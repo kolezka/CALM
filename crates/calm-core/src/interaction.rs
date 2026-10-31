@@ -28,6 +28,7 @@ pub struct Modifiers {
 pub enum Button {
     Left,
     Middle,
+    Right,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +87,16 @@ pub enum Effect {
     ConfirmClose(PanelId),
     /// Remove the panel and end its process.
     ClosePanel(PanelId),
+    /// Right click on empty canvas. `screen` is canvas-relative, `world` is where to add.
+    ShowCanvasMenu {
+        screen: Point,
+        world: Point,
+    },
+    /// Right click on a panel's chrome strip or minimized chip.
+    ShowPanelMenu {
+        id: PanelId,
+        screen: Point,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +133,9 @@ impl InputHandler {
         _mods: Modifiers,
         scene: &mut Scene,
     ) -> Vec<Effect> {
+        if button == Button::Right {
+            return context_menu(screen, scene);
+        }
         if button == Button::Middle || self.space_held {
             self.state = Interaction::Panning {
                 last_screen: screen,
@@ -257,6 +271,20 @@ impl InputHandler {
         }
     }
 
+    /// Trackpad pinch. `delta` is the fractional change, 0.1 is 10 % in.
+    pub fn pinch(&mut self, screen: Point, delta: f64, scene: &mut Scene) -> Vec<Effect> {
+        // A gesture must not move the canvas under a rectangle being drawn or resized.
+        let busy = matches!(
+            self.state,
+            Interaction::Drawing { .. } | Interaction::Resizing { .. }
+        );
+        if busy || !delta.is_finite() || delta == 0.0 {
+            return Vec::new();
+        }
+        scene.camera.zoom_by(1.0 + delta.clamp(-0.5, 0.5), screen);
+        vec![Effect::Redraw]
+    }
+
     pub fn key_zoom(&mut self, step: ZoomStep, anchor_screen: Point, scene: &mut Scene) {
         let factor = match step {
             ZoomStep::In => 1.1,
@@ -302,6 +330,21 @@ impl InputHandler {
                 settings: serde_json::Value::Object(serde_json::Map::new()),
             }),
         }
+    }
+}
+
+/// Right click: canvas menu on empty canvas, panel menu on chrome or a minimized chip,
+/// nothing on content, which handles its own right clicks.
+fn context_menu(screen: Point, scene: &Scene) -> Vec<Effect> {
+    let world = scene.camera.screen_to_world(screen);
+    let Some(id) = scene.hit_test(world) else {
+        return vec![Effect::ShowCanvasMenu { screen, world }];
+    };
+    match scene.get(id) {
+        Some(panel) if panel.minimized || world.y < panel.rect.origin.y + CHROME_HEIGHT => {
+            vec![Effect::ShowPanelMenu { id, screen }]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -621,5 +664,152 @@ mod tests {
         assert_eq!(handler.confirm_key(ConfirmKey::Escape), None);
         assert_eq!(handler.confirming, None);
         assert_eq!(handler.confirm_key(ConfirmKey::Enter), None);
+    }
+
+    #[test]
+    fn right_click_on_empty_canvas_emits_canvas_menu() {
+        let mut scene = Scene::default();
+        scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        scene.camera.zoom = 2.0;
+        let mut handler = InputHandler::default();
+        let screen = Point::new(1000.0, 100.0);
+        let effects = handler.mouse_down(screen, Button::Right, no_mods(), &mut scene);
+        assert_eq!(
+            effects,
+            vec![Effect::ShowCanvasMenu {
+                screen,
+                world: Point::new(500.0, 50.0),
+            }]
+        );
+        assert_eq!(handler.state, Interaction::Idle);
+        assert_eq!(scene.panels.len(), 1);
+    }
+
+    #[test]
+    fn right_click_on_chrome_emits_panel_menu() {
+        let mut scene = Scene::default();
+        let back = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        let front = scene.add(terminal(), Rect::new(500.0, 0.0, 400.0, 300.0));
+        let mut handler = InputHandler::default();
+        let screen = Point::new(100.0, 10.0);
+        let effects = handler.mouse_down(screen, Button::Right, no_mods(), &mut scene);
+        assert_eq!(effects, vec![Effect::ShowPanelMenu { id: back, screen }]);
+        // No drag starts and the stacking order stays.
+        assert_eq!(handler.state, Interaction::Idle);
+        assert_eq!(scene.panels.last().map(|panel| panel.id), Some(front));
+
+        // A minimized panel's chip counts as chrome and is not restored.
+        scene.get_mut(front).unwrap().minimized = true;
+        let chip = Point::new(510.0, 10.0);
+        let effects = handler.mouse_down(chip, Button::Right, no_mods(), &mut scene);
+        assert_eq!(
+            effects,
+            vec![Effect::ShowPanelMenu {
+                id: front,
+                screen: chip
+            }]
+        );
+        assert!(scene.get(front).unwrap().minimized);
+    }
+
+    #[test]
+    fn right_click_on_content_emits_nothing() {
+        let mut scene = Scene::default();
+        scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mut handler = InputHandler::default();
+        let effects = handler.mouse_down(
+            Point::new(100.0, 150.0),
+            Button::Right,
+            no_mods(),
+            &mut scene,
+        );
+        assert_eq!(effects, Vec::new());
+        assert_eq!(handler.state, Interaction::Idle);
+    }
+
+    #[test]
+    fn pinch_in_zooms_at_center() {
+        let mut scene = Scene::default();
+        let mut handler = InputHandler::default();
+        let center = Point::new(300.0, 200.0);
+        let world_before = scene.camera.screen_to_world(center);
+        let effects = handler.pinch(center, 0.1, &mut scene);
+        assert_eq!(effects, vec![Effect::Redraw]);
+        assert!((scene.camera.zoom - 1.1).abs() < 1e-9);
+        let world_after = scene.camera.screen_to_world(center);
+        assert!((world_after.x - world_before.x).abs() < 1e-9);
+        assert!((world_after.y - world_before.y).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pinch_out_zooms_out() {
+        let mut scene = Scene::default();
+        let mut handler = InputHandler::default();
+        handler.pinch(Point::new(300.0, 200.0), -0.1, &mut scene);
+        assert!((scene.camera.zoom - 0.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pinch_clamps_large_delta() {
+        let mut scene = Scene::default();
+        let mut handler = InputHandler::default();
+        handler.pinch(Point::new(300.0, 200.0), 5.0, &mut scene);
+        assert!((scene.camera.zoom - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pinch_ignores_nan_and_zero() {
+        let mut scene = Scene::default();
+        let mut handler = InputHandler::default();
+        let before = scene.camera;
+        for delta in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                handler.pinch(Point::new(300.0, 200.0), delta, &mut scene),
+                Vec::new(),
+                "delta {delta}"
+            );
+            assert_eq!(scene.camera, before, "delta {delta}");
+        }
+    }
+
+    #[test]
+    fn pinch_ignored_while_drawing() {
+        let mut scene = Scene::default();
+        let mut handler = InputHandler {
+            tool: Tool::DrawTerminal,
+            ..InputHandler::default()
+        };
+        handler.mouse_down(
+            Point::new(100.0, 100.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
+        assert!(matches!(handler.state, Interaction::Drawing { .. }));
+        assert_eq!(
+            handler.pinch(Point::new(300.0, 200.0), 0.1, &mut scene),
+            Vec::new()
+        );
+        assert_eq!(scene.camera.zoom, 1.0);
+
+        // Resizing ignores it too; dragging still zooms.
+        handler.state = Interaction::Resizing {
+            id: PanelId(1),
+            edge: ResizeEdge::BottomRight,
+            grab_offset_world: Point::new(0.0, 0.0),
+        };
+        assert_eq!(
+            handler.pinch(Point::new(300.0, 200.0), 0.1, &mut scene),
+            Vec::new()
+        );
+        assert_eq!(scene.camera.zoom, 1.0);
+        handler.state = Interaction::Dragging {
+            id: PanelId(1),
+            grab_offset_world: Point::new(0.0, 0.0),
+        };
+        assert_eq!(
+            handler.pinch(Point::new(300.0, 200.0), 0.1, &mut scene),
+            vec![Effect::Redraw]
+        );
     }
 }
