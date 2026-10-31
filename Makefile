@@ -16,7 +16,7 @@ OUT ?= dist
 
 export ZIG
 
-.PHONY: help setup-check build test lint fmt smoke run bench bundle plugins plugins-check ci graph clean
+.PHONY: help setup-check build test lint fmt smoke run bench bundle release-upload plugins plugins-check ci graph clean
 
 help: ## Show the available targets.
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  %-14s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -69,6 +69,9 @@ bench: ## Run a benchmark with N, SECONDS, and ZOOM options.
 
 bundle: ## Build a macOS bundle with VERSION and OUT options.
 	@if [[ ! -f scripts/bundle-macos.sh ]]; then printf 'error: scripts/bundle-macos.sh is not available yet\n' >&2; exit 1; fi; scripts/bundle-macos.sh "$(VERSION)" "$(OUT)"
+
+release-upload: ## Build the macOS zip and attach it to release VERSION.
+	@if [[ "$(origin VERSION)" != "command line" && "$(origin VERSION)" != "environment" ]]; then printf 'error: pass the release version, e.g. make release-upload VERSION=0.1.1\n' >&2; exit 1; fi; scripts/release-upload.sh "$(VERSION)"
 
 plugins: ## Install and build every plugin package.
 	@for manifest in plugins/*/package.json templates/*/package.json; do \

@@ -9,3 +9,4 @@ templates/*/dist/
 bench-results/
 .DS_Store
 *.log
+dist/
