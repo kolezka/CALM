@@ -18,6 +18,7 @@ use crate::geometry::Size;
 use crate::grid::GridKind;
 use crate::menu::DEFAULT_TERMINAL_SIZE;
 use crate::preview::PREVIEW_ZOOM_THRESHOLD;
+use crate::process_stats::{DEFAULT_INTERVAL_MS, INTERVAL_MS_RANGE, MemoryUnit};
 use crate::snap::{DEFAULT_SNAP_EDGE, DEFAULT_SNAP_GRID, SnapConfig};
 use crate::terminal_profile::TerminalSettings;
 
@@ -80,6 +81,40 @@ pub struct Settings {
     /// Plain terminal defaults and profiles.
     pub terminal: TerminalSettings,
     pub canvas: CanvasSettings,
+    pub developer: DeveloperSettings,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DeveloperSettings {
+    pub stats: StatsSettings,
+}
+
+/// Which items the stats readout (cmd-shift-f) shows, and how often CPU and memory are
+/// sampled. The readout itself starts hidden each launch.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StatsSettings {
+    pub show_fps: bool,
+    pub show_cpu: bool,
+    pub show_memory: bool,
+    /// Also count child processes (terminal shells, plugin backends) in CPU and memory.
+    pub include_children: bool,
+    pub interval_ms: u64,
+    pub memory_unit: MemoryUnit,
+}
+
+impl Default for StatsSettings {
+    fn default() -> Self {
+        StatsSettings {
+            show_fps: true,
+            show_cpu: true,
+            show_memory: true,
+            include_children: false,
+            interval_ms: DEFAULT_INTERVAL_MS,
+            memory_unit: MemoryUnit::Auto,
+        }
+    }
 }
 
 /// How the empty canvas reacts to input.
@@ -184,6 +219,7 @@ impl Default for Settings {
             plugins: PluginSettings::default(),
             terminal: TerminalSettings::default(),
             canvas: CanvasSettings::default(),
+            developer: DeveloperSettings::default(),
         }
     }
 }
@@ -413,6 +449,14 @@ impl Settings {
             PREVIEW_ZOOM_RANGE,
         )?;
         self.terminal.validate()?;
+        let interval = self.developer.stats.interval_ms;
+        if !INTERVAL_MS_RANGE.contains(&interval) {
+            return Err(format!(
+                "\"developer.stats.interval_ms\" is {interval}, expected {} to {}",
+                INTERVAL_MS_RANGE.start(),
+                INTERVAL_MS_RANGE.end()
+            ));
+        }
         self.plugins.menus.validate()
     }
 }
@@ -640,6 +684,36 @@ mod tests {
         settings.panels.default_terminal_width = 800.0;
         settings.panels.preview_below_zoom = 0.3;
         settings
+    }
+
+    #[test]
+    fn stats_settings_default_and_reject_bad_values() {
+        let absent: Settings = serde_json::from_str(r#"{ "version": 2 }"#).unwrap();
+        assert_eq!(absent.developer.stats, StatsSettings::default());
+        assert_eq!(absent.developer.stats.interval_ms, 1000);
+        let set: Settings = serde_json::from_str(
+            r#"{ "version": 2, "developer": { "stats": { "show_fps": false,
+                "interval_ms": 250, "memory_unit": "gb", "include_children": true } } }"#,
+        )
+        .unwrap();
+        let stats = &set.developer.stats;
+        assert!(!stats.show_fps && stats.show_cpu && stats.include_children);
+        assert_eq!(stats.memory_unit, MemoryUnit::Gb);
+        assert!(set.validate().is_ok());
+        for interval in [0, 249, 10_001] {
+            let mut bad = Settings::default();
+            bad.developer.stats.interval_ms = interval;
+            let error = bad.validate().unwrap_err();
+            assert!(error.contains("developer.stats.interval_ms"), "{error}");
+        }
+        for json in [
+            r#"{ "version": 2, "developer": { "stats": { "memory_unit": "kb" } } }"#,
+            r#"{ "version": 2, "developer": { "stats": { "show_gpu": true } } }"#,
+            r#"{ "version": 2, "developer": { "stats": { "interval_ms": -5 } } }"#,
+            r#"{ "version": 2, "developer": { "stats": { "show_cpu": "yes" } } }"#,
+        ] {
+            assert!(serde_json::from_str::<Settings>(json).is_err(), "{json}");
+        }
     }
 
     #[test]

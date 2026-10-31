@@ -112,6 +112,45 @@ fn remove_smoke_dir() {
 }
 
 const SMOKE_FPS_FRAMES: usize = 10;
+/// CPU needs two samples one interval (default 1 s) apart, plus a paint to show them.
+const SMOKE_STATS_TIMEOUT: Duration = Duration::from_secs(5);
+/// CALM with GPUI, Metal and two terminals is far above this; less means a bad reading.
+const SMOKE_STATS_MIN_MB: f64 = 10.0;
+
+/// Waits for the status pill to show CPU and memory, then parses them back out of its
+/// text, so the line checks what the user sees, not only the sampler.
+async fn smoke_process_stats(view: &gpui::Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
+    let started = Instant::now();
+    loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+        let (text, fps) = cx.update(|cx| {
+            let view = view.read(cx);
+            let text = view.status_bar_state().map(|(_, _, text)| text);
+            (text, view.frame_stats.fps())
+        });
+        let text = match text {
+            Ok(text) => text,
+            Err(err) => smoke_fail(&format!("stats: no status bar: {err}")),
+        };
+        if let (Some(cpu), Some(mem)) = calm_core::process_stats::parse_stats_text(&text) {
+            if !(cpu >= 0.0 && cpu.is_finite()) || mem <= SMOKE_STATS_MIN_MB {
+                smoke_fail(&format!(
+                    "stats: implausible cpu={cpu} mem={mem}MB in {text:?}"
+                ));
+            }
+            let fps = fps.unwrap_or(0.0);
+            println!("smoke: stats fps={fps:.1} cpu={cpu:.1}% mem={mem:.0}MB");
+            return;
+        }
+        if started.elapsed() > SMOKE_STATS_TIMEOUT {
+            smoke_fail(&format!(
+                "stats: no cpu and memory in the status bar: {text:?}"
+            ));
+        }
+    }
+}
 const SMOKE_FPS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long both terminals may take to reach a mode after a zoom change.
@@ -249,10 +288,10 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_tui(&view, window, cx).await;
 
         let toggled = cx.update_window(window, |_, window, cx| {
-            view.update(cx, |view, cx| view.set_show_fps(true, window, cx))
+            view.update(cx, |view, cx| view.set_show_stats(true, window, cx))
         });
         if let Err(err) = toggled {
-            smoke_fail(&format!("show_fps toggle: {err:#}"));
+            smoke_fail(&format!("show_stats toggle: {err:#}"));
         }
         let shown = Instant::now();
         loop {
@@ -272,9 +311,10 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 break;
             }
             if shown.elapsed() > SMOKE_FPS_TIMEOUT {
-                smoke_fail(&format!("only {frames} frames with show_fps on"));
+                smoke_fail(&format!("only {frames} frames with show_stats on"));
             }
         }
+        smoke_process_stats(&view, cx).await;
         // Zoom out: both terminals switch to GPUI-drawn snapshots.
         cx.update(|cx| {
             view.update(cx, |view, _| view.preview_input_targets = 0);
@@ -299,7 +339,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             }
         }
 
-        // show_fps is still on, so a frame paints every tick. Readbacks must stay at
+        // show_stats is still on, so a frame paints every tick. Readbacks must stay at
         // one per refresh period anyway.
         let before = cx.update(|cx| view.read(cx).snapshot_counts(cx));
         cx.background_executor().timer(SMOKE_SNAPSHOT_WINDOW).await;

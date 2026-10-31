@@ -64,7 +64,7 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 `t` then drag draws a terminal. Right-click opens Add and panel actions. Space+drag or
 middle-drag pans. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom. `cmd-shift-h`
 centers the world origin, `cmd-shift-0` fits all panels (both also in the View menu).
-`cmd-ctrl-f` fullscreen, `cmd-shift-f` FPS. A click on empty canvas clears panel focus
+`cmd-ctrl-f` fullscreen, `cmd-shift-f` stats (FPS, CPU, memory; items in `developer.stats`). A click on empty canvas clears panel focus
 (`canvas.click_empty_clears_focus`). `alt` while dragging disables snapping (default
 grid 8 world units, edge snap within 8). `cmd-,` opens the native Settings window
 (background, grid, snapping, panels). Settings persist in `~/.config/calm/settings.json`; `CALM_HOME`
