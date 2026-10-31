@@ -10,9 +10,10 @@ use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
     Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, Tool, ZoomStep,
 };
+use calm_core::join::{Axis, JoinLayout, JoinedEdges, Side};
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
-use calm_core::scene::{Panel, PanelId, PanelKind, Scene, content_rect};
+use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{HostView, NativeChild, StatusBar, show_context_menu};
@@ -132,6 +133,8 @@ pub struct CanvasView {
     status_bar: Option<StatusBar>,
     /// Set when the status bar could not be created, so paint stops retrying.
     status_bar_error: Option<String>,
+    /// Joins and visible dividers in the last render. Read by the smoke.
+    pub join_counts: (usize, usize),
 }
 
 impl CanvasView {
@@ -177,6 +180,7 @@ impl CanvasView {
             },
             status_bar: None,
             status_bar_error: None,
+            join_counts: (0, 0),
         }
     }
 
@@ -809,6 +813,8 @@ struct PaintSnapshot {
     /// Terminals that got an input div in this render.
     input_targets: Vec<PanelId>,
     settings: calm_core::settings::Settings,
+    /// Computed once per render from `scene`.
+    joins: JoinLayout,
 }
 
 /// How a terminal or plugin panel's content is drawn this paint. A plugin in Preview has
@@ -897,8 +903,40 @@ impl PaintSnapshot {
                 .any(|content| matches!(content, TerminalContent::Preview(_)));
             // Panels paint inside this mask; nested masks intersect with it, so nothing
             // a panel draws can leave the canvas.
+            let z_of: HashMap<PanelId, usize> = self
+                .scene
+                .panels
+                .iter()
+                .enumerate()
+                .map(|(index, panel)| (panel.id, index))
+                .collect();
             for panel in &self.scene.panels {
+                // A group's shadows all go down before its first member, so its members cover
+                // the shadow between them and only the outer boundary casts one.
+                let group = self
+                    .joins
+                    .groups
+                    .iter()
+                    .find(|members| members.contains(&panel.id));
+                match group {
+                    Some(members) if members[0] == panel.id => {
+                        for id in members {
+                            if let Some(member) = self.scene.get(*id) {
+                                self.paint_shadow(member, origin, window);
+                            }
+                        }
+                    }
+                    Some(_) => {}
+                    None => self.paint_shadow(panel, origin, window),
+                }
                 self.paint_panel(panel, contents.get(&panel.id), origin, window, cx);
+                // A divider goes on right after the later of its two panels.
+                let z = z_of[&panel.id];
+                for join in &self.joins.joins {
+                    if z_of.get(&join.first).max(z_of.get(&join.second)) == Some(&z) {
+                        self.paint_divider(join, origin, window);
+                    }
+                }
             }
             if let Interaction::Drawing { draft, .. } = self.state {
                 // Painted from the snapped world rect so the outline matches the panel created.
@@ -996,6 +1034,121 @@ impl PaintSnapshot {
         (contents, changed)
     }
 
+    /// Drop shadow outside the panel's outline, square where a neighbor joins.
+    fn paint_shadow(&self, panel: &Panel, origin: gpui::Point<f64>, window: &mut Window) {
+        let zoom = self.scene.camera.zoom;
+        let body = self.scene.camera.world_rect_to_screen(body_rect(panel));
+        let shadow_color = if self.focused == Some(panel.id) {
+            theme::SHADOW_FOCUSED
+        } else {
+            theme::SHADOW
+        };
+        window.paint_drop_shadows(
+            to_bounds(body, origin),
+            panel_corners(panel, self.joins.edges(panel.id), zoom, 0.0),
+            &[BoxShadow {
+                color: rgba(shadow_color).into(),
+                offset: point(px(0.), px((4.0 * zoom).clamp(1.0, 6.0) as f32)),
+                blur_radius: px((18.0 * zoom).clamp(2.0, 24.0) as f32),
+                spread_radius: px(0.),
+                inset: false,
+            }],
+        );
+    }
+
+    /// Ring pieces along the parts of joined sides that no neighbor covers.
+    fn paint_open_ring(
+        &self,
+        body: Rect,
+        edges: &JoinedEdges,
+        color: gpui::Rgba,
+        origin: gpui::Point<f64>,
+        window: &mut Window,
+    ) {
+        let camera = self.scene.camera;
+        let zoom = camera.zoom;
+        for side in [Side::Left, Side::Top, Side::Right, Side::Bottom] {
+            // Thick enough to cover the ring's reach into the gap.
+            let thickness = edges
+                .gap(side)
+                .map_or(BORDER_PX, |gap| BORDER_PX.max(gap * zoom / 2.0));
+            for &(start, end) in edges.open(side) {
+                let vertical = matches!(side, Side::Left | Side::Right);
+                let (low, high) = if vertical {
+                    (body.origin.y, body.bottom())
+                } else {
+                    (body.origin.x, body.right())
+                };
+                // Pieces that reach a corner extend over it to meet the neighbor side's ring.
+                let lead = if start <= low { BORDER_PX } else { 0.0 };
+                let tail = if end >= high { BORDER_PX } else { 0.0 };
+                let piece = if vertical {
+                    let top = camera.world_to_screen(Point::new(body.origin.x, start)).y - lead;
+                    let bottom = camera.world_to_screen(Point::new(body.origin.x, end)).y + tail;
+                    let x = if side == Side::Left {
+                        camera.world_to_screen(body.origin).x - thickness
+                    } else {
+                        camera.world_to_screen(Point::new(body.right(), 0.0)).x
+                    };
+                    Rect::new(x, top, thickness, bottom - top)
+                } else {
+                    let left = camera.world_to_screen(Point::new(start, body.origin.y)).x - lead;
+                    let right = camera.world_to_screen(Point::new(end, body.origin.y)).x + tail;
+                    let y = if side == Side::Top {
+                        camera.world_to_screen(body.origin).y - thickness
+                    } else {
+                        camera.world_to_screen(Point::new(0.0, body.bottom())).y
+                    };
+                    Rect::new(left, y, right - left, thickness)
+                };
+                window.paint_quad(fill(to_bounds(piece, origin), color));
+            }
+        }
+    }
+
+    /// Fills the gap of a join. It sits between the two panels, so it never covers a native
+    /// view. Where both title bars face each other it is at least one pixel wide, so a
+    /// joined pair still shows a seam through the bar strip when the gap is 0 or tiny.
+    fn paint_divider(
+        &self,
+        join: &calm_core::join::Join,
+        origin: gpui::Point<f64>,
+        window: &mut Window,
+    ) {
+        let camera = self.scene.camera;
+        let zoom = camera.zoom;
+        let involved = |id: Option<PanelId>| id == Some(join.first) || id == Some(join.second);
+        let color = if involved(self.confirming) {
+            theme::CONFIRM_BORDER
+        } else if involved(self.focused) {
+            theme::ACCENT
+        } else {
+            theme::PANEL_BORDER
+        };
+        let gap = camera.world_rect_to_screen(join.divider);
+        window.paint_quad(fill(to_bounds(gap, origin), rgb(color)));
+        if join.axis != Axis::Row || join.gap * zoom >= BORDER_PX {
+            return;
+        }
+        let (Some(first), Some(second)) = (self.scene.get(join.first), self.scene.get(join.second))
+        else {
+            return;
+        };
+        // The shared span starts at the lower of the two tops; both bars run to the higher
+        // top plus the bar height.
+        let bars_top = join.divider.origin.y;
+        let bars_bottom = (first.rect.origin.y.min(second.rect.origin.y) + TITLE_BAR_HEIGHT)
+            .min(join.divider.bottom());
+        if bars_bottom <= bars_top {
+            return;
+        }
+        let top = camera.world_to_screen(Point::new(0.0, bars_top)).y;
+        let bottom = camera.world_to_screen(Point::new(0.0, bars_bottom)).y;
+        let center = gap.origin.x + gap.size.width / 2.0;
+        let seam = Rect::new(center - BORDER_PX / 2.0, top, BORDER_PX, bottom - top);
+        window.paint_quad(fill(to_bounds(seam, origin), rgb(color)));
+    }
+
     fn paint_panel(
         &self,
         panel: &Panel,
@@ -1029,50 +1182,42 @@ impl PaintSnapshot {
             (theme::PANEL_BAR, theme::PANEL_BORDER, theme::TITLE_TEXT)
         };
 
-        // Shadow and ring sit outside the panel rect, so neither reaches into native content.
-        // Bottom corners stay square on a full panel: the native view below is square.
-        let body = camera.world_rect_to_screen(if panel.minimized {
-            layout.bar
-        } else {
-            panel.rect
-        });
-        let radius = CORNER_RADIUS * zoom;
-        let bottom_radius = if panel.minimized { radius } else { 0.0 };
-        let shadow_color = if focused {
-            theme::SHADOW_FOCUSED
-        } else {
-            theme::SHADOW
+        // The ring sits outside the panel rect, so it never reaches into native content.
+        // On a joined side it has no border and reaches halfway across the gap, where the
+        // divider takes over; the outer ring then runs unbroken across the group.
+        let edges = self.joins.edges(panel.id);
+        let body = body_rect(panel);
+        let body_screen = camera.world_rect_to_screen(body);
+        let outward = |side: Side| match edges.and_then(|edges| edges.gap(side)) {
+            Some(gap) => gap * zoom / 2.0,
+            None => BORDER_PX,
         };
-        window.paint_drop_shadows(
-            to_bounds(body, origin),
-            corners(radius, bottom_radius),
-            &[BoxShadow {
-                color: rgba(shadow_color).into(),
-                offset: point(px(0.), px((4.0 * zoom).clamp(1.0, 6.0) as f32)),
-                blur_radius: px((18.0 * zoom).clamp(2.0, 24.0) as f32),
-                spread_radius: px(0.),
-                inset: false,
-            }],
-        );
+        let border = |side: Side| match edges.and_then(|edges| edges.gap(side)) {
+            Some(_) => px(0.),
+            None => px(BORDER_PX as f32),
+        };
         let ring = Rect::new(
-            body.origin.x - BORDER_PX,
-            body.origin.y - BORDER_PX,
-            body.size.width + 2.0 * BORDER_PX,
-            body.size.height + 2.0 * BORDER_PX,
+            body_screen.origin.x - outward(Side::Left),
+            body_screen.origin.y - outward(Side::Top),
+            body_screen.size.width + outward(Side::Left) + outward(Side::Right),
+            body_screen.size.height + outward(Side::Top) + outward(Side::Bottom),
         );
-        let ring_bottom = if panel.minimized {
-            bottom_radius + BORDER_PX
-        } else {
-            0.0
-        };
         window.paint_quad(quad(
             to_bounds(ring, origin),
-            corners(radius + BORDER_PX, ring_bottom),
+            panel_corners(panel, edges, zoom, BORDER_PX),
             rgb(bar_color),
-            Edges::all(px(BORDER_PX as f32)),
+            Edges {
+                top: border(Side::Top),
+                right: border(Side::Right),
+                bottom: border(Side::Bottom),
+                left: border(Side::Left),
+            },
             rgb(border_color),
             BorderStyle::Solid,
         ));
+        if let Some(edges) = edges {
+            self.paint_open_ring(body, edges, rgb(border_color), origin, window);
+        }
 
         if !panel.minimized {
             let content_screen = camera.world_rect_to_screen(content_rect(panel));
@@ -1225,12 +1370,32 @@ impl PaintSnapshot {
     }
 }
 
-fn corners(top: f64, bottom: f64) -> Corners<Pixels> {
+/// What a panel's chrome outlines: the chip when minimized, else the whole panel.
+fn body_rect(panel: &Panel) -> Rect {
+    if panel.minimized {
+        chip_rect(panel)
+    } else {
+        panel.rect
+    }
+}
+
+/// Screen radii of a panel's outline grown by `grow` pixels. Bottom corners stay square on a
+/// full panel because the native view below is square; corners a neighbor covers are square.
+fn panel_corners(
+    panel: &Panel,
+    edges: Option<&JoinedEdges>,
+    zoom: f64,
+    grow: f64,
+) -> Corners<Pixels> {
+    let radius = CORNER_RADIUS * zoom + grow;
+    let bottom = if panel.minimized { radius } else { 0.0 };
+    let square = edges.map(|edges| edges.square).unwrap_or_default();
+    let pick = |is_square: bool, round: f64| px(if is_square { 0.0 } else { round } as f32);
     Corners {
-        top_left: px(top as f32),
-        top_right: px(top as f32),
-        bottom_right: px(bottom as f32),
-        bottom_left: px(bottom as f32),
+        top_left: pick(square.top_left, radius),
+        top_right: pick(square.top_right, radius),
+        bottom_right: pick(square.bottom_right, bottom),
+        bottom_left: pick(square.bottom_left, bottom),
     }
 }
 
@@ -1342,7 +1507,12 @@ impl Render for CanvasView {
             modal_open: self.input.confirming.is_some() || self.menu_open,
             input_targets: Vec::new(),
             settings: self.settings.settings,
+            joins: JoinLayout::compute(&self.scene.panels),
         };
+        self.join_counts = (
+            snapshot.joins.joins.len(),
+            snapshot.joins.visible_dividers(),
+        );
         // Mouse and key targets for terminals, at last frame's viewport.
         let viewport = self.viewport;
         // Only live terminals take input; a preview's clicks and scrolls go to the canvas.

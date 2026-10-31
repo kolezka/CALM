@@ -60,6 +60,17 @@ one means a new entry, not an edit.
   Cost if wrong: canvas clicks in the top 28 pt strip drag the window instead (native
   title bar drag), and clicks on the bar fall through to the canvas.
 
+- **Joined panels leave a 1 unit gap, filled by the divider.** Panels join when facing
+  edges are 0 to 2 world units apart (`JOIN_GAP`) and their spans overlap. Edge snapping
+  puts facing edges exactly 1 unit apart (`JOIN_SNAP_GAP`), never flush, because GPUI
+  cannot paint over a native view: a 0 gap leaves the divider no room beside two live
+  terminals. The divider fills the gap, so it is 1 px at zoom 1 and scales with zoom.
+  Over the title bars it is at least 1 px wide, so a pair at gap 0 (only reachable with
+  `alt`) still shows a seam in the bar, but none over the content. All panel kinds join.
+  Resizing a shared edge moves one panel; snapping keeps it joined. Rejected: a 0 gap
+  with the divider drawn on chrome only, which leaves two terminals visually fused.
+  Cost if wrong: the 1 unit offset breaks exact grid alignment of the second panel.
+
 ## Process
 
 - **Agent Teams with disjoint write scopes.** SDD forbids parallel implementers; lanes run
