@@ -8,5 +8,6 @@ pub mod layout;
 pub mod menu;
 pub mod preview;
 pub mod scene;
+pub mod settings;
 pub mod stats;
 pub mod viewport;

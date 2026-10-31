@@ -10,6 +10,7 @@ use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{HostView, NativeChild, show_context_menu};
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, BorderStyle, Bounds, ContentMask, Context, DispatchPhase, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
@@ -20,7 +21,8 @@ use gpui::{
 
 use std::time::Instant;
 
-use crate::dev_menu::{self, ResetFps, ToggleFps};
+use crate::dev_menu::{ResetFps, ToggleFps};
+use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalPanel};
 use crate::theme;
 use crate::toolbar::{TOOLBAR_HEIGHT, toolbar};
@@ -86,6 +88,7 @@ pub struct CanvasView {
     focus_handle: FocusHandle,
     pub show_fps: bool,
     pub frame_stats: FrameStats,
+    pub settings: SettingsState,
 }
 
 impl CanvasView {
@@ -104,6 +107,10 @@ impl CanvasView {
             focus_handle: cx.focus_handle(),
             show_fps: false,
             frame_stats: FrameStats::default(),
+            settings: SettingsState {
+                settings: Default::default(),
+                path: calm_core::settings::settings_path(),
+            },
         }
     }
 
@@ -111,7 +118,8 @@ impl CanvasView {
         self.show_fps = show;
         self.frame_stats.reset();
         // Rebuild the menu bar so the Show FPS check mark follows the state.
-        cx.defer(move |cx| cx.set_menus(dev_menu::menus(show)));
+        let settings = self.settings.settings;
+        cx.defer(move |cx| cx.set_menus(settings_menu::menus(show, &settings)));
         window.refresh();
         cx.notify();
     }
@@ -147,7 +155,8 @@ impl CanvasView {
                     let alive = self
                         .terminal(id)
                         .is_some_and(|terminal| terminal.read(cx).is_alive());
-                    queue.push_back(self.input.request_close(id, alive));
+                    let confirm = alive && self.settings.settings.confirm_close;
+                    queue.push_back(self.input.request_close(id, confirm));
                 }
                 Effect::ConfirmClose(_) => {
                     // Enter and Escape must reach the canvas, not the terminal.
@@ -251,7 +260,8 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) {
         if let PanelKind::Terminal { command, cwd } = kind {
-            let options = terminal::options(command.as_deref(), cwd.clone());
+            let mut options = terminal::options(command.as_deref(), cwd.clone());
+            settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
             if let Err(err) = self.spawn_terminal(id, options, window, cx) {
                 eprintln!("calm: terminal failed to start: {err}");
             }
@@ -467,6 +477,7 @@ struct PaintSnapshot {
     confirming: Option<PanelId>,
     pointer: Point,
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
+    settings: calm_core::settings::Settings,
 }
 
 /// A panel's native placement in window points, or `None` when minimized or off screen.
@@ -495,8 +506,12 @@ impl PaintSnapshot {
             f64::from(f32::from(bounds.origin.y)),
         );
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.paint_quad(fill(bounds, rgb(theme::BACKGROUND)));
+            let background = self.settings.background.rgb();
+            window.paint_quad(fill(bounds, rgb(background)));
             let camera = self.scene.camera;
+            if self.settings.show_grid {
+                settings_menu::paint_grid(bounds, &camera, background, window);
+            }
             // Panels paint inside this mask; nested masks intersect with it, so nothing
             // a panel draws can reach the toolbar.
             for panel in &self.scene.panels {
@@ -671,6 +686,7 @@ impl Render for CanvasView {
             confirming: self.input.confirming,
             pointer: self.pointer,
             terminals: self.terminals.clone(),
+            settings: self.settings.settings,
         };
         // Mouse and key targets for terminals, at last frame's placement.
         let viewport = self.viewport;
@@ -692,7 +708,7 @@ impl Render for CanvasView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(theme::BACKGROUND))
+            .bg(rgb(self.settings.settings.background.rgb()))
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::key_down))
@@ -724,6 +740,7 @@ impl Render for CanvasView {
                 view.set_show_fps(!view.show_fps, window, cx)
             }))
             .on_action(cx.listener(|view, _: &ResetFps, window, cx| view.reset_fps(window, cx)))
+            .map(|root| settings_menu::bind(root, cx))
             .child(toolbar(self))
             .child(
                 div()

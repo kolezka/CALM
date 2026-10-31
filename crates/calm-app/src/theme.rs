@@ -1,6 +1,6 @@
 //! Colors shared by the canvas and the toolbar.
+//! The canvas background is a setting: `Settings::background` in calm-core.
 
-pub const BACKGROUND: u32 = 0x151515;
 pub const CHROME: u32 = 0x2a2a2a;
 pub const CHROME_FOCUSED: u32 = 0x3c6e9f;
 pub const TEXT: u32 = 0xe6e6e6;

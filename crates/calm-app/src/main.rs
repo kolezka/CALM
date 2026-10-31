@@ -1,5 +1,6 @@
 mod canvas_view;
 mod dev_menu;
+mod settings_menu;
 mod terminal;
 mod theme;
 mod toolbar;
@@ -14,6 +15,7 @@ use gpui::{
 };
 
 use crate::canvas_view::CanvasView;
+use crate::settings_menu::SettingsState;
 
 #[derive(Default)]
 struct Args {
@@ -161,12 +163,62 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
     .detach();
 }
 
+/// The smoke keeps its settings in a fresh temp dir, so the user's file is never touched.
+fn startup_settings(smoke: bool) -> SettingsState {
+    if !smoke {
+        let path = calm_core::settings::settings_path();
+        let settings = calm_core::settings::load_settings_from(&path);
+        return SettingsState { settings, path };
+    }
+    let dir = std::env::temp_dir().join(format!("calm-smoke-{}", std::process::id()));
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        smoke_fail(&format!("settings temp dir {}: {err}", dir.display()));
+    }
+    let path = dir.join("settings.json");
+    let settings = calm_core::settings::load_settings_from(&path);
+    SettingsState { settings, path }
+}
+
+/// Changes two settings through the menu path, then reads the file back.
+fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<CanvasView>) {
+    use calm_core::settings::{BackgroundPreset, read_settings_from};
+    view.update_settings(
+        |s| {
+            s.background = BackgroundPreset::MidnightBlue;
+            s.show_grid = true;
+        },
+        window,
+        cx,
+    );
+    let path = view.settings.path.clone();
+    let saved = match read_settings_from(&path) {
+        Ok(saved) => saved,
+        Err(err) => smoke_fail(&format!("settings: {err}")),
+    };
+    if saved != view.settings.settings {
+        smoke_fail(&format!("settings file {saved:?} differs from state"));
+    }
+    println!(
+        "smoke: settings background={} grid={} path={}",
+        saved.background.label(),
+        saved.show_grid,
+        path.display()
+    );
+    if let Some(dir) = path.parent()
+        && let Err(err) = std::fs::remove_dir_all(dir)
+    {
+        eprintln!("smoke: could not remove {}: {err}", dir.display());
+    }
+}
+
 fn main() {
     let args = parse_args();
     gpui_platform::application().run(move |cx: &mut App| {
         cx.bind_keys(canvas_view::key_bindings());
         cx.bind_keys(dev_menu::key_bindings());
         dev_menu::install(cx);
+        let settings = startup_settings(args.smoke);
+        settings_menu::install(cx, &settings.settings);
         // Single window in v1: closing it quits.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -189,6 +241,7 @@ fn main() {
         let opened = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| {
                 let mut view = CanvasView::new(cx);
+                view.settings = settings;
                 if smoke && let Err(err) = add_smoke_panels(&mut view, window, cx) {
                     smoke_fail(&format!("terminal spawn: {err}"));
                 }
@@ -216,6 +269,7 @@ fn main() {
                     if rect.size.width <= 0.0 || rect.size.height <= 0.0 || panels != 2 {
                         smoke_fail("canvas did not lay out with both panels");
                     }
+                    smoke_view.update(cx, |view, cx| smoke_settings(view, window, cx));
                     wait_for_terminal_frames(smoke_view, window.window_handle(), cx);
                 });
             }
