@@ -77,6 +77,9 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
+    // Linux can report ETXTBSY when parallel tests exec a script while another writes one.
+    static FAKE_GH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn fake_gh(dir: &Path, body: &str) -> PathBuf {
         let path = dir.join("gh");
         fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -86,6 +89,7 @@ mod tests {
 
     #[test]
     fn api_runs_gh_and_parses_json() {
+        let _guard = FAKE_GH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let gh = fake_gh(
             dir.path(),
@@ -122,6 +126,7 @@ fi"#,
 
     #[test]
     fn api_reports_not_authenticated_from_stderr() {
+        let _guard = FAKE_GH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let gh = fake_gh(
             dir.path(),
@@ -140,6 +145,7 @@ exit 4"#,
 
     #[test]
     fn api_reports_rejected_for_other_failures() {
+        let _guard = FAKE_GH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let gh = fake_gh(
             dir.path(),
@@ -154,6 +160,7 @@ exit 1"#,
 
     #[test]
     fn api_rejects_paths_with_flags_or_spaces() {
+        let _guard = FAKE_GH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("ran");
         let gh = fake_gh(
