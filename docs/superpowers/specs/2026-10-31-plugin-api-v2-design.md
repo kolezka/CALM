@@ -685,9 +685,9 @@ hidden page. Recommendation: backends replace hidden background pages for most c
 backend first when `main` is declared. Background pages stay in the design for headless
 code that needs the web platform, built last and only on demand.
 
-**Bun runtime source.** For the user to decide. Two options:
+**Bun runtime source: the user's installed bun (decided 2026-10-31).** The options compared:
 
-| | A: bun on the user's system (recommended) | B: pinned bun inside CALM.app |
+| | A: bun on the user's system (chosen) | B: pinned bun inside CALM.app |
 | --- | --- | --- |
 | Setup | user installs bun once (`brew install oven-sh/bun/bun` or the install script) | none |
 | App size | no change | tens of MB more per arch (measure before quoting) |
@@ -696,7 +696,7 @@ code that needs the web platform, built last and only on demand.
 | Version drift | plugins may meet different bun versions; `engines.bun` catches mismatches | one known version, fewer surprises |
 | Fits today | yes: first-party plugins already need bun to build, and the macOS zip is built locally | adds a download and packaging step to `gmake release-upload` |
 
-Recommendation: **A**, with a fixed lookup order and a loud failure. Order: the
+Decision: **A**, with a fixed lookup order and a loud failure. Order: the
 `plugins.bun_path` setting if set, then `PATH` from a login shell (`$SHELL -lc 'command -v
 bun'`, run once at startup, because an app started from Finder does not get the shell
 `PATH`), then `~/.bun/bin/bun`, `/opt/homebrew/bin/bun`, `/usr/local/bin/bun`. If none is
@@ -1265,8 +1265,8 @@ From the user, through the lead:
 5. `terminals.setFontSize` changes a terminal's grid. `CLAUDE.md` says only a panel resize
    changes the logical grid; that rule should read "only a panel resize or a font size
    change, never camera zoom" once phase 10 lands.
-6. Bun runtime source: A (bun on the system, recommended) or B (pinned bun in the app).
-   The user decides.
+6. Bun runtime source: the user's installed bun (decided 2026-10-31). A bundled copy can
+   be added later as the last lookup step.
 7. The `confirm_close` line in the API stays, but a backend can bypass it by killing the
    shell's process. Keep it as a guard against plugin bugs, or drop it as theater.
 8. Whether fd 3 IPC works with bun as a stream, or the per-plugin socket fallback is needed.

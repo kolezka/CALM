@@ -389,6 +389,11 @@ impl SettingsWindow {
         self.window.isVisible()
     }
 
+    /// True when AppKit placed the window on a display, so it is not lost off screen.
+    pub fn is_on_screen(&self) -> bool {
+        self.window.screen().is_some()
+    }
+
     /// Controls wired to the target, for the smoke.
     pub fn bound_controls(&self) -> usize {
         self.target.ivars().bindings.borrow().len()

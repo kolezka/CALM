@@ -906,11 +906,11 @@ mod tests {
             no_mods(),
             &mut scene,
         );
-        // Left edge 205 snaps flush to the neighbor's right edge 200; top 401 to the grid.
+        // Left edge 205 joins the neighbor's right edge 200 one unit off; top 401 to the grid.
         handler.mouse_move(Point::new(215.0, 411.0), no_mods(), &mut scene);
         assert_eq!(
             scene.get(moving).unwrap().rect,
-            Rect::new(200.0, 400.0, 200.0, 100.0)
+            Rect::new(201.0, 400.0, 200.0, 100.0)
         );
     }
 

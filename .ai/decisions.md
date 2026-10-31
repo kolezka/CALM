@@ -15,6 +15,13 @@ one means a new entry, not an edit.
   installed. Cost: a malicious plugin has host access; mitigated by explicit install only.
 - **GitHub through `gh` on the host.** Plugin JS never sees a token. Cost: users must have
   `gh` logged in.
+- **Customization first (user, 2026-10-31).** Every user-visible feature exposes its look
+  and behavior (colors, icons, titles, sizes, fonts, keys, behaviors) as settings or
+  manifest fields with sensible defaults and strict validation. A hard-coded choice needs
+  its own entry here. Security rules still win over any setting. Reason: the user wants
+  CALM shaped to their own workflow, not to the author's taste. Cost: more settings to
+  validate, test and document, and more states to support. If it proves wrong, fold rarely
+  used settings back into fixed defaults.
 
 ## Architecture
 
@@ -76,6 +83,17 @@ one means a new entry, not an edit.
   bar with native views clipped above it, which keeps a hard edge where terminals end.
   Cost if wrong: canvas clicks in the top 28 pt strip drag the window instead (native
   title bar drag), and clicks on the bar fall through to the canvas.
+
+- **Joined panels leave a 1 unit gap, filled by the divider.** Panels join when facing
+  edges are 0 to 2 world units apart (`JOIN_GAP`) and their spans overlap. Edge snapping
+  puts facing edges exactly 1 unit apart (`JOIN_SNAP_GAP`), never flush, because GPUI
+  cannot paint over a native view: a 0 gap leaves the divider no room beside two live
+  terminals. The divider fills the gap, so it is 1 px at zoom 1 and scales with zoom.
+  Over the title bars it is at least 1 px wide, so a pair at gap 0 (only reachable with
+  `alt`) still shows a seam in the bar, but none over the content. All panel kinds join.
+  Resizing a shared edge moves one panel; snapping keeps it joined. Rejected: a 0 gap
+  with the divider drawn on chrome only, which leaves two terminals visually fused.
+  Cost if wrong: the 1 unit offset breaks exact grid alignment of the second panel.
 
 ## Process
 
@@ -146,8 +164,12 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   processes), no `calm` bridge in browser panels, CALM never hands its own secrets to
   plugins, and the API never closes a live terminal without the user's confirmation (a
   guard for the user's work against plugin bugs; a backend could still kill the process).
-- **Bun runtime source: pending the user.** Recommended: bun on the user's system with a
-  fixed lookup order and a loud failure, not a bundled copy.
+- **Bun runtime source: the user's installed bun (decided 2026-10-31).** Lookup order: the
+  `plugins.bun_path` setting, then a one-time login shell `$SHELL -lc 'command -v bun'`,
+  then `~/.bun/bin`, `/opt/homebrew/bin` and `/usr/local/bin`. A missing bun, or one outside
+  `engines.bun`, fails loud with an install hint in the panel and the status bar error count.
+  Reason: developers already need bun; bundling adds size, signing and delayed security
+  fixes. Cost if wrong: a bundled copy can be added later as the last lookup step.
 
 ## Built-in plugin dirs (2026-10-31)
 

@@ -45,6 +45,13 @@ verified unless marked otherwise.
   red tinted bar during "Close? enter / esc". Icon, title and buttons hide below 12 px of
   bar height on screen. Colors in `calm-app/src/theme.rs`.
 - Unverified: the look itself. Only smoke ran; a manual GUI pass is the user's.
+- Joined panels (branch `feat/panel-join`, not merged yet). `calm-core::join` finds panels
+  whose facing edges are 0 to `JOIN_GAP` (2) apart with overlapping spans, for all kinds;
+  minimized chips never join. Paint squares the covered corners, drops the ring on joined
+  sides, fills the gap with one divider, and casts the shadow only around a group's outer
+  boundary. Edge snapping now lands facing edges `JOIN_SNAP_GAP` (1) apart instead of
+  flush. Smoke prints `join pairs=1 dividers=1 gap=1`. Unverified: the look, and partial
+  overlaps at high zoom. Manual GUI pass is the user's.
 - Bottom bar (PR #4): the top status strip is removed; the title bar is transparent with a
   hidden title; zoom, FPS and the save flash show in a native translucent pill at the
   bottom center (`calm_native::StatusBar`, rect from `calm_core::status_bar`). Smoke
@@ -101,6 +108,10 @@ verified unless marked otherwise.
   Settings…, all through one global `OpenSettings` handler; a second open focuses the
   same window. A top-level menu bar item cannot fire an action in GPUI (each top-level
   `Menu` becomes an item with a submenu), so the Settings menu stays a menu.
+  The handler defers the open: GPUI runs it while it holds the canvas window, so a
+  direct `canvas.update` failed and all three entry points did nothing until this fix.
+  Smoke line `settings_dispatch` dispatches the action on the canvas window to cover it.
+  Manual pass with a terminal and a browser focused is pending.
 - Backgrounds: solid color, linear or radial gradient with 2 to 6 stops, image with
   cover, contain, tile or center and blur, brightness, contrast, saturation, grayscale
   and dim. Live on the canvas while editing.
