@@ -1,3 +1,5 @@
+mod background;
+mod browser_panel;
 mod canvas_view;
 mod dev_menu;
 mod plugin_host;
@@ -39,8 +41,15 @@ fn parse_args() -> Args {
     args
 }
 
-/// Two live terminals at zoom 1.5. The first starts above the canvas so its chrome and
-/// content cross the window's top edge and the native view is clipped.
+/// A page with no network use that clicks its own link as soon as it parses, so following
+/// it proves link navigation and the URL event path. Fully percent-encoded for NSURL.
+const SMOKE_BROWSER_PAGE: &str = "data:text/html,%3Ca%20id%3Dl%20href%3D%22about%3Ablank%23clicked%22%3Elink%3C%2Fa%3E%3Cscript%3Edocument.getElementById(%22l%22).click()%3C%2Fscript%3E";
+const SMOKE_BROWSER_TARGET: &str = "about:blank#clicked";
+const SMOKE_BROWSER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Two live terminals at zoom 1.5 and one browser below them. The first terminal starts
+/// above the canvas so its chrome and content cross the window's top edge and the native
+/// view is clipped.
 fn add_smoke_panels(
     view: &mut CanvasView,
     window: &mut Window,
@@ -58,6 +67,12 @@ fn add_smoke_panels(
         let id = view.scene.add(kind, rect);
         view.spawn_terminal(id, terminal::options(None, None), window, cx)?;
     }
+    let url = SMOKE_BROWSER_PAGE.to_string();
+    let id = view.scene.add(
+        PanelKind::Browser { url: url.clone() },
+        Rect::new(20.0, 220.0, 320.0, 200.0),
+    );
+    view.spawn_browser(id, &url, window, cx)?;
     Ok(())
 }
 
@@ -167,7 +182,8 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 .await;
             let (scene, native) = cx.update(|cx| view.read(cx).native_zorder(cx));
             let line = format!("zorder={native:?} scene={scene:?}");
-            if scene == native && scene.len() == 2 {
+            // Two terminals and the browser share the native stack.
+            if scene == native && scene.len() == 3 {
                 println!("smoke: {line}");
                 // Restacking the panels must not bury the status bar.
                 smoke_status_bar(cx.update(|cx| view.read(cx).status_bar_state()));
@@ -309,7 +325,10 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 .iter()
                 .any(|count| *count == 0 || *count > SMOKE_MAX_SNAPSHOTS)
         {
-            smoke_fail(&format!("preview refresh outside 1..=3 snapshots: {line}"));
+            let visible = cx.update(|cx| window_visible(window, cx));
+            smoke_fail(&format!(
+                "preview refresh outside 1..=3 snapshots: {line} window_visible={visible:?}"
+            ));
         }
         // Input divs over a preview would steal its scroll and keys from the canvas.
         println!("smoke: preview_input_targets={targets}");
@@ -339,7 +358,48 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 break;
             }
             if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
-                smoke_fail(&format!("terminals not live at zoom 1.5: {previews:?}"));
+                let visible = cx.update(|cx| window_visible(window, cx));
+                smoke_fail(&format!(
+                    "terminals not live at zoom 1.5: {previews:?} window_visible={visible:?}"
+                ));
+            }
+        }
+        // The gradient set by `smoke_settings` rendered once per size, off the UI thread.
+        let (renders, idle, error) = cx.update(|cx| {
+            let background = &view.read(cx).background;
+            (
+                background.renders,
+                background.is_idle(),
+                background.error.clone(),
+            )
+        });
+        println!("smoke: background renders={renders} idle={idle} error={error:?}");
+        if renders == 0 || !idle || error.is_some() {
+            smoke_fail("gradient background did not render");
+        }
+
+        // The browser loaded its page, followed the link and reported the new URL.
+        let started = Instant::now();
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+            let status = cx.update(|cx| view.read(cx).browser_status());
+            let [(mode, loading, page, scene)] = status.as_slice() else {
+                smoke_fail(&format!("expected 1 browser, found {}", status.len()));
+            };
+            let target = Some(SMOKE_BROWSER_TARGET.to_string());
+            let done = !loading && *page == target && *scene == target;
+            if done && *mode == PanelMode::Live {
+                println!(
+                    "smoke: browser loaded=true link=followed url={SMOKE_BROWSER_TARGET} mode=live"
+                );
+                break;
+            }
+            if started.elapsed() > SMOKE_BROWSER_TIMEOUT {
+                smoke_fail(&format!(
+                    "browser: mode={mode:?} loading={loading} page={page:?} scene={scene:?}"
+                ));
             }
         }
 
@@ -347,6 +407,14 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+/// Whether AppKit has the window on screen. GPUI stops painting an occluded window, so a
+/// failed frame check with `Some(false)` points at the desktop, not the code.
+fn window_visible(window: AnyWindowHandle, cx: &mut App) -> Option<bool> {
+    cx.update_window(window, |_, window, _| calm_native::window_visible(window))
+        .ok()
+        .flatten()
 }
 
 /// A fixture plugin whose page sets the title twice; the second call runs only after the
@@ -466,7 +534,8 @@ async fn smoke_plugins(
             .await;
         let (scene, native) = cx.update(|cx| view.read(cx).native_zorder(cx));
         let line = format!("zorder={native:?} scene={scene:?}");
-        if scene == native && scene.len() == 4 {
+        // Two terminals, the browser and two plugins.
+        if scene == native && scene.len() == 5 {
             println!("smoke: plugins {line}");
             break;
         }
@@ -490,9 +559,7 @@ fn set_zoom(view: &Entity<CanvasView>, zoom: f64, cx: &mut App) {
 /// file is never touched.
 fn startup_settings(smoke: bool) -> SettingsState {
     if !smoke {
-        let path = calm_core::settings::settings_path();
-        let settings = calm_core::settings::load_settings_from(&path);
-        return SettingsState { settings, path };
+        return load_startup_settings(calm_core::settings::settings_path());
     }
     let dir = match tempfile::Builder::new().prefix("calm-smoke-").tempdir() {
         Ok(dir) => dir,
@@ -500,17 +567,64 @@ fn startup_settings(smoke: bool) -> SettingsState {
     };
     let path = dir.path().join("settings.json");
     *SMOKE_DIR.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir);
-    let settings = calm_core::settings::load_settings_from(&path);
-    SettingsState { settings, path }
+    match calm_core::settings::load_settings_from(&path) {
+        Ok(settings) => SettingsState {
+            settings,
+            path,
+            notice: None,
+        },
+        Err(err) => smoke_fail(&format!("settings: {err}")),
+    }
 }
 
-/// Changes two settings through the menu path, then reads the file back.
+/// A rejected file is reported and moved aside before the defaults are used, so the next
+/// save cannot overwrite it.
+fn load_startup_settings(path: std::path::PathBuf) -> SettingsState {
+    use calm_core::settings::{Settings, load_settings_from, set_aside_invalid};
+    let error = match load_settings_from(&path) {
+        Ok(settings) => {
+            return SettingsState {
+                settings,
+                path,
+                notice: None,
+            };
+        }
+        Err(error) => error,
+    };
+    eprintln!("calm: {error}");
+    let notice = match set_aside_invalid(&path) {
+        Ok(moved) => {
+            eprintln!(
+                "calm: moved it to {}; using default settings",
+                moved.display()
+            );
+            format!(
+                "Your settings file could not be read ({error}). It was moved to {} and the defaults are in use.",
+                moved.display()
+            )
+        }
+        Err(move_error) => {
+            eprintln!("calm: {move_error}");
+            format!("Your settings file could not be read ({error}) or moved aside ({move_error}).")
+        }
+    };
+    SettingsState {
+        settings: Settings::default(),
+        path,
+        notice: Some(notice),
+    }
+}
+
+/// Sets a gradient background and the grid through the settings path, reads the file back,
+/// then builds the native Settings window and checks every control was bound.
 fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<CanvasView>) {
-    use calm_core::settings::{BackgroundPreset, read_settings_from};
+    use calm_core::background::BackgroundKind;
+    use calm_core::settings::read_settings_from;
+    use calm_core::settings_form::{Control, settings_form};
     view.update_settings(
         |s| {
-            s.background = BackgroundPreset::MidnightBlue;
-            s.show_grid = true;
+            s.background.kind = BackgroundKind::Gradient;
+            s.grid.show = true;
         },
         window,
         cx,
@@ -524,11 +638,46 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
         smoke_fail(&format!("settings file {saved:?} differs from state"));
     }
     println!(
-        "smoke: settings background={} grid={} path={}",
-        saved.background.label(),
-        saved.show_grid,
+        "smoke: settings background={:?} grid={} path={}",
+        saved.background.kind,
+        saved.grid.show,
         path.display()
     );
+    view.open_settings(window, cx);
+    let first = view.settings_window.as_ref().map(|w| w.window_number());
+    // A second open, as from another entry point, must reuse the same window.
+    view.open_settings(window, cx);
+    let second = view.settings_window.as_ref().map(|w| w.window_number());
+    let count = calm_native::settings_window_count()
+        .unwrap_or_else(|err| smoke_fail(&format!("settings window count: {err}")));
+    println!(
+        "smoke: settings_window opens=2 windows={count} same={}",
+        first == second
+    );
+    if count != 1 || first.is_none() || first != second {
+        smoke_fail("opening Settings twice did not reuse one window");
+    }
+    let expected = settings_form(&view.settings.settings, &view.form_context())
+        .iter()
+        .flat_map(|section| &section.fields)
+        .filter(|field| !matches!(field.control, Control::Note(_)))
+        .count();
+    let Some(settings_window) = &view.settings_window else {
+        smoke_fail("settings window was not created");
+    };
+    let bound = settings_window.bound_controls();
+    println!(
+        "smoke: settings_window visible={} controls={bound}",
+        settings_window.is_visible()
+    );
+    if bound != expected || !settings_window.is_visible() {
+        smoke_fail(&format!(
+            "settings window bound {bound} of {expected} controls"
+        ));
+    }
+    settings_window.hide();
+    // Give focus back to the canvas, as a user closing Settings would.
+    window.activate_window();
 }
 
 fn main() {
@@ -536,6 +685,7 @@ fn main() {
     gpui_platform::application().run(move |cx: &mut App| {
         cx.bind_keys(canvas_view::key_bindings());
         cx.bind_keys(dev_menu::key_bindings());
+        cx.bind_keys(settings_menu::key_bindings());
         dev_menu::install(cx);
         if args.smoke {
             let previous = std::panic::take_hook();
@@ -576,7 +726,7 @@ fn main() {
         let opened = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| {
                 let mut view = CanvasView::new(cx);
-                view.settings = settings;
+                view.set_settings_state(settings);
                 if smoke && let Err(err) = add_smoke_panels(&mut view, window, cx) {
                     smoke_fail(&format!("terminal spawn: {err}"));
                 }
@@ -601,8 +751,8 @@ fn main() {
                         "smoke: canvas viewport={}x{} panels={panels}",
                         rect.size.width, rect.size.height
                     );
-                    if rect.size.width <= 0.0 || rect.size.height <= 0.0 || panels != 2 {
-                        smoke_fail("canvas did not lay out with both panels");
+                    if rect.size.width <= 0.0 || rect.size.height <= 0.0 || panels != 3 {
+                        smoke_fail("canvas did not lay out with all three panels");
                     }
                     smoke_view.update(cx, |view, cx| smoke_settings(view, window, cx));
                     wait_for_terminal_frames(smoke_view, window.window_handle(), cx);
@@ -610,6 +760,9 @@ fn main() {
             }
             view
         });
+        if let Ok(canvas) = &opened {
+            settings_menu::install_open_handler(cx, *canvas);
+        }
         if let Err(err) = opened {
             if smoke {
                 smoke_fail(&format!("open_window: {err:#}"));

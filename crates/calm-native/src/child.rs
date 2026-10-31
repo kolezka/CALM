@@ -149,6 +149,25 @@ impl NativeChild {
     pub(crate) fn zoom_view(&self) -> &Retained<NSView> {
         &self.zoom
     }
+
+    pub(crate) fn clip_view(&self) -> &Retained<NSView> {
+        &self.clip
+    }
+}
+
+/// Whether AppKit reports any part of `window` as visible on screen, or `None` when the
+/// handle is not an AppKit view in a window. GPUI stops drawing an occluded window.
+pub fn window_visible(window: &impl HasWindowHandle) -> Option<bool> {
+    MainThreadMarker::new()?;
+    let handle = window.window_handle().ok()?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    // SAFETY: as in `NativeChild::new`: a live NSView while the handle is borrowed, read on
+    // the main thread.
+    let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+    let state = view.window()?.occlusionState();
+    Some(state.contains(objc2_app_kit::NSWindowOcclusionState::Visible))
 }
 
 impl HasWindowHandle for NativeChild {
