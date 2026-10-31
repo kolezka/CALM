@@ -4,7 +4,7 @@
 
 Runs on every push to any branch and on pull requests. Two jobs:
 
-- `linux-arch` (`archlinux:latest` container on the self-hosted runner): `cargo fmt --check`,
+- `linux-arch` (`archlinux:latest` on the self-hosted runner, via `scripts/ci-arch.sh`): `cargo fmt --check`,
   then tests and clippy for `calm-core` and `calm-plugins` only.
 - `macos` (`macos-15`, arm64): installs Zig 0.16 from ziglang.org (checksum pinned in
   `.github/actions/macos-toolchain/action.yml`) and the Metal Toolchain, then fmt, build, test and
@@ -21,8 +21,15 @@ pass. Read the smoke log before trusting it either way.
 Every Linux job (`linux-arch` in both workflows and the release `guard`) runs on
 `[self-hosted, linux, calm]`: a `myoung34/github-runner` container on the OVH host, deployed
 with Coolify and registered to this repository with labels `self-hosted,linux,x64,ovh,calm`.
-Container jobs need the runner to reach a Docker daemon. If no runner with those labels is
-online, the jobs wait in the queue rather than fail. `.github/actionlint.yaml` lists the custom
+If no runner with those labels is online, the jobs wait in the queue rather than fail.
+
+The Arch steps run through `scripts/ci-arch.sh`, not a job-level `container:`. The runner talks
+to the host's Docker daemon through its socket, and the daemon cannot see the runner's own work
+directory, so `container:` (and any `-v "$GITHUB_WORKSPACE":...` bind mount) gets an empty
+workspace: the first run failed with `sh: /__w/_temp/<id>.sh: No such file or directory`. The
+script streams the checkout into `archlinux:latest` with `tar` and keeps pacman, rustup, cargo
+and `target` caches in named Docker volumes (`calm-arch-*`) on the host. To clear the caches:
+`docker volume rm calm-arch-pacman calm-arch-rustup calm-arch-cargo calm-arch-target`. `.github/actionlint.yaml` lists the custom
 labels so `actionlint` accepts them. The macOS jobs stay on GitHub-hosted `macos-15`.
 
 ## Linux limitation

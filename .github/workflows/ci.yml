@@ -20,38 +20,17 @@ jobs:
   # The app is macOS only (calm-native is AppKit/WebKit and calm-app depends on it).
   # This job covers the portable crates. Switch it to the full workspace once a
   # Linux native backend exists.
-  # Runs on the self-hosted OVH runner (labels self-hosted, linux, calm), which needs Docker
-  # for the container.
+  # Runs on the self-hosted OVH runner (labels self-hosted, linux, calm). The Arch steps run
+  # through scripts/ci-arch.sh, not `container:`, because the runner's work directory is not
+  # visible to the host Docker daemon. See docs/release.md.
   linux-arch:
     runs-on: [self-hosted, linux, calm]
-    container: archlinux:latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
-      - name: Install toolchain
-        run: |
-          pacman -Syu --noconfirm --needed rustup base-devel git
-          rustup default stable
-          rustc --version
-
       - uses: actions/checkout@v4
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: linux-arch-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: linux-arch-cargo-
-
-      - name: Format
-        run: cargo fmt --all -- --check
-
-      - name: Test portable crates
-        run: cargo test -p calm-core -p calm-plugins
-
-      - name: Clippy portable crates
-        run: cargo clippy -p calm-core -p calm-plugins --all-targets -- -D warnings
+      - name: Fmt, test and clippy portable crates in Arch
+        run: scripts/ci-arch.sh ci
 
   macos:
     runs-on: macos-15

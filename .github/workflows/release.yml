@@ -45,30 +45,14 @@ jobs:
   linux-arch:
     needs: guard
     runs-on: [self-hosted, linux, calm]
-    container: archlinux:latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
-      - name: Install toolchain
-        run: |
-          pacman -Syu --noconfirm --needed rustup base-devel git
-          rustup default stable
-          rustc --version
-
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: linux-arch-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: linux-arch-cargo-
-
-      - name: Test portable crates
-        run: cargo test -p calm-core -p calm-plugins
+      - name: Test portable crates in Arch
+        run: scripts/ci-arch.sh test
 
   release:
     needs: [guard, linux-arch]
