@@ -93,6 +93,10 @@ impl BrowserPanel {
         self.host.bring_to_front();
     }
 
+    pub fn stack_index(&self) -> Option<usize> {
+        self.host.stack_index()
+    }
+
     pub fn focus_page(&self) {
         self.view.focus_page();
     }

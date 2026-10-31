@@ -52,8 +52,8 @@ Ghostty surface parented to the zoom view at `(0, 0, logical size)`. The adapter
 
 macOS 27.0.1, Apple M4 Pro, 2026-10-31.
 
-- `cargo run -p calm-app -- --smoke`: two terminals at zoom 1.5, one clipped by the toolbar
-  edge, both draw frames and stay alive.
+- `cargo run -p calm-app -- --smoke`: two terminals at zoom 1.5, one clipped by the window's
+  top edge, both draw frames and stay alive.
 - Driven with synthetic CGEvents and checked by screenshot: a drawn terminal shows a zsh
   prompt below its chrome strip; `echo ok` typed and run; the close button on a live shell
   shows the confirmation, Escape cancels it; cmd-= twice zooms to 121% and the grid scales
