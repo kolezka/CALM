@@ -16,6 +16,57 @@ impl BridgeRequest {
     }
 }
 
+/// Every request `method` the prelude can send. The single source of truth for the host
+/// dispatcher, the prelude and `packages/calm-plugin-sdk/calm.d.ts` (tests keep them in sync).
+pub const BRIDGE_METHODS: &[&str] = &[
+    "settings.get",
+    "settings.set",
+    "storage.get",
+    "storage.set",
+    "storage.remove",
+    "panel.setTitle",
+    "panel.getBounds",
+    "panel.minimize",
+    "panel.close",
+    "canvas.createPanel",
+    "canvas.focusPanel",
+    "canvas.listPanels",
+    "process.exec",
+    "github.api",
+    "openExternal",
+    "theme.get",
+    "log",
+];
+
+pub fn is_known_method(method: &str) -> bool {
+    BRIDGE_METHODS.contains(&method)
+}
+
+/// JSON text that is also safe inside a JS source string: JSON allows U+2028 and U+2029
+/// raw, older JS string literals do not.
+fn js_literal(value: &Value) -> String {
+    value
+        .to_string()
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
+}
+
+/// A host to plugin event, delivered to handlers registered with `calm.events.on`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeEvent {
+    pub event: String,
+    pub payload: Value,
+}
+
+impl BridgeEvent {
+    /// The script the host evaluates in the page to fan the event out to its handlers.
+    pub fn to_js(&self) -> String {
+        let event = js_literal(&Value::from(self.event.as_str()));
+        let payload = js_literal(&self.payload);
+        format!("window.__calm.emit({event}, {payload})")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeResponse {
     Ok(u64, Value),
@@ -23,17 +74,19 @@ pub enum BridgeResponse {
 }
 
 impl BridgeResponse {
+    /// The answer for a method the host does not serve yet. Rejects instead of hanging.
+    pub fn not_implemented(id: u64, method: &str) -> Self {
+        BridgeResponse::Err(id, format!("not implemented: {method}"))
+    }
+
     /// The script the host evaluates in the page to settle the call's Promise.
     pub fn to_js(&self) -> String {
         let (id, ok, value) = match self {
-            BridgeResponse::Ok(id, value) => (id, true, value.to_string()),
+            BridgeResponse::Ok(id, value) => (id, true, js_literal(value)),
             BridgeResponse::Err(id, message) => {
-                (id, false, Value::from(message.as_str()).to_string())
+                (id, false, js_literal(&Value::from(message.as_str())))
             }
         };
-        let value = value
-            .replace('\u{2028}', "\\u2028")
-            .replace('\u{2029}', "\\u2029");
         format!("window.__calm.resolve({id}, {ok}, {value})")
     }
 }
@@ -43,22 +96,29 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
   if (window.calm) return;
   var nextId = 1;
   var pending = new Map();
+  var handlers = new Map();
+  var EVENTS = ["focus", "blur", "resize", "visibility", "settingsChanged", "themeChanged"];
 
-  function call(method, params) {
+  function call(request) {
     return new Promise(function (resolve, reject) {
       var id = nextId++;
       pending.set(id, { resolve: resolve, reject: reject });
       try {
         window.webkit.messageHandlers.calm.postMessage({
           id: id,
-          method: method,
-          params: params === undefined ? null : params
+          method: request.method,
+          params: request.params === undefined ? null : request.params
         });
       } catch (err) {
         pending.delete(id);
         reject(err);
       }
     });
+  }
+
+  // Fire and forget: a failed log has nowhere better to go.
+  function log(message) {
+    call({ method: "log", params: { message: String(message) } }).catch(function () {});
   }
 
   window.__calm = Object.freeze({
@@ -68,22 +128,74 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
       pending.delete(id);
       if (ok) entry.resolve(value);
       else entry.reject(new Error(String(value)));
+    },
+    // Called by the host. Never throws back into it: a failing handler is logged.
+    emit: function (event, payload) {
+      var set = handlers.get(event);
+      if (!set) return;
+      Array.from(set).forEach(function (handler) {
+        try {
+          handler(payload);
+        } catch (err) {
+          log("calm.events handler for " + event + " threw: " + ((err && err.stack) || err));
+        }
+      });
     }
   });
 
   window.calm = Object.freeze({
     settings: Object.freeze({
-      get: function () { return call("settings.get", null); },
-      set: function (obj) { return call("settings.set", obj); }
+      get: function () { return call({ method: "settings.get", params: null }); },
+      set: function (value) { return call({ method: "settings.set", params: value }); }
+    }),
+    storage: Object.freeze({
+      get: function (key) { return call({ method: "storage.get", params: { key: String(key) } }); },
+      set: function (key, value) {
+        return call({ method: "storage.set", params: { key: String(key), value: value } });
+      },
+      remove: function (key) { return call({ method: "storage.remove", params: { key: String(key) } }); }
     }),
     panel: Object.freeze({
-      setTitle: function (title) { return call("panel.setTitle", { title: String(title) }); }
+      setTitle: function (title) { return call({ method: "panel.setTitle", params: { title: String(title) } }); },
+      getBounds: function () { return call({ method: "panel.getBounds", params: null }); },
+      minimize: function () { return call({ method: "panel.minimize", params: null }); },
+      close: function () { return call({ method: "panel.close", params: null }); }
+    }),
+    canvas: Object.freeze({
+      createPanel: function (spec) { return call({ method: "canvas.createPanel", params: { spec: spec } }); },
+      focusPanel: function (id) { return call({ method: "canvas.focusPanel", params: { id: id } }); },
+      listPanels: function () { return call({ method: "canvas.listPanels", params: null }); }
+    }),
+    process: Object.freeze({
+      exec: function (command, args, options) {
+        var opts = options || {};
+        return call({ method: "process.exec", params: {
+          command: String(command),
+          args: Array.prototype.map.call(args || [], String),
+          cwd: opts.cwd === undefined ? null : String(opts.cwd),
+          timeoutMs: opts.timeoutMs === undefined ? null : Number(opts.timeoutMs)
+        } });
+      }
     }),
     github: Object.freeze({
-      api: function (path) { return call("github.api", { path: String(path) }); }
+      api: function (path) { return call({ method: "github.api", params: { path: String(path) } }); }
     }),
-    log: function (message) { return call("log", { message: String(message) }); },
-    openExternal: function (url) { return call("openExternal", { url: String(url) }); }
+    theme: Object.freeze({
+      get: function () { return call({ method: "theme.get", params: null }); }
+    }),
+    events: Object.freeze({
+      on: function (event, handler) {
+        if (EVENTS.indexOf(event) < 0) throw new TypeError("unknown calm event: " + event);
+        if (typeof handler !== "function") throw new TypeError("calm.events.on needs a function");
+        var set = handlers.get(event);
+        if (!set) handlers.set(event, (set = new Set()));
+        var entry = function (payload) { handler(payload); };
+        set.add(entry);
+        return function () { set.delete(entry); };
+      }
+    }),
+    openExternal: function (url) { return call({ method: "openExternal", params: { url: String(url) } }); },
+    log: log
   });
 })();
 "#;
@@ -130,19 +242,202 @@ mod tests {
         );
     }
 
+    /// The contract from the plugin SDK, in declaration order.
+    const CONTRACT: &[&str] = &[
+        "settings.get",
+        "settings.set",
+        "storage.get",
+        "storage.set",
+        "storage.remove",
+        "panel.setTitle",
+        "panel.getBounds",
+        "panel.minimize",
+        "panel.close",
+        "canvas.createPanel",
+        "canvas.focusPanel",
+        "canvas.listPanels",
+        "process.exec",
+        "github.api",
+        "openExternal",
+        "theme.get",
+        "log",
+    ];
+
+    /// Declared in the d.ts but served by the prelude itself, not by the host.
+    const PRELUDE_ONLY: &[&str] = &["events.on"];
+
     #[test]
-    fn prelude_posts_every_bridge_method() {
+    fn bridge_methods_match_contract() {
+        assert_eq!(BRIDGE_METHODS, CONTRACT);
+    }
+
+    /// Every `method: "<name>"` literal in the prelude, in order.
+    fn prelude_method_literals() -> Vec<&'static str> {
+        CALM_PRELUDE_JS
+            .split("method: \"")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .collect()
+    }
+
+    #[test]
+    fn prelude_exposes_every_bridge_method() {
         for needle in [
             "window.webkit.messageHandlers.calm.postMessage",
             "window.__calm",
-            "\"settings.get\"",
-            "\"settings.set\"",
-            "\"panel.setTitle\"",
-            "\"github.api\"",
-            "\"log\"",
-            "\"openExternal\"",
         ] {
             assert!(CALM_PRELUDE_JS.contains(needle), "prelude lacks {needle}");
         }
+        let literals = prelude_method_literals();
+        for method in BRIDGE_METHODS {
+            assert!(
+                literals.contains(method),
+                "prelude lacks method: \"{method}\""
+            );
+        }
+        for literal in &literals {
+            assert!(
+                is_known_method(literal),
+                "prelude calls {literal}, which is not in BRIDGE_METHODS"
+            );
+        }
+    }
+
+    /// Body between the braces of `interface <name> {`, nested braces included.
+    fn interface_body<'a>(src: &'a str, name: &str) -> &'a str {
+        let header = format!("interface {name} {{");
+        let start = src
+            .find(&header)
+            .unwrap_or_else(|| panic!("calm.d.ts lacks `{header}`"))
+            + header.len();
+        let mut depth = 1;
+        for (offset, ch) in src[start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[start..start + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("interface {name} is not closed");
+    }
+
+    /// Members declared one per line: `(name, rest)` where rest starts with `(`, `<` or `:`.
+    fn members(body: &str) -> Vec<(&str, &str)> {
+        body.lines()
+            .map(str::trim)
+            .filter_map(|line| {
+                let end = line.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))?;
+                let (name, rest) = line.split_at(end);
+                let first = name.chars().next()?;
+                (first.is_ascii_alphabetic()
+                    && matches!(rest.chars().next(), Some('(' | '<' | ':')))
+                .then_some((name, rest))
+            })
+            .collect()
+    }
+
+    /// Every `ns.fn` and top level `fn` that the d.ts declares on `window.calm`.
+    fn declared_calm_functions(src: &str) -> Vec<String> {
+        let mut declared = Vec::new();
+        for (name, rest) in members(interface_body(src, "Calm")) {
+            if let Some(namespace_type) = rest.strip_prefix(':') {
+                let namespace_type = namespace_type.trim().trim_end_matches(';').trim();
+                for (function, rest) in members(interface_body(src, namespace_type)) {
+                    assert!(
+                        !rest.starts_with(':'),
+                        "{name}.{function} is a property; declare it as a method"
+                    );
+                    declared.push(format!("{name}.{function}"));
+                }
+            } else {
+                declared.push(name.to_string());
+            }
+        }
+        declared
+    }
+
+    #[test]
+    fn dts_declares_every_bridge_method() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packages/calm-plugin-sdk/calm.d.ts");
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        assert!(src.contains("interface Window {\n    calm: Calm;"));
+        let declared = declared_calm_functions(&src);
+
+        for method in BRIDGE_METHODS {
+            assert!(
+                declared.iter().any(|d| d == method),
+                "calm.d.ts does not declare calm.{method}"
+            );
+        }
+        for function in &declared {
+            assert!(
+                is_known_method(function) || PRELUDE_ONLY.contains(&function.as_str()),
+                "calm.d.ts declares calm.{function} without a bridge method"
+            );
+        }
+        for function in PRELUDE_ONLY {
+            assert!(
+                declared.iter().any(|d| d == function),
+                "calm.d.ts lacks {function}"
+            );
+        }
+    }
+
+    #[test]
+    fn event_to_js_escapes_payload() {
+        let event = BridgeEvent {
+            event: "settingsChanged".into(),
+            payload: json!({ "note": "say \"hi\"\u{2028}</script>\u{2029}" }),
+        };
+        assert_eq!(
+            event.to_js(),
+            r#"window.__calm.emit("settingsChanged", {"note":"say \"hi\"\u2028</script>\u2029"})"#
+        );
+
+        // The event name is JSON encoded too, so it cannot break out of its string.
+        let hostile = BridgeEvent {
+            event: "x\");alert(1);(\"".into(),
+            payload: Value::Null,
+        };
+        assert_eq!(
+            hostile.to_js(),
+            r#"window.__calm.emit("x\");alert(1);(\"", null)"#
+        );
+    }
+
+    #[test]
+    fn unknown_method_is_not_known() {
+        for method in BRIDGE_METHODS {
+            assert!(is_known_method(method), "{method} should be known");
+        }
+        for method in [
+            "",
+            "nope",
+            "Settings.get",
+            "settings",
+            "settings.get ",
+            "events.on",
+        ] {
+            assert!(!is_known_method(method), "{method:?} should not be known");
+        }
+    }
+
+    #[test]
+    fn not_implemented_rejects_with_method_name() {
+        assert_eq!(
+            BridgeResponse::not_implemented(9, "storage.get"),
+            BridgeResponse::Err(9, "not implemented: storage.get".into())
+        );
+        assert_eq!(
+            BridgeResponse::not_implemented(9, "storage.get").to_js(),
+            r#"window.__calm.resolve(9, false, "not implemented: storage.get")"#
+        );
     }
 }

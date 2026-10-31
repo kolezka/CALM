@@ -8,7 +8,9 @@ A starting point for a CALM plugin written in TypeScript and TSX, with Preact as
 4. Run CALM with the parent folder on the plugin path, for example
    `CALM_PLUGIN_PATH=/path/to/my-plugins cargo run -p calm-app`.
 
-`src/calm.d.ts` types the `window.calm` API. The full reference is `docs/plugins.md` in the
-CALM repository.
+The `window.calm` types come from `@calm/plugin-sdk`, mapped in `tsconfig.json` `paths` to
+`packages/calm-plugin-sdk/calm.d.ts` in the CALM repository. After copying this folder, fix that
+path to point at your CALM checkout. Type check with `bunx tsc --noEmit -p .`. The full reference
+is `docs/plugins.md` in the CALM repository.
 
 Plugins are trusted code with full access to the host bridge. They are not sandboxed.

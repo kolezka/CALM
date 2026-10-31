@@ -1,3 +1,4 @@
+import type { Calm } from "@calm/plugin-sdk";
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 
@@ -29,7 +30,7 @@ function readSettings(value: unknown): Settings {
 }
 
 function RepoPulls({ calm, repo, reload, onRemove }: {
-  calm: CalmApi;
+  calm: Calm;
   repo: string;
   reload: number;
   onRemove: () => void;
@@ -81,7 +82,7 @@ function RepoPulls({ calm, repo, reload, onRemove }: {
   );
 }
 
-function App({ calm }: { calm: CalmApi }) {
+function App({ calm }: { calm: Calm }) {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
