@@ -29,6 +29,7 @@ rm -rf "${app:?}" "${out_dir:?}/$zip_name" "${out_dir:?}/$zip_name.sha256"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 cp "$target_dir/release/calm-app" "$app/Contents/MacOS/calm-app"
+cp "$repo_root/assets/brand/CALM.icns" "$app/Contents/Resources/CALM.icns"
 # First-party plugins ship in Resources/plugins, where the app looks for built-ins.
 mkdir -p "$app/Contents/Resources/plugins"
 for manifest in "$repo_root"/plugins/*/calm-plugin.json; do
