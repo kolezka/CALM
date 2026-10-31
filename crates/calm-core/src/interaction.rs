@@ -4,9 +4,9 @@ use crate::snap::{SnapConfig, snap_draw, snap_move, snap_resize};
 
 /// Width of the resize grab band inside a panel's right and bottom edges, in world units.
 pub const RESIZE_BAND: f64 = 12.0;
-/// Side of each square chrome button, in world units.
-pub const CHROME_BUTTON_SIZE: f64 = 20.0;
-const CHROME_BUTTON_MARGIN: f64 = (CHROME_HEIGHT - CHROME_BUTTON_SIZE) / 2.0;
+/// Side of each square chrome button hit target, in world units.
+pub const CHROME_BUTTON_SIZE: f64 = crate::chrome::BUTTON_HIT_SIZE;
+pub use crate::chrome::{ChromeButton, chrome_hit};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tool {
@@ -37,12 +37,6 @@ pub enum ResizeEdge {
     Right,
     Bottom,
     BottomRight,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChromeButton {
-    Close,
-    Minimize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -395,22 +389,6 @@ fn context_menu(screen: Point, scene: &Scene) -> Vec<Effect> {
             vec![Effect::ShowPanelMenu { id, screen }]
         }
         _ => Vec::new(),
-    }
-}
-
-/// Close is the rightmost square of the chrome strip, Minimize sits to its left.
-pub fn chrome_hit(panel: &Panel, world: Point) -> Option<ChromeButton> {
-    let top = panel.rect.origin.y + CHROME_BUTTON_MARGIN;
-    let close_left = panel.rect.right() - CHROME_BUTTON_MARGIN - CHROME_BUTTON_SIZE;
-    let minimize_left = close_left - CHROME_BUTTON_MARGIN - CHROME_BUTTON_SIZE;
-    let close = Rect::new(close_left, top, CHROME_BUTTON_SIZE, CHROME_BUTTON_SIZE);
-    let minimize = Rect::new(minimize_left, top, CHROME_BUTTON_SIZE, CHROME_BUTTON_SIZE);
-    if close.contains(world) {
-        Some(ChromeButton::Close)
-    } else if minimize.contains(world) {
-        Some(ChromeButton::Minimize)
-    } else {
-        None
     }
 }
 
