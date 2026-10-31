@@ -743,6 +743,7 @@ dependencies = [
 name = "calm-plugins"
 version = "0.1.0"
 dependencies = [
+ "calm-core",
  "serde",
  "serde_json",
  "tempfile",

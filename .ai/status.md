@@ -123,6 +123,23 @@ verified unless marked otherwise.
   filters on a real photo). The smoke builds the window and checks every control is
   bound, and renders a gradient background.
 
+## On `fix/panel-resize` (PR open, not merged)
+
+- Fixed: browser panels could not be resized. The 12 unit grab band sat inside the
+  content rect; Ghostty's view returns nil from `hitTest`, so terminals passed the click to
+  GPUI, but a WKWebView keeps it. Plugin panels had the same bug.
+- `calm-core::resize`: `ResizePolicy { resizable, min, max }` from
+  `ResizePolicy::derive(kind, plugin)`, `resize_target` for press and cursor, an outer grab
+  band of 8 screen px outside the right and bottom edges. Drag clamps to the policy.
+- Plugin manifest: optional `resizable`, `minSize`, `maxSize`, strictly validated.
+  `calm-plugins` now depends on `calm-core`.
+- Resize cursor on hover (left-right, up-down, diagonal). The smoke drags a browser and a
+  locked plugin through the real mouse handlers and prints `smoke: resize ...`.
+- Merged with #12 and #13: the outer band does not reach into a joined neighbor
+  (`resize_target`); the shared edge resizes from the join gap or the inner band.
+- Unverified: manual GUI pass of the cursor and of a resize by hand over a live web view,
+  and of a joined shared edge between two web views.
+
 ## Verified on hardware
 
 macOS 27.0.1, Apple M4 Pro: smoke passes; two terminals render in zoom views at zoom 1.5;

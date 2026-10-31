@@ -3,15 +3,24 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use calm_core::resize::PluginResize;
+use calm_core::scene::MIN_PANEL_SIZE;
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 pub const MANIFEST_FILE: &str = "calm-plugin.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Size {
     pub width: f64,
     pub height: f64,
+}
+
+impl Size {
+    fn core(self) -> calm_core::geometry::Size {
+        calm_core::geometry::Size::new(self.width, self.height)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,6 +31,36 @@ pub struct PluginManifest {
     pub version: String,
     pub entry: PathBuf,
     pub default_size: Size,
+    /// `false` locks the panel at the size it was created with. Absent means true.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resizable: Option<bool>,
+    /// Smallest size a user resize may reach, chrome included.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub min_size: Option<Size>,
+    /// Largest size a user resize may reach, chrome included.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_size: Option<Size>,
+}
+
+/// An optional field that, when written, must hold a value: `null` is an error, not absent.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 impl PluginManifest {
@@ -31,7 +70,65 @@ impl PluginManifest {
         Ok(manifest)
     }
 
+    /// The validated resize settings, as calm-core's policy takes them.
+    pub fn resize(&self) -> PluginResize {
+        PluginResize {
+            resizable: self.resizable.unwrap_or(true),
+            min: self.min_size.map(Size::core),
+            max: self.max_size.map(Size::core),
+        }
+    }
+
+    fn validate_resize(&self) -> Result<(), String> {
+        let limited = self.min_size.is_some() || self.max_size.is_some();
+        if self.resizable == Some(false) && limited {
+            return Err(
+                "minSize and maxSize apply only to a resizable panel; remove them or \
+                 \"resizable\": false"
+                    .to_string(),
+            );
+        }
+        for (field, size) in [("minSize", self.min_size), ("maxSize", self.max_size)] {
+            let Some(size) = size else { continue };
+            for (axis, value) in [("width", size.width), ("height", size.height)] {
+                if !value.is_finite() || value <= 0.0 {
+                    return Err(format!(
+                        "{field}.{axis} must be a positive number, got {value}"
+                    ));
+                }
+            }
+            if size.width < MIN_PANEL_SIZE.width || size.height < MIN_PANEL_SIZE.height {
+                return Err(format!(
+                    "{field} {}x{} is below the smallest panel, {}x{}",
+                    size.width, size.height, MIN_PANEL_SIZE.width, MIN_PANEL_SIZE.height
+                ));
+            }
+        }
+        let min = self.min_size.map(Size::core).unwrap_or(MIN_PANEL_SIZE);
+        if let Some(max) = self.max_size
+            && (max.width < min.width || max.height < min.height)
+        {
+            return Err(format!(
+                "maxSize {}x{} is smaller than minSize {}x{}",
+                max.width, max.height, min.width, min.height
+            ));
+        }
+        let size = self.default_size;
+        let below = size.width < min.width || size.height < min.height;
+        let above = self
+            .max_size
+            .is_some_and(|max| size.width > max.width || size.height > max.height);
+        if limited && (below || above) {
+            return Err(format!(
+                "defaultSize {}x{} is outside minSize and maxSize",
+                size.width, size.height
+            ));
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<(), String> {
+        self.validate_resize()?;
         let id_ok = !self.id.is_empty()
             && self
                 .id
@@ -421,9 +518,106 @@ mod tests {
                         width: 320.0,
                         height: 200.0
                     },
+                    resizable: None,
+                    min_size: None,
+                    max_size: None,
                 },
                 dir,
             }]
+        );
+    }
+
+    fn with_fields(extra: &str) -> String {
+        format!(
+            r#"{{ "id": "p", "name": "P", "version": "0.1.0", "entry": "index.html",
+                 "defaultSize": {{ "width": 320, "height": 200 }}{extra} }}"#
+        )
+    }
+
+    #[test]
+    fn resize_fields_are_optional_and_default_to_free() {
+        let manifest = PluginManifest::from_json(&with_fields("")).unwrap();
+        assert_eq!(manifest.resize(), PluginResize::default());
+    }
+
+    #[test]
+    fn resize_fields_parse_opt_out_and_limits() {
+        let locked = PluginManifest::from_json(&with_fields(r#", "resizable": false"#)).unwrap();
+        assert!(!locked.resize().resizable);
+        let limited = PluginManifest::from_json(&with_fields(
+            r#", "resizable": true, "minSize": { "width": 200, "height": 120 },
+               "maxSize": { "width": 900, "height": 700 }"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            limited.resize(),
+            PluginResize {
+                resizable: true,
+                min: Some(calm_core::geometry::Size::new(200.0, 120.0)),
+                max: Some(calm_core::geometry::Size::new(900.0, 700.0)),
+            }
+        );
+    }
+
+    /// Each bad value is its own explicit error, never a quiet fallback to free resizing.
+    #[test]
+    fn bad_resize_fields_are_manifest_errors() {
+        let cases = [
+            (r#", "resizable": "no""#, "invalid type"),
+            (r#", "resizable": null"#, "invalid type: null"),
+            (r#", "minSize": null"#, "invalid type: null"),
+            (r#", "minSize": { "w": 200, "h": 120 }"#, "unknown field"),
+            (r#", "minSize": { "width": 200 }"#, "missing field `height`"),
+            (
+                r#", "minSize": { "width": -5, "height": 120 }"#,
+                "minSize.width must be a positive",
+            ),
+            (
+                r#", "maxSize": { "width": 300, "height": 0 }"#,
+                "maxSize.height must be a positive",
+            ),
+            (
+                r#", "minSize": { "width": 60, "height": 120 }"#,
+                "below the smallest panel",
+            ),
+            (
+                r#", "minSize": { "width": 300, "height": 150 }, "maxSize": { "width": 250, "height": 400 }"#,
+                "smaller than minSize",
+            ),
+            (
+                r#", "resizable": false, "maxSize": { "width": 400, "height": 400 }"#,
+                "apply only to a resizable panel",
+            ),
+            (
+                r#", "minSize": { "width": 400, "height": 120 }"#,
+                "defaultSize 320x200 is outside",
+            ),
+            (
+                r#", "maxSize": { "width": 300, "height": 400 }"#,
+                "defaultSize 320x200 is outside",
+            ),
+        ];
+        for (extra, want) in cases {
+            let err = PluginManifest::from_json(&with_fields(extra)).unwrap_err();
+            assert!(err.contains(want), "{extra}: {err}");
+        }
+    }
+
+    #[test]
+    fn bad_resize_fields_skip_the_plugin_at_discovery() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = write_plugin(
+            root.path(),
+            "bad",
+            &with_fields(r#", "resizable": "sometimes""#).replace(r#""id": "p""#, r#""id": "bad""#),
+        );
+        let found = discover(&[root.path().to_path_buf()]);
+        assert!(found.plugins.is_empty());
+        assert_eq!(
+            only_invalid_path(&found),
+            Some(dir.join(MANIFEST_FILE).as_path()),
+            "{:?}",
+            found.errors
         );
     }
 

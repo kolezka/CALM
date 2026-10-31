@@ -11,6 +11,7 @@ pub mod join;
 pub mod layout;
 pub mod menu;
 pub mod preview;
+pub mod resize;
 pub mod scene;
 pub mod settings;
 pub mod settings_form;

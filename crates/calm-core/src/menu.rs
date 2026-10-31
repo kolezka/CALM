@@ -263,6 +263,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 400.0, 300.0),
             title: "Terminal".to_string(),
             minimized,
+            resize: crate::resize::ResizePolicy::FREE,
         }
     }
 
