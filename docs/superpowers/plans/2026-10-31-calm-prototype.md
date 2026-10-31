@@ -288,6 +288,26 @@ Added 2026-10-31 at the user's request. Runs in parallel with Task 9 in its own 
 
 ---
 
+### Task 6f: Panel snapping (`calm-core`, `calm-app`)
+
+Added 2026-10-31 at the user's request: snapping while moving, resizing and drawing panels so terminals line up on a grid and against each other. Pure logic in calm-core; a one-line change at the app boundary. The Settings menu entry for the snap step is added after Task 6e merges (follow-up, not this task).
+
+**Files:**
+- Create: `crates/calm-core/src/snap.rs`
+- Modify: `crates/calm-core/src/interaction.rs`, `crates/calm-core/src/lib.rs`, `crates/calm-app/src/canvas_view.rs` (pass modifiers to `mouse_move`)
+
+**Interfaces:**
+- Produces (`snap.rs`, pure, tested): `SnapConfig { grid: Option<f64> /* world units, None = off */, edge_distance: f64 /* world units */ }` with `Default` = `grid: Some(DEFAULT_SNAP_GRID)`, `edge_distance: DEFAULT_SNAP_EDGE`; `DEFAULT_SNAP_GRID: f64 = 8.0`; `DEFAULT_SNAP_EDGE: f64 = 8.0`; `SNAP_STEPS: &[f64] = &[0.0 /* off */, 4.0, 8.0, 16.0, 32.0]` (menu choices for the later Settings entry); `fn snap_value(v: f64, grid: Option<f64>) -> f64` (nearest multiple; identity when off); `fn snap_move(rect: Rect, others: &[Rect], cfg: &SnapConfig) -> Rect` (origin snaps to the grid; then, if any of the moving rect's left/right/top/bottom edges is within `edge_distance` of a neighbor's opposite or same edge, the rect shifts so those edges coincide; edge snap wins over grid snap; size unchanged); `fn snap_resize(rect: Rect, edge: ResizeEdge, others: &[Rect], cfg: &SnapConfig) -> Rect` (only the dragged edges move; same grid-then-edge rule; `MIN_PANEL_SIZE` still enforced by the caller); `fn snap_draw(rect: Rect, others: &[Rect], cfg: &SnapConfig) -> Rect` (both origin and far corner snap, used while drawing a new panel).
+- `InputHandler` gets `snap: SnapConfig` (default on) and applies `snap_move` in `Dragging`, `snap_resize` in `Resizing` and `snap_draw` in `Drawing`, with `others` = every other panel's `rect` (minimized panels contribute their chip rect). Holding `alt` disables snapping for that event. `mouse_move(screen, mods: Modifiers, &mut Scene)` gains the `mods` parameter; the app passes `event.modifiers`.
+
+- [ ] **Step 1: Write failing tests** (`calm-core`): `snap_value_rounds_to_nearest_multiple`, `snap_value_off_is_identity`, `snap_move_snaps_origin_to_grid` (origin (13, 21) with grid 8 gives (16, 24)), `snap_move_edge_beats_grid` (moving rect's left edge at 203 with a neighbor's right edge at 200 and grid 8 gives left = 200, not 208), `snap_move_ignores_far_edges` (neighbor 50 away is ignored), `snap_resize_moves_only_dragged_edge`, `snap_draw_snaps_both_corners`, `drag_with_alt_held_does_not_snap` (through `InputHandler::mouse_move` with `mods.alt = true`), `drag_without_alt_snaps` (same path, alt false).
+- [ ] **Step 2: Run** `cargo test -p calm-core` Expected: FAIL. **Step 3: Implement.** **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Wire** the `mods` parameter in `canvas_view.rs` (one call site).
+- [ ] **Step 6: Verify** `cargo test --workspace; echo rc=$?`, `cargo run -p calm-app -- --smoke; echo rc=$?`, clippy and fmt once each. Manual: drag a terminal next to another: it snaps flush when within 8 world units; hold `alt` to place it freely.
+- [ ] **Step 7: Commit** `feat(core): snap panels to a grid and to neighbor edges while moving, resizing and drawing`
+
+---
+
 ### Task 7: Native child host (`calm-native`)
 
 **Files:**
