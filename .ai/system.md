@@ -33,6 +33,10 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
   `FocusPanel`, `ClosePanelRequested`, `ConfirmClose`, `ClosePanel`, `ToggleMinimize`,
   `ShowCanvasMenu`, `ShowPanelMenu`, `Redraw`.
 - `snap`: grid and neighbor-edge snapping (`SnapConfig`, default grid 8, edge distance 8).
+  A facing edge snaps `JOIN_SNAP_GAP` (1) off the neighbor so the pair joins.
+- `join`: `JoinLayout::compute` finds joined neighbors (gap 0 to `JOIN_GAP`, overlapping
+  spans, minimized skipped): per-panel square corners, joined sides with their gap and
+  uncovered parts, divider rects and groups. Paint computes it once per render.
 - `viewport`: `place_native` computes a `NativePlacement` (clipped rect, inner origin, zoom)
   for a panel's content rect against the camera and canvas.
 - `preview`: `decide_mode` (Live, Preview, Hidden) and `refresh_due` with

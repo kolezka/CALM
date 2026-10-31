@@ -7,6 +7,7 @@ pub mod chrome;
 pub mod frame_stats;
 pub mod geometry;
 pub mod interaction;
+pub mod join;
 pub mod layout;
 pub mod menu;
 pub mod preview;
