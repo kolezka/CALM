@@ -51,6 +51,11 @@ verified unless marked otherwise.
   checks the bar is visible and above both terminals after a restack.
 - Plugin panels (PR #5): discovery at startup fills the right-click Add menu. Skipped
   plugin folders print to stderr and show as `⚠ plugins: N errors` in the status bar pill.
+- Built-in plugin dirs (fix/dev-plugin-discovery): user dirs first, then the workspace
+  `plugins/` in a dev build and `CALM.app/Contents/Resources/plugins` in a bundle. A user
+  plugin shadows a built-in with the same id. Off with `plugins.builtin=false` (file only,
+  not in the Settings window) or `CALM_NO_BUILTIN_PLUGINS=1`. Empty Add menu says
+  "No plugins found" and lists searched dirs. Smoke prints `plugins builtin=N user=M`.
 - Adding a plugin opens a Plugin panel (`crates/calm-app/src/plugin_host.rs`): a `WebPanel`
   in a `NativeChild`, prelude injected at document start, entry loaded with `load_file`.
   Placed like terminals: Live sets the frame each paint, Preview and Hidden hide the view

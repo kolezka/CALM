@@ -66,7 +66,12 @@ Scrolling over empty canvas pans it. Scrolling over a terminal scrolls the termi
 Plugins are small HTML and JavaScript apps that run in a canvas panel and talk to CALM through
 `window.calm`. They are trusted code that you install yourself, with full access, so only install
 plugins you have read or whose author you trust. The plugin format and API are described in
-[docs/plugins.md](docs/plugins.md); showing plugin panels in the app is still in progress.
+[docs/plugins.md](docs/plugins.md).
+
+From a clone, `gmake plugins && cargo run -p calm-app` builds the first-party plugins and shows
+them under right-click > Add. A development build reads the repository's `plugins/` folder
+directly; installed plugins go in `~/.config/calm/plugins`. Set `CALM_NO_BUILTIN_PLUGINS=1` to
+hide the built-in ones.
 
 ## Status
 

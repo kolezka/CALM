@@ -104,6 +104,10 @@ pub struct CanvasView {
     pub plugin_sizes: Vec<(String, Size)>,
     /// Plugins found at startup. A new plugin needs an app restart to show up.
     installed_plugins: Vec<InstalledPlugin>,
+    /// Plugin dirs searched at startup, shown in the Add menu when none was found.
+    plugin_search_dirs: Vec<String>,
+    /// (built-in, user) plugins found at startup. The smoke prints it.
+    pub plugin_counts: (usize, usize),
     /// Plugin folders skipped at startup, shown in the status bar; stderr names each one.
     pub plugin_errors: usize,
     /// Live plugin pages by panel. Dropping an entry closes the page.
@@ -145,8 +149,10 @@ pub struct CanvasView {
 }
 
 impl CanvasView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let discovery = plugin_host::discover_installed();
+    /// `builtin_plugins` is the `plugins.builtin` setting, read once here.
+    pub fn new(builtin_plugins: bool, cx: &mut Context<Self>) -> Self {
+        let (discovery, plugin_search_dirs) = plugin_host::discover_installed(builtin_plugins);
+        let plugin_counts = (discovery.builtin_count, discovery.user_count());
         let (plugins, plugin_sizes) = plugin_host::menu_entries(&discovery.plugins);
         let (bridge, mut messages) = futures::channel::mpsc::unbounded::<(PanelId, String)>();
         let bridge_task = cx.spawn(async move |this, cx| {
@@ -166,6 +172,8 @@ impl CanvasView {
             plugins,
             plugin_sizes,
             installed_plugins: discovery.plugins,
+            plugin_search_dirs,
+            plugin_counts,
             plugin_errors: discovery.errors.len(),
             plugin_panels: Vec::new(),
             bridge,
@@ -274,7 +282,7 @@ impl CanvasView {
                 }
                 Effect::Redraw => {}
                 Effect::ShowCanvasMenu { screen, world } => {
-                    let items = menu::canvas_menu(&self.plugins);
+                    let items = self.canvas_menu();
                     self.show_menu(items, screen, MenuTarget::Canvas { world }, window, cx);
                 }
                 Effect::ShowPanelMenu { id, screen } => {
@@ -470,6 +478,11 @@ impl CanvasView {
         self.plugins.extend(names);
         self.plugin_sizes.extend(sizes);
         self.installed_plugins.extend(plugins);
+    }
+
+    /// The Add menu as the user would see it now.
+    pub fn canvas_menu(&self) -> Vec<menu::MenuItem> {
+        menu::canvas_menu(&self.plugins, &self.plugin_search_dirs)
     }
 
     /// (loading, load error) per plugin panel, in creation order.

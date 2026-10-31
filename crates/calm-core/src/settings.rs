@@ -67,6 +67,22 @@ pub struct Settings {
     pub grid: GridSettings,
     pub snap: SnapSettings,
     pub panels: PanelSettings,
+    pub plugins: PluginSettings,
+}
+
+/// Plugin discovery options. Read once at startup.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginSettings {
+    /// Also load the plugins shipped with CALM (the repo's `plugins/` in a dev build,
+    /// `CALM.app/Contents/Resources/plugins` in a bundle).
+    pub builtin: bool,
+}
+
+impl Default for PluginSettings {
+    fn default() -> Self {
+        PluginSettings { builtin: true }
+    }
 }
 
 impl Default for Settings {
@@ -77,6 +93,7 @@ impl Default for Settings {
             grid: GridSettings::default(),
             snap: SnapSettings::default(),
             panels: PanelSettings::default(),
+            plugins: PluginSettings::default(),
         }
     }
 }
@@ -516,6 +533,15 @@ mod tests {
     }
 
     #[test]
+    fn plugins_builtin_reads_from_file_and_defaults_on() {
+        let off: Settings =
+            serde_json::from_str(r#"{ "version": 2, "plugins": { "builtin": false } }"#).unwrap();
+        assert!(!off.plugins.builtin);
+        let absent: Settings = serde_json::from_str(r#"{ "version": 2 }"#).unwrap();
+        assert!(absent.plugins.builtin);
+    }
+
+    #[test]
     fn default_settings_values() {
         let settings = Settings::default();
         assert_eq!(settings.version, 2);
@@ -531,6 +557,7 @@ mod tests {
             DEFAULT_TERMINAL_SIZE
         );
         assert_eq!(settings.panels.preview_below_zoom, PREVIEW_ZOOM_THRESHOLD);
+        assert!(settings.plugins.builtin);
         assert_eq!(settings.validate(), Ok(()));
     }
 

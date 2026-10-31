@@ -148,6 +148,19 @@ fn build_menu(
                 ids.push(id.clone());
                 ns_item
             }
+            MenuItem::Disabled { label } => {
+                // SAFETY: a menu item with no action and an empty key equivalent.
+                let ns_item = unsafe {
+                    NSMenuItem::initWithTitle_action_keyEquivalent(
+                        NSMenuItem::alloc(mtm),
+                        &NSString::from_str(label),
+                        None,
+                        &NSString::from_str(""),
+                    )
+                };
+                ns_item.setEnabled(false);
+                ns_item
+            }
             MenuItem::Submenu { label, items } => {
                 let submenu = build_menu(mtm, label, items, target, ids);
                 // SAFETY: a menu item with no action and an empty key equivalent.

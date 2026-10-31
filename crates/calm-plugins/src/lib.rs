@@ -11,5 +11,6 @@ pub use bridge::{
 };
 pub use github::{GhClient, GhError};
 pub use manifest::{
-    Discovery, InstalledPlugin, PluginError, PluginManifest, Size, discover, plugin_dirs,
+    Discovery, InstalledPlugin, NO_BUILTIN_ENV, PluginError, PluginManifest, PluginSearch,
+    Shadowed, Size, discover, discover_search, plugin_dirs, plugin_search, workspace_plugins_dir,
 };
