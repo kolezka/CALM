@@ -4,6 +4,7 @@
 
 #![cfg(target_os = "macos")]
 
+pub mod app_icon;
 pub mod browser;
 pub mod child;
 pub mod menu;

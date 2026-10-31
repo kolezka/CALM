@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-31, against `origin/main` at `47c517c` plus #22 (PRs #1 to #28 merged). This
+Last updated: 2026-10-31, against `origin/main` at `c327cb1` plus #29 (PRs #1 to #29 merged). This
 file describes `main`, not branches. Facts are verified against the code unless marked
 otherwise.
 
@@ -104,6 +104,10 @@ Pull requests:
   redacted in output and Debug. Smoke `github.api ok` runs against a fake `gh` script.
 - #22 Plugin API v2 design refresh: layouts (`layouts.*`, `session.saveNow`) added as phase
   16. Design only.
+- #29 Runtime app icon: `calm_native::app_icon` sets the embedded 512 px brand PNG as the
+  application icon at startup when no bundle icon is present. A new "About CALM" item, first
+  in the app menu, opens the standard About panel (icon, Cargo version, credits line). Smoke
+  prints `app_icon set=... size=WxH` and fails unless the brand image is set.
 
 ## In progress (not on `main`)
 
@@ -156,6 +160,7 @@ Pull requests:
 - Blur: a real mouse click on empty canvas, Escape inside a web page.
 - Plugin menus: a real right click (the NSMenu), long titles, the github-prs "Open repo
   in browser" item.
+- App icon: the Dock, cmd-tab and About panel by eye.
 - Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
