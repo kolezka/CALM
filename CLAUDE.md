@@ -21,19 +21,22 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 
 ## Workspace
 
-- `crates/calm-core`: pure model. Geometry, camera, scene, interaction, layouts, viewport
-  placement, preview policy, snapping, settings, menus, frame stats. No GPUI, no AppKit.
-  Everything here has unit tests.
+- `crates/calm-core`: pure model. Geometry, camera, scene, interaction, chrome, joins,
+  resize policy, grid, layouts, viewport placement, preview policy, snapping, settings and
+  the settings form, backgrounds, status bar rect, TUI launch, menus, frame stats. No GPUI,
+  no AppKit. Everything here has unit tests.
 - `crates/calm-native`: AppKit. Clip view plus zoom view for each native child, Ghostty
-  parenting, WKWebView with the `calm` message handler, the NSMenu context menu. All
-  `unsafe` lives here, each block with a SAFETY comment.
-- `crates/calm-plugins`: manifest discovery, JS bridge (`CALM_PRELUDE_JS`, `BRIDGE_METHODS`),
-  `gh api` client.
+  parenting, WKWebView with the `calm` message handler, the browser view, the NSMenu context
+  menu, the Settings window, the status pill. All `unsafe` lives here, each block with a
+  SAFETY comment.
+- `crates/calm-plugins`: manifest discovery (user and built-in dirs), TUI manifests, JS bridge
+  (`CALM_PRELUDE_JS`, `BRIDGE_METHODS`), `gh api` client.
 - `crates/calm-app`: the GPUI binary. Thin: maps events to `calm-core`, places native views,
-  owns the Developer and Settings menus and the libghostty adapter.
-- `plugins/hello-world`, `plugins/github-prs`: first-party plugins (Preact TSX, built with
-  bun). `templates/plugin-tsx`: starter. `packages/calm-plugin-sdk/calm.d.ts`: the
-  `window.calm` API.
+  hosts terminals, TUI apps, browsers and plugins, owns the Developer and Settings menus and
+  the libghostty adapter.
+- `plugins/hello-world`, `plugins/github-prs`: first-party web plugins (`github-prs` is Preact
+  TSX built with bun). `plugins/top-example`: a TUI app. `templates/plugin-tsx`,
+  `templates/plugin-tui`: starters. `packages/calm-plugin-sdk/calm.d.ts`: the `window.calm` API.
 - `scripts/`: version bump, macOS bundle, Arch CI container, release upload.
   `.github/workflows/`: `ci.yml`, `release.yml`.
 
@@ -48,10 +51,10 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
   window. Smoke prints viewport, canvas, terminals, zorder, fps, settings and preview lines
   and must exit 0. Gate before every push.
 - Plugin tests that need bun fail unless bun is installed; `CALM_SKIP_BUN_TESTS=1` skips them.
-- Not wired yet: `--bench`, `--layout`, layout save and load, and most of the plugin bridge
-  (only `log`, `panel.setTitle`, `settings.get` and `settings.set` answer). The Makefile
-  targets for `--bench` and `--layout` exist; the flags do not. Do not document them as
-  working. Browser and plugin panels are wired.
+- Not wired yet: `--bench`, `--layout`, layout save and load, session restore, and most of
+  the plugin bridge (only `log`, `panel.setTitle`, `settings.get` and `settings.set` answer).
+  The Makefile `bench` target exists; the flag does not. Do not document them as working.
+  Browser, plugin and TUI app panels are wired.
 - Benchmarks go to `docs/benchmarks.md` with hardware and method. Never quote a number
   without a run.
 
