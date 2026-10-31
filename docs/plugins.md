@@ -82,7 +82,12 @@ a terminal panel titled "Slack" that runs `slk`.
 | `cwd`         | no       | Working directory, absolute or starting with `~/`. Default: home.    |
 | `env`         | no       | Object of string values, set for the command only.                   |
 | `defaultSize` | no       | `{ "width", "height" }` in canvas points. Default 640 by 400.        |
-| `icon`        | no       | 1 to 4 characters, drawn in the title bar in place of the icon.      |
+| `icon`        | no       | 1 to 4 characters, or a `.png` or `.svg` file in the plugin folder.  |
+| `title`       | no       | Title bar text. `{name}` is replaced by `name`. Default: `name`.     |
+| `accentColor` | no       | Focus ring, join divider and text icon color. Hex, see below.        |
+| `titleBarColor` | no     | Title bar background. Hex.                                           |
+| `titleColor`  | no       | Title text color. Hex.                                               |
+| `terminalColors` | no    | Terminal background, foreground and 16-color palette. See below.     |
 | `description` | no       | Free text for people reading the manifest.                           |
 | `restart`     | no       | `"prompt"` (default), `"on-exit"` or `"never"`. See below.           |
 | `shell`       | no       | `true` (default) runs through your login shell. See below.           |
@@ -129,7 +134,73 @@ A TUI panel is a terminal in every other way: it moves, resizes, minimizes and t
 preview like one, and closing it while the program runs asks first. Layouts store only the
 plugin `id`, never the command, `args` or `env`.
 
-`plugins/top-example` runs macOS `top`. `templates/plugin-tui` is a starting point.
+`plugins/top-example` runs macOS `top` with its own accent, title and SVG icon.
+`templates/plugin-tui` is a starting point.
+
+### Customizing TUI apps
+
+Every part of a TUI panel's look can come from its manifest. Each field is optional and falls
+back to the theme. A bad value is an error that names the field, never a silent default.
+
+This Slack panel uses every field:
+
+```json
+{
+  "kind": "tui",
+  "id": "slack",
+  "name": "Slack",
+  "version": "1.0.0",
+  "description": "Slack in the terminal, through slk.",
+  "command": "slk",
+  "args": ["--workspace", "my team"],
+  "cwd": "~/work",
+  "env": { "SLK_THEME": "dark" },
+  "shell": true,
+  "restart": "on-exit",
+  "defaultSize": { "width": 900, "height": 600 },
+  "title": "{name} (work)",
+  "icon": "icons/slack.svg",
+  "accentColor": "#4a154b",
+  "titleBarColor": "#1a1d21",
+  "titleColor": "#d1d2d3",
+  "terminalColors": {
+    "background": "#1a1d21",
+    "foreground": "#d1d2d3",
+    "palette": [
+      "#1a1d21", "#e01e5a", "#2eb67d", "#ecb22e", "#36c5f0", "#4a154b", "#36c5f0", "#d1d2d3",
+      "#616061", "#e01e5a", "#2eb67d", "#ecb22e", "#36c5f0", "#ae6ec8", "#36c5f0", "#ffffff"
+    ]
+  }
+}
+```
+
+The folder then holds `calm-plugin.json` and `icons/slack.svg`.
+
+- `title`: shown in the title bar. `{name}` is the only placeholder; any other `{` or `}` is an
+  error. It may not be empty or blank, may not hold control characters, and is at most 120
+  characters. Status text such as `: exited, code 0` is added after it.
+- `icon`: text of 1 to 4 characters, or a path ending in `.png` or `.svg`, relative to the
+  plugin folder. The image is scaled into the icon slot and decoded once, when the panel
+  opens. A path that is absolute, uses `..`, or resolves through a symlink to outside the
+  folder is an error, and so is a missing file. A file that exists but does not decode is
+  logged on stderr and the panel falls back to the terminal icon. Images keep their own
+  colors; `accentColor` tints only a text icon.
+- Colors are `#rrggbb` or `#rrggbbaa` (alpha last), upper or lower case.
+  `accentColor` colors the ring while the panel has focus, the divider between it and a
+  joined neighbor while it has focus, and a text icon. `titleBarColor` and `titleColor` apply
+  with or without focus; the accent ring is what marks focus. During a close confirmation the
+  bar always uses the theme's warning colors.
+- `terminalColors`: the Ghostty colors for this panel, laid over your Ghostty config (or over
+  Ghostty's defaults when Settings turns the user config off). `background`, `foreground` and
+  all 16 `palette` entries are required, each `#rrggbb` with no alpha. Other keys are errors.
+
+Planned, not supported yet: `fontSize`, `fontFamily` and `padding`. gpui-libghostty 0.3.1 takes
+only colors per terminal; fonts and padding come from your Ghostty config for all terminals.
+They need the planned libghostty shim patch. Until then these three fields are rejected with
+an error that says so, rather than being ignored.
+
+Per-panel edits after a panel is added (rename, change icon, pick an accent from the
+right-click menu) are not built yet.
 
 ## The `window.calm` API
 
