@@ -191,6 +191,255 @@ pub fn button_strokes(button: ChromeButton) -> Vec<Vec<(f64, f64)>> {
     }
 }
 
+/// `#rrggbb` or `#rrggbbaa` to 0xRRGGBBAA.
+pub fn parse_hex_color(text: &str) -> Option<u32> {
+    let hex = text.strip_prefix('#')?;
+    if !(hex.len() == 6 || hex.len() == 8) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let value = u32::from_str_radix(hex, 16).ok()?;
+    Some(if hex.len() == 6 {
+        (value << 8) | 0xff
+    } else {
+        value
+    })
+}
+
+/// Per-panel chrome colors, 0xRRGGBBAA. `None` falls back to the theme.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChromeOverrides {
+    /// Focus ring, join divider next to the focused panel, and icon tint.
+    pub accent: Option<u32>,
+    pub title_bar: Option<u32>,
+    pub title: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChromeState {
+    Idle,
+    Focused,
+    /// A close confirmation is up. Theme colors win so the warning always reads.
+    Confirming,
+}
+
+impl ChromeState {
+    pub fn of(focused: bool, confirming: bool) -> Self {
+        match (confirming, focused) {
+            (true, _) => ChromeState::Confirming,
+            (false, true) => ChromeState::Focused,
+            (false, false) => ChromeState::Idle,
+        }
+    }
+}
+
+/// Theme chrome colors, 0xRRGGBBAA.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChromePalette {
+    pub bar: u32,
+    pub bar_focused: u32,
+    pub border: u32,
+    pub accent: u32,
+    pub title: u32,
+    pub title_focused: u32,
+    pub confirm_bar: u32,
+    pub confirm_border: u32,
+    pub confirm_title: u32,
+}
+
+/// What one panel's chrome is painted with this frame, 0xRRGGBBAA.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChromeColors {
+    pub bar: u32,
+    pub border: u32,
+    pub title: u32,
+}
+
+pub fn chrome_colors(
+    state: ChromeState,
+    overrides: &ChromeOverrides,
+    palette: &ChromePalette,
+) -> ChromeColors {
+    match state {
+        ChromeState::Confirming => ChromeColors {
+            bar: palette.confirm_bar,
+            border: palette.confirm_border,
+            title: palette.confirm_title,
+        },
+        ChromeState::Focused => ChromeColors {
+            bar: overrides.title_bar.unwrap_or(palette.bar_focused),
+            border: overrides.accent.unwrap_or(palette.accent),
+            title: overrides.title.unwrap_or(palette.title_focused),
+        },
+        ChromeState::Idle => ChromeColors {
+            bar: overrides.title_bar.unwrap_or(palette.bar),
+            border: palette.border,
+            title: overrides.title.unwrap_or(palette.title),
+        },
+    }
+}
+
+/// The icon's color: the accent if set, else the kind's theme color.
+pub fn icon_tint(overrides: &ChromeOverrides, kind_color: u32) -> u32 {
+    overrides.accent.unwrap_or(kind_color)
+}
+
+/// The divider between two joined panels. A confirmation on either side wins, then the
+/// focused side's accent, then the plain border.
+pub fn divider_color(sides: [(ChromeState, &ChromeOverrides); 2], palette: &ChromePalette) -> u32 {
+    if sides
+        .iter()
+        .any(|(state, _)| *state == ChromeState::Confirming)
+    {
+        return palette.confirm_border;
+    }
+    sides
+        .iter()
+        .find(|(state, _)| *state == ChromeState::Focused)
+        .map_or(palette.border, |(_, overrides)| {
+            overrides.accent.unwrap_or(palette.accent)
+        })
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+
+    const PALETTE: ChromePalette = ChromePalette {
+        bar: 0x01,
+        bar_focused: 0x02,
+        border: 0x03,
+        accent: 0x04,
+        title: 0x05,
+        title_focused: 0x06,
+        confirm_bar: 0x07,
+        confirm_border: 0x08,
+        confirm_title: 0x09,
+    };
+    const CUSTOM: ChromeOverrides = ChromeOverrides {
+        accent: Some(0xa0),
+        title_bar: Some(0xb0),
+        title: Some(0xc0),
+    };
+    const NONE: ChromeOverrides = ChromeOverrides {
+        accent: None,
+        title_bar: None,
+        title: None,
+    };
+
+    #[test]
+    fn no_overrides_use_the_theme() {
+        let colors = |state| chrome_colors(state, &NONE, &PALETTE);
+        assert_eq!(
+            colors(ChromeState::Idle),
+            ChromeColors {
+                bar: 0x01,
+                border: 0x03,
+                title: 0x05
+            }
+        );
+        assert_eq!(
+            colors(ChromeState::Focused),
+            ChromeColors {
+                bar: 0x02,
+                border: 0x04,
+                title: 0x06
+            }
+        );
+        assert_eq!(icon_tint(&NONE, 0x77), 0x77);
+        assert_eq!(ChromeOverrides::default(), NONE);
+    }
+
+    #[test]
+    fn overrides_replace_bar_title_and_focused_ring() {
+        assert_eq!(
+            chrome_colors(ChromeState::Focused, &CUSTOM, &PALETTE),
+            ChromeColors {
+                bar: 0xb0,
+                border: 0xa0,
+                title: 0xc0
+            }
+        );
+        // Unfocused panels keep the plain border: the accent marks focus.
+        assert_eq!(
+            chrome_colors(ChromeState::Idle, &CUSTOM, &PALETTE),
+            ChromeColors {
+                bar: 0xb0,
+                border: 0x03,
+                title: 0xc0
+            }
+        );
+        assert_eq!(icon_tint(&CUSTOM, 0x77), 0xa0);
+    }
+
+    #[test]
+    fn each_override_is_independent() {
+        let only_bar = ChromeOverrides {
+            title_bar: Some(0xb0),
+            ..NONE
+        };
+        assert_eq!(
+            chrome_colors(ChromeState::Focused, &only_bar, &PALETTE),
+            ChromeColors {
+                bar: 0xb0,
+                border: 0x04,
+                title: 0x06
+            }
+        );
+        let only_title = ChromeOverrides {
+            title: Some(0xc0),
+            ..NONE
+        };
+        assert_eq!(
+            chrome_colors(ChromeState::Idle, &only_title, &PALETTE),
+            ChromeColors {
+                bar: 0x01,
+                border: 0x03,
+                title: 0xc0
+            }
+        );
+    }
+
+    #[test]
+    fn confirmation_ignores_overrides() {
+        assert_eq!(
+            chrome_colors(ChromeState::Confirming, &CUSTOM, &PALETTE),
+            ChromeColors {
+                bar: 0x07,
+                border: 0x08,
+                title: 0x09
+            }
+        );
+    }
+
+    #[test]
+    fn state_of_prefers_confirmation() {
+        assert_eq!(ChromeState::of(true, true), ChromeState::Confirming);
+        assert_eq!(ChromeState::of(true, false), ChromeState::Focused);
+        assert_eq!(ChromeState::of(false, false), ChromeState::Idle);
+    }
+
+    #[test]
+    fn divider_follows_the_focused_side() {
+        use ChromeState::*;
+        assert_eq!(
+            divider_color([(Idle, &CUSTOM), (Idle, &NONE)], &PALETTE),
+            0x03
+        );
+        assert_eq!(
+            divider_color([(Idle, &NONE), (Focused, &CUSTOM)], &PALETTE),
+            0xa0
+        );
+        assert_eq!(
+            divider_color([(Focused, &NONE), (Idle, &CUSTOM)], &PALETTE),
+            0x04
+        );
+        assert_eq!(
+            divider_color([(Focused, &CUSTOM), (Confirming, &NONE)], &PALETTE),
+            0x08
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

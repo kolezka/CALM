@@ -2,8 +2,9 @@
 
 use calm_core::camera::FIT_MARGIN;
 use calm_core::chrome::{
-    CORNER_RADIUS, ChromeButton, PanelIcon, TITLE_BAR_HEIGHT, button_dot, button_strokes,
-    details_visible, hover_target, icon_strokes, title_bar_layout,
+    CORNER_RADIUS, ChromeButton, ChromeOverrides, ChromePalette, ChromeState, PanelIcon,
+    TITLE_BAR_HEIGHT, button_dot, button_strokes, chrome_colors, details_visible, divider_color,
+    hover_target, icon_strokes, icon_tint, title_bar_layout,
 };
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
@@ -16,6 +17,7 @@ use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_m
 use calm_core::resize::ResizePolicy;
 use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
+use calm_core::terminal_profile::{ResolvedTerminal, TerminalIcon, display_cwd, render_title};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{BrowserEvent, HostView, NativeChild, StatusBar, show_context_menu};
 use gpui::prelude::FluentBuilder as _;
@@ -42,8 +44,11 @@ use crate::plugin_host::{self, BridgeSender, PluginPanel, Route};
 use crate::plugin_services::{self, ServiceCall};
 use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalEvent, TerminalPanel};
+use crate::terminal_profiles::{self, TerminalMeta};
 use crate::theme;
 use crate::tui_host::{self, TuiRun};
+
+mod plugin_menus;
 
 actions!(
     calm,
@@ -135,6 +140,15 @@ pub struct CanvasView {
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Restart state of TUI panels. Their terminal is in `terminals`.
     tui_runs: Vec<(PanelId, TuiRun)>,
+    /// Plain terminals opened from the `terminal` settings. Their terminal is in `terminals`.
+    terminal_meta: Vec<(PanelId, TerminalMeta)>,
+    /// Profile asked for by a menu item or a duplicate, read when the panel is created.
+    requested_profiles: HashMap<PanelId, String>,
+    /// Plain terminals opened so far, for `{n}`.
+    terminals_opened: u64,
+    /// Decoded TUI image icons by absolute path, `None` when decoding failed. Decoded once,
+    /// never per frame.
+    tui_icons: HashMap<std::path::PathBuf, Option<Arc<RenderImage>>>,
     /// Live browser panels. Dropping an entry closes its page.
     browsers: Vec<(PanelId, BrowserPanel)>,
     /// Sender for page events; the receiving task starts with the first browser.
@@ -162,6 +176,8 @@ pub struct CanvasView {
     status_bar_error: Option<String>,
     /// Joins and visible dividers in the last render. Read by the smoke.
     pub join_counts: (usize, usize),
+    /// `run` args of the plugin menu item opening a TUI panel right now.
+    pending_tui_args: Option<Vec<String>>,
 }
 
 impl CanvasView {
@@ -202,6 +218,10 @@ impl CanvasView {
             resize_cursor: None,
             terminals: Vec::new(),
             tui_runs: Vec::new(),
+            terminal_meta: Vec::new(),
+            requested_profiles: HashMap::new(),
+            terminals_opened: 0,
+            tui_icons: HashMap::new(),
             browsers: Vec::new(),
             browser_events: None,
             browser_listener: None,
@@ -223,6 +243,7 @@ impl CanvasView {
             status_bar: None,
             status_bar_error: None,
             join_counts: (0, 0),
+            pending_tui_args: None,
         }
     }
 
@@ -235,6 +256,8 @@ impl CanvasView {
     /// Pushes the settings the input handler reads.
     pub fn apply_settings_to_input(&mut self) {
         self.input.snap = self.settings.settings.snap.config();
+        self.input.click_empty_clears_focus =
+            self.settings.settings.canvas.click_empty_clears_focus;
     }
 
     pub fn set_show_fps(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -284,6 +307,14 @@ impl CanvasView {
                         }
                     }
                 }
+                Effect::ClearFocus => {
+                    self.focused = None;
+                    // GPUI focus alone leaves a web view or Ghostty surface holding the keys.
+                    if !calm_native::focus_host_view(window) {
+                        eprintln!("focus: the canvas could not take the first responder");
+                    }
+                    self.focus_handle.focus(window, cx);
+                }
                 Effect::ClosePanelRequested(id) => {
                     // A browser's page is state too, so it confirms like a running terminal.
                     let alive = self
@@ -308,11 +339,7 @@ impl CanvasView {
                     self.show_menu(items, screen, MenuTarget::Canvas { world }, window, cx);
                 }
                 Effect::ShowPanelMenu { id, screen } => {
-                    if let Some(panel) = self.scene.get(id) {
-                        let can_restart = self
-                            .tui_run(id)
-                            .is_some_and(|run| run.supervisor.can_restart());
-                        let items = menu::panel_menu(panel, can_restart);
+                    if let Some(items) = self.panel_menu(id) {
                         self.show_menu(items, screen, MenuTarget::Panel(id), window, cx);
                     }
                 }
@@ -322,6 +349,7 @@ impl CanvasView {
                     }
                     self.terminals.retain(|(panel, _)| *panel != id);
                     self.tui_runs.retain(|(panel, _)| *panel != id);
+                    self.terminal_meta.retain(|(panel, _)| *panel != id);
                     self.browsers.retain(|(panel, _)| *panel != id);
                     self.plugin_panels.retain(|(panel, _)| *panel != id);
                     self.scene.remove(id);
@@ -378,23 +406,34 @@ impl CanvasView {
         .detach();
     }
 
-    fn apply_menu_choice(
+    /// Runs the item the native menu returned. The smoke calls this with an id from the
+    /// built menu, the same path a real click takes after the NSMenu closes.
+    pub(crate) fn apply_menu_choice(
         &mut self,
         id: &str,
         target: MenuTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.apply_plugin_choice(id, target, window, cx) {
+            window.refresh();
+            cx.notify();
+            return;
+        }
         let world = match target {
             MenuTarget::Canvas { world } => world,
             MenuTarget::Panel(_) => Point::new(0.0, 0.0),
         };
+        let profile = menu::terminal_profile_choice(id).map(str::to_string);
         let effects = match (menu::menu_action(id, world, &self.plugin_sizes), target) {
             (Some(MenuCommand::AddPanel { kind, mut rect }), MenuTarget::Canvas { .. }) => {
                 if matches!(kind, PanelKind::Terminal { .. }) {
                     rect.size = self.settings.settings.panels.default_terminal_size();
                 }
                 let id = self.scene.add(kind.clone(), rect);
+                if let Some(profile) = profile {
+                    self.requested_profiles.insert(id, profile);
+                }
                 let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
                 vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)]
             }
@@ -430,6 +469,10 @@ impl CanvasView {
                 let Some(copy) = self.scene.duplicate(id) else {
                     return;
                 };
+                if let Some(profile) = self.terminal_meta(id).and_then(|meta| meta.profile.clone())
+                {
+                    self.requested_profiles.insert(copy, profile);
+                }
                 let Some(panel) = self.scene.get(copy) else {
                     return;
                 };
@@ -455,9 +498,16 @@ impl CanvasView {
     ) {
         match kind {
             PanelKind::Terminal { command, cwd } => {
-                let mut options = terminal::options(command.as_deref(), cwd.clone());
-                settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
-                if let Err(err) = self.spawn_terminal(id, options, window, cx) {
+                let profile = self.requested_profiles.remove(&id);
+                let opened = self.open_plain_terminal(
+                    id,
+                    profile,
+                    command.as_deref(),
+                    cwd.clone(),
+                    window,
+                    cx,
+                );
+                if let Err(err) = opened {
                     eprintln!("calm: terminal failed to start: {err}");
                 }
             }
@@ -485,6 +535,123 @@ impl CanvasView {
         }
     }
 
+    /// Starts a plain terminal for a panel already in the scene, from `profile` (else the
+    /// default profile) over the `terminal` defaults. A command or cwd stored on the panel
+    /// wins over the profile's.
+    pub fn open_plain_terminal(
+        &mut self,
+        id: PanelId,
+        profile: Option<String>,
+        command: Option<&str>,
+        cwd: Option<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let resolved = self.resolve_terminal(profile.as_deref());
+        if let Some(asked) = &profile
+            && resolved.profile.as_ref() != Some(asked)
+        {
+            eprintln!("calm: terminal profile {asked:?} not found, using the defaults");
+        }
+        let home = terminal_profiles::home_dir();
+        let inherited = self
+            .focused
+            .and_then(|focused| self.terminal_meta(focused))
+            .map(|meta| meta.cwd.clone());
+        let start = cwd.unwrap_or_else(|| {
+            terminal_profiles::start_dir(&resolved.cwd, inherited.as_deref(), &home)
+        });
+        let options = terminal_profiles::options(&resolved, command, start.clone());
+        let configuration = terminal_profiles::configuration_name(&options.configuration);
+        self.spawn_terminal(id, options, window, cx)?;
+        self.terminals_opened += 1;
+        self.terminal_meta.push((
+            id,
+            TerminalMeta {
+                profile,
+                index: self.terminals_opened,
+                cwd: start,
+                applied_colors: resolved.colors,
+                configuration,
+            },
+        ));
+        self.refresh_terminal_chrome(id, &resolved);
+        Ok(())
+    }
+
+    pub fn terminal_meta(&self, id: PanelId) -> Option<&TerminalMeta> {
+        self.terminal_meta
+            .iter()
+            .find(|(panel, _)| *panel == id)
+            .map(|(_, meta)| meta)
+    }
+
+    fn resolve_terminal(&self, profile: Option<&str>) -> ResolvedTerminal {
+        let settings = &self.settings.settings;
+        settings
+            .terminal
+            .resolve(profile, settings.panels.terminal_user_config)
+    }
+
+    fn settings_dir(&self) -> std::path::PathBuf {
+        self.settings
+            .path
+            .parent()
+            .map_or_else(std::path::PathBuf::new, std::path::Path::to_path_buf)
+    }
+
+    /// Sets the title and decodes an image icon once. Decoding and path problems are logged
+    /// once per path; the panel then shows the terminal icon.
+    fn refresh_terminal_chrome(&mut self, id: PanelId, resolved: &ResolvedTerminal) {
+        let Some(meta) = self.terminal_meta(id) else {
+            return;
+        };
+        let cwd = display_cwd(&meta.cwd, &terminal_profiles::home_dir());
+        let title = render_title(&resolved.title_template, meta.index, &cwd);
+        if let Some(panel) = self.scene.get_mut(id) {
+            panel.title = title;
+        }
+        if let Some(TerminalIcon::Image(relative)) = &resolved.icon {
+            let dir = self.settings_dir();
+            self.tui_icons.entry(dir.join(relative)).or_insert_with(|| {
+                terminal_profiles::icon_file(&dir, relative)
+                    .and_then(|path| crate::icon_image::load(&path))
+                    .inspect_err(|err| eprintln!("calm: {err}"))
+                    .ok()
+            });
+        }
+    }
+
+    /// After a settings change: every plain terminal's title and chrome follow at once, and
+    /// a changed palette recolors the running surface. Removing a palette, or switching the
+    /// Ghostty user config, needs a new terminal: libghostty only takes a new theme.
+    pub fn terminal_settings_changed(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<PanelId> = self.terminal_meta.iter().map(|(id, _)| *id).collect();
+        for id in ids {
+            let Some(meta) = self.terminal_meta(id) else {
+                continue;
+            };
+            let applied = meta.applied_colors;
+            let resolved = self.resolve_terminal(meta.profile.clone().as_deref());
+            self.refresh_terminal_chrome(id, &resolved);
+            let Some(colors) = resolved.colors.filter(|colors| Some(*colors) != applied) else {
+                continue;
+            };
+            let Some(terminal) = self.terminal(id) else {
+                continue;
+            };
+            let theme = terminal_profiles::theme(&colors);
+            match terminal.update(cx, |terminal, _| terminal.apply_theme(&theme)) {
+                Ok(()) => {
+                    if let Some((_, meta)) = self.terminal_meta.iter_mut().find(|(p, _)| *p == id) {
+                        meta.applied_colors = Some(colors);
+                    }
+                }
+                Err(err) => eprintln!("calm: terminal recolor failed: {err}"),
+            }
+        }
+    }
+
     /// Starts a TUI plugin's command in a terminal for a panel already in the scene.
     pub fn open_tui_panel(
         &mut self,
@@ -499,7 +666,15 @@ impl CanvasView {
             .find(|plugin| plugin.manifest.id == plugin_id)
             .ok_or_else(|| format!("plugin {plugin_id} is not installed"))?
             .clone();
-        let run = TuiRun::new(plugin)?;
+        let mut run = TuiRun::new(plugin)?;
+        run.extra_args = self.pending_tui_args.take().unwrap_or_default();
+        if let Some(path) = run.icon_path() {
+            self.tui_icons.entry(path).or_insert_with_key(|path| {
+                crate::icon_image::load(path)
+                    .inspect_err(|err| eprintln!("calm: tui icon: {err}"))
+                    .ok()
+            });
+        }
         self.tui_runs.push((id, run));
         self.launch_tui(id, window, cx)
     }
@@ -531,6 +706,9 @@ impl CanvasView {
         let mut options = run.next_launch(id)?;
         let title = run.title();
         settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
+        if let Some(run) = self.tui_run(id) {
+            run.apply_terminal_colors(&mut options);
+        }
         if let Some(old) = self.terminal(id) {
             old.update(cx, |terminal, _| terminal.release_preview(window));
             self.terminals.retain(|(panel, _)| *panel != id);
@@ -621,6 +799,44 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// The chrome look paint uses for a panel. Read by the smoke.
+    pub fn panel_look(&self, id: PanelId) -> PanelLook {
+        if let Some(meta) = self.terminal_meta(id) {
+            let resolved = self.resolve_terminal(meta.profile.as_deref());
+            let icon = match resolved.icon {
+                Some(TerminalIcon::Text(text)) => Some(IconLook::Text(text)),
+                Some(TerminalIcon::Image(relative)) => self
+                    .tui_icons
+                    .get(&self.settings_dir().join(relative))
+                    .cloned()
+                    .flatten()
+                    .map(IconLook::Image),
+                None => None,
+            };
+            return PanelLook {
+                overrides: resolved.overrides,
+                icon,
+            };
+        }
+        let Some(run) = self.tui_run(id) else {
+            return PanelLook::default();
+        };
+        let icon = match (run.glyph(), run.icon_path()) {
+            (Some(text), _) => Some(IconLook::Text(text.to_string())),
+            (None, Some(path)) => self
+                .tui_icons
+                .get(&path)
+                .cloned()
+                .flatten()
+                .map(IconLook::Image),
+            (None, None) => None,
+        };
+        PanelLook {
+            overrides: run.chrome_overrides(),
+            icon,
+        }
+    }
+
     /// Per TUI panel in creation order: chrome title, state, Restart offered, launches.
     pub fn tui_status(&self) -> Vec<(String, calm_core::tui::TuiState, bool, u64)> {
         self.tui_runs
@@ -678,11 +894,6 @@ impl CanvasView {
         self.apps.extend(entries.apps);
         self.plugin_sizes.extend(entries.sizes);
         self.installed_plugins.extend(plugins);
-    }
-
-    /// The Add menu as the user would see it now.
-    pub fn canvas_menu(&self) -> Vec<menu::MenuItem> {
-        menu::canvas_menu(&self.plugins, &self.apps, &self.plugin_search_dirs)
     }
 
     /// (loading, load error) per plugin panel, in creation order.
@@ -1251,14 +1462,60 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// Escape that reached the canvas. A native view with the keyboard keeps it, and its
+    /// panel keeps focus: Escape belongs to the program or page in there.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.input.confirming.is_some() {
-            if let Some(effect) = self.input.confirm_key(ConfirmKey::Escape) {
-                self.apply_effects(vec![effect], window, cx);
-            }
-            return;
-        }
-        self.set_tool(Tool::Select, window, cx);
+        let native_keyboard = calm_native::host_view_is_first_responder(window) != Some(true);
+        let effects = self.input.escape(native_keyboard);
+        self.apply_effects(effects, window, cx);
+    }
+
+    /// A world point on screen over no panel, chrome or resize band. Only the smoke uses it.
+    pub fn smoke_empty_point(&self) -> Option<Point> {
+        let size = self.viewport.size;
+        let steps = |len: f64| (1..(len / 20.0) as usize).map(|i| i as f64 * 20.0);
+        steps(size.height)
+            .flat_map(|y| steps(size.width).map(move |x| Point::new(x, y)))
+            .map(|screen| self.scene.camera.screen_to_world(screen))
+            .find(|world| {
+                self.scene.hit_test(*world).is_none() && self.resize_cursor_at(*world).is_none()
+            })
+    }
+
+    pub fn focused(&self) -> Option<PanelId> {
+        self.focused
+    }
+
+    /// Presses and releases `button` at `world` through the real mouse handlers, without
+    /// moving. Only the smoke uses it.
+    pub fn smoke_click(
+        &mut self,
+        world: Point,
+        button: MouseButton,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let screen = self.scene.camera.world_to_screen(world);
+        let position = point(
+            px((screen.x + self.viewport.origin.x) as f32),
+            px((screen.y + self.viewport.origin.y) as f32),
+        );
+        let modifiers = gpui::Modifiers::default();
+        let down = MouseDownEvent {
+            button,
+            position,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        };
+        self.mouse_down(&down, window, cx);
+        let up = MouseUpEvent {
+            button,
+            position,
+            modifiers,
+            click_count: 1,
+        };
+        self.mouse_up(&up, window, cx);
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1280,7 +1537,7 @@ impl CanvasView {
 
 /// What a context menu was opened on.
 #[derive(Clone, Copy, Debug)]
-enum MenuTarget {
+pub(crate) enum MenuTarget {
     /// Empty canvas; new panels go at `world`.
     Canvas {
         world: Point,
@@ -1289,6 +1546,39 @@ enum MenuTarget {
 }
 
 /// What paint needs, copied out at render time so painting does not borrow the view.
+/// A panel's own chrome colors and icon, over the theme.
+#[derive(Clone, Debug, Default)]
+pub struct PanelLook {
+    pub overrides: ChromeOverrides,
+    pub icon: Option<IconLook>,
+}
+
+#[derive(Clone, Debug)]
+pub enum IconLook {
+    Text(String),
+    Image(Arc<RenderImage>),
+}
+
+/// A theme 0xRRGGBB color as 0xRRGGBBAA.
+const fn opaque(rgb: u32) -> u32 {
+    (rgb << 8) | 0xff
+}
+
+/// Theme chrome colors as 0xRRGGBBAA.
+pub(crate) fn chrome_palette() -> ChromePalette {
+    ChromePalette {
+        bar: opaque(theme::PANEL_BAR),
+        bar_focused: opaque(theme::PANEL_BAR_FOCUSED),
+        border: opaque(theme::PANEL_BORDER),
+        accent: opaque(theme::ACCENT),
+        title: opaque(theme::TITLE_TEXT),
+        title_focused: opaque(theme::TITLE_TEXT_FOCUSED),
+        confirm_bar: opaque(theme::CONFIRM_BAR),
+        confirm_border: opaque(theme::CONFIRM_BORDER),
+        confirm_title: opaque(theme::CONFIRM_TEXT),
+    }
+}
+
 struct PaintSnapshot {
     scene: Scene,
     state: Interaction,
@@ -1298,8 +1588,8 @@ struct PaintSnapshot {
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Panels with a plugin web view.
     plugin_ids: Vec<PanelId>,
-    /// TUI panels whose manifest has an `icon`, drawn as text in place of the icon strokes.
-    glyphs: Vec<(PanelId, String)>,
+    /// Panels with custom chrome colors or icon. Others use the theme.
+    looks: HashMap<PanelId, PanelLook>,
     /// Close confirmation or context menu up: native views must not cover it.
     modal_open: bool,
     /// Terminals that got an input div in this render.
@@ -1627,6 +1917,15 @@ impl PaintSnapshot {
         }
     }
 
+    fn overrides(&self, id: PanelId) -> &ChromeOverrides {
+        const THEME: ChromeOverrides = ChromeOverrides {
+            accent: None,
+            title_bar: None,
+            title: None,
+        };
+        self.looks.get(&id).map_or(&THEME, |look| &look.overrides)
+    }
+
     /// Fills the gap of a join. It sits between the two panels, so it never covers a native
     /// view. Where both title bars face each other it is at least one pixel wide, so a
     /// joined pair still shows a seam through the bar strip when the gap is 0 or tiny.
@@ -1638,16 +1937,17 @@ impl PaintSnapshot {
     ) {
         let camera = self.scene.camera;
         let zoom = camera.zoom;
-        let involved = |id: Option<PanelId>| id == Some(join.first) || id == Some(join.second);
-        let color = if involved(self.confirming) {
-            theme::CONFIRM_BORDER
-        } else if involved(self.focused) {
-            theme::ACCENT
-        } else {
-            theme::PANEL_BORDER
-        };
+        let color = rgba(divider_color(
+            [join.first, join.second].map(|id| {
+                (
+                    ChromeState::of(self.focused == Some(id), self.confirming == Some(id)),
+                    self.overrides(id),
+                )
+            }),
+            &chrome_palette(),
+        ));
         let gap = camera.world_rect_to_screen(join.divider);
-        window.paint_quad(fill(to_bounds(gap, origin), rgb(color)));
+        window.paint_quad(fill(to_bounds(gap, origin), color));
         if join.axis != Axis::Row || join.gap * zoom >= BORDER_PX {
             return;
         }
@@ -1667,7 +1967,7 @@ impl PaintSnapshot {
         let bottom = camera.world_to_screen(Point::new(0.0, bars_bottom)).y;
         let center = gap.origin.x + gap.size.width / 2.0;
         let seam = Rect::new(center - BORDER_PX / 2.0, top, BORDER_PX, bottom - top);
-        window.paint_quad(fill(to_bounds(seam, origin), rgb(color)));
+        window.paint_quad(fill(to_bounds(seam, origin), color));
     }
 
     fn paint_panel(
@@ -1687,21 +1987,13 @@ impl PaintSnapshot {
             _ => None,
         };
         let layout = title_bar_layout(panel);
-        let (bar_color, border_color, text_color) = if confirming {
-            (
-                theme::CONFIRM_BAR,
-                theme::CONFIRM_BORDER,
-                theme::CONFIRM_TEXT,
-            )
-        } else if focused {
-            (
-                theme::PANEL_BAR_FOCUSED,
-                theme::ACCENT,
-                theme::TITLE_TEXT_FOCUSED,
-            )
-        } else {
-            (theme::PANEL_BAR, theme::PANEL_BORDER, theme::TITLE_TEXT)
-        };
+        let look = self.looks.get(&panel.id);
+        let overrides = self.overrides(panel.id);
+        let colors = chrome_colors(
+            ChromeState::of(focused, confirming),
+            overrides,
+            &chrome_palette(),
+        );
 
         // The ring sits outside the panel rect, so it never reaches into native content.
         // On a joined side it has no border and reaches halfway across the gap, where the
@@ -1726,18 +2018,18 @@ impl PaintSnapshot {
         window.paint_quad(quad(
             to_bounds(ring, origin),
             panel_corners(panel, edges, zoom, BORDER_PX),
-            rgb(bar_color),
+            rgba(colors.bar),
             Edges {
                 top: border(Side::Top),
                 right: border(Side::Right),
                 bottom: border(Side::Bottom),
                 left: border(Side::Left),
             },
-            rgb(border_color),
+            rgba(colors.border),
             BorderStyle::Solid,
         ));
         if let Some(edges) = edges {
-            self.paint_open_ring(body, edges, rgb(border_color), origin, window);
+            self.paint_open_ring(body, edges, rgba(colors.border), origin, window);
         }
 
         if !panel.minimized {
@@ -1781,7 +2073,7 @@ impl PaintSnapshot {
                         line,
                         TextLook {
                             align: TextAlign::Left,
-                            color: theme::TITLE_TEXT,
+                            color: opaque(theme::TITLE_TEXT),
                         },
                         zoom,
                         origin,
@@ -1796,14 +2088,22 @@ impl PaintSnapshot {
         if !details_visible(zoom) {
             return;
         }
-        let icon_color = match PanelIcon::for_kind(&panel.kind) {
+        let kind_color = match PanelIcon::for_kind(&panel.kind) {
             PanelIcon::Terminal => theme::ICON_TERMINAL,
             PanelIcon::Browser => theme::ICON_BROWSER,
             PanelIcon::Plugin => theme::ICON_PLUGIN,
         };
+        let icon_color = icon_tint(overrides, opaque(kind_color));
         let stroke = (1.5 * zoom).max(1.0);
         let icon_rect = camera.world_rect_to_screen(layout.icon);
-        if let Some((_, glyph)) = self.glyphs.iter().find(|(id, _)| *id == panel.id) {
+        if let Some(IconLook::Image(image)) = look.and_then(|look| look.icon.as_ref()) {
+            let bounds = to_bounds(icon_rect, origin);
+            if let Err(err) =
+                window.paint_image(bounds, bounds, Default::default(), image.clone(), 0, false)
+            {
+                eprintln!("calm: icon paint failed: {err:#}");
+            }
+        } else if let Some(IconLook::Text(glyph)) = look.and_then(|look| look.icon.as_ref()) {
             paint_text(
                 glyph,
                 icon_rect,
@@ -1855,7 +2155,7 @@ impl PaintSnapshot {
                     &button_strokes(button),
                     dot,
                     stroke,
-                    glyph_color,
+                    opaque(glyph_color),
                     origin,
                     window,
                 );
@@ -1878,7 +2178,7 @@ impl PaintSnapshot {
                 label,
                 TextLook {
                     align: TextAlign::Right,
-                    color: theme::STALE_TEXT,
+                    color: opaque(theme::STALE_TEXT),
                 },
                 zoom,
                 origin,
@@ -1897,7 +2197,7 @@ impl PaintSnapshot {
             middle,
             TextLook {
                 align: TextAlign::Left,
-                color: text_color,
+                color: colors.title,
             },
             zoom,
             origin,
@@ -1959,7 +2259,7 @@ fn paint_strokes(
             }
         }
         match builder.build() {
-            Ok(path) => window.paint_path(path, rgb(color)),
+            Ok(path) => window.paint_path(path, rgba(color)),
             Err(err) => eprintln!("calm: chrome stroke failed: {err:?}"),
         }
     }
@@ -1968,6 +2268,7 @@ fn paint_strokes(
 /// Alignment and color of one `paint_text` line.
 struct TextLook {
     align: TextAlign,
+    /// 0xRRGGBBAA.
     color: u32,
 }
 
@@ -1989,7 +2290,7 @@ fn paint_text(
     let run = TextRun {
         len: title.len(),
         font: window.text_style().font(),
-        color: rgb(look.color).into(),
+        color: rgba(look.color).into(),
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -2052,10 +2353,10 @@ impl Render for CanvasView {
             hover: self.hover,
             terminals: self.terminals.clone(),
             plugin_ids: self.plugin_panels.iter().map(|(id, _)| *id).collect(),
-            glyphs: self
+            looks: self
                 .tui_runs
                 .iter()
-                .filter_map(|(id, run)| run.glyph().map(|glyph| (*id, glyph.to_string())))
+                .map(|(id, _)| (*id, self.panel_look(*id)))
                 .collect(),
             modal_open: self.input.confirming.is_some() || self.menu_open,
             input_targets: Vec::new(),

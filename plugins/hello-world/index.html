@@ -21,6 +21,11 @@
       // window.calm exists only inside CALM; skip the call when the file is opened in a browser.
       if (window.calm) {
         calm.panel.setTitle("Hello").catch(function (err) { console.error(err); });
+        // The "Say hello" item from contributes.menus in calm-plugin.json.
+        calm.events.on("command", function (command) {
+          if (command.id !== "wave") return;
+          calm.panel.setTitle("Hello from the menu").catch(function (err) { console.error(err); });
+        });
       }
     </script>
   </body>

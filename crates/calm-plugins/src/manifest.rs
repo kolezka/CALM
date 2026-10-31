@@ -8,7 +8,9 @@ use calm_core::scene::MIN_PANEL_SIZE;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+use crate::contributes;
 use crate::tui::{self, TuiSpec};
+use calm_core::plugin_menu::MenuContribution;
 
 pub const MANIFEST_FILE: &str = "calm-plugin.json";
 
@@ -45,6 +47,8 @@ pub struct PluginManifest {
     pub min_size: Option<Size>,
     /// Largest size a user resize may reach, chrome included.
     pub max_size: Option<Size>,
+    /// Context menu items from `contributes.menus`, in manifest order.
+    pub menus: Vec<MenuContribution>,
 }
 
 /// The `"kind": "web"` manifest as it was before `kind` existed.
@@ -81,7 +85,9 @@ impl PluginManifest {
             Some(serde_json::Value::String(kind)) => kind.as_str(),
             Some(other) => return Err(format!("kind must be a string, got {other}")),
         };
-        let manifest = match kind {
+        let is_tui = kind == "tui";
+        let menus = contributes::parse(value.get("contributes"), is_tui)?;
+        let mut manifest = match kind {
             "web" => {
                 let web: WebManifestJson =
                     serde_json::from_value(value).map_err(|e| e.to_string())?;
@@ -94,6 +100,7 @@ impl PluginManifest {
                     resizable: web.resizable,
                     min_size: web.min_size,
                     max_size: web.max_size,
+                    menus: Vec::new(),
                 }
             }
             "tui" => {
@@ -109,6 +116,7 @@ impl PluginManifest {
                     resizable: None,
                     min_size: None,
                     max_size: None,
+                    menus: Vec::new(),
                 }
             }
             other => {
@@ -118,6 +126,7 @@ impl PluginManifest {
             }
         };
         manifest.validate()?;
+        manifest.menus = menus;
         Ok(manifest)
     }
 
@@ -459,25 +468,28 @@ fn load_manifest(dir: &Path) -> Result<PluginManifest, PluginError> {
     let text = fs::read_to_string(&path).map_err(|e| invalid(e.to_string()))?;
     let manifest = PluginManifest::from_json(&text).map_err(invalid)?;
     if let Some(entry) = manifest.entry() {
-        check_entry_on_disk(dir, entry).map_err(invalid)?;
+        check_file_on_disk(dir, entry, "entry").map_err(invalid)?;
+    }
+    if let Some(icon) = manifest.tui().and_then(TuiSpec::icon_image) {
+        check_file_on_disk(dir, icon, "icon").map_err(invalid)?;
     }
     Ok(manifest)
 }
 
 // The lexical check in from_json cannot see symlinks, so resolve the real path here.
-fn check_entry_on_disk(dir: &Path, entry: &Path) -> Result<(), String> {
-    let shown = entry.display();
+fn check_file_on_disk(dir: &Path, file: &Path, field: &str) -> Result<(), String> {
+    let shown = file.display();
     let real_dir = fs::canonicalize(dir).map_err(|e| format!("cannot resolve plugin dir: {e}"))?;
-    let real_entry = fs::canonicalize(dir.join(entry))
-        .map_err(|e| format!("cannot resolve entry {shown}: {e}"))?;
-    if !real_entry.starts_with(&real_dir) {
+    let real_file = fs::canonicalize(dir.join(file))
+        .map_err(|e| format!("cannot resolve {field} {shown}: {e}"))?;
+    if !real_file.starts_with(&real_dir) {
         return Err(format!(
-            "entry {shown} resolves to {}, outside the plugin directory",
-            real_entry.display()
+            "{field} {shown} resolves to {}, outside the plugin directory",
+            real_file.display()
         ));
     }
-    if !real_entry.is_file() {
-        return Err(format!("entry {shown} is not a file"));
+    if !real_file.is_file() {
+        return Err(format!("{field} {shown} is not a file"));
     }
     Ok(())
 }
@@ -593,6 +605,7 @@ mod tests {
                     resizable: None,
                     min_size: None,
                     max_size: None,
+                    menus: Vec::new(),
                 },
                 dir,
             }]

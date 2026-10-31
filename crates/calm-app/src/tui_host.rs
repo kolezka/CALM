@@ -3,13 +3,15 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use calm_core::chrome::ChromeOverrides;
 use calm_core::scene::PanelId;
 use calm_core::tui::{self, LaunchContext, LaunchSpec, RestartPolicy, Supervisor};
-use calm_plugins::{InstalledPlugin, TuiRestart, TuiSpec};
+use calm_plugins::{InstalledPlugin, TuiIcon, TuiRestart, TuiSpec};
 use gpui::Subscription;
 use gpui_libghostty::TerminalOptions;
 
 use crate::terminal;
+use crate::terminal_profiles::{self, login_shell};
 
 /// One TUI panel: its plugin, restart state and the current launch.
 pub struct TuiRun {
@@ -21,6 +23,8 @@ pub struct TuiRun {
     pub status_file: PathBuf,
     /// Exit and Enter events of the current terminal. Replaced on restart.
     pub subscription: Option<Subscription>,
+    /// Appended to the manifest's `args`, from the plugin menu item that opened the panel.
+    pub extra_args: Vec<String>,
 }
 
 impl TuiRun {
@@ -41,6 +45,7 @@ impl TuiRun {
             launches: 0,
             status_file: PathBuf::new(),
             subscription: None,
+            extra_args: Vec::new(),
         })
     }
 
@@ -52,12 +57,32 @@ impl TuiRun {
     }
 
     pub fn title(&self) -> String {
-        self.supervisor
-            .title(&self.plugin.manifest.name, &self.spec().command)
+        let name = self.spec().chrome_title(&self.plugin.manifest.name);
+        self.supervisor.title(&name, &self.spec().command)
     }
 
+    /// The text icon, if the manifest has one.
     pub fn glyph(&self) -> Option<&str> {
-        self.spec().icon.as_deref()
+        match &self.spec().icon {
+            Some(TuiIcon::Text(text)) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Absolute path of the image icon, if the manifest has one.
+    pub fn icon_path(&self) -> Option<PathBuf> {
+        self.spec()
+            .icon_image()
+            .map(|icon| self.plugin.dir.join(icon))
+    }
+
+    pub fn chrome_overrides(&self) -> ChromeOverrides {
+        let spec = self.spec();
+        ChromeOverrides {
+            accent: spec.accent_color,
+            title_bar: spec.title_bar_color,
+            title: spec.title_color,
+        }
     }
 
     /// Options for the next launch. Removes a stale status file first, so a missing file
@@ -82,7 +107,7 @@ impl TuiRun {
         let spec = self.spec();
         let launch = LaunchSpec {
             command: spec.command.clone(),
-            args: spec.args.clone(),
+            args: spec.args.iter().chain(&self.extra_args).cloned().collect(),
             env: spec.env.clone().into_iter().collect(),
             shell: spec.shell,
         };
@@ -106,6 +131,14 @@ impl TuiRun {
         self.supervisor.started();
         Ok(terminal::options(Some(&tui::command_line(&argv)), cwd))
     }
+
+    /// Puts the manifest's `terminalColors` on top of whatever config `options` loads.
+    /// Call after the settings have picked the base configuration.
+    pub fn apply_terminal_colors(&self, options: &mut TerminalOptions) {
+        if let Some(colors) = &self.spec().terminal_colors {
+            terminal_profiles::apply_colors(options, colors);
+        }
+    }
 }
 
 /// The exit code the wrapper wrote, or `None` if it never got there (e.g. killed).
@@ -126,14 +159,6 @@ pub fn read_exit_code(path: &Path) -> Option<i32> {
             None
         }
     }
-}
-
-/// `$SHELL`, else zsh, the macOS default. Apps started from Finder may lack `$SHELL`.
-fn login_shell() -> String {
-    std::env::var("SHELL")
-        .ok()
-        .filter(|shell| !shell.is_empty())
-        .unwrap_or_else(|| "/bin/zsh".to_string())
 }
 
 /// Per app run, so two CALM instances never read each other's status files.

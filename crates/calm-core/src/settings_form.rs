@@ -7,11 +7,13 @@ use crate::background::{
     BackgroundKind, GradientKind, GradientStop, ImageFit, MAX_BLUR, MAX_FILTER_FACTOR,
     MAX_GRADIENT_STOPS, MIN_GRADIENT_STOPS, Rgb,
 };
+use crate::chrome::parse_hex_color;
 use crate::grid::GridKind;
 use crate::settings::{
     GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
     SNAP_EDGE_RANGE, SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
 };
+use crate::terminal_profile::{PALETTE_PRESETS, TerminalColors, TerminalColorsSetting, hex};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
@@ -201,6 +203,11 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
     sections.push(section(
         "Canvas and Snapping",
         vec![
+            checkbox(
+                "canvas.click_empty_clears_focus",
+                "Click on empty canvas clears focus",
+                settings.canvas.click_empty_clears_focus,
+            ),
             checkbox("snap.enabled", "Snap panels", snap.enabled),
             choice("snap.grid", "Snap grid", steps, selected),
             slider(
@@ -250,6 +257,8 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
             ),
         ],
     ));
+
+    sections.push(section("Terminal", terminal_fields(settings)));
 
     sections.push(section(
         "Developer",
@@ -402,6 +411,9 @@ pub fn apply_field(
         }
         _ => None,
     };
+    if let Some(rest) = id.strip_prefix("terminal.") {
+        return apply_terminal_field(settings, rest, value);
+    }
     let background = &mut settings.background;
 
     if let Some(rest) = id.strip_prefix("gradient.stop.") {
@@ -537,6 +549,10 @@ pub fn apply_field(
             settings.snap.edge_distance = number(SNAP_EDGE_RANGE, 0).unwrap_or_default();
             changed
         }
+        ("canvas.click_empty_clears_focus", FieldValue::Bool(on)) => {
+            settings.canvas.click_empty_clears_focus = on;
+            changed
+        }
         ("panels.confirm_close", FieldValue::Bool(on)) => {
             settings.panels.confirm_close = on;
             changed
@@ -592,6 +608,7 @@ pub fn apply_field(
             | "grid.mark_size"
             | "grid.major_every"
             | "grid.major_opacity"
+            | "canvas.click_empty_clears_focus"
             | "snap.enabled"
             | "snap.grid"
             | "snap.edge"
@@ -606,6 +623,218 @@ pub fn apply_field(
             _,
         ) => mismatch(),
         _ => Err(format!("unknown settings field {id:?}")),
+    }
+}
+
+/// Chrome colors a "Custom title bar colors" switch starts from: the brand cyan accent on
+/// the theme's dark bar and light title.
+const CHROME_SEED: [&str; 3] = ["#48f5e7", "#1e1e1e", "#e8e8e8"];
+
+fn rgb_of(text: Option<&str>) -> Rgb {
+    Rgb(text.and_then(parse_hex_color).map_or(0, |rgba| rgba >> 8))
+}
+
+/// The defaults layer of the `terminal` section. Title, icon, launch options and profile
+/// editing need text input the window does not have yet; settings.json holds them.
+fn terminal_fields(settings: &Settings) -> Vec<Field> {
+    let terminal = &settings.terminal;
+    let defaults = &terminal.defaults;
+    let custom_chrome = defaults.accent_color.is_some()
+        || defaults.title_bar_color.is_some()
+        || defaults.title_color.is_some();
+    let mut fields = vec![checkbox(
+        "terminal.custom_chrome",
+        "Custom title bar colors",
+        custom_chrome,
+    )];
+    if custom_chrome {
+        fields.extend([
+            color(
+                "terminal.accent",
+                "Accent",
+                rgb_of(defaults.accent_color.as_deref()),
+            ),
+            color(
+                "terminal.title_bar",
+                "Title bar",
+                rgb_of(defaults.title_bar_color.as_deref()),
+            ),
+            color(
+                "terminal.title",
+                "Title",
+                rgb_of(defaults.title_color.as_deref()),
+            ),
+        ]);
+    }
+    let colors = defaults
+        .terminal_colors
+        .as_ref()
+        .and_then(|colors| colors.parse("terminal.terminal_colors").ok());
+    fields.push(checkbox(
+        "terminal.custom_colors",
+        "Custom terminal colors",
+        colors.is_some(),
+    ));
+    if let Some(colors) = colors {
+        fields.push(color(
+            "terminal.background",
+            "Background",
+            Rgb(colors.background),
+        ));
+        fields.push(color(
+            "terminal.foreground",
+            "Foreground",
+            Rgb(colors.foreground),
+        ));
+        for (index, value) in colors.palette.iter().enumerate() {
+            fields.push(color(
+                &format!("terminal.palette.{index}"),
+                &format!("Color {index}"),
+                Rgb(*value),
+            ));
+        }
+        for preset in PALETTE_PRESETS {
+            fields.push(button(
+                &format!("terminal.preset.{}", preset.id),
+                "",
+                &format!("Load {}", preset.label),
+            ));
+        }
+    }
+    if !terminal.profiles.is_empty() {
+        let mut names = vec!["None".to_string()];
+        names.extend(terminal.profiles.iter().map(|profile| profile.name.clone()));
+        let selected = terminal
+            .default_profile
+            .as_deref()
+            .and_then(|id| terminal.profiles.iter().position(|p| p.id == id))
+            .map_or(0, |index| index + 1);
+        fields.push(choice(
+            "terminal.default_profile",
+            "Default profile",
+            names,
+            selected,
+        ));
+    }
+    if let Some(env) = &defaults.env {
+        // Keys only: values may be secrets.
+        let masked: Vec<String> = env
+            .keys()
+            .map(|key| format!("{key}=\u{2022}\u{2022}\u{2022}"))
+            .collect();
+        fields.push(note("terminal.env", "Environment", masked.join(" ")));
+    }
+    fields.push(note(
+        "terminal.more",
+        "",
+        format!(
+            "Title, icon, command, folder, environment and {} profile(s): settings.json, \
+             see docs/configuration.md. Palette changes recolor running terminals.",
+            terminal.profiles.len()
+        ),
+    ));
+    fields
+}
+
+fn apply_terminal_field(
+    settings: &mut Settings,
+    id: &str,
+    value: FieldValue,
+) -> Result<FormOutcome, String> {
+    let changed = Ok(FormOutcome::Changed { rebuild: false });
+    let rebuilt = Ok(FormOutcome::Changed { rebuild: true });
+    let terminal = &mut settings.terminal;
+    let defaults = &mut terminal.defaults;
+    let current = defaults
+        .terminal_colors
+        .as_ref()
+        .and_then(|colors| colors.parse("terminal.terminal_colors").ok());
+    let mut set_colors = |colors: TerminalColors| {
+        defaults.terminal_colors = Some(TerminalColorsSetting::from_colors(&colors));
+    };
+    if let Some(preset) = id.strip_prefix("preset.") {
+        let preset = PALETTE_PRESETS
+            .iter()
+            .find(|known| known.id == preset)
+            .ok_or_else(|| format!("unknown palette preset {preset:?}"))?;
+        return match value {
+            FieldValue::Pressed => {
+                set_colors(preset.colors);
+                rebuilt
+            }
+            _ => Err(format!("settings field \"terminal.{id}\" got {value:?}")),
+        };
+    }
+    if let Some(index) = id.strip_prefix("palette.") {
+        let index: usize = index
+            .parse()
+            .ok()
+            .filter(|index| *index < 16)
+            .ok_or_else(|| format!("unknown settings field \"terminal.{id}\""))?;
+        return match (value, current) {
+            (FieldValue::Color(rgb), Some(mut colors)) => {
+                colors.palette[index] = rgb.0;
+                set_colors(colors);
+                changed
+            }
+            _ => Err(format!("settings field \"terminal.{id}\" got {value:?}")),
+        };
+    }
+    match (id, value) {
+        ("custom_chrome", FieldValue::Bool(on)) => {
+            let seed = |text: &str| on.then(|| text.to_string());
+            defaults.accent_color = seed(CHROME_SEED[0]);
+            defaults.title_bar_color = seed(CHROME_SEED[1]);
+            defaults.title_color = seed(CHROME_SEED[2]);
+            rebuilt
+        }
+        ("accent", FieldValue::Color(rgb)) => {
+            defaults.accent_color = Some(hex(rgb.0));
+            changed
+        }
+        ("title_bar", FieldValue::Color(rgb)) => {
+            defaults.title_bar_color = Some(hex(rgb.0));
+            changed
+        }
+        ("title", FieldValue::Color(rgb)) => {
+            defaults.title_color = Some(hex(rgb.0));
+            changed
+        }
+        ("custom_colors", FieldValue::Bool(on)) => {
+            if on {
+                set_colors(PALETTE_PRESETS[0].colors);
+            } else {
+                defaults.terminal_colors = None;
+            }
+            rebuilt
+        }
+        ("background" | "foreground", FieldValue::Color(rgb)) => {
+            let mut colors = current.ok_or("terminal colors are off")?;
+            if id == "background" {
+                colors.background = rgb.0;
+            } else {
+                colors.foreground = rgb.0;
+            }
+            set_colors(colors);
+            changed
+        }
+        ("default_profile", FieldValue::Index(index)) => {
+            terminal.default_profile = match index {
+                0 => None,
+                _ => Some(
+                    terminal
+                        .profiles
+                        .get(index - 1)
+                        .ok_or("bad default profile")?
+                        .id
+                        .clone(),
+                ),
+            };
+            changed
+        }
+        _ => Err(format!(
+            "unknown settings field \"terminal.{id}\" or wrong value {value:?}"
+        )),
     }
 }
 
@@ -634,6 +863,7 @@ fn add_stop(settings: &mut Settings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal_profile::TerminalProfile;
     use std::path::PathBuf;
 
     fn ids(sections: &[Section]) -> Vec<String> {
@@ -651,7 +881,61 @@ mod tests {
             color: Rgb(0xff0000),
             position: 0.5,
         });
+        // Every terminal control shows: custom chrome, custom colors, profiles, env.
+        let terminal = &mut settings.terminal;
+        terminal.defaults.accent_color = Some("#112233".into());
+        terminal.defaults.terminal_colors = Some(TerminalColorsSetting::from_colors(
+            &PALETTE_PRESETS[2].colors,
+        ));
+        terminal.defaults.env = Some([("TOKEN".to_string(), "hunter2".to_string())].into());
+        terminal.profiles.push(TerminalProfile {
+            id: "neon".into(),
+            name: "Neon".into(),
+            ..TerminalProfile::default()
+        });
         settings
+    }
+
+    #[test]
+    fn terminal_section_masks_env_and_edits_the_palette() {
+        let settings = settings_with(BackgroundKind::Solid);
+        let form = settings_form(&settings, &FormContext::default());
+        let fields: Vec<&Field> = form.iter().flat_map(|s| &s.fields).collect();
+        let env = fields.iter().find(|f| f.id == "terminal.env").unwrap();
+        let Control::Note(text) = &env.control else {
+            panic!()
+        };
+        assert!(
+            text.contains("TOKEN=") && !text.contains("hunter2"),
+            "{text}"
+        );
+        let wells = fields
+            .iter()
+            .filter(|f| f.id.starts_with("terminal.palette."))
+            .count();
+        assert_eq!(wells, 16);
+        let mut next = settings.clone();
+        apply_field(
+            &mut next,
+            "terminal.preset.solarized-dark",
+            FieldValue::Pressed,
+        )
+        .unwrap();
+        let loaded = next.terminal.defaults.terminal_colors.as_ref().unwrap();
+        assert_eq!(loaded.parse("x"), Ok(PALETTE_PRESETS[1].colors));
+        apply_field(
+            &mut next,
+            "terminal.palette.3",
+            FieldValue::Color(Rgb(0xabcdef)),
+        )
+        .unwrap();
+        let edited = next.terminal.defaults.terminal_colors.as_ref().unwrap();
+        assert_eq!(edited.parse("x").unwrap().palette[3], 0xabcdef);
+        apply_field(&mut next, "terminal.custom_colors", FieldValue::Bool(false)).unwrap();
+        assert!(next.terminal.defaults.terminal_colors.is_none());
+        apply_field(&mut next, "terminal.default_profile", FieldValue::Index(1)).unwrap();
+        assert_eq!(next.terminal.default_profile.as_deref(), Some("neon"));
+        assert_eq!(next.validate(), Ok(()));
     }
 
     /// The value a user could send from this control.

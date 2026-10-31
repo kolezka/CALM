@@ -8,8 +8,8 @@ use calm_core::scene::{Panel, PanelId, PanelKind};
 use calm_core::viewport::NativePlacement;
 use calm_native::{NativeChild, WebPanel};
 use calm_plugins::{
-    BridgeRequest, BridgeResponse, CALM_PRELUDE_JS, Discovery, InstalledPlugin, discover_search,
-    is_known_method, missing_scripts, plugin_search,
+    BridgeEvent, BridgeRequest, BridgeResponse, CALM_PRELUDE_JS, Discovery, InstalledPlugin,
+    discover_search, is_known_method, missing_scripts, plugin_search,
 };
 use futures::channel::mpsc::UnboundedSender;
 use gpui::Window;
@@ -210,6 +210,11 @@ impl PluginPanel {
 
     pub fn reply(&mut self, response: &BridgeResponse) {
         self.web.eval_js(&response.to_js());
+    }
+
+    /// Fans a host event out to the page's `calm.events.on` handlers.
+    pub fn emit(&mut self, event: &BridgeEvent) {
+        self.web.eval_js(&event.to_js());
     }
 }
 
