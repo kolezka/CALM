@@ -170,13 +170,25 @@ impl<'de> Deserialize<'de> for PanelKind {
 }
 
 /// What the user chose for a panel's look. Always wins over what the panel sets.
-/// Applying them in the chrome is not wired yet.
+/// Applying and validating them is the plugin API's job; files only need the types.
+/// Unknown keys are ignored so an older CALM opens a file with more override fields.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PanelOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// 1 to 4 characters, or a relative .png or .svg path inside the plugin folder.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    pub accent: Option<String>,
+    /// "#rrggbb" or "#rrggbbaa".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accent_color: Option<String>,
+}
+
+impl PanelOverrides {
+    pub fn is_empty(&self) -> bool {
+        *self == PanelOverrides::default()
+    }
 }
 
 impl PanelKind {

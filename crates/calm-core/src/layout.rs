@@ -36,8 +36,8 @@ pub struct LayoutPanel {
     pub rect: Rect,
     pub title: String,
     pub minimized: bool,
-    /// A missing key means no overrides.
-    #[serde(default)]
+    /// A missing key means no overrides; no overrides writes no key.
+    #[serde(default, skip_serializing_if = "PanelOverrides::is_empty")]
     pub overrides: PanelOverrides,
 }
 
@@ -374,10 +374,7 @@ mod tests {
         let panel = json["panels"][0].as_object().unwrap();
         let mut keys: Vec<&str> = panel.keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(
-            keys,
-            vec!["kind", "minimized", "overrides", "rect", "title"]
-        );
+        assert_eq!(keys, vec!["kind", "minimized", "rect", "title"]);
     }
 
     #[test]
@@ -751,7 +748,7 @@ mod tests {
             panel.overrides = PanelOverrides {
                 title: Some("Top".into()),
                 icon: Some("terminal".into()),
-                accent: Some("#ff8800".into()),
+                accent_color: Some("#ff8800".into()),
             };
             panel.title = "top".into();
         }
@@ -1057,6 +1054,54 @@ mod tests {
                 "{name}: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn overrides_key_is_written_only_when_set() {
+        let mut scene = Scene::default();
+        let plain = scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+            },
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        let styled = scene.duplicate(plain).unwrap();
+        scene.get_mut(styled).unwrap().overrides.title = Some("Logs".into());
+        let text = serde_json::to_string(&scene.to_layout()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(json["panels"][0].get("overrides").is_none(), "{json}");
+        assert_eq!(
+            json["panels"][1]["overrides"],
+            serde_json::json!({"title": "Logs"})
+        );
+        let restored = Scene::from_layout(serde_json::from_str(&text).unwrap());
+        assert_panels_match(&restored, &scene);
+    }
+
+    #[test]
+    fn unknown_override_key_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = v2_json_with_kinds(&[r#"{"type": "terminal", "command": null, "cwd": null}"#]);
+        // Positive control: the same file without overrides.
+        std::fs::write(dir.path().join("plain.json"), &text).unwrap();
+        assert!(load_layout_from(dir.path(), "plain").is_ok());
+
+        let with_overrides = text.replacen(
+            r#""minimized": false"#,
+            r##""minimized": false, "overrides": {"accent_color": "#11223344", "title_bar_color": "#000000"}"##,
+            1,
+        );
+        assert_ne!(with_overrides, text);
+        std::fs::write(dir.path().join("newer.json"), &with_overrides).unwrap();
+        let loaded = load_layout_from(dir.path(), "newer").unwrap();
+        assert_eq!(
+            loaded.panels[0].overrides,
+            PanelOverrides {
+                accent_color: Some("#11223344".into()),
+                ..PanelOverrides::default()
+            }
+        );
     }
 
     #[test]
