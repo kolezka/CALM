@@ -240,6 +240,14 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   touch `snap_resize`, which PR #12 rewrites. Cost: no resize from the left or top yet.
 - **No `aspectRatio`.** Snapping and two clamped axes make it more than cheap.
 
+## Brand assets (2026-10-31)
+
+- **The shipped app identity uses a fixed pixel palette.** The user requested a cyberpunk,
+  pixel-art CALM wordmark and icon. The source pixel grids, palette and all export sizes live
+  in `assets/brand/build.py`, so anyone can rebuild or change the artwork without a runtime
+  setting. This is a release asset, not an in-canvas feature or a plugin appearance. Cost: a
+  custom icon needs a rebuild of the app bundle rather than a setting.
+
 ## Built-in plugin dirs (2026-10-31)
 
 - **First-party plugins load without install.** A dev build (debug, or a binary in a cargo

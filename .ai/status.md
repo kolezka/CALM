@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-31, against `origin/main` at `305fdd1` (PRs #1 to #21 merged). This
+Last updated: 2026-10-31, against `origin/main` at `fa65450` (PRs #1 to #21 and #27 merged). This
 file describes `main`, not branches. Facts are verified against the code unless marked
 otherwise.
 
@@ -76,13 +76,16 @@ Pull requests:
 - #21 TUI look fields: `title` with `{name}`, image `icon` (`.png`, `.svg`), `accentColor`,
   `titleBarColor`, `titleColor`, `terminalColors`. Colors from
   `calm-core::chrome::chrome_colors`; image icons decoded once in `calm-app/src/icon_image.rs`.
+- #27 Pixel-art brand: `assets/brand/build.py` generates the wordmarks, README banner,
+  hand-tuned 16 and 32 px icons, a 1024 px master and an iconset; `iconutil` builds
+  `CALM.icns`. The bundle script copies it to `Contents/Resources` and the plist names it
+  with `CFBundleIconFile`.
 
 ## In progress (not on `main`)
 
 - #22 (open): refresh of the plugin API v2 design, including layouts as a v2 phase.
 - No PR yet: `github.api` dispatch with `GITHUB_TOKEN` read from `.env`; plugin context menu
-  contributions; blur on outside click; terminal customization and profiles; the pixel-art
-  brand and app icon; a Linux port plan.
+  contributions; blur on outside click; terminal customization and profiles; a Linux port plan.
 
 ## Not wired yet
 
@@ -125,6 +128,7 @@ Pull requests:
   accent ring and terminal colors.
 - Terminals: mouse selection at zoom 1.0 and 1.7, cmd-v paste, Polish letters through the
   input method, resize reflow, Enter to confirm close, pinch feel, `htop`.
+- Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
 
