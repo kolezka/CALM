@@ -1,12 +1,12 @@
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
-use calm_core::geometry::Rect;
+use calm_core::geometry::{Rect, Size};
 use calm_core::viewport::NativePlacement;
 use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSResponder, NSView};
-use objc2_foundation::{NSObject, NSPoint, NSRect, NSSize};
+use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::NSView;
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{
     AppKitWindowHandle, DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle,
     RawWindowHandle, WindowHandle,
@@ -14,94 +14,61 @@ use raw_window_handle::{
 
 use crate::NativeError;
 
-define_class!(
-    // SAFETY: NSView has no subclassing requirements beyond being used on the main thread,
-    // which MainThreadOnly enforces. We only override isFlipped.
-    #[unsafe(super(NSView, NSResponder, NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "CalmContainerView"]
-    struct ContainerView;
-
-    impl ContainerView {
-        // Top-left origin, so children and bounds use the same y direction as calm-core.
-        // SAFETY: matches NSView's `- (BOOL)isFlipped` signature.
-        #[unsafe(method(isFlipped))]
-        fn is_flipped(&self) -> bool {
-            true
-        }
-    }
-);
-
-impl ContainerView {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
-        let zero = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
-        // SAFETY: initWithFrame: is NSView's designated initializer and the ivars are set.
-        unsafe { msg_send![super(this), initWithFrame: zero] }
-    }
-}
-
-/// Snaps a length to the device pixel grid.
-fn snap(value: f64, scale_factor: f64) -> f64 {
-    if scale_factor > 0.0 {
-        (value * scale_factor).round() / scale_factor
-    } else {
-        value
-    }
-}
-
-/// The container's frame in the parent's bottom-left (AppKit) coordinates, snapped to device
-/// pixels. `placement.container` is top-left, in the same points as the parent view.
-pub fn container_frame(
-    placement: &NativePlacement,
-    viewport_height_px: f64,
-    scale_factor: f64,
-) -> Rect {
+/// The clip view's frame in the parent's bottom-left (AppKit) coordinates.
+/// `placement.container` is top-left, in the parent's points.
+pub fn clip_frame(placement: &NativePlacement, viewport_height_px: f64) -> Rect {
     let c = placement.container;
-    let left = snap(c.origin.x, scale_factor);
-    let top = snap(c.origin.y, scale_factor);
-    let right = snap(c.right(), scale_factor);
-    let bottom = snap(c.bottom(), scale_factor);
     Rect::new(
-        left,
-        viewport_height_px - bottom,
-        right - left,
-        bottom - top,
+        c.origin.x,
+        viewport_height_px - c.bottom(),
+        c.size.width,
+        c.size.height,
     )
 }
 
-/// The container's bounds. The container is flipped, so the bounds origin is the content
-/// point shown at the container's top-left corner. Snapping shifts are folded back in.
-pub fn container_bounds(placement: &NativePlacement, scale_factor: f64) -> Rect {
-    let c = placement.container;
+/// The zoom view's frame inside the clip view. It puts logical point `inner_origin`
+/// (top-left based) at the clip view's top-left corner. Neither view is flipped.
+pub fn zoom_frame(placement: &NativePlacement) -> Rect {
     let zoom = placement.zoom;
-    let left = snap(c.origin.x, scale_factor);
-    let top = snap(c.origin.y, scale_factor);
-    let width = snap(c.right(), scale_factor) - left;
-    let height = snap(c.bottom(), scale_factor) - top;
+    let logical = placement.logical_size;
     Rect::new(
-        placement.inner_origin.x + (left - c.origin.x) / zoom,
-        placement.inner_origin.y + (top - c.origin.y) / zoom,
-        width / zoom,
-        height / zoom,
+        -placement.inner_origin.x * zoom,
+        placement.container.size.height - logical.height * zoom + placement.inner_origin.y * zoom,
+        logical.width * zoom,
+        logical.height * zoom,
     )
 }
 
-fn ns_rect(rect: Rect) -> NSRect {
+/// The zoom view's bounds are always the logical size, so AppKit scales by frame / bounds
+/// and a child filling `(0, 0, logical_size)` never sees the clip.
+pub fn zoom_bounds(logical_size: Size) -> Rect {
+    Rect::new(0.0, 0.0, logical_size.width, logical_size.height)
+}
+
+pub(crate) fn ns_rect(rect: Rect) -> NSRect {
     NSRect::new(
         NSPoint::new(rect.origin.x, rect.origin.y),
         NSSize::new(rect.size.width, rect.size.height),
     )
 }
 
-/// A plain layer-backed container view per panel. CALM moves, clips and scales it; the
-/// panel's own view (Ghostty, WKWebView) sits inside at `(0, 0, logical_size)`.
+fn plain_layer_view(mtm: MainThreadMarker) -> Retained<NSView> {
+    let zero = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
+    let view = NSView::initWithFrame(NSView::alloc(mtm), zero);
+    view.setWantsLayer(true);
+    view
+}
+
+/// Two plain views per panel. `clip` sits in the window at the clipped screen rect and clips;
+/// `zoom` inside it is the logical content scaled by zoom. Ghostty and WKWebView attach to
+/// `zoom` at `(0, 0, logical_size)`.
 pub struct NativeChild {
-    container: Retained<ContainerView>,
+    clip: Retained<NSView>,
+    zoom: Retained<NSView>,
 }
 
 impl NativeChild {
-    /// Adds a hidden container to the view behind `window`'s AppKit handle.
+    /// Adds a hidden clip view to the view behind `window`'s AppKit handle.
     pub fn new(window: &impl HasWindowHandle) -> Result<NativeChild, NativeError> {
         let mtm = MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
         let handle = window
@@ -116,38 +83,44 @@ impl NativeChild {
         // is borrowed, and we are on the main thread.
         let parent: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
 
-        let container = ContainerView::new(mtm);
-        container.setWantsLayer(true);
-        container.setHidden(true);
-        parent.addSubview(&container);
-        Ok(NativeChild { container })
+        let clip = plain_layer_view(mtm);
+        // Off by default on macOS 14+, so an oversized child would paint past the clip rect.
+        clip.setClipsToBounds(true);
+        clip.setHidden(true);
+        let zoom = plain_layer_view(mtm);
+        clip.addSubview(&zoom);
+        parent.addSubview(&clip);
+        Ok(NativeChild { clip, zoom })
     }
 
-    /// Moves, clips and scales the container for this frame.
+    /// Moves, clips and scales the views for this frame. All values are logical points;
+    /// `_scale_factor` is kept for the call signature.
     pub fn apply(
         &mut self,
         placement: &NativePlacement,
         viewport_height_px: f64,
-        scale_factor: f64,
+        _scale_factor: f64,
     ) {
-        let frame = container_frame(placement, viewport_height_px, scale_factor);
-        let bounds = container_bounds(placement, scale_factor);
-        self.container.setFrame(ns_rect(frame));
-        self.container.setBounds(ns_rect(bounds));
-        self.container.setHidden(false);
+        self.clip
+            .setFrame(ns_rect(clip_frame(placement, viewport_height_px)));
+        // Frame first: setting the frame after custom bounds would rescale the bounds.
+        self.zoom.setFrame(ns_rect(zoom_frame(placement)));
+        self.zoom
+            .setBounds(ns_rect(zoom_bounds(placement.logical_size)));
+        self.clip.setHidden(false);
     }
 
     pub fn set_visible(&mut self, visible: bool) {
-        self.container.setHidden(!visible);
+        self.clip.setHidden(!visible);
     }
 
-    /// The container view, used as the parent for Ghostty and WKWebView.
+    /// The zoom view, used as the parent for Ghostty and WKWebView.
     pub fn ns_view(&self) -> *mut c_void {
-        Retained::as_ptr(&self.container) as *mut c_void
+        Retained::as_ptr(&self.zoom) as *mut c_void
     }
 
-    pub(crate) fn container(&self) -> &NSView {
-        &self.container
+    pub(crate) fn zoom_view(&self) -> &Retained<NSView> {
+        &self.zoom
     }
 }
 
@@ -155,7 +128,7 @@ impl HasWindowHandle for NativeChild {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         let ns_view = NonNull::new(self.ns_view()).ok_or(HandleError::Unavailable)?;
         let raw = RawWindowHandle::AppKit(AppKitWindowHandle::new(ns_view));
-        // SAFETY: the container is retained by self, so the view outlives the borrow.
+        // SAFETY: the zoom view is retained by self, so it outlives the borrow.
         Ok(unsafe { WindowHandle::borrow_raw(raw) })
     }
 }
@@ -168,14 +141,14 @@ impl HasDisplayHandle for NativeChild {
 
 impl Drop for NativeChild {
     fn drop(&mut self) {
-        self.container.removeFromSuperview();
+        self.clip.removeFromSuperview();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_core::geometry::{Point, Size};
+    use calm_core::geometry::Point;
 
     fn placement() -> NativePlacement {
         NativePlacement {
@@ -186,32 +159,59 @@ mod tests {
         }
     }
 
+    /// Where a top-left based logical point lands in the clip view's (unflipped) coordinates.
+    fn logical_to_clip(p: &NativePlacement, logical: Point) -> Point {
+        let frame = zoom_frame(p);
+        let unflipped_y = p.logical_size.height - logical.y;
+        Point::new(
+            frame.origin.x + logical.x * p.zoom,
+            frame.origin.y + unflipped_y * p.zoom,
+        )
+    }
+
     #[test]
-    fn container_frame_flips_y_against_viewport_height() {
+    fn clip_frame_flips_y_against_viewport_height() {
         // bottom edge at 250 from the top of an 800 tall view is 550 from its bottom.
         assert_eq!(
-            container_frame(&placement(), 800.0, 2.0),
+            clip_frame(&placement(), 800.0),
             Rect::new(0.0, 550.0, 300.0, 214.0)
         );
     }
 
     #[test]
-    fn container_bounds_starts_at_inner_origin_and_divides_by_zoom() {
+    fn zoom_frame_scales_logical_size_and_offsets_by_inner_origin() {
+        // x: -100 * 2; y: 214 - 300 * 2 + 86 * 2.
         assert_eq!(
-            container_bounds(&placement(), 2.0),
-            Rect::new(100.0, 86.0, 150.0, 107.0)
+            zoom_frame(&placement()),
+            Rect::new(-200.0, -214.0, 800.0, 600.0)
         );
     }
 
     #[test]
-    fn snapping_to_device_pixels_shifts_bounds_origin_to_match() {
-        let mut p = placement();
-        p.container = Rect::new(10.3, 36.0, 300.0, 214.0);
-        p.zoom = 1.0;
-        let frame = container_frame(&p, 800.0, 2.0);
-        let bounds = container_bounds(&p, 2.0);
-        assert_eq!(frame.origin.x, 10.5);
-        assert_eq!(frame.size.width, 300.0);
-        assert!((bounds.origin.x - 100.2).abs() < 1e-9);
+    fn inner_origin_lands_at_clip_top_left() {
+        let p = placement();
+        assert_eq!(
+            logical_to_clip(&p, p.inner_origin),
+            Point::new(0.0, p.container.size.height)
+        );
+    }
+
+    #[test]
+    fn unclipped_zoom_frame_fills_the_clip_view() {
+        let p = NativePlacement {
+            container: Rect::new(10.0, 20.0, 600.0, 450.0),
+            inner_origin: Point::new(0.0, 0.0),
+            logical_size: Size::new(400.0, 300.0),
+            zoom: 1.5,
+        };
+        assert_eq!(zoom_frame(&p), Rect::new(0.0, 0.0, 600.0, 450.0));
+    }
+
+    #[test]
+    fn zoom_bounds_are_the_logical_size() {
+        assert_eq!(
+            zoom_bounds(Size::new(400.0, 300.0)),
+            Rect::new(0.0, 0.0, 400.0, 300.0)
+        );
     }
 }

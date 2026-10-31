@@ -15,7 +15,8 @@ use calm_native::{NativeChild, WebPanel};
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize};
 use raw_window_handle::{
@@ -91,51 +92,110 @@ fn main() {
     };
 
     let mut child = NativeChild::new(&handle).unwrap_or_else(|e| fail(&e.to_string()));
+    let scale = window.backingScaleFactor();
+    let viewport = Rect::new(0.0, 0.0, WIDTH, HEIGHT);
+    let content = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let logical_h = content.size.height;
+
+    // SAFETY: ns_view is the live zoom NSView owned by `child`, which outlives this borrow.
+    let zoom: &NSView = unsafe { &*(child.ns_view() as *const NSView) };
+    // SAFETY: a plain property read on the main thread; the clip view retains the zoom view.
+    let clip = unsafe { zoom.superview() }.unwrap_or_else(|| fail("zoom view has no clip view"));
+
+    // Stands in for gpui-libghostty: it places its view at y = NSHeight(parent.bounds) - y - h
+    // without checking isFlipped. Here y = 0 and h = the logical height.
+    let shim = NSView::initWithFrame(mtm.alloc::<NSView>(), NSRect::ZERO);
+    zoom.addSubview(&shim);
+    let shim_y = |zoom: &NSView| {
+        let y = zoom.bounds().size.height - logical_h;
+        shim.setFrame(NSRect::new(
+            NSPoint::new(0.0, y),
+            NSSize::new(content.size.width, logical_h),
+        ));
+        shim.frame().origin.y
+    };
+
+    // Unclipped: content lands at screen (30,30,600,450).
+    let unclipped_camera = Camera {
+        offset: Point::new(-20.0, -20.0),
+        zoom: 1.5,
+    };
+    let unclipped = place_native(content, &unclipped_camera, viewport)
+        .unwrap_or_else(|| fail("unclipped placement is None"));
+    if unclipped.container.size.width != 600.0 || unclipped.container.size.height != 450.0 {
+        fail("unclipped placement is clipped");
+    }
+    child.apply(&unclipped, HEIGHT, scale);
+    let shim_unclipped = shim_y(zoom);
 
     // Content 400x300 at zoom 1.5 lands at screen (-60,-30), so the left and top are clipped.
     let camera = Camera {
         offset: Point::new(40.0, 20.0),
         zoom: 1.5,
     };
-    let viewport = Rect::new(0.0, 0.0, WIDTH, HEIGHT);
-    let content = Rect::new(0.0, 0.0, 400.0, 300.0);
     let placement =
         place_native(content, &camera, viewport).unwrap_or_else(|| fail("placement is None"));
-    let scale = window.backingScaleFactor();
     child.apply(&placement, HEIGHT, scale);
+    let shim_clipped = shim_y(zoom);
 
-    // SAFETY: ns_view is the live container NSView owned by `child`.
-    let container: &objc2_app_kit::NSView =
-        unsafe { &*(child.ns_view() as *const objc2_app_kit::NSView) };
-    let frame = container.frame();
-    let bounds = container.bounds();
+    let frame = clip.frame();
     println!(
-        "native_smoke: container frame={} bounds={}",
+        "native_smoke: clip frame={} zoom frame={} zoom bounds={}",
         fmt_rect(frame),
-        fmt_rect(bounds)
+        fmt_rect(zoom.frame()),
+        fmt_rect(zoom.bounds())
     );
     let expected_frame = NSRect::new(NSPoint::new(0.0, 180.0), NSSize::new(540.0, 420.0));
     if frame != expected_frame {
         fail(&format!(
-            "frame {} != {}",
+            "clip frame {} != {}",
             fmt_rect(frame),
             fmt_rect(expected_frame)
         ));
     }
 
+    // The zoom view is larger than the clip view here, so only clipsToBounds keeps it inside.
+    let zf = zoom.frame();
+    let oversized = zf.origin.x < 0.0
+        || zf.origin.y < 0.0
+        || zf.origin.x + zf.size.width > frame.size.width
+        || zf.origin.y + zf.size.height > frame.size.height;
+    if !oversized {
+        fail("zoom view is not larger than the clip view, the clip check proves nothing");
+    }
+    let clips = clip.clipsToBounds();
+    println!("native_smoke: clip={clips}");
+    if !clips {
+        fail("clip view does not clip to bounds");
+    }
+
+    println!("native_smoke: shim y unclipped={shim_unclipped} clipped={shim_clipped}");
+    if shim_unclipped != 0.0 || shim_clipped != 0.0 {
+        fail("Ghostty-style child is not at y = 0 in the zoom view");
+    }
+    println!("native_smoke: shim_compat=true");
+    shim.removeFromSuperview();
+
     let mut web = WebPanel::new(&child).unwrap_or_else(|e| fail(&e.to_string()));
     web.set_logical_size(placement.logical_size);
+    let web_frame = web.web_view().frame();
+    if web_frame != NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 300.0)) {
+        fail(&format!("web view frame {}", fmt_rect(web_frame)));
+    }
 
-    // The content point at inner_origin must sit at the container's top-left corner.
-    let inner = NSPoint::new(placement.inner_origin.x, placement.inner_origin.y);
-    let in_window = web.web_view().convertPoint_toView(inner, None);
+    // Logical point inner_origin (top-left based) must sit at the clip view's top-left corner.
+    let inner = NSPoint::new(
+        placement.inner_origin.x,
+        logical_h - placement.inner_origin.y,
+    );
+    let in_window = zoom.convertPoint_toView(inner, None);
     let corner = NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height);
     println!(
-        "native_smoke: inner_origin maps to window=({},{}) container top-left=({},{})",
+        "native_smoke: inner_origin maps to window=({},{}) clip top-left=({},{})",
         in_window.x, in_window.y, corner.x, corner.y
     );
     if (in_window.x - corner.x).abs() > 1e-6 || (in_window.y - corner.y).abs() > 1e-6 {
-        fail("inner_origin is not at the container's top-left corner");
+        fail("inner_origin is not at the clip view's top-left corner");
     }
 
     let messages: Rc<RefCell<Vec<String>>> = Rc::default();

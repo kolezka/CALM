@@ -7,7 +7,7 @@
 pub mod child;
 pub mod webview;
 
-pub use child::{NativeChild, container_bounds, container_frame};
+pub use child::{NativeChild, clip_frame, zoom_bounds, zoom_frame};
 pub use webview::{DEFAULT_BROWSER_URL, WebPanel};
 
 use std::fmt;

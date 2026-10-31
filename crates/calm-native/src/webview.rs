@@ -5,12 +5,14 @@ use calm_core::geometry::Size;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest};
 use objc2_web_kit::{
     WKScriptMessage, WKScriptMessageHandler, WKUserContentController, WKUserScript,
     WKUserScriptInjectionTime, WKWebView, WKWebViewConfiguration,
 };
 
+use crate::child::{ns_rect, zoom_bounds};
 use crate::{NativeChild, NativeError};
 
 pub const DEFAULT_BROWSER_URL: &str = "https://ghostty.org";
@@ -84,6 +86,7 @@ pub struct WebPanel {
     web_view: Retained<WKWebView>,
     controller: Retained<WKUserContentController>,
     handler: Retained<MessageHandler>,
+    zoom_view: Retained<NSView>,
 }
 
 impl WebPanel {
@@ -104,20 +107,24 @@ impl WebPanel {
                 WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), frame, &config);
             (web_view, controller)
         };
-        // No autoresizing: the container frame shrinks when clipped, the page must not.
-        web_view.setAutoresizingMask(objc2_app_kit::NSAutoresizingMaskOptions::ViewNotSizable);
-        host.container().addSubview(&web_view);
+        // No autoresizing: the page keeps its logical size whatever the clip does.
+        web_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewNotSizable);
+        let zoom_view = host.zoom_view().clone();
+        zoom_view.addSubview(&web_view);
         Ok(WebPanel {
             web_view,
             controller,
             handler,
+            zoom_view,
         })
     }
 
-    /// Lays the page out at `(0, 0, size)` in content units. Only a panel resize changes it.
+    /// Lays the page out at `(0, 0, size)` in the zoom view and makes that the zoom view's
+    /// bounds. Only a panel resize changes it; the next `NativeChild::apply` sets the frame.
     pub fn set_logical_size(&mut self, size: Size) {
-        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(size.width, size.height));
-        self.web_view.setFrame(frame);
+        let rect = ns_rect(zoom_bounds(size));
+        self.zoom_view.setBounds(rect);
+        self.web_view.setFrame(rect);
     }
 
     /// Loads `url`. An unparsable URL is ignored and returns false.
