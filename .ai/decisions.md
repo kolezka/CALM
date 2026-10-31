@@ -15,6 +15,13 @@ one means a new entry, not an edit.
   installed. Cost: a malicious plugin has host access; mitigated by explicit install only.
 - **GitHub through `gh` on the host.** Plugin JS never sees a token. Cost: users must have
   `gh` logged in.
+- **Customization first (user, 2026-10-31).** Every user-visible feature exposes its look
+  and behavior (colors, icons, titles, sizes, fonts, keys, behaviors) as settings or
+  manifest fields with sensible defaults and strict validation. A hard-coded choice needs
+  its own entry here. Security rules still win over any setting. Reason: the user wants
+  CALM shaped to their own workflow, not to the author's taste. Cost: more settings to
+  validate, test and document, and more states to support. If it proves wrong, fold rarely
+  used settings back into fixed defaults.
 
 ## Architecture
 

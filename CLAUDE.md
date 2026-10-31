@@ -88,6 +88,7 @@ overrides the directory. Distant panels become previews refreshed every 2 s.
 - After structural changes run `repo-intel build` and check its exit code. The graphify graph
   (graphify only, backend litellm, scope in `.graphifyignore`) answers concept and
   architecture questions; `rg` answers literal and call-site questions. See `AGENTS.md`.
+- Customization first. Every user-visible feature exposes its look and behavior as settings or manifest fields (colors, icons, titles, sizes, fonts, keys, behaviors) with sensible defaults, validated strictly. A hard-coded choice needs a reason in `.ai/decisions.md`. Security rules above still apply.
 
 ## Process
 
