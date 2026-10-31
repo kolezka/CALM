@@ -20,11 +20,14 @@ use gpui::{
     Window, actions, canvas, div, fill, outline, point, px, rgb, size,
 };
 
+use calm_plugins::{BridgeRequest, InstalledPlugin};
+use futures::StreamExt as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::dev_menu::{ResetFps, ToggleFps};
+use crate::plugin_host::{self, BridgeSender, PluginPanel};
 use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalPanel};
 use crate::theme;
@@ -80,16 +83,25 @@ pub struct CanvasView {
     pub input: InputHandler,
     /// Window pixels of the canvas area below the toolbar. Set during prepaint.
     pub viewport: Rect,
-    /// (id, name) per discovered plugin. Task 11 fills it.
+    /// (id, name) per discovered plugin, for the Add menu.
     pub plugins: Vec<(String, String)>,
-    /// (id, default panel size) per discovered plugin. Task 11 fills it.
+    /// (id, default panel size) per discovered plugin.
     pub plugin_sizes: Vec<(String, Size)>,
+    /// Plugins found at startup. A new plugin needs an app restart to show up.
+    installed_plugins: Vec<InstalledPlugin>,
+    /// Plugin folders skipped at startup; stderr names each one.
+    pub plugin_errors: usize,
+    /// Live plugin pages by panel. Dropping an entry closes the page.
+    plugin_panels: Vec<(PanelId, PluginPanel)>,
+    bridge: BridgeSender,
+    /// Feeds bridge messages from plugin pages into `plugin_message`.
+    _bridge_task: Task<()>,
     /// Path of the last saved layout, shown in the status strip. Task 13 sets it.
     pub saved_flash: Option<String>,
     focused: Option<PanelId>,
     /// Live terminals by panel. Dropping an entry ends its process.
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
-    /// Back-to-front terminal order the native views were last stacked in.
+    /// Back-to-front order the native views (terminals and plugins) were last stacked in.
     native_order: Vec<PanelId>,
     focus_handle: FocusHandle,
     pub show_fps: bool,
@@ -105,12 +117,30 @@ pub struct CanvasView {
 
 impl CanvasView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let discovery = plugin_host::discover_installed();
+        let (plugins, plugin_sizes) = plugin_host::menu_entries(&discovery.plugins);
+        let (bridge, mut messages) = futures::channel::mpsc::unbounded::<(PanelId, String)>();
+        let bridge_task = cx.spawn(async move |this, cx| {
+            while let Some((id, text)) = messages.next().await {
+                if this
+                    .update(cx, |view, cx| view.plugin_message(id, &text, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         Self {
             scene: Scene::default(),
             input: InputHandler::default(),
             viewport: Rect::new(0.0, f64::from(TOOLBAR_HEIGHT), 0.0, 0.0),
-            plugins: Vec::new(),
-            plugin_sizes: Vec::new(),
+            plugins,
+            plugin_sizes,
+            installed_plugins: discovery.plugins,
+            plugin_errors: discovery.errors.len(),
+            plugin_panels: Vec::new(),
+            bridge,
+            _bridge_task: bridge_task,
             saved_flash: None,
             focused: None,
             terminals: Vec::new(),
@@ -196,6 +226,7 @@ impl CanvasView {
                         terminal.update(cx, |terminal, _| terminal.release_preview(window));
                     }
                     self.terminals.retain(|(panel, _)| *panel != id);
+                    self.plugin_panels.retain(|(panel, _)| *panel != id);
                     self.scene.remove(id);
                     if self.focused == Some(id) {
                         self.focused = None;
@@ -285,11 +316,98 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let PanelKind::Terminal { command, cwd } = kind {
-            let mut options = terminal::options(command.as_deref(), cwd.clone());
-            settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
-            if let Err(err) = self.spawn_terminal(id, options, window, cx) {
-                eprintln!("calm: terminal failed to start: {err}");
+        match kind {
+            PanelKind::Terminal { command, cwd } => {
+                let mut options = terminal::options(command.as_deref(), cwd.clone());
+                settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
+                if let Err(err) = self.spawn_terminal(id, options, window, cx) {
+                    eprintln!("calm: terminal failed to start: {err}");
+                }
+            }
+            PanelKind::Plugin { plugin_id, .. } => {
+                if let Err(err) = self.open_plugin_panel(id, plugin_id, window) {
+                    eprintln!("calm: plugin panel failed to open: {err}");
+                    if let Some(panel) = self.scene.get_mut(id) {
+                        panel.title = format!("{plugin_id}: failed to open");
+                    }
+                }
+            }
+            PanelKind::Browser { .. } => {}
+        }
+    }
+
+    /// Opens the web view for a plugin panel already in the scene. The chrome shows the
+    /// plugin's name, or that it is not built.
+    pub fn open_plugin_panel(
+        &mut self,
+        id: PanelId,
+        plugin_id: &str,
+        window: &mut Window,
+    ) -> Result<(), String> {
+        let plugin = self
+            .installed_plugins
+            .iter()
+            .find(|plugin| plugin.manifest.id == plugin_id)
+            .ok_or_else(|| format!("plugin {plugin_id} is not installed"))?;
+        let panel = PluginPanel::open(id, plugin, self.bridge.clone(), window)?;
+        let title = match panel.load_error() {
+            Some(_) => format!("{} (not built)", plugin.manifest.name),
+            None => plugin.manifest.name.clone(),
+        };
+        if let Some(scene_panel) = self.scene.get_mut(id) {
+            scene_panel.title = title;
+        }
+        self.plugin_panels.push((id, panel));
+        Ok(())
+    }
+
+    /// Installs plugins found outside the startup scan, e.g. the smoke's fixture.
+    pub fn install_plugins(&mut self, plugins: Vec<InstalledPlugin>) {
+        let (names, sizes) = plugin_host::menu_entries(&plugins);
+        self.plugins.extend(names);
+        self.plugin_sizes.extend(sizes);
+        self.installed_plugins.extend(plugins);
+    }
+
+    /// (loading, load error) per plugin panel, in creation order.
+    pub fn plugin_status(&self) -> Vec<(bool, Option<String>)> {
+        self.plugin_panels
+            .iter()
+            .map(|(_, panel)| (panel.is_loading(), panel.load_error().map(str::to_string)))
+            .collect()
+    }
+
+    /// One message a plugin page posted. Bad JSON has no id to answer, so it is logged.
+    fn plugin_message(&mut self, id: PanelId, text: &str, cx: &mut Context<Self>) {
+        let request = match BridgeRequest::from_json(text) {
+            Ok(request) => request,
+            Err(err) => {
+                eprintln!("calm: plugin panel {}: bad bridge message: {err}", id.0);
+                return;
+            }
+        };
+        let Some(panel) = self.scene.get_mut(id) else {
+            return;
+        };
+        let Some(response) = plugin_host::dispatch(panel, &request) else {
+            return;
+        };
+        if let Some((_, plugin)) = self.plugin_panels.iter_mut().find(|(p, _)| *p == id) {
+            plugin.reply(&response);
+        }
+        cx.notify();
+    }
+
+    /// Applies each plugin panel's mode for this frame. Called right after paint with the
+    /// modes and placements paint computed, so the chrome and the web view agree.
+    fn apply_plugin_modes(
+        &mut self,
+        modes: &[(PanelId, PanelMode, Option<NativePlacement>)],
+        window: &Window,
+    ) {
+        for (id, mode, placement) in modes {
+            if let Some((_, plugin)) = self.plugin_panels.iter_mut().find(|(p, _)| p == id) {
+                plugin.apply_mode(*mode, *placement, window);
             }
         }
     }
@@ -366,37 +484,48 @@ impl CanvasView {
         }));
     }
 
-    /// Terminal ids in scene order, back to front.
-    fn terminal_order(&self) -> Vec<PanelId> {
+    /// Ids of panels with a native view (terminals and plugins), back to front.
+    fn native_panel_order(&self) -> Vec<PanelId> {
         self.scene
             .panels
             .iter()
             .map(|panel| panel.id)
-            .filter(|id| self.terminals.iter().any(|(t, _)| t == id))
+            .filter(|id| {
+                self.terminals.iter().any(|(t, _)| t == id)
+                    || self.plugin_panels.iter().any(|(p, _)| p == id)
+            })
             .collect()
     }
 
     /// Native views stack in creation order, so restack them when the scene order changes.
+    /// Terminals and plugins share one stack, so both restack together.
     fn sync_native_order(&mut self, cx: &mut Context<Self>) {
-        let order = self.terminal_order();
+        let order = self.native_panel_order();
         if order == self.native_order {
             return;
         }
         for id in &order {
             if let Some(terminal) = self.terminal(*id) {
                 terminal.update(cx, |terminal, _| terminal.bring_to_front());
+            } else if let Some((_, plugin)) = self.plugin_panels.iter_mut().find(|(p, _)| p == id) {
+                plugin.bring_to_front();
             }
         }
         self.native_order = order;
     }
 
-    /// (scene order, native stacking order) of terminal ids, both back to front.
-    pub fn terminal_zorder(&self, cx: &App) -> (Vec<u64>, Vec<u64>) {
-        let scene = self.terminal_order().iter().map(|id| id.0).collect();
+    /// (scene order, native stacking order) of all native panel ids, both back to front.
+    pub fn native_zorder(&self, cx: &App) -> (Vec<u64>, Vec<u64>) {
+        let scene = self.native_panel_order().iter().map(|id| id.0).collect();
         let mut native: Vec<(Option<usize>, u64)> = self
             .terminals
             .iter()
             .map(|(id, terminal)| (terminal.read(cx).stack_index(), id.0))
+            .chain(
+                self.plugin_panels
+                    .iter()
+                    .map(|(id, plugin)| (plugin.stack_index(), id.0)),
+            )
             .collect();
         native.sort();
         (scene, native.into_iter().map(|(_, id)| id).collect())
@@ -544,6 +673,8 @@ struct PaintSnapshot {
     focused: Option<PanelId>,
     confirming: Option<PanelId>,
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
+    /// Panels with a plugin web view.
+    plugin_ids: Vec<PanelId>,
     /// Close confirmation or context menu up: native views must not cover it.
     modal_open: bool,
     /// Terminals that got an input div in this render.
@@ -551,7 +682,8 @@ struct PaintSnapshot {
     settings: calm_core::settings::Settings,
 }
 
-/// How a terminal panel's content is drawn this paint.
+/// How a terminal or plugin panel's content is drawn this paint. A plugin in Preview has
+/// no snapshot, so it shows the flat rect with the title.
 enum TerminalContent {
     /// The native view covers the content rect.
     Live,
@@ -601,6 +733,7 @@ impl PaintSnapshot {
         let mut previewing = false;
         let mut modes_changed = false;
         let mut preview_targets = 0;
+        let mut plugin_modes = Vec::new();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             let background = self.settings.background.rgb();
             window.paint_quad(fill(bounds, rgb(background)));
@@ -614,8 +747,17 @@ impl PaintSnapshot {
                 f64::from(f32::from(bounds.size.width)),
                 f64::from(f32::from(bounds.size.height)),
             );
-            let (contents, changed) = self.apply_terminal_modes(viewport, window, cx);
+            let (mut contents, changed) = self.apply_terminal_modes(viewport, window, cx);
             modes_changed = changed;
+            plugin_modes = self.plugin_modes(viewport);
+            for (id, mode, _) in &plugin_modes {
+                let content = match mode {
+                    PanelMode::Live => TerminalContent::Live,
+                    PanelMode::Preview => TerminalContent::Preview(PreviewImage::None),
+                    PanelMode::Hidden => continue,
+                };
+                contents.insert(*id, content);
+            }
             preview_targets = self
                 .input_targets
                 .iter()
@@ -649,6 +791,7 @@ impl PaintSnapshot {
         });
 
         this.update(cx, |view, cx| {
+            view.apply_plugin_modes(&plugin_modes, window);
             view.sync_native_order(cx);
             view.sync_preview_timer(previewing, cx);
             view.preview_input_targets += preview_targets;
@@ -673,6 +816,22 @@ impl PaintSnapshot {
                     .ok();
             }
         });
+    }
+
+    /// Mode and placement per plugin panel, by the same rules as terminals.
+    fn plugin_modes(&self, viewport: Rect) -> Vec<(PanelId, PanelMode, Option<NativePlacement>)> {
+        self.plugin_ids
+            .iter()
+            .filter_map(|id| self.scene.get(*id))
+            .map(|panel| {
+                let mode = terminal_mode(panel, &self.scene, viewport, self.modal_open);
+                (
+                    panel.id,
+                    mode,
+                    terminal_placement(panel, &self.scene, viewport),
+                )
+            })
+            .collect()
     }
 
     /// Decides each terminal's mode, applies it, and returns what to draw in its content
@@ -900,6 +1059,7 @@ impl Render for CanvasView {
             focused: self.focused,
             confirming: self.input.confirming,
             terminals: self.terminals.clone(),
+            plugin_ids: self.plugin_panels.iter().map(|(id, _)| *id).collect(),
             modal_open: self.input.confirming.is_some() || self.menu_open,
             input_targets: Vec::new(),
             settings: self.settings.settings,

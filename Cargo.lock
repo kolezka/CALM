@@ -705,9 +705,12 @@ version = "0.1.0"
 dependencies = [
  "calm-core",
  "calm-native",
+ "calm-plugins",
+ "futures",
  "gpui-libghostty",
  "gpui-pre",
  "gpui-pre-platform",
+ "serde_json",
  "tempfile",
 ]
 

@@ -1,4 +1,4 @@
-//! Status strip above the canvas viewport: save flash, zoom and the FPS readout.
+//! Status strip above the canvas viewport: save flash, plugin errors, zoom and FPS.
 //! Panels are added from the right-click menu, so the strip has no buttons.
 
 use gpui::{IntoElement, ParentElement, Styled, div, px, rgb};
@@ -24,6 +24,14 @@ pub fn toolbar(view: &CanvasView) -> impl IntoElement {
     // Task 13 sets the flash after a layout save.
     if let Some(path) = &view.saved_flash {
         bar = bar.child(format!("Saved {path}"));
+    }
+    if view.plugin_errors > 0 {
+        // stderr names each skipped plugin folder and why.
+        bar = bar.child(
+            div()
+                .text_color(rgb(theme::ERROR_TEXT))
+                .child(format!("plugins: {} errors", view.plugin_errors)),
+        );
     }
     bar = bar
         .child(div().flex_1())

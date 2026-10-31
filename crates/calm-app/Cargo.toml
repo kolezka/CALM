@@ -10,5 +10,8 @@ calm-core = { path = "../calm-core" }
 gpui.workspace = true
 gpui_platform.workspace = true
 calm-native = { path = "../calm-native" }
+calm-plugins = { path = "../calm-plugins" }
+futures = "=0.3.34"
+serde_json.workspace = true
 gpui-libghostty.workspace = true
 tempfile = "3"
