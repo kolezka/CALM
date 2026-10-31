@@ -13,7 +13,7 @@ use calm_native::{HostView, NativeChild, show_context_menu};
 use gpui::{
     App, BorderStyle, Bounds, ContentMask, Context, DispatchPhase, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, NoAction, ParentElement, Pixels, Render, ScrollDelta,
+    MouseMoveEvent, MouseUpEvent, NoAction, ParentElement, PinchEvent, Pixels, Render, ScrollDelta,
     ScrollWheelEvent, SharedString, Styled, TextAlign, TextRun, WeakEntity, Window, actions,
     canvas, div, fill, outline, point, px, rgb, size,
 };
@@ -396,6 +396,16 @@ impl CanvasView {
         cx.notify();
     }
 
+    fn pinch(&mut self, event: &PinchEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let screen = self.to_canvas(event.position);
+        let effects = self
+            .input
+            .pinch(screen, f64::from(event.delta), &mut self.scene);
+        if !effects.is_empty() {
+            self.apply_effects(effects, window, cx);
+        }
+    }
+
     fn key_zoom(&mut self, step: ZoomStep, window: &mut Window, cx: &mut Context<Self>) {
         let center = Point::new(
             self.viewport.size.width / 2.0,
@@ -687,6 +697,7 @@ impl Render for CanvasView {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::key_down))
             .on_key_up(cx.listener(Self::key_up))
+            .on_pinch(cx.listener(Self::pinch))
             .on_action(
                 cx.listener(|view, _: &ZoomIn, window, cx| view.key_zoom(ZoomStep::In, window, cx)),
             )
