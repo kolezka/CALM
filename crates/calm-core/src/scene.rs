@@ -150,6 +150,21 @@ impl Scene {
             .map(|panel| panel.id)
     }
 
+    /// Smallest world rect covering every panel as drawn (a minimized panel is its chip).
+    /// `None` when the scene is empty.
+    pub fn bounds(&self) -> Option<Rect> {
+        self.panels
+            .iter()
+            .map(|panel| {
+                if panel.minimized {
+                    chip_rect(panel)
+                } else {
+                    panel.rect
+                }
+            })
+            .reduce(|a, b| a.union(&b))
+    }
+
     fn index_of(&self, id: PanelId) -> Option<usize> {
         self.panels.iter().position(|panel| panel.id == id)
     }
@@ -299,5 +314,24 @@ mod tests {
             content_rect(panel),
             Rect::new(5.0, 6.0 + CHROME_HEIGHT, 120.0, 80.0 - CHROME_HEIGHT)
         );
+    }
+
+    #[test]
+    fn bounds_covers_panels_and_uses_chip_when_minimized() {
+        let mut scene = Scene::default();
+        assert_eq!(scene.bounds(), None);
+        scene.add(terminal(), Rect::new(-100.0, -50.0, 300.0, 200.0));
+        let wide = scene.add(terminal(), Rect::new(400.0, 300.0, 1000.0, 500.0));
+        assert_eq!(
+            scene.bounds(),
+            Some(Rect::new(-100.0, -50.0, 1500.0, 850.0))
+        );
+        scene
+            .panels
+            .iter_mut()
+            .find(|p| p.id == wide)
+            .unwrap()
+            .minimized = true;
+        assert_eq!(scene.bounds(), Some(Rect::new(-100.0, -50.0, 700.0, 378.0)));
     }
 }

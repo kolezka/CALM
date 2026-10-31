@@ -1,5 +1,6 @@
 //! The canvas: paints panels from the `calm-core` scene and feeds it input.
 
+use calm_core::camera::FIT_MARGIN;
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
@@ -36,6 +37,8 @@ actions!(
         ZoomIn,
         ZoomOut,
         ZoomReset,
+        CenterOnOrigin,
+        FitAll,
         DrawTerminal,
         DrawBrowser,
         Cancel,
@@ -64,6 +67,8 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("cmd-=", ZoomIn, ctx),
         KeyBinding::new("cmd--", ZoomOut, ctx),
         KeyBinding::new("cmd-0", ZoomReset, ctx),
+        KeyBinding::new("cmd-shift-h", CenterOnOrigin, ctx),
+        KeyBinding::new("cmd-shift-0", FitAll, ctx),
         KeyBinding::new("t", DrawTerminal, ctx),
         KeyBinding::new("b", DrawBrowser, ctx),
         KeyBinding::new("escape", Cancel, ctx),
@@ -291,7 +296,7 @@ impl CanvasView {
                 };
                 self.scene
                     .camera
-                    .fit_rect(rect, self.viewport.size, ZOOM_TO_FIT_MARGIN);
+                    .fit(Some(rect), self.viewport.size, ZOOM_TO_FIT_MARGIN);
                 vec![Effect::Redraw]
             }
             (Some(MenuCommand::Duplicate), MenuTarget::Panel(id)) => {
@@ -526,6 +531,19 @@ impl CanvasView {
             self.viewport.size.height / 2.0,
         );
         self.input.key_zoom(step, center, &mut self.scene);
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Jumps the camera: `CenterOnOrigin` keeps the zoom, `FitAll` frames every panel.
+    fn frame_view(&mut self, fit_all: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let viewport = self.viewport.size;
+        if fit_all {
+            let bounds = self.scene.bounds();
+            self.scene.camera.fit(bounds, viewport, FIT_MARGIN);
+        } else {
+            self.scene.camera.center_on(Point::new(0.0, 0.0), viewport);
+        }
         window.refresh();
         cx.notify();
     }
@@ -1000,6 +1018,12 @@ impl Render for CanvasView {
             .on_action(cx.listener(|view, _: &ZoomReset, window, cx| {
                 view.key_zoom(ZoomStep::Reset, window, cx)
             }))
+            .on_action(cx.listener(|view, _: &CenterOnOrigin, window, cx| {
+                view.frame_view(false, window, cx)
+            }))
+            .on_action(
+                cx.listener(|view, _: &FitAll, window, cx| view.frame_view(true, window, cx)),
+            )
             .on_action(cx.listener(|view, _: &DrawTerminal, window, cx| {
                 view.set_tool(Tool::DrawTerminal, window, cx)
             }))
