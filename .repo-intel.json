@@ -1,0 +1,7 @@
+{
+  "tools": "graphify",
+  "llm": {
+    "backend": "litellm",
+    "model": "deepseek/deepseek-flash"
+  }
+}
