@@ -189,11 +189,14 @@ Proved: on Claude Code 2.1.316, a mod can reach a permission-restricted Unix soc
 token and read a 0600 file. Not proved: behavior in an interactive session, on other versions,
 or under org policies that restrict `http.fetch`.
 
-## Open questions for the user
+## Decisions (2026-10-31)
 
-1. First version: status dots on terminal panels (idea 1), or go straight to the subagent board (idea 2, which waits on the plugin host)?
-2. May the external channel ever create a terminal that runs a given command (behind a Settings switch), or only empty terminals at a cwd?
-3. Where should the `calm-bridge` mod live: in this repo with a `marketplace.json` (installable with `/plugin install`), or privately under `~/.claude`?
+The user accepted the recommendations:
+
+1. First version: agent status on terminal panels (idea 1). The subagent board follows once the plugin host is merged.
+2. External callers get the allowlist from the Security section. The default is read-only methods plus `panel.setStatus` and `events.*`. Running something in a terminal (`command`, `terminals.write`, `process.exec`) is one unit, refused by default and only enabled together through a Settings switch.
+3. The `calm-bridge` mod lives in this repo with a `marketplace.json`, so its version moves with CALM.
+4. The external socket channel is approved to build as phase 11 of the plugin API v2 design, after the plugin host and browser panels are merged.
 
 ## Sources
 
