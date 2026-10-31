@@ -3,8 +3,10 @@
 // CALM changes: Ghostty parents to a calm-native container; placement comes from the canvas.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use calm_core::geometry::Point;
+use calm_core::preview::{PanelMode, PreviewImage, refresh_due};
 use calm_core::viewport::{NativePlacement, unzoom_mouse_position};
 use calm_native::NativeChild;
 use gpui::{
@@ -30,6 +32,15 @@ pub struct TerminalPanel {
     tick_task: Option<Task<()>>,
     visible: bool,
     window_focused: bool,
+    mode: PanelMode,
+    /// Last snapshot, drawn by the canvas while in `Preview`.
+    preview: PreviewImage<Arc<RenderImage>>,
+    /// When the last snapshot was attempted, successful or not. Survives mode changes,
+    /// so readbacks stay at most one per refresh period.
+    snapshot_at: Option<Instant>,
+    /// Snapshot attempts so far, for smoke.
+    snapshot_count: u64,
+    snapshot_error_logged: bool,
     _subscriptions: Vec<Subscription>,
     host: NativeChild,
 }
@@ -76,6 +87,11 @@ impl TerminalPanel {
                 tick_task: None,
                 visible: true,
                 window_focused: false,
+                mode: PanelMode::Live,
+                preview: PreviewImage::None,
+                snapshot_at: None,
+                snapshot_count: 0,
+                snapshot_error_logged: false,
                 _subscriptions: subscriptions,
                 host,
             };
@@ -93,18 +109,84 @@ impl TerminalPanel {
         self.surface.frame_count()
     }
 
-    /// Keeps the renderer running while hidden, so a snapshot stays current.
-    #[allow(dead_code)] // Preview mode (Task 9).
-    pub fn set_hidden_rendering(&mut self, rendered: bool) {
-        self.surface.set_hidden_rendering(rendered);
+    pub fn mode(&self) -> PanelMode {
+        self.mode
     }
 
-    /// Synchronous GPU readback of the last frame, at the surface's display scale.
-    #[allow(dead_code)] // Preview mode (Task 9).
-    pub fn snapshot(&mut self) -> Result<Arc<RenderImage>, String> {
-        Ok(Arc::new(RenderImage::new([self
-            .surface
-            .snapshot_frame()?])))
+    /// The image to draw while in `Preview`. `PreviewImage::None` means draw a flat rect.
+    pub fn preview(&self) -> PreviewImage<Arc<RenderImage>> {
+        self.preview.clone()
+    }
+
+    pub fn snapshot_count(&self) -> u64 {
+        self.snapshot_count
+    }
+
+    /// Applies this paint's mode. `placement` is only used in `Live`.
+    /// The process keeps running in every mode.
+    pub fn apply_mode(
+        &mut self,
+        mode: PanelMode,
+        placement: Option<NativePlacement>,
+        window: &mut Window,
+    ) {
+        let entering = mode != self.mode;
+        self.mode = mode;
+        match mode {
+            PanelMode::Live => {
+                if entering {
+                    self.surface.set_hidden_rendering(false);
+                }
+                self.set_placement(placement, window);
+            }
+            PanelMode::Preview => {
+                if entering {
+                    // Keep rendering once hidden, so later snapshots are current.
+                    self.surface.set_hidden_rendering(true);
+                }
+                // Not forced on entry: flipping modes must not beat the refresh limit.
+                // Until the next one is due, the last image (at most one period old) shows.
+                if refresh_due(self.snapshot_at, Instant::now()) {
+                    // Taken before hiding, so entering shows the last live frame.
+                    self.take_snapshot(window);
+                }
+                self.set_placement(None, window);
+            }
+            PanelMode::Hidden => {
+                if entering {
+                    self.surface.set_hidden_rendering(false);
+                }
+                self.set_placement(None, window);
+            }
+        }
+    }
+
+    fn take_snapshot(&mut self, window: &mut Window) {
+        self.snapshot_at = Some(Instant::now());
+        self.snapshot_count += 1;
+        match self.surface.snapshot_frame() {
+            Ok(frame) => {
+                let image = Arc::new(RenderImage::new([frame]));
+                if let Some(old) = self.preview.refreshed(image) {
+                    window.drop_image(old).ok();
+                }
+            }
+            Err(err) => {
+                // Not fatal: the canvas keeps the last image marked stale, or a flat rect.
+                self.preview.refresh_failed();
+                if !self.snapshot_error_logged {
+                    eprintln!("calm: terminal snapshot failed: {err}");
+                    self.snapshot_error_logged = true;
+                }
+            }
+        }
+    }
+
+    /// Drops the snapshot and frees its texture in the window's atlas.
+    pub fn release_preview(&mut self, window: &mut Window) {
+        if let Some(image) = self.preview.take() {
+            window.drop_image(image).ok();
+        }
     }
 
     pub fn focus<T>(&mut self, window: &mut Window, cx: &mut Context<T>) {
@@ -113,7 +195,7 @@ impl TerminalPanel {
     }
 
     /// Where the canvas put the terminal this frame, in window points. `None` hides it.
-    pub fn set_placement(&mut self, placement: Option<NativePlacement>, window: &Window) {
+    fn set_placement(&mut self, placement: Option<NativePlacement>, window: &Window) {
         self.placement = placement;
         let Some(placement) = placement else {
             self.set_visible(false);

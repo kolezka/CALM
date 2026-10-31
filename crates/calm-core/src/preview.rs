@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use crate::geometry::Rect;
 
 /// Below this zoom a panel shows a snapshot instead of its live native view.
@@ -29,10 +31,109 @@ pub fn decide_mode(
     }
 }
 
+/// True when a preview snapshot should be taken: none yet, or the last one is
+/// at least `PREVIEW_REFRESH_SECS` old.
+pub fn refresh_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|at| {
+        now.saturating_duration_since(at) >= Duration::from_secs(PREVIEW_REFRESH_SECS)
+    })
+}
+
+/// The snapshot a preview draws. A failed refresh keeps the last good image as `Stale`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PreviewImage<T> {
+    /// No snapshot ever succeeded: draw a flat rect with the title.
+    None,
+    Fresh(T),
+    Stale(T),
+}
+
+impl<T> PreviewImage<T> {
+    /// A refresh succeeded. Returns the replaced image so the caller can free it.
+    pub fn refreshed(&mut self, image: T) -> Option<T> {
+        std::mem::replace(self, PreviewImage::Fresh(image)).into_image()
+    }
+
+    /// A refresh failed: keep the image, if any, and mark it stale.
+    pub fn refresh_failed(&mut self) {
+        *self = match std::mem::replace(self, PreviewImage::None) {
+            PreviewImage::Fresh(image) | PreviewImage::Stale(image) => PreviewImage::Stale(image),
+            PreviewImage::None => PreviewImage::None,
+        };
+    }
+
+    /// Drops the image, returning it so the caller can free it.
+    pub fn take(&mut self) -> Option<T> {
+        std::mem::replace(self, PreviewImage::None).into_image()
+    }
+
+    pub fn image(&self) -> Option<&T> {
+        match self {
+            PreviewImage::None => None,
+            PreviewImage::Fresh(image) | PreviewImage::Stale(image) => Some(image),
+        }
+    }
+
+    pub fn is_stale(&self) -> bool {
+        matches!(self, PreviewImage::Stale(_))
+    }
+
+    fn into_image(self) -> Option<T> {
+        match self {
+            PreviewImage::None => None,
+            PreviewImage::Fresh(image) | PreviewImage::Stale(image) => Some(image),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::geometry::Rect;
+
+    #[test]
+    fn first_snapshot_is_due() {
+        assert!(refresh_due(None, Instant::now()));
+    }
+
+    #[test]
+    fn refresh_not_due_before_2s() {
+        let last = Instant::now();
+        assert!(!refresh_due(Some(last), last));
+        assert!(!refresh_due(Some(last), last + Duration::from_millis(1900)));
+        assert!(!refresh_due(Some(last), last + Duration::from_millis(1999)));
+    }
+
+    #[test]
+    fn refresh_due_at_2s() {
+        let last = Instant::now();
+        assert!(refresh_due(Some(last), last + Duration::from_secs(2)));
+        assert!(refresh_due(Some(last), last + Duration::from_millis(2500)));
+    }
+
+    #[test]
+    fn failed_refresh_without_image_stays_none() {
+        let mut preview: PreviewImage<u32> = PreviewImage::None;
+        preview.refresh_failed();
+        assert_eq!(preview, PreviewImage::None);
+    }
+
+    #[test]
+    fn failed_refresh_marks_image_stale_and_success_clears_it() {
+        let mut preview = PreviewImage::None;
+        assert_eq!(preview.refreshed(1), None);
+        assert_eq!(preview, PreviewImage::Fresh(1));
+        preview.refresh_failed();
+        assert_eq!(preview, PreviewImage::Stale(1));
+        assert!(preview.is_stale());
+        assert_eq!(preview.image(), Some(&1));
+        preview.refresh_failed();
+        assert_eq!(preview, PreviewImage::Stale(1));
+        assert_eq!(preview.refreshed(2), Some(1));
+        assert_eq!(preview, PreviewImage::Fresh(2));
+        assert_eq!(preview.take(), Some(2));
+        assert_eq!(preview, PreviewImage::None);
+    }
 
     const VIEWPORT: Rect = Rect::new(0.0, 36.0, 1280.0, 764.0);
     const ON_SCREEN: Rect = Rect::new(100.0, 100.0, 400.0, 300.0);
