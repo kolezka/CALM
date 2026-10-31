@@ -5,6 +5,7 @@ mod dev_menu;
 mod grid_paint;
 mod icon_image;
 mod plugin_host;
+mod plugin_services;
 mod settings_menu;
 mod terminal;
 mod terminal_profiles;
@@ -246,6 +247,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             }
         }
 
+        cx.update(|_| smoke_app_icon());
         smoke_plugins(&view, window, cx).await;
         smoke_tui(&view, window, cx).await;
 
@@ -441,6 +443,8 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_resize(&view, window, cx).await;
         smoke_blur(&view, window, cx);
         smoke_settings_dispatch(&view, window, cx).await;
+        smoke_github_api(&view, window, cx).await;
+        smoke_plugin_menus(&view, window, cx).await;
 
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
@@ -1118,6 +1122,170 @@ async fn smoke_plugins(
     }
 }
 
+/// A fixture plugin with one canvas and one panel item. Its page registers the command
+/// handler late, so a command that arrives first must wait in the prelude.
+const SMOKE_MENUS_HTML: &str = r#"<!doctype html><body>menus<script>
+setTimeout(function () {
+  calm.events.on("command", function (c) {
+    calm.panel.setTitle("cmd:" + c.id + ":" + c.location + ":" +
+      (c.panel ? c.panel.id : "none") + ":" + (c.world ? "world" : "noworld"));
+  });
+}, 300);
+</script></body>"#;
+const SMOKE_MENUS_CONTRIBUTES: &str = r#","contributes":{"menus":[
+  {"id":"ping","title":"Smoke ping","location":"canvas"},
+  {"id":"pong","title":"Smoke pong","location":"panel","when":{"plugin":["smoke-menus"]}}
+]}"#;
+
+fn menu_ids(items: Vec<calm_core::menu::MenuItem>) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut stack = items;
+    while let Some(item) = stack.pop() {
+        match item {
+            calm_core::menu::MenuItem::Submenu { items, .. } => stack.extend(items),
+            calm_core::menu::MenuItem::Action { id, .. } => ids.push(id),
+            _ => {}
+        }
+    }
+    ids
+}
+
+/// Waits until panel `id` has `title`, which the fixture page sets from its command handler.
+async fn wait_for_title(
+    view: &Entity<CanvasView>,
+    id: calm_core::scene::PanelId,
+    title: &str,
+    cx: &mut gpui::AsyncApp,
+) {
+    let started = Instant::now();
+    loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let now = cx.update(|cx| view.read(cx).scene.get(id).map(|panel| panel.title.clone()));
+        if now.as_deref() == Some(title) {
+            return;
+        }
+        if started.elapsed() > SMOKE_FRAME_TIMEOUT {
+            smoke_fail(&format!("plugin menus: want title {title:?}, got {now:?}"));
+        }
+    }
+}
+
+/// Plugin menu items: both fixture items are in the built menus, the panel item only for
+/// the plugin's own panels. The canvas item runs through the real menu choice path with no
+/// panel open, so CALM opens one at the click point and delivers after load; the panel
+/// item then reuses that panel.
+async fn smoke_plugin_menus(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::plugin_menu::item_menu_id;
+    let fixtures = match tempfile::Builder::new()
+        .prefix("calm-smoke-menus-")
+        .tempdir()
+    {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("plugin menus temp dir: {err}")),
+    };
+    let id = "smoke-menus";
+    if let Err(err) = write_smoke_plugin(
+        fixtures.path(),
+        id,
+        SMOKE_MENUS_HTML,
+        SMOKE_MENUS_CONTRIBUTES,
+    ) {
+        smoke_fail(&format!("plugin fixture {id}: {err}"));
+    }
+    let discovery = calm_plugins::discover(&[fixtures.path().to_path_buf()]);
+    if discovery.plugins.len() != 1 || !discovery.errors.is_empty() {
+        smoke_fail(&format!(
+            "plugin menus fixture not discovered: {:?}",
+            discovery.errors
+        ));
+    }
+    let ping = item_menu_id(id, "ping");
+    let pong = item_menu_id(id, "pong");
+    let invoked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.install_plugins(discovery.plugins);
+            // Near the top-left corner, so the new page is on screen and live.
+            let world = view.scene.camera.screen_to_world(Point::new(40.0, 40.0));
+            let canvas = menu_ids(view.canvas_menu());
+            if !canvas.contains(&ping) || canvas.contains(&pong) {
+                return Err(format!("canvas menu: {canvas:?}"));
+            }
+            let other = view.scene.panels.first().map(|panel| panel.id);
+            let other_ids = other
+                .and_then(|panel| view.panel_menu(panel))
+                .unwrap_or_default();
+            if menu_ids(other_ids).contains(&pong) {
+                return Err("pong shown on a panel of another kind".to_string());
+            }
+            let before = view.scene.panels.len();
+            view.apply_menu_choice(&ping, canvas_view::MenuTarget::Canvas { world }, window, cx);
+            let opened: Vec<_> = view
+                .scene
+                .panels
+                .iter()
+                .filter(|panel| calm_core::plugin_menu::plugin_of(&panel.kind) == Some(id))
+                .map(|panel| (panel.id, panel.rect.origin))
+                .collect();
+            match opened[..] {
+                [(panel, origin)] if view.scene.panels.len() == before + 1 => {
+                    Ok((panel, origin, world))
+                }
+                _ => Err(format!("canvas item opened {opened:?}")),
+            }
+        })
+    });
+    let (panel, origin, world) = match invoked {
+        Ok(Ok(found)) => found,
+        Ok(Err(err)) => smoke_fail(&format!("plugin menus: {err}")),
+        Err(err) => smoke_fail(&format!("plugin menus: {err:#}")),
+    };
+    if (origin.x - world.x).abs() > 8.0 || (origin.y - world.y).abs() > 8.0 {
+        smoke_fail(&format!(
+            "plugin menus: panel at {origin:?}, clicked {world:?}"
+        ));
+    }
+    wait_for_title(view, panel, "cmd:ping:canvas:none:world", cx).await;
+
+    let invoked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let items = menu_ids(view.panel_menu(panel).unwrap_or_default());
+            // The canvas menu held ping (checked above); the panel menu must hold pong.
+            let count = 1 + usize::from(items.contains(&pong));
+            if !items.contains(&pong) {
+                return Err(format!("panel menu: {items:?}"));
+            }
+            let before = view.scene.panels.len();
+            view.apply_menu_choice(&pong, canvas_view::MenuTarget::Panel(panel), window, cx);
+            if view.scene.panels.len() != before {
+                return Err("panel item opened a panel instead of reusing it".to_string());
+            }
+            Ok(count)
+        })
+    });
+    let items = match invoked {
+        Ok(Ok(count)) => count,
+        Ok(Err(err)) => smoke_fail(&format!("plugin menus: {err}")),
+        Err(err) => smoke_fail(&format!("plugin menus: {err:#}")),
+    };
+    wait_for_title(
+        view,
+        panel,
+        &format!("cmd:pong:panel:{}:noworld", panel.0),
+        cx,
+    )
+    .await;
+    println!("smoke: plugin menus items={items} invoked=ok");
+    if let Err(err) = fixtures.close() {
+        eprintln!("smoke: could not remove the plugin menus temp dir: {err}");
+    }
+}
+
 fn set_zoom(view: &Entity<CanvasView>, zoom: f64, cx: &mut App) {
     view.update(cx, |view, cx| {
         view.scene.camera.zoom = zoom;
@@ -1193,6 +1361,128 @@ fn smoke_grid_kind() -> GridKind {
         .into_iter()
         .find(|kind| kind.label().eq_ignore_ascii_case(&wanted))
         .unwrap_or_else(|| smoke_fail(&format!("CALM_SMOKE_GRID={wanted:?} is not a grid style")))
+}
+
+/// Calls `github.api` twice and storage once from a fixture page. `gh` is a fake script in
+/// a temp dir, so the smoke never reaches the network or the user's token. The PR list
+/// answers; any other path fails the way a logged-out `gh` does.
+const SMOKE_GH_SCRIPT: &str = r#"#!/bin/sh
+if [ "$1" = api ] && [ "$2" = "repos/smoke/calm/pulls?state=open&per_page=30" ]; then
+  echo '[{"number":1,"title":"Smoke PR","draft":false}]'
+else
+  echo "To get started with GitHub CLI, please run:  gh auth login" >&2
+  exit 4
+fi
+"#;
+const SMOKE_GH_HTML: &str = r#"<!doctype html><body>gh<script>
+calm.github.api("repos/smoke/calm/pulls?state=open&per_page=30").then(function (pulls) {
+  return calm.storage.set("seen", pulls.length)
+    .then(function () { return calm.storage.get("seen"); })
+    .then(function (seen) {
+      return calm.github.api("user").then(
+        function () { return "auth=answered"; },
+        function (err) { return "auth=" + err.message.split(" (")[0]; }
+      ).then(function (auth) {
+        return calm.panel.setTitle("gh-ok " + pulls[0].title + " stored=" + seen + " " + auth);
+      });
+    });
+}).catch(function (err) { calm.panel.setTitle("gh-err " + err.message); });
+</script></body>"#;
+
+async fn smoke_github_api(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixtures = match tempfile::Builder::new().prefix("calm-smoke-gh-").tempdir() {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("github.api temp dir: {err}")),
+    };
+    let gh = fixtures.path().join("bin/gh");
+    let written = std::fs::create_dir_all(fixtures.path().join("bin"))
+        .and_then(|()| std::fs::write(&gh, SMOKE_GH_SCRIPT))
+        .and_then(|()| std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)))
+        .and_then(|()| {
+            write_smoke_plugin(
+                &fixtures.path().join("plugins"),
+                "smoke-gh",
+                SMOKE_GH_HTML,
+                "",
+            )
+        });
+    if let Err(err) = written {
+        smoke_fail(&format!("github.api fixture: {err}"));
+    }
+    // Plugins get their own dir: discovery reads every subdir, `bin` included.
+    let discovery = calm_plugins::discover(&[fixtures.path().join("plugins")]);
+    if discovery.plugins.len() != 1 || !discovery.errors.is_empty() {
+        smoke_fail(&format!(
+            "github.api fixture not discovered: {:?}",
+            discovery.errors
+        ));
+    }
+    let services = crate::plugin_services::Services {
+        gh: calm_plugins::GhClient::new(gh),
+        data_dir: fixtures.path().join("plugin-data"),
+        opener: fixtures.path().join("no-open"),
+    };
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.plugin_services = std::sync::Arc::new(services);
+            view.install_plugins(discovery.plugins);
+            let kind = PanelKind::Plugin {
+                plugin_id: "smoke-gh".to_string(),
+                plugin_version: None,
+                settings: serde_json::json!({}),
+            };
+            let id = view.scene.add(kind, Rect::new(20.0, 420.0, 300.0, 160.0));
+            view.open_plugin_panel(id, "smoke-gh", window)?;
+            cx.notify();
+            Ok::<_, String>(id)
+        })
+    });
+    let id = match opened {
+        Ok(Ok(id)) => id,
+        Ok(Err(err)) => smoke_fail(&format!("github.api panel: {err}")),
+        Err(err) => smoke_fail(&format!("github.api panel: {err:#}")),
+    };
+    let expected = "gh-ok Smoke PR stored=1 auth=gh is not logged in, run gh auth login";
+    let started = Instant::now();
+    let title = loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let title = cx.update(|cx| view.read(cx).scene.get(id).map(|p| p.title.clone()));
+        if title.as_deref().is_some_and(|t| t.starts_with("gh-")) {
+            break title.unwrap_or_default();
+        }
+        if started.elapsed() > SMOKE_FRAME_TIMEOUT {
+            smoke_fail(&format!(
+                "github.api did not answer within 10 s: title={title:?}"
+            ));
+        }
+    };
+    if title != expected {
+        smoke_fail(&format!(
+            "github.api: title={title:?}, expected {expected:?}"
+        ));
+    }
+    let stored = std::fs::read_to_string(fixtures.path().join("plugin-data/smoke-gh.json"))
+        .unwrap_or_else(|err| smoke_fail(&format!("github.api storage file: {err}")));
+    if stored != r#"{"seen":1}"# {
+        smoke_fail(&format!("github.api storage file holds {stored:?}"));
+    }
+    println!("smoke: github.api ok pulls=1 title=\"Smoke PR\" logged_out=reported storage=ok");
+    // Back to the real services; quit follows, but nothing should keep the fake.
+    cx.update(|cx| {
+        view.update(cx, |view, _| {
+            view.plugin_services = Default::default();
+        })
+    });
+    if let Err(err) = fixtures.close() {
+        eprintln!("smoke: could not remove the github.api temp dir: {err}");
+    }
 }
 
 /// Opens Settings the way a menu click or `cmd-,` does: `OpenSettings` dispatched on the
@@ -1324,6 +1614,28 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
     window.activate_window();
 }
 
+/// Brand icon for the Dock, cmd-tab, About and alerts when running without a bundle.
+/// A failure keeps the default icon and is logged, never fatal.
+fn install_app_icon() {
+    match calm_native::app_icon::install_app_icon() {
+        Ok(_) => {}
+        Err(err) => eprintln!("calm: app icon not set, using the default: {err}"),
+    }
+}
+
+/// The application icon must be the embedded brand image when running unbundled.
+fn smoke_app_icon() {
+    match calm_native::app_icon::app_icon_state() {
+        Ok((set, w, h)) => {
+            println!("smoke: app_icon set={set} size={w}x{h}");
+            if !set || w <= 0.0 || h <= 0.0 {
+                smoke_fail("app icon is not the brand image");
+            }
+        }
+        Err(err) => smoke_fail(&format!("app icon state: {err}")),
+    }
+}
+
 fn main() {
     let args = parse_args();
     gpui_platform::application().run(move |cx: &mut App| {
@@ -1331,6 +1643,7 @@ fn main() {
         cx.bind_keys(dev_menu::key_bindings());
         cx.bind_keys(settings_menu::key_bindings());
         dev_menu::install(cx);
+        install_app_icon();
         if args.smoke {
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {

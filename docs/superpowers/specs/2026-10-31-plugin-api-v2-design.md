@@ -1,13 +1,30 @@
 # CALM plugin API v2 design
 
-Status: design for review, with the user's decisions of 2026-10-31 folded in. Nothing
-here is implemented. Extends the plugin section of
+Status: approved by the user on 2026-10-31 and refreshed against `origin/main` at 7d700be
+(PR #17) the same day. Nothing in this API is implemented yet. Extends the plugin section of
 `2026-10-31-calm-design.md`, which stays binding where the two disagree.
+
+## Changes since first draft
+
+- 2026-10-31, first draft (PR #10): the design with the user's first decisions.
+- 2026-10-31, this refresh:
+  - The four sections marked as the lead's reading are confirmed. The user replied "the
+    rest suits me very well", then added the bun decision.
+  - Merged code folded in: settings schema v2 (#7), joined panels (#12), Settings opening
+    through `cx.defer` (#13), the resize policy (#16), built-in plugin dirs (#17) and grid
+    styles (#20).
+  - Open PRs folded in, marked pending merge: TUI app plugins (#18) and their look (#21).
+  - Layouts are no longer a non-goal. `calm.layouts` and `calm.session` come from the canvas
+    persistence plan as phase 16.
+  - Customization pass: `panels.setAppearance`, look fields for web plugin manifests, a
+    placement `gap`, `panel.setResizePolicy`, a status dot color and a per-page event
+    window.
+  - Phase order updated, resolved review points removed, open questions cut to three.
 
 ## Context
 
 The v1 contract (`crates/calm-plugins/src/bridge.rs`, `packages/calm-plugin-sdk/calm.d.ts`)
-declares 17 methods. The host in PR #5 (`crates/calm-app/src/plugin_host.rs`) serves four:
+declares 17 methods. The host on `origin/main` (`crates/calm-app/src/plugin_host.rs`) still serves four:
 `log`, `panel.setTitle`, `settings.get`, `settings.set`. The other 13 reject with
 `not implemented: <method>`.
 
@@ -45,20 +62,24 @@ has a host sender yet.
 ### Models the API reads and writes
 
 - `calm_core::scene`: `Scene { panels (back to front), camera }`, `Panel { id, kind, rect,
-  title, minimized }`, `PanelKind::{Terminal { command, cwd }, Browser { url }, Plugin {
-  plugin_id, settings }}`, `bring_to_front`, ids never reused.
+  title, minimized, resize }`, `PanelKind::{Terminal { command, cwd }, Browser { url },
+  Plugin { plugin_id, settings }}`, `bring_to_front`, `set_resize_policy`, ids never reused.
+  Pending merge (#18): `PanelKind::Tui { plugin_id }`, which stores only the id, so a layout
+  never holds a TUI app's command or env.
 - `calm_core::camera`: `offset`, `zoom` in `[0.1, 4.0]`, `center_on`, `fit` (PR #1).
 - `calm_core::interaction`: close goes through `InputHandler::request_close(id, alive)`,
   which sets `confirming` and returns `ConfirmClose`; Enter or a second request closes,
   Escape cancels. One panel can be confirming at a time.
-- `calm_core::settings::Settings`, schema version 2 from PR #7 (`feat/settings-modal`,
-  not merged yet): `background` (`calm_core::background::BackgroundSettings`: `kind` solid,
-  gradient or image; `solid` color; `gradient` linear or radial with 2 to 6 stops and an
-  angle; `image` with path, fit and filters), `grid`, `snap`, `panels` (`confirm_close`,
-  `terminal_user_config`, default terminal size, `preview_below_zoom`). `Settings::validate`
-  checks every range and names the field. Version 1 files migrate on read.
-  `feat/grid-styles` adds grid kinds on top. The API targets this schema, not the v1
-  preset enum, which survives only for migration.
+- `calm_core::settings::Settings`, schema version 2 (PR #7, merged): `background`
+  (`calm_core::background::BackgroundSettings`: `kind` solid, gradient or image; `solid`
+  color; `gradient` linear or radial with 2 to 6 stops and an angle; `image` with path, fit
+  and filters), `grid` (`show`, `spacing`, `color`, `opacity`, and from PR #20 `kind` lines,
+  dots, crosses or none, `mark_size` 1 to 4, `major_every` 0 or 2 to 32, `major_opacity`),
+  `snap`, `panels` (`confirm_close`, `terminal_user_config`, default terminal size,
+  `preview_below_zoom`) and `plugins` (`builtin`, PR #17). `Settings::validate` checks every
+  range and names the field. Version 1 files migrate on read. The struct is
+  `#[serde(default)]` without `deny_unknown_fields`, so serde alone drops unknown keys. The
+  API targets this schema, not the v1 preset enum, which survives only for migration.
 - `calm_core::menu`: Add submenu, panel actions (PR #2 adds zoom to fit, bring to front,
   send to back, duplicate, delete).
 - Browser panels (PR #6, `calm-native/src/browser.rs`): `BrowserView::open`, `url()`,
@@ -67,6 +88,27 @@ has a host sender yet.
   `GHOSTTY_ACTION_SET_TITLE` and `GHOSTTY_ACTION_PWD`, but the gpui-libghostty 0.3.1 shim
   (`shim/ghostty_surface.m`, `runtime_action`) handles only `RENDER` and drops the rest.
   Terminal title and cwd are not observable today.
+- `calm_core::resize` (PR #16): `ResizePolicy { resizable, min, max }` from
+  `ResizePolicy::derive(kind, plugin)`. Terminals and browsers resize freely; a plugin's
+  manifest `resizable`, `minSize` and `maxSize` lock it or set limits, validated in
+  `calm-plugins`, which now depends on `calm-core`. `ResizePolicy::clamp` holds a size within
+  the limits; drags and the hover cursor read the policy.
+- `calm_core::join` (PR #12): `JoinLayout::compute(panels)` finds panels whose facing edges
+  are 0 to 2 units apart with overlapping spans, as `Join { first, second, axis, gap,
+  divider }`. Joins are derived from rects, never stored.
+- `calm_plugins::manifest` (PR #17): `PluginSearch { user, builtin }`, user dirs first.
+  `Discovery { plugins, errors, shadowed, builtin_count }`: a user plugin with a built-in's
+  id hides the built-in (`Shadowed { id, kept, hidden }`). Built-ins are off with the
+  `plugins.builtin` setting or `CALM_NO_BUILTIN_PLUGINS`. Discovery runs once at launch.
+- Pending merge (#18 on `feat/tui-plugins`, #21 on `feat/tui-customize`): a `"kind": "tui"`
+  manifest runs one `command` with `args`, `cwd`, `env` and `shell` in a terminal panel;
+  `"web"` is the default kind. `restart` is `prompt` (default), `on-exit` or `never`. The
+  state is running, exited with a code, command not found (127), restarting or gave up. Exit
+  codes come from a status wrapper, not Ghostty. #21 adds `title` (with `{name}`), `icon` (1
+  to 4 characters, or a `.png` or `.svg` in the plugin folder), `accentColor`,
+  `titleBarColor`, `titleColor` and `terminalColors` (background, foreground and all 16
+  palette colors). `fontSize`, `fontFamily` and `padding` are rejected as planned for the
+  shim patch. A close confirmation always paints the theme's warning colors.
 
 ## Goals
 
@@ -81,6 +123,9 @@ has a host sender yet.
   add context menu items and key bindings, change the background, show a short notice.
 - Plugins react to changes through events that stay cheap during pan and zoom.
 - Plugins talk to each other and keep their own data.
+- Customization first: every look and behavior a plugin may want to change is settable
+  (titles, icons, colors, size limits, placement gaps, event rates, layouts), with defaults
+  and strict validation.
 - The manifest says what a plugin does, so the user can read it before installing.
 - v1 plugins keep working unchanged.
 
@@ -98,7 +143,6 @@ has a host sender yet.
   (see the terminal table); output events are text diffs.
 - Closing a live terminal without the user's confirmation.
 - Remote or marketplace install, plugin updates, hot reload of manifests.
-- Layout save and load (Task 13). The API leaves room for it but does not depend on it.
 
 ## Principles
 
@@ -120,7 +164,7 @@ has a host sender yet.
 
 ## Plugin panels are free-form UI surfaces
 
-*[lead's reading, confirm in review]*
+*Confirmed by the user on 2026-10-31.*
 
 A plugin panel is a full WKWebView with the normal web platform: DOM, CSS, `fetch`,
 canvas 2D, WebGL, Web Workers, `localStorage` and IndexedDB, media, and anything else
@@ -174,6 +218,9 @@ background page uses `calm.storage`.
 | `exports`      | Methods other plugins may call through `calm.plugins.call`. See plugin RPC.   |
 | `requires`     | Plugin ids with a semver range of their `version`. See plugin RPC.            |
 | `contributes`  | Commands, menu entries and key bindings. Requires `apiVersion` 2.             |
+| `kind`         | `"web"` (default) or `"tui"` (pending merge, #18). A TUI app has `command`, not `entry`, `main` or `contributes`. |
+| `resizable`, `minSize`, `maxSize` | Merged (#16). Lock a plugin panel or set its limits. Limits with `"resizable": false` are an error, and `defaultSize` must lie within them. |
+| `icon`, `accentColor`, `titleBarColor`, `titleColor` | Panel look. The fields and rules of TUI apps (#21), extended to web plugin panels. |
 
 **Background pages (decided: opt-in; now secondary to backends).** A plugin with
 `"background": true` gets one hidden
@@ -208,9 +255,9 @@ The table names what each word stands for:
 
 | Capability        | Methods                                                                     |
 | ----------------- | --------------------------------------------------------------------------- |
-| (no word needed)  | `log`, `app.info`, `plugins.list`, `plugins.serve`, `panel.*` on the plugin's own panel, `settings.*` (own panel), `storage.*`, `panels.list`, `panels.get`, `camera.get`, `app.getSettings`, `theme.get`, `bus.*`, `events.*`, `ui.notify`, `backend.*` |
+| (no word needed)  | `log`, `app.info`, `plugins.list`, `plugins.serve`, `panel.*` on the plugin's own panel (including `setResizePolicy` and `setAppearance`), `settings.*` (own panel), `storage.*`, `panels.list`, `panels.get`, `camera.get`, `app.getSettings`, `theme.get`, `bus.*`, `events.*`, `ui.notify`, `backend.*`, `layouts.list`, `session.saveNow` |
 | `panels.create`   | `panels.create`, `canvas.createPanel`                                       |
-| `panels.control`  | `panels.focus`, `move`, `resize`, `setRect`, `setTitle`, `minimize`, `restore`, `bringToFront`, `sendToBack` on other panels; `canvas.focusPanel` |
+| `panels.control`  | `panels.focus`, `move`, `resize`, `setRect`, `setTitle`, `setAppearance`, `minimize`, `restore`, `bringToFront`, `sendToBack`, `restart` on other panels; `canvas.focusPanel` |
 | `panels.close`    | `panels.close` on other panels                                              |
 | `camera.control`  | `camera.set`, `camera.centerOn`, `camera.fit`                               |
 | `terminal.read`   | `terminals.info`, `readScreen`, `readScrollback`, `readSelection`, `terminalOutput` and other terminal content events |
@@ -224,6 +271,7 @@ The table names what each word stands for:
 | `process.exec`    | `process.exec`                                                              |
 | `github`          | `github.api`                                                                |
 | `open.external`   | `openExternal`                                                              |
+| `layouts`         | `layouts.save`, `layouts.open`, `layouts.delete`                            |
 | `backend`         | implied by `main`: a bun process with the full Node and Bun API             |
 
 The browser table's "Capability" column below uses these words as labels, not checks.
@@ -240,7 +288,7 @@ export type PanelId = number;
 export interface Point { x: number; y: number }
 export interface Size { width: number; height: number }
 export interface Rect { x: number; y: number; width: number; height: number }
-export type PanelKind = "terminal" | "browser" | "plugin";
+export type PanelKind = "terminal" | "browser" | "plugin" | "tui";   // "tui" pending #18
 export type PanelMode = "live" | "preview" | "hidden";
 
 export interface PanelInfo {            // v1 fields first, unchanged
@@ -252,12 +300,36 @@ export interface PanelInfo {            // v1 fields first, unchanged
   z: number;                            // 0 is backmost
   mode: PanelMode;
   focused: boolean;
-  pluginId?: string;                    // kind "plugin"
+  pluginId?: string;                    // kind "plugin" or "tui"
   url?: string;                         // kind "browser", committed URL
   createdBy?: string;                   // plugin id, when a plugin created it
+  resize: ResizeInfo;                   // the panel's ResizePolicy (PR #16)
+  joined: JoinedNeighbor[];             // from JoinLayout, read-only (PR #12)
+  appearance: PanelAppearance;          // effective look: override, then manifest, then theme
+  tui?: TuiInfo;                        // kind "tui", pending merge (#18)
 }
 
 export type Side = "right" | "below" | "left" | "above";
+
+export interface ResizeInfo { resizable: boolean; minSize: Size; maxSize: Size | null }
+/** `side` is where the neighbor sits relative to this panel. */
+export interface JoinedNeighbor { id: PanelId; side: Side; gap: number }
+
+export interface TerminalColors { background: Rgb; foreground: Rgb; palette: Rgb[] }  // 16
+export interface PanelAppearance {
+  icon: string | null;                  // 1 to 4 characters, or a .png/.svg path
+  accentColor: Rgb | null;              // focus ring, join divider, text icon
+  titleBarColor: Rgb | null;
+  titleColor: Rgb | null;
+  terminalColors: TerminalColors | null;   // terminal and tui panels only
+}
+
+export interface TuiInfo {              // pending merge (#18)
+  state: "running" | "exited" | "notFound" | "restarting" | "gaveUp";
+  code: number | null;                  // last exit code, null if unknown
+  restart: "prompt" | "on-exit" | "never";
+  restartInMs?: number;                 // state "restarting"
+}
 
 /** Where a new panel goes. Give `rect`, or `near` (optionally with `side` and `size`), or
  *  neither. Both `rect` and `near` is `invalid_params`. */
@@ -266,6 +338,7 @@ export interface Placement {
   near?: PanelId;
   side?: Side;                          // default "right"
   size?: Size;                          // default: the kind's default size
+  gap?: number;                         // world units for `near`, default 16, 0 to 256
 }
 
 export type PanelSpec =
@@ -273,7 +346,10 @@ export type PanelSpec =
        env?: Record<string, string>; title?: string; focus?: boolean } & Placement)
   | ({ kind: "browser"; url: string; title?: string; focus?: boolean } & Placement)
   | ({ kind: "plugin"; pluginId: string; settings?: Record<string, unknown>;
-       title?: string; focus?: boolean } & Placement);
+       title?: string; focus?: boolean } & Placement)
+  | ({ kind: "tui"; pluginId: string; title?: string; focus?: boolean } & Placement);
+// Every variant also takes `appearance?: Partial<PanelAppearance>`. A TUI app's command,
+// args and env come from its manifest only.
 
 export interface CameraInfo {
   x: number; y: number;                 // world point at the viewport origin
@@ -293,7 +369,7 @@ export interface AppInfo {
 }
 
 // The settings.json v2 shape, exactly as serde writes it (snake_case keys). The SDK
-// mirrors calm_core::settings::Settings; grid fields follow whatever feat/grid-styles lands.
+// mirrors calm_core::settings::Settings on origin/main, grid styles (PR #20) included.
 export type Rgb = string;               // "#rrggbb"
 export interface GradientStop { color: Rgb; position: number }   // position 0..1
 export interface BackgroundSettings {
@@ -310,11 +386,15 @@ export interface BackgroundSettings {
 export interface AppSettings {
   version: number;                      // 2
   background: BackgroundSettings;
-  grid: Record<string, unknown> & { show: boolean };
+  grid: { show: boolean; spacing: number; color: Rgb; opacity: number;
+          kind: "lines" | "dots" | "crosses" | "none"; mark_size: number;
+          major_every: number; major_opacity: number };
   snap: { enabled: boolean; grid: number; edge_distance: number };
   panels: { confirm_close: boolean; terminal_user_config: boolean;
             default_terminal_width: number; default_terminal_height: number;
             preview_below_zoom: number };
+  plugins: { builtin: boolean };        // read at launch; bun_path arrives with phase 14
+  // session: { ... } arrives with the canvas persistence plan (phase 16)
 }
 export type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
 
@@ -360,9 +440,14 @@ Rules on top of `validate`:
 - `background.image.path` must be an absolute path to an existing regular file that the
   host can decode as an image. CALM reads it in place and does not copy it, as the Settings
   window does. A bad path rejects before anything is saved.
-- Unknown keys reject, so a typo does not silently do nothing. When `feat/grid-styles`
-  lands, its grid fields become writable because they are part of `Settings`, with no API
-  change.
+- Unknown keys reject, so a typo does not silently do nothing. `Settings` has no
+  `deny_unknown_fields`, so serde would drop them; the host checks every patch key against
+  the serialized current settings before it deserializes.
+- Grid styles (PR #20: `grid.kind`, `mark_size`, `major_every`, `major_opacity`) are part
+  of `Settings`, so they are writable with no API change, and `Settings::validate` already
+  checks their ranges. Confirmed on `origin/main`.
+- `plugins.builtin` is writable and takes effect at the next launch, because discovery runs
+  once. The docs say so.
 - Writes are coalesced: a plugin animating the background may call `setSettings` often,
   but the file is saved at most once per second, with a trailing save. Live apply is not
   delayed.
@@ -374,21 +459,28 @@ gradient or image background.
 ### `calm.panel` (the calling panel, v1, now served)
 
 `setTitle`, `getBounds`, `minimize`, `close` as in v1. Added: `info()` (`panel.info`,
-`PanelInfo` of itself), `setRect(rect)` (`panel.setRect`). `close` on itself never needs
-confirmation: a plugin page has no process the user can lose.
+`PanelInfo` of itself, so a plugin's own panels report their size limits in `resize`),
+`setRect(rect)` (`panel.setRect`, under the resize policy like every size change),
+`setResizePolicy({ resizable?, minSize?, maxSize? })` (`panel.setResizePolicy`, the manifest
+fields at run time with the manifest's validation, applied through
+`Scene::set_resize_policy`; the current size is clamped into the new limits) and
+`setAppearance(patch)` (`panel.setAppearance`). `close` on itself never needs confirmation:
+a plugin page has no process the user can lose.
 
 ### `calm.panels`
 
 | Method                    | Wire                  | Result and rules                                                    |
 | ------------------------- | --------------------- | ------------------------------------------------------------------- |
-| `create(spec)`            | `panels.create`       | `PanelId`. Placement rules below. Rect is clamped to `MIN_PANEL_SIZE`. |
+| `create(spec)`            | `panels.create`       | `PanelId`. Placement rules below. Size clamped by the new panel's resize policy. |
 | `list(filter?)`           | `panels.list`         | `PanelInfo[]` back to front. `filter`: `{ kind?, pluginId? }`.      |
 | `get(id)`                 | `panels.get`          | `PanelInfo`, or `not_found`.                                        |
 | `focus(id)`               | `panels.focus`        | Focuses and brings to front. Restores a minimized panel first.      |
 | `move(id, point)`         | `panels.move`         | Moves the rect origin. No snapping unless `{ snap: true }`.         |
-| `resize(id, size)`        | `panels.resize`       | Changes the logical size, so a terminal reflows. Never zoom.        |
-| `setRect(id, rect)`       | `panels.setRect`      | Move and resize in one step.                                        |
-| `setTitle(id, title)`     | `panels.setTitle`     | Chrome title.                                                       |
+| `resize(id, size)`        | `panels.resize`       | Changes the logical size, so a terminal reflows. Never zoom. Resize policy applies; resolves with the resulting `Rect`. |
+| `setRect(id, rect)`       | `panels.setRect`      | Move and resize in one step, same policy as `resize`.               |
+| `setTitle(id, title)`     | `panels.setTitle`     | Chrome title. `null` drops the override: a TUI app's `title` template, else the kind's title. |
+| `setAppearance(id, patch)` | `panels.setAppearance` | Per-panel look override, see Appearance.                         |
+| `restart(id)`             | `panels.restart`      | TUI panels only (pending #18): the panel menu's Restart. `busy` while running, `unavailable` with `restart: "never"`. |
 | `minimize(id)` / `restore(id)` | `panels.minimize` / `panels.restore` | Process keeps running.                         |
 | `bringToFront(id)` / `sendToBack(id)` | `panels.bringToFront` / `panels.sendToBack` | Scene order, then native restack. |
 | `close(id)`               | `panels.close`        | `"closed"` or `"cancelled"`. See the close rule.                    |
@@ -397,7 +489,7 @@ v1 `canvas.createPanel`, `canvas.focusPanel`, `canvas.listPanels` stay as aliase
 `panels.create`, `panels.focus`, `panels.list`. The v1 `PanelSpec` is a subset of v2.
 
 **Placement.** `rect` places the panel exactly. `near: id` places it beside panel `id`:
-`right` puts it at the target's right edge plus a 16 world unit gap, top edges aligned;
+`right` puts it at the target's right edge plus `gap` (default 16 world units), top edges aligned;
 `below` at the bottom edge plus the gap, left edges aligned; `left` and `above` mirror
 those. The size is `size`, or the kind's default (terminal default from
 `panels.default_terminal_width/height` in settings, browser 800x600, plugin from its
@@ -407,12 +499,33 @@ from the inputs, and a caller that wants a free spot reads `panels.list` first. 
 target is `not_found`. With neither `rect` nor `near`, the panel goes to the viewport
 center at its default size. The math is a pure function in calm-core,
 `placement::place_near(target: Rect, side, size, gap) -> Rect`, with a test per side.
-`near` works without `command`, so a caller can place a plain shell next to a panel.
+`near` works without `command`, so a caller can place a plain shell next to a panel. A
+`gap` of 1 (`JOIN_SNAP_GAP`) joins the new panel to its target, as edge snapping does.
 
 Terminal `env`: keys must match `[A-Z_][A-Z0-9_]*`, values have no NUL. The host merges them
 over its own environment. Docs tell authors not to pass tokens through `env`; the host never
 logs env values. `args` exists so a command with spaces needs no shell quoting; with `args`
 present, `command` is the program, not a shell line.
+
+**Resize policy.** Every size the API sets (`create`, `resize`, `setRect`, `panel.setRect`,
+a placement `size`) goes through the target's `ResizePolicy::clamp`, as a drag does, and
+the call resolves with the resulting rect so the caller sees any clamp. A locked panel
+(`resizable: false`) rejects a size change with `invalid_params` naming the panel; moving it
+still works. Only a plugin's own panels can change policy (`panel.setResizePolicy`);
+terminals, browsers and TUI panels stay free.
+
+**Appearance (customization first).** `panels.setAppearance(id, patch)` and
+`panel.setAppearance(patch)` set per-panel overrides of `icon`, `accentColor`,
+`titleBarColor`, `titleColor` and, on terminal and TUI panels, `terminalColors`. They work on
+every kind. Values follow the #21 manifest rules: `#rrggbb` colors, an icon of 1 to 4
+characters or a `.png` or `.svg` path inside the calling plugin's folder, `terminalColors`
+with all 16 palette colors or none. `null` drops an override, so the manifest value or the
+theme applies again. Precedence: override, then manifest, then theme. No override touches a
+close confirmation, which keeps the theme's warning colors, and the accent marks focus only.
+`terminalColors` goes through the surface's `update_theme`, so it needs no shim patch.
+`fontSize`, `fontFamily` and `padding` reject with `unavailable` until phase 10. Title,
+icon and accent overrides are saved as a panel's `overrides` once layouts land (phase 16);
+the other fields need the plan's `overrides` to grow.
 
 **Close rule.** `panels.close(id)` on a terminal with a live process goes through
 `InputHandler::request_close(id, alive)` exactly as a click on the close button does. If
@@ -436,7 +549,7 @@ coalescing below keeps that from flooding events.
 
 ### `calm.terminals` (native terminal API)
 
-*[lead's reading, confirm in review]*
+*Confirmed by the user on 2026-10-31.*
 
 Every method takes a terminal `PanelId` and rejects `wrong_kind` for another kind and
 `not_alive` once the process has exited (except `info`, `readScreen`, `readScrollback`).
@@ -505,7 +618,7 @@ power. The declared capability makes it visible.
 
 ### `calm.browsers` (native browser API)
 
-*[lead's reading, confirm in review]*
+*Confirmed by the user on 2026-10-31.*
 
 **Decision reversed.** The earlier draft said "no script injection into browser panels and
 no reading page content". The user asked for the native browser API, so a plugin with
@@ -547,6 +660,7 @@ Data stores. Today browser panels share the default persistent store: `BrowserVi
 gives each browser panel the option of its own persistent store through
 `WKWebsiteDataStore dataStoreForIdentifier:` (macOS 14+), set at creation:
 `panels.create({ kind: "browser", url, dataStore: "shared" | "panel" | "<name>" })`.
+Decided: the shared store stays the default, and `"panel"` or a name opts out.
 `browser.data` acts on the panel's store; with the shared store it touches every panel that
 shares it, and the docs say so.
 
@@ -557,25 +671,34 @@ already has, extended.
 
 ### `calm.plugins` (plugin to plugin RPC)
 
-*[lead's reading, confirm in review]*
+*Confirmed by the user on 2026-10-31.*
 
 The bus is fan-out with no answer. Plugin RPC is a call with a result.
 
 | Method                                     | Wire              | Result                                              |
 | ------------------------------------------ | ----------------- | --------------------------------------------------- |
-| `list()`                                   | `plugins.list`    | `PluginEntry[]`                                     |
+| `list({ includeShadowed? })`               | `plugins.list`    | `PluginEntry[]`, user plugins first, then built-ins |
 | `call(pluginId, method, params?, { timeoutMs? })` | `plugins.call` | Promise of the callee's result               |
 | `serve(method, handler)`                   | `plugins.serve`   | Sync. Registers a handler in this page for an exported method; returns an unregister function |
 
 ```ts
 export interface PluginEntry {
   id: string; name: string; version: string; apiVersion: number;
+  kind: "web" | "tui";                  // "tui" pending merge (#18)
+  source: "user" | "builtin";           // from Discovery: past user_count() is builtin
+  dir: string;
+  shadows: string | null;               // dir of the built-in this user plugin hides
+  shadowed: boolean;                    // true only for a hidden built-in, with includeShadowed
+  built: boolean;                       // false when entry scripts are missing ("not built")
   exports: { name: string; description?: string; uses: string[] }[];
   capabilities: string[];
   running: { backend: "stopped" | "starting" | "ready" | "failed"; background: boolean; panels: PanelId[] };
   requires: Record<string, string>;
 }
 ```
+
+`plugins.list` needs no RPC machinery, so it lands with the read-only host (phase 3). A
+shadowed built-in is not loaded: it has `running` empty and cannot be called.
 
 Manifest `exports` lists the methods others may call: `name` matches
 `[a-zA-Z][a-zA-Z0-9_.]*`, `uses` lists the capabilities the method uses on the callee's
@@ -737,6 +860,25 @@ The status bar (PR #4, `calm_core::status_bar`, drawn by `calm-native/src/status
 is a native view that draws above terminals, so nothing covers it. That makes it the cheap
 toast. No modal UI from plugins in v2.
 
+### `calm.layouts` and `calm.session` (phase 16)
+
+Moved from non-goal into v2 by the canvas persistence plan
+(`docs/superpowers/plans/2026-10-31-canvas-persistence.md`). The plan's File menu (New
+Canvas, Open Layout, Open Recent, Save Layout, Save Layout As, Restore Previous Session,
+Reveal Layouts in Finder) and restore on launch (on by default, `session.restore_on_launch`
+`on`, `off` or `ask`) are decided by the user. The API is a thin layer over the same code.
+
+| Method             | Wire               | Result                                                   |
+| ------------------ | ------------------ | -------------------------------------------------------- |
+| `list()`           | `layouts.list`     | Names with `saved_at` and panel count                    |
+| `save(name)`       | `layouts.save`     | Saves the current canvas as `name` in `layouts/`; same name rule as Save Layout As |
+| `open(name)`       | `layouts.open`     | Replaces the canvas. Live terminals close only through the user's confirmation, as in `panels.close`; resolves after the confirm, rejects with `cancelled` |
+| `delete(name)`     | `layouts.delete`   | Moves the file to `layouts/.trash/`                       |
+| `calm.session.saveNow()` | `session.saveNow` | Forces an autosave of `session.json`                  |
+
+Events: `layoutSaved` and `layoutOpened`. Panel ids are fresh after an open, so a plugin
+that kept ids reads `panels.list` again on `layoutOpened`.
+
 ### Other v1 calls, now served
 
 `process.exec` runs on GPUI's background executor, with `timeoutMs` default 30 s and
@@ -750,16 +892,20 @@ on the background executor. `openExternal` allows `http`, `https` and `mailto` o
 when the first handler for an event registers and when the last one leaves
 (`events.subscribe` and `events.unsubscribe`, internal wire methods). The host only sends a
 page the events it subscribed to, so an idle plugin costs nothing.
+`calm.events.on(event, handler, { throttleMs })` sets that page's window for a coalesced
+event, 16 to 5000 ms, default 100. Discrete events ignore it.
 
 | Event                 | Payload                                                  | Coalescing                      |
 | --------------------- | -------------------------------------------------------- | ------------------------------- |
 | `panelAdded`          | `PanelInfo`                                              | none                            |
 | `panelRemoved`        | `{ id }`                                                 | none                            |
-| `panelChanged`        | `PanelInfo` plus `changes: ("rect"\|"title"\|"minimized"\|"z"\|"mode"\|"url")[]` | per panel, latest wins, 100 ms |
+| `panelChanged`        | `PanelInfo` plus `changes: ("rect"\|"title"\|"minimized"\|"z"\|"mode"\|"url"\|"resize"\|"joined"\|"appearance"\|"tui")[]` | per panel, latest wins, 100 ms |
 | `panelFocused`        | `{ id: PanelId \| null }`                                | per frame, latest wins          |
 | `cameraChanged`       | `CameraInfo`                                             | latest wins, 100 ms, trailing edge always sent |
 | `appSettingsChanged`  | `AppSettings`, full v2 object                            | latest wins, 100 ms             |
-| `terminalExited`      | `{ id, code: number \| null }`                          | none                            |
+| `terminalExited`      | `{ id, code: number \| null }`, plain terminals          | none                            |
+| `tuiExited`           | `{ id, pluginId, code: number \| null, state, restartInMs? }` (pending #18) | none     |
+| `layoutSaved`, `layoutOpened` | `{ name }` (phase 16)                            | none                            |
 | `terminalOutput`      | `{ id, lines: string[], replaced: boolean }` (patch)     | per terminal, 250 ms            |
 | `terminalTitleChanged`, `terminalCwdChanged` | `{ id, title }`, `{ id, cwd }` (patch) | per terminal, latest wins, 100 ms |
 | `terminalCommandFinished` | `{ id, code, durationMs }` (patch)                   | none                            |
@@ -781,7 +927,7 @@ plugin still learns about background changes made through the v2 settings. `resi
 time. Keys are `(event, panel id or none)`. Each key holds only its latest payload. A key
 flushes when its window (100 ms) has passed since its last send. A trailing flush runs after
 the stream goes quiet, so the final camera position and the final drag rect always arrive.
-Discrete events (`panelAdded`, `panelRemoved`, `terminalExited`, `command`) are never
+Discrete events (`panelAdded`, `panelRemoved`, `terminalExited`, `tuiExited`, `command`) are never
 merged and keep their order relative to each other. A `panelChanged` for a panel is dropped
 if a `panelRemoved` for it is queued.
 
@@ -793,7 +939,8 @@ batch: `window.__calm.emitBatch([[event, payload], ...])`.
 
 Targets to verify in `docs/benchmarks.md`, not measured claims:
 
-- Continuous pan or zoom: at most 10 `cameraChanged` per second per subscribed page.
+- Continuous pan or zoom: at most 10 `cameraChanged` per second per subscribed page at
+  the default window. A page that asks for 16 ms gets up to about 60 and pays for them.
 - Dragging one panel: at most 10 `panelChanged` per second for that panel.
 - Host work for bridge dispatch plus event flush under 1 ms per frame at the 20 terminal,
   5 plugin workload.
@@ -835,7 +982,8 @@ works and gets `code: "host_error"`.
 | `not_found`          | No panel with that id                                             |
 | `wrong_kind`         | Terminal method on a browser, and so on                           |
 | `not_alive`          | Terminal process exited                                           |
-| `busy`               | Another close confirmation is pending                             |
+| `busy`               | Another close confirmation is pending, or a TUI restart while running |
+| `cancelled`          | The user cancelled the confirmation of `layouts.open`             |
 | `unavailable`        | Needs the Ghostty shim patch (phase 10) or a later phase          |
 | `too_large`          | Payload, storage or output over its limit                         |
 | `storage_corrupt`    | Plugin data file does not parse                                   |
@@ -851,7 +999,8 @@ works and gets `code: "host_error"`.
 ## Rust types
 
 New module `crates/calm-plugins/src/api.rs`. `calm-plugins` gains a dependency on
-`calm-core` (both are pure, no GPUI) for geometry and scene types.
+`calm-core` (both are pure, no GPUI) for geometry and scene types. That dependency exists
+since PR #16.
 
 ```rust
 pub const API_VERSION: u32 = 2;
@@ -859,10 +1008,12 @@ pub const API_VERSION: u32 = 2;
 pub enum ApiRequest {
     Log { message: String },
     AppInfo, AppGetSettings, AppSetSettings(SettingsPatch),
-    PanelSelf(SelfOp),                       // setTitle, getBounds, minimize, close, info, setRect
+    PanelSelf(SelfOp),                       // setTitle, getBounds, minimize, close, info, setRect,
+                                             // setResizePolicy, setAppearance
     PanelSettingsGet, PanelSettingsSet(Value),
     PanelsCreate(PanelSpec), PanelsList(PanelFilter), PanelsGet(PanelId),
-    PanelsOp(PanelId, PanelOp),              // focus, move, resize, setRect, setTitle, ...
+    PanelsOp(PanelId, PanelOp),              // focus, move, resize, setRect, setTitle,
+                                             // setAppearance, restart, ...
     PanelsClose(PanelId),
     CameraGet, CameraSet(CameraPatch), CameraCenterOn(Point), CameraFit(Option<Vec<PanelId>>, f64),
     Terminal(PanelId, TerminalOp),           // info, write, sendKeys, read*, clear, scroll, ...
@@ -873,6 +1024,7 @@ pub enum ApiRequest {
     BusPublish(String, Value), BusSubscribe(String), BusUnsubscribe(String),
     EventsSubscribe(String), EventsUnsubscribe(String),
     UiNotify(String, u32),
+    Layouts(LayoutOp), SessionSaveNow,       // phase 16
     ProcessExec(ExecSpec), GithubApi(String), OpenExternal(String), ThemeGet,
 }
 
@@ -892,7 +1044,7 @@ pub enum Caller {
 
 pub enum Capability { PanelsCreate, PanelsControl, PanelsClose, CameraControl,
     TerminalRead, TerminalWrite, TerminalControl, BrowserControl, BrowserScript, BrowserData,
-    PluginsCall, SettingsWrite, ProcessExec, Github, OpenExternal }
+    PluginsCall, SettingsWrite, ProcessExec, Github, OpenExternal, Layouts }
 
 pub struct ApiError { pub code: ErrorCode, pub message: String }
 
@@ -900,8 +1052,10 @@ pub struct ApiError { pub code: ErrorCode, pub message: String }
 /// (phase 11), rejecting with `not_allowed`. `Panel` and `Backend` always pass.
 pub fn check(allowlist: &ExternalAllowlist, request: &ApiRequest, caller: &Caller) -> Result<(), ApiError>;
 
-/// Pure snapshot from the scene plus the host's per-panel extras (mode, focus, url).
-pub fn panel_info(scene: &Scene, id: PanelId, extras: &PanelExtras) -> Option<PanelInfo>;
+/// Pure snapshot from the scene plus the host's per-panel extras (mode, focus, url,
+/// appearance, TUI state). `resize` comes from `Panel::resize`, `joined` from `joins`.
+pub fn panel_info(scene: &Scene, joins: &JoinLayout, id: PanelId, extras: &PanelExtras)
+    -> Option<PanelInfo>;
 pub fn camera_info(camera: &Camera, viewport: Size) -> CameraInfo;
 ```
 
@@ -941,6 +1095,12 @@ closes drops its pending replies; nothing is evaluated in a dead web view.
   window through `this.update_in`. If that is not available on `gpui-pre 0.3.4`, panel
   creation is queued as an `Effect::CreatePanel` and applied at the next render, which
   already has the window.
+- Never update a window from inside its own action dispatch. PR #13 found it: GPUI holds
+  the canvas window while it runs an action handler, so `canvas.update(..)` from the
+  `OpenSettings` handler failed with "window not found" and Settings stopped opening. The
+  fix defers the update with `cx.defer`. The same applies to contributed commands and key
+  bindings (phase 8) and to anything that opens a native window, such as the `layouts.open`
+  confirmation (phase 16): the action handler defers, the deferred closure updates.
 - `eval_js` replies run in the GPUI task. WebKit runs them asynchronously, so a reply never
   re-enters the dispatcher in the same stack.
 - Blocking work (`process.exec`, `gh api`, storage file I/O over 64 KiB) runs on the
@@ -997,7 +1157,7 @@ the docs can say it next to each capability word:
   user has turned `confirm_close` off, and the API cannot turn that setting off. This is
   kept on purpose: it protects the user's running work from a plugin bug, not the user
   from the plugin. It is not a guarantee: a backend can find the shell's pid and kill it,
-  or edit `settings.json`. Flagged for review, kept as the lead asked.
+  or edit `settings.json`. Kept: the user confirmed it on 2026-10-31.
 - The host never logs request params for `terminals.write`, `storage.set`, `bus.publish` or
   terminal `env`. Logs carry the method and the error code only.
 
@@ -1015,12 +1175,12 @@ the docs can say it next to each capability word:
 
 ## External control channel (phase 11)
 
-**Status: approved by the user on 2026-10-31. Build after PRs #5 and #6 merge.** Nothing
-in phases 1 to 10 depends on it, apart from the `Caller` type, which v2 has from phase 1.
-The allowlist follows PR #9 (`docs/superpowers/specs/2026-10-31-claude-code-mods-integration.md`
-on `docs/mods-integration`). The first integration is agent status on terminal panels. The
-`calm-bridge` Claude Code mod lives in this repo with a `marketplace.json`, so its version
-moves with CALM.
+**Status: approved by the user on 2026-10-31.** PRs #5 and #6 have merged, so the only
+gate left is phases 1 to 6, which give it the dispatcher, `Caller`, close and events. The
+decisions of PR #9 (`docs/superpowers/specs/2026-10-31-claude-code-mods-integration.md`, now
+on `main`) hold: the allowlist below, the external socket as this phase, agent status on
+terminal panels (TUI panels too) as the first integration, and the `calm-bridge` Claude Code
+mod in this repo with a `marketplace.json`, so its version moves with CALM.
 
 ### Why
 
@@ -1093,11 +1253,11 @@ External requests run as `Caller::External { client }`. They are checked against
 
 | Group             | Methods                                                                    |
 | ----------------- | -------------------------------------------------------------------------- |
-| `read` (default)  | `app.info`, `panels.list`, `panels.get`, `camera.get`, `terminals.info`, `browsers.info` |
+| `read` (default)  | `app.info`, `panels.list`, `panels.get`, `camera.get`, `terminals.info`, `browsers.info`, `layouts.list`, `session.saveNow` |
 | `status` (default)| `panel.setStatus`                                                          |
 | `events` (default)| `events.poll`, `events.publish`                                            |
-| `layout`          | `panels.create` **without** `command`, `args` or `env`; `panels.focus`, `move`, `resize`, `setRect`, `setTitle`, `minimize`, `restore`, z-order; `camera.set`, `centerOn`, `fit` |
-| `run`             | `panels.create` **with** `command`, `args` or `env`, **and** `terminals.write`, `terminals.sendKeys`, **and** `process.exec` |
+| `layout`          | `panels.create` **without** `command`, `args` or `env`; `panels.focus`, `move`, `resize`, `setRect`, `setTitle`, `setAppearance`, `minimize`, `restore`, z-order; `camera.set`, `centerOn`, `fit`; `layouts.save`, `open`, `delete` |
+| `run`             | `panels.create` **with** `command`, `args` or `env`, or of kind `tui`, **and** `terminals.write`, `terminals.sendKeys`, `panels.restart`, **and** `process.exec` |
 | `browser`         | `browsers.navigate`, `browsers.reload`                                     |
 | `close`           | `panels.close`, through the same user confirmation as plugins              |
 
@@ -1119,7 +1279,8 @@ panel; it names `panelId`). A method outside `allow` rejects with `not_allowed`.
 `panel.setStatus({ panelId?, state, text?, detail? })`, available to both origins. A plugin
 page sets its own panel or names another with `panelId`; a backend names `panelId`. An
 external caller must name `panelId`. `state` is `"idle" | "running" | "waiting" | "error" |
-"done"`, `text` at most 80 characters, `detail` at most 1 KiB, `null` clears. The status is
+"done"`, `text` at most 80 characters, `detail` at most 1 KiB, `color` an optional `#rrggbb` that replaces the state's dot color,
+`null` clears. The status is
 drawn in the panel's chrome strip as a colored dot and the text. The strip is GPUI paint
 outside the native content rect, so it never overlaps a live native view. `detail` is API
 only, not drawn. `PanelInfo` gains `status`. The event `panelStatusChanged { panelId,
@@ -1172,12 +1333,17 @@ Each phase ends with `cargo test` for the touched crates and lands as its own co
    conformance tests updated.
 3. **Read-only host.** `app.info`, `app.getSettings`, `theme.get`, `panels.list`,
    `panels.get`, `panel.info`, `panel.getBounds`, `camera.get`, `browsers.info`,
-   `terminals.info` (spawn values, `title: null`). Snapshot builders in calm-plugins.
+   `terminals.info` (spawn values, `title: null`), `plugins.list` with `source`, `shadows`
+   and `built`. `PanelInfo` with `resize`, `joined` and `appearance`. Snapshot builders in
+   calm-plugins.
 4. **Control.** `panels.create` (all kinds), focus, move, resize, setRect, setTitle,
-   minimize, restore, z-order, `panel.*` on self, `camera.set`, `centerOn`, `fit`,
-   `browsers.navigate`, `reload`, `terminals.write`, `app.setSettings`, `ui.notify`.
-   `app.setSettings` needs PR #7 merged: merge patch, `Settings::validate`, the
-   `confirm_close` and `version` refusal, the image path check, and a test per rule.
+   setAppearance, minimize, restore, z-order, `panel.*` on self including
+   `setResizePolicy`, placement with `gap`, `camera.set`, `centerOn`, `fit`,
+   `browsers.navigate`, `reload`, `terminals.write`, `app.setSettings`, `ui.notify`. Every
+   size change through `ResizePolicy::clamp`, with a test for a locked and a limited plugin
+   panel. `app.setSettings` (PR #7 is merged): merge patch, the host-side unknown key check,
+   `Settings::validate`, the `confirm_close` and `version` refusal, the image path check, a
+   grid style write, and a test per rule.
 5. **Close.** `panels.close` and `panel.close` through `request_close`, `PendingReply`
    settled from Enter and Escape, `busy`. Regression test: a plugin close of a live terminal
    with `confirm_close` on does not remove the panel until Enter.
@@ -1208,8 +1374,8 @@ Each phase ends with `cargo test` for the touched crates and lands as its own co
 12. **Native browser API.** Content world, `eval`, user scripts and styles, read text and
     HTML, snapshot, navigation rules and hook, history, user agent, page zoom, per-panel
     data stores, cookies and clear data, `browserNavigation` and `browserMessage`.
-13. **Plugin RPC.** `exports`, `requires` with semver ranges at discovery, `plugins.list`,
-    `call`, `serve`, server choice (backend, background page, panel), timeouts,
+13. **Plugin RPC.** `exports`, `requires` with semver ranges at discovery, `plugins.call`,
+    `serve`, server choice (backend, background page, panel), timeouts,
     `pluginsChanged`.
 14. **Plugin backend.** bun lookup and `engines.bun` check, spawn in a process group, fd 3
     IPC (or the socket fallback), `hello` handshake, restart policy, logs, stop at quit,
@@ -1217,9 +1383,19 @@ Each phase ends with `cargo test` for the touched crates and lands as its own co
     backend that answers a page call, spawns a terminal through `calm.panels.create`, and
     a crash fixture that checks restart and the `failed` state.
 15. **Background pages,** only if a plugin needs headless web platform code.
+16. **Layouts and session.** `layouts.list`, `save`, `open`, `delete`, `session.saveNow`,
+    `layoutSaved` and `layoutOpened`, with the `layout` group of the external allowlist.
+    Lands as PR 8 of the canvas persistence plan, after its PRs 1 to 7 (format, session file,
+    restore, File menu).
 
-Order: 1 to 9, then 14, 13 and 12, then 10 and 11 as the merged PRs allow. 10 can start any
-time because it only touches the fork.
+TUI panels (pending merge, #18 and #21) join phases 3, 4 and 6 once #18 is on `main`:
+`kind: "tui"` in `panels.create` and `PanelInfo.tui` (3 and 4), `panels.restart` (4),
+`tuiExited` (6). Until then those rows reject with `not_implemented`.
+
+Order: 1 to 6, then 11, because #5 and #6 have merged and agent status on terminal panels is
+the first integration the user chose. Then 7 to 9, then 14, 13 and 12, then 16 once the
+persistence plan's PRs 1 to 7 land. 10 can start any time because it only touches the fork.
+15 comes last, if at all.
 
 Phase 1 also lands the `Caller` type and phase 4 the `near`/`side` placement, so phase 11
 adds a transport, not a new dispatcher.
@@ -1229,8 +1405,9 @@ adds a transport, not a new dispatcher.
 From the user, through the lead:
 
 1. Plugin panels are free-form HTML/TSX surfaces, and plugins get the native browser API,
-   the native terminal API and the API of other plugins. The concrete shape of each is the
-   lead's reading, marked *[lead's reading, confirm in review]* in its section.
+   the native terminal API and the API of other plugins. The concrete shape of each, first
+   written as the lead's reading, is confirmed: the user replied "the rest suits me very
+   well".
 2. The Claude Code mods integration is accepted as in PR #9: the external socket channel
    (phase 11) is approved to build after #5 and #6 merge, with PR #9's allowlist (read-only
    plus `panel.setStatus` and `events.*` by default; `command`, `terminals.write` and
@@ -1249,24 +1426,39 @@ From the user, through the lead:
 8. Unchanged by 6 and 7: the external socket allowlist (it governs outside processes, not
    installed plugins), browser panels never get the `calm` bridge, and CALM never hands its
    own credentials to plugins.
+9. Bun runtime: the system bun, with the lookup order in Plugin backend. A bundled copy can
+   be added later as the last lookup step.
+10. Customization first: every look and behavior is configurable, and a hard-coded choice
+    needs a reason in `.ai/decisions.md`. This refresh adds the settable items listed in
+    Changes since first draft.
+11. Layouts are in v2 as phase 16, with the methods of the canvas persistence plan. The
+    plan's File menu and restore on launch are decided.
+12. The `confirm_close` guard in the API stays, as a guard against plugin bugs. Browser
+    panels default to the shared data store.
 
 ## Open points for review
 
-1. The four *[lead's reading, confirm in review]* sections: free-form panels, native browser API, native terminal API,
-   plugin RPC.
-2. "No credentials reach plugin JS" narrows to "CALM never hands over its own secrets",
-   because plugins are unrestricted: the browser and terminal APIs expose site sessions and
-   printed secrets, and a backend can read any file the user can. `CLAUDE.md` says "Plugin JS never sees a token"; that line
-   should name the GitHub and socket tokens explicitly when the implementation lands.
-3. `terminalOutput` is a text diff at 250 ms, not a byte stream. Enough for agent boards and
-   log watchers, not for a terminal recorder.
-4. Whether browser panels default to the shared data store (today's behavior, checked on
-   PR #6) or a per-panel store.
-5. `terminals.setFontSize` changes a terminal's grid. `CLAUDE.md` says only a panel resize
-   changes the logical grid; that rule should read "only a panel resize or a font size
-   change, never camera zoom" once phase 10 lands.
-6. Bun runtime source: the user's installed bun (decided 2026-10-31). A bundled copy can
-   be added later as the last lookup step.
-7. The `confirm_close` line in the API stays, but a backend can bypass it by killing the
-   shell's process. Keep it as a guard against plugin bugs, or drop it as theater.
-8. Whether fd 3 IPC works with bun as a stream, or the per-plugin socket fallback is needed.
+Resolved since the first draft and removed: the four lead's-reading sections (confirmed),
+the bun source (decided), the browser data store default (shared, per-panel opt-in) and the
+`confirm_close` guard (kept).
+
+1. Join neighbors in `PanelInfo.joined`. Recommended: read-only and cheap, because
+   `JoinLayout::compute` already runs for paint, and a board plugin can treat a joined block
+   as one unit. Confirm, or leave joins out until a plugin asks.
+2. `panels.setAppearance` on every kind, not only TUI panels as in #21. Recommended for
+   customization first; a plugin could then recolor a browser or terminal panel it did not
+   create. Confirm.
+3. Restart words differ: backends use `on-failure` and `never`, TUI apps (#18) use `prompt`,
+   `on-exit` and `never`. Keep them apart (a backend has no Enter to press), or align the
+   names before either ships.
+
+## Follow-ups when phases land
+
+- `CLAUDE.md` says "Plugin JS never sees a token". When the implementation lands, it should
+  name the GitHub and socket tokens: plugins can see site sessions and printed secrets
+  through the browser and terminal APIs, and a backend can read any file the user can.
+- `CLAUDE.md` says only a panel resize changes a terminal's grid. Once phase 10 lands it
+  should read "only a panel resize or a font size change, never camera zoom".
+- `terminalOutput` is a text diff at 250 ms, not a byte stream: enough for agent boards and
+  log watchers, not for a terminal recorder. Accepted.
+- Phase 14 checks whether bun can use fd 3 as a stream, or needs the per-plugin socket.

@@ -9,5 +9,15 @@
   "icon": "icon.svg",
   "accentColor": "#ff8a3d",
   "defaultSize": { "width": 720, "height": 420 },
-  "restart": "prompt"
+  "restart": "prompt",
+  "contributes": {
+    "menus": [
+      {
+        "id": "slow-refresh",
+        "title": "Top, refresh every 5 s",
+        "location": "canvas",
+        "run": ["-s", "5"]
+      }
+    ]
+  }
 }

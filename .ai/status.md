@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-31, against `origin/main` at `a17fac3` (PRs #1 to #21, #24, #25 and #27 merged). This
+Last updated: 2026-10-31, against `origin/main` at `c327cb1` plus #29 (PRs #1 to #29 merged). This
 file describes `main`, not branches. Facts are verified against the code unless marked
 otherwise.
 
@@ -89,25 +89,47 @@ Pull requests:
 - #25 Blur on outside click: a click on empty canvas clears panel focus and makes the GPUI
   host view the first responder; pans and zooms keep focus; Escape clears it only when no
   native view has the keyboard. Setting `canvas.click_empty_clears_focus` (default true).
+- #28 Plugin context menu items: `contributes.menus` in web and TUI manifests
+  (`calm-plugins::contributes`, strict per-field errors), the merged menu model and
+  `command` payload in `calm-core::plugin_menu`, settings `plugins.menus.hidden` and
+  `plugins.menus.submenu_above`, glue in `calm-app/src/canvas_view/plugin_menus.rs`. Web
+  plugins get a `command` event in an open panel or a new one; TUI items open a new panel
+  with `run` args appended. Not built: `calm.menus.register`, `shortcut`,
+  `contributes.commands`.
+- #23 Plugin services: `github.api`, `storage.get/set/remove` and `openExternal` (http and
+  https only) are served by `plugin_services` on the background executor. `GhClient` kills
+  `gh` after 30 s and refuses output over 8 MiB. `calm_plugins::gh_token` takes
+  `GH_TOKEN`/`GITHUB_TOKEN` from CALM's env, then `$CALM_HOME/.env`, then (dev builds) the
+  workspace `.env`, else `gh`'s own login; passed as child env `GH_TOKEN`, never argv, and
+  redacted in output and Debug. Smoke `github.api ok` runs against a fake `gh` script.
+- #22 Plugin API v2 design refresh: layouts (`layouts.*`, `session.saveNow`) added as phase
+  16. Design only.
+- #29 Runtime app icon: `calm_native::app_icon` sets the embedded 512 px brand PNG as the
+  application icon at startup when no bundle icon is present. A new "About CALM" item, first
+  in the app menu, opens the standard About panel (icon, Cargo version, credits line). Smoke
+  prints `app_icon set=... size=WxH` and fails unless the brand image is set.
 
 ## In progress (not on `main`)
 
-- #22 (open): refresh of the plugin API v2 design, including layouts as a v2 phase.
-- No PR yet: `github.api` dispatch with `GITHUB_TOKEN` read from `.env`; plugin context menu
-  contributions; a Linux port plan.
+- No PR yet: a Linux port plan.
 
 ## Not wired yet
 
-- Plugin bridge: only `log`, `panel.setTitle`, `settings.get` and `settings.set` are served
-  (`plugin_host.rs`). The other 13 of the 17 `BRIDGE_METHODS` reject with
-  `not implemented: <method>`: `storage.*`, `panel.getBounds/minimize/close`, `canvas.*`,
-  `process.exec`, `github.api`, `openExternal`, `theme.get`. No host events are sent.
-  `github-prs` renders but its list shows the `github.api` error.
+- Plugin bridge: `log`, `panel.setTitle`, `settings.get` and `settings.set` are served in
+  `plugin_host.rs`; `github.api`, `storage.get/set/remove` and `openExternal` in
+  `plugin_services.rs`. The other 8 of the 17 `BRIDGE_METHODS` reject with
+  `not implemented: <method>`: `panel.getBounds/minimize/close`, `canvas.*`,
+  `process.exec`, `theme.get`. `storage.keys` and `mailto:` for `openExternal` are not
+  served. No host events are sent other than `command`. Errors are still v1 strings; the v2
+  `{ code, message }` shape is not done.
 - Clicking inside a plugin page does not focus or raise its panel; AppKit routes the click
   to the WKWebView.
 - Layouts and session: layout save and load, `--layout`, session autosave and restore are
   not built. Only the core layout format exists. Plugin settings are not saved anywhere.
-  Layout v2 (persistence plan Task 2, `feat/layout-v2`): `saved_at_unix`, per-panel
+  The session restore decision (restore on launch by default, Open replaces after one
+  confirmation, browser urls saved with `strip_all`, a seven item File menu) is recorded
+  in `decisions.md` and the spec; implementation (plan Tasks 3 to 12) is pending.
+  Layout v2 (persistence plan Task 2, PR #31): `saved_at_unix`, per-panel
   `overrides`, `plugin_version`, browser `page_zoom`, and `PanelKind::Unsupported` that keeps
   an unknown kind's JSON bytes. v1 files load as v2 and are never rewritten; version 3 and
   up fail. The resize policy is not saved. Overrides are stored but not applied in the
@@ -144,6 +166,9 @@ Pull requests:
   input method, resize reflow, Enter to confirm close, pinch feel, `htop`.
 - Terminal profiles: the live recolor, the profile submenu, the Settings > Terminal controls.
 - Blur: a real mouse click on empty canvas, Escape inside a web page.
+- Plugin menus: a real right click (the NSMenu), long titles, the github-prs "Open repo
+  in browser" item.
+- App icon: the Dock, cmd-tab and About panel by eye.
 - Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.

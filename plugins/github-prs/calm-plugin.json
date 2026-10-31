@@ -3,5 +3,21 @@
   "name": "GitHub PRs",
   "version": "0.1.0",
   "entry": "index.html",
-  "defaultSize": { "width": 420, "height": 520 }
+  "defaultSize": { "width": 420, "height": 520 },
+  "contributes": {
+    "menus": [
+      {
+        "id": "open-repo",
+        "title": "Open repo in browser",
+        "location": "panel",
+        "when": { "plugin": ["github-prs"] }
+      },
+      {
+        "id": "new-panel",
+        "title": "New GitHub PRs panel here",
+        "location": "canvas",
+        "open": "new"
+      }
+    ]
+  }
 }

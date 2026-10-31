@@ -103,6 +103,7 @@ mod tests {
                 resizable: None,
                 min_size: None,
                 max_size: None,
+                menus: Vec::new(),
             },
             dir: dir.path().to_path_buf(),
         };
