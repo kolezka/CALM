@@ -1737,7 +1737,7 @@ mod tests {
             },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
-        let styled = scene.duplicate(plain).unwrap();
+        let styled = scene.duplicate(plain, |_| None).unwrap();
         scene.get_mut(styled).unwrap().overrides.title = Some("Logs".into());
         let text = serde_json::to_string(&scene.to_layout()).unwrap();
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();

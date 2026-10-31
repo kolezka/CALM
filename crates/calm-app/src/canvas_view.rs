@@ -680,7 +680,9 @@ impl CanvasView {
                 vec![Effect::Redraw]
             }
             (Some(MenuCommand::Duplicate), MenuTarget::Panel(id)) => {
-                let Some(copy) = self.scene.duplicate(id) else {
+                let installed =
+                    |plugin_id: &str| installed_version(&self.installed_plugins, plugin_id);
+                let Some(copy) = self.scene.duplicate(id, installed) else {
                     return;
                 };
                 if let Some(profile) = self.terminal_meta(id).and_then(|meta| meta.profile.clone())

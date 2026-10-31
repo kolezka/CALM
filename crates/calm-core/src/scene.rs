@@ -387,9 +387,14 @@ impl Scene {
 
     /// Adds a copy of `id` on top, shifted by `DUPLICATE_OFFSET`, never minimized.
     /// Only the kind and size are copied, so a duplicated terminal gets a fresh process.
-    pub fn duplicate(&mut self, id: PanelId) -> Option<PanelId> {
+    /// `installed` gives a plugin's installed manifest version, stamped on the copy.
+    pub fn duplicate(
+        &mut self,
+        id: PanelId,
+        installed: impl Fn(&str) -> Option<String>,
+    ) -> Option<PanelId> {
         let source = self.get(id)?;
-        let kind = source.kind.clone();
+        let kind = source.kind.clone().with_installed_version(installed);
         let rect = Rect {
             origin: Point::new(
                 source.rect.origin.x + DUPLICATE_OFFSET,
@@ -490,7 +495,7 @@ mod tests {
             (
                 "duplicate",
                 Box::new(|s, back, _| {
-                    let _ = s.duplicate(back);
+                    let _ = s.duplicate(back, |_| None);
                 }),
             ),
             (
@@ -596,6 +601,50 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_stamps_the_installed_version_on_plugin_and_tui_copies() {
+        let installed = |id: &str| (id == "notes").then(|| "2.0.0".to_string());
+        let mut scene = Scene::default();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let tui = scene.add(
+            PanelKind::Tui {
+                plugin_id: "notes".to_string(),
+                plugin_version: Some("1.0.0".to_string()),
+            },
+            rect,
+        );
+        let plugin = scene.add(
+            PanelKind::Plugin {
+                plugin_id: "notes".to_string(),
+                plugin_version: Some("1.0.0".to_string()),
+                settings: serde_json::json!({ "a": 1 }),
+            },
+            rect,
+        );
+        let tui_copy = scene.duplicate(tui, installed).unwrap();
+        assert_eq!(
+            scene.get(tui_copy).unwrap().kind,
+            PanelKind::Tui {
+                plugin_id: "notes".to_string(),
+                plugin_version: Some("2.0.0".to_string()),
+            }
+        );
+        let plugin_copy = scene.duplicate(plugin, installed).unwrap();
+        assert_eq!(
+            scene.get(plugin_copy).unwrap().kind,
+            PanelKind::Plugin {
+                plugin_id: "notes".to_string(),
+                plugin_version: Some("2.0.0".to_string()),
+                settings: serde_json::json!({ "a": 1 }),
+            }
+        );
+        // The source keeps the version it was saved with.
+        assert!(matches!(
+            &scene.get(tui).unwrap().kind,
+            PanelKind::Tui { plugin_version: Some(v), .. } if v == "1.0.0"
+        ));
+    }
+
+    #[test]
     fn with_installed_version_fills_plugin_and_tui_kinds_only() {
         let installed = |id: &str| (id == "notes").then(|| "1.2.3".to_string());
         let plugin = PanelKind::Plugin {
@@ -694,7 +743,7 @@ mod tests {
         let source = scene.add(kind.clone(), Rect::new(10.0, 20.0, 300.0, 200.0));
         let _other = scene.add(terminal(), Rect::new(900.0, 0.0, 200.0, 200.0));
         scene.get_mut(source).unwrap().minimized = true;
-        let copy = scene.duplicate(source).unwrap();
+        let copy = scene.duplicate(source, |_| None).unwrap();
         assert_ne!(copy, source);
         assert_eq!(scene.panels.last().map(|panel| panel.id), Some(copy));
         let panel = scene.get(copy).unwrap();
@@ -710,7 +759,7 @@ mod tests {
         );
         assert!(!panel.minimized);
         assert!(scene.get(source).unwrap().minimized);
-        assert_eq!(scene.duplicate(PanelId(99)), None);
+        assert_eq!(scene.duplicate(PanelId(99), |_| None), None);
     }
 
     #[test]
