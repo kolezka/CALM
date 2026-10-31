@@ -89,7 +89,11 @@ rejected and nothing is tagged.
 
 The runner image has no Rust, and `scripts/bump-version.sh` runs `cargo update` to refresh
 `Cargo.lock`. The `release` job therefore installs a minimal stable toolchain with rustup into
-the job's temp directory when `cargo` is missing. It also checks that `git`, `gh`, `tar`, `gzip`,
+the job's temp directory when `cargo` is missing. When `gh` is missing it downloads a pinned
+`gh` release for linux amd64 into the temp directory, checks the tarball against that release's
+checksums file and against a SHA-256 pinned in the workflow, and puts it on `PATH`. To move to a
+newer `gh`, update `GH_CLI_VERSION` and `GH_CLI_SHA256` in `release.yml` from
+`gh_<version>_checksums.txt` of the new release. The job also checks that `git`, `gh`, `tar`, `gzip`,
 `sha256sum` and `curl` are on the runner and fails with a named error if one is missing.
 
 The release commit is pushed with `GITHUB_TOKEN`, and GitHub does not trigger other workflows
