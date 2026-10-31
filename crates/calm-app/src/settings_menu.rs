@@ -1,12 +1,11 @@
-//! The Settings menu bar menu, its actions and the canvas dot grid.
+//! The Settings menu bar menu, its actions and the canvas grid.
 
 use std::path::PathBuf;
 
 use calm_core::camera::Camera;
 use calm_core::geometry::Point;
 use calm_core::settings::{
-    BackgroundPreset, GRID_STEP_WORLD, Settings, grid_dot_rgb, grid_screen_spacing,
-    save_settings_to,
+    BackgroundPreset, Settings, grid_dot_rgb, grid_line_offsets, save_settings_to,
 };
 use gpui::{
     Action, App, Bounds, Context, InteractiveElement, Menu, MenuItem, Pixels, Window, actions,
@@ -33,7 +32,7 @@ actions!(
 #[action(namespace = calm, no_json)]
 pub struct SetBackground(pub BackgroundPreset);
 
-const GRID_DOT_PX: f32 = 2.0;
+const GRID_LINE_PX: f32 = 1.0;
 
 /// Settings plus the file they persist to. The smoke points `path` at a temp dir.
 pub struct SettingsState {
@@ -154,36 +153,26 @@ pub fn apply_terminal_config(options: &mut TerminalOptions, settings: &Settings)
     }
 }
 
-/// Dots every `GRID_STEP_WORLD` world units inside `bounds`. Paint it before panels.
+/// Lines every `GRID_STEP_WORLD` world units inside `bounds`. Paint it before panels.
+/// One quad per line: a quad per dot cost about 11 ms a frame at zoom 0.4 in a debug build
+/// and starved preview refresh.
 pub fn paint_grid(bounds: Bounds<Pixels>, camera: &Camera, background: u32, window: &mut Window) {
-    let Some(spacing) = grid_screen_spacing(camera.zoom) else {
-        return;
-    };
     let width = f64::from(f32::from(bounds.size.width));
     let height = f64::from(f32::from(bounds.size.height));
-    let first = camera.screen_to_world(Point::new(0.0, 0.0));
-    let start = camera.world_to_screen(Point::new(
-        (first.x / GRID_STEP_WORLD).ceil() * GRID_STEP_WORLD,
-        (first.y / GRID_STEP_WORLD).ceil() * GRID_STEP_WORLD,
-    ));
+    let zero = camera.world_to_screen(Point::new(0.0, 0.0));
     let color = rgb(grid_dot_rgb(background));
-    let half = f64::from(GRID_DOT_PX) / 2.0;
-    let origin_x = f64::from(f32::from(bounds.origin.x));
-    let origin_y = f64::from(f32::from(bounds.origin.y));
-    let mut y = start.y;
-    while y < height {
-        let mut x = start.x;
-        while x < width {
-            let dot = Bounds {
-                origin: point(
-                    px((origin_x + x - half) as f32),
-                    px((origin_y + y - half) as f32),
-                ),
-                size: size(px(GRID_DOT_PX), px(GRID_DOT_PX)),
-            };
-            window.paint_quad(fill(dot, color));
-            x += spacing;
-        }
-        y += spacing;
+    for x in grid_line_offsets(zero.x, camera.zoom, width) {
+        let line = Bounds {
+            origin: point(bounds.origin.x + px(x as f32), bounds.origin.y),
+            size: size(px(GRID_LINE_PX), bounds.size.height),
+        };
+        window.paint_quad(fill(line, color));
+    }
+    for y in grid_line_offsets(zero.y, camera.zoom, height) {
+        let line = Bounds {
+            origin: point(bounds.origin.x, bounds.origin.y + px(y as f32)),
+            size: size(bounds.size.width, px(GRID_LINE_PX)),
+        };
+        window.paint_quad(fill(line, color));
     }
 }

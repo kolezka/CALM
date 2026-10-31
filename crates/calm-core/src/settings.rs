@@ -229,6 +229,24 @@ pub fn grid_screen_spacing(zoom: f64) -> Option<f64> {
     (spacing.is_finite() && spacing >= MIN_GRID_SPACING_PX).then_some(spacing)
 }
 
+/// Screen offsets in `[0, extent)` of the grid lines along one axis, where world 0 sits at
+/// `screen_of_world_zero`. Empty when the grid is skipped at `zoom`.
+/// Lines, not dots: one quad per line keeps the count near `extent / 8` at worst.
+pub fn grid_line_offsets(screen_of_world_zero: f64, zoom: f64, extent: f64) -> Vec<f64> {
+    let Some(spacing) = grid_screen_spacing(zoom) else {
+        return Vec::new();
+    };
+    if !screen_of_world_zero.is_finite() || !extent.is_finite() || extent <= 0.0 {
+        return Vec::new();
+    }
+    let first = screen_of_world_zero.rem_euclid(spacing);
+    let count = ((extent - first) / spacing).ceil().max(0.0) as usize;
+    // Multiply instead of adding up, so rounding does not drift across the screen.
+    (0..count)
+        .map(|index| first + index as f64 * spacing)
+        .collect()
+}
+
 /// `background` with each channel moved 12 % of the way to white.
 pub fn grid_dot_rgb(background: u32) -> u32 {
     let lighten = |shift: u32| {
@@ -378,6 +396,30 @@ mod tests {
         assert_eq!(grid_screen_spacing(0.12), None);
         assert_eq!(grid_screen_spacing(0.0), None);
         assert_eq!(grid_screen_spacing(f64::NAN), None);
+    }
+
+    #[test]
+    fn grid_lines_follow_zoom_and_pan() {
+        assert_eq!(
+            grid_line_offsets(0.0, 1.0, 256.0),
+            vec![0.0, 64.0, 128.0, 192.0]
+        );
+        // World 0 left of the screen: the first line is the next multiple of the step.
+        assert_eq!(
+            grid_line_offsets(-10.0, 1.0, 256.0),
+            vec![54.0, 118.0, 182.0, 246.0]
+        );
+        assert_eq!(grid_line_offsets(300.0, 1.0, 128.0), vec![44.0, 108.0]);
+        // Zoom 0.4 over 1280 px: 25.6 px apart, 50 lines, all on screen.
+        let lines = grid_line_offsets(0.0, 0.4, 1280.0);
+        assert_eq!(lines.len(), 50);
+        assert!(lines.iter().all(|x| (0.0..1280.0).contains(x)));
+        assert!((lines[49] - 49.0 * 25.6).abs() < 1e-9);
+        // At the 8 px limit the count stays at extent / 8; below it the grid is skipped.
+        assert_eq!(grid_line_offsets(0.0, 0.125, 1280.0).len(), 160);
+        assert!(grid_line_offsets(0.0, 0.1, 1280.0).is_empty());
+        assert!(grid_line_offsets(f64::NAN, 1.0, 1280.0).is_empty());
+        assert!(grid_line_offsets(0.0, 1.0, 0.0).is_empty());
     }
 
     #[test]
