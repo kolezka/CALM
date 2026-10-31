@@ -281,6 +281,40 @@ Plan in `docs/superpowers/plans/2026-10-31-canvas-persistence.md`, approved by t
   often ride in query strings. A name list (`strip_sensitive`) was rejected as best effort.
   Cost: pages that need their query reopen without it.
 
+## Session restore (2026-10-31, approved by the user, implementation pending)
+
+The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 1 and
+"Resolved 2026-10-31"). None of it is built yet. Status lives in `.ai/status.md`.
+
+- **Reversal: restore the last session on launch by default.** This reverses the spec
+  sentence "A fresh app launch after a computer restart starts with an empty canvas; users
+  can explicitly load a saved layout." The spec now reads "A fresh app launch restores the
+  last session's panels with fresh processes, unless restore is off". Processes still start
+  fresh: terminals get new shells, browsers reload their url, plugins reload their page.
+  "Processes need not survive app quit" stands. Reason: the user's goal, "when I start the
+  canvas the same plugins and elements load". Cost if wrong: a bad or unwanted session file
+  greets every launch; mitigated by moving a failed file aside and starting empty,
+  `restore_on_launch` set to `off` or `ask`, and `--no-restore`.
+- **Opening a named layout replaces the canvas after one confirmation.** New Canvas, Open
+  Layout, Open Recent and Restore Previous Session ask once, with a native alert, when live
+  terminals exist or the canvas has changes not saved to a named layout. Open never merges.
+  Reason: one shared rule is simpler than a merge mode, and the confirmation keeps the rule
+  that only an explicit, confirmed close ends a process. Cost if wrong: users who want to
+  add a layout's panels to the current canvas cannot, and the alert can feel like friction.
+- **Browser urls are saved with query and fragment stripped by default.**
+  `session.browser_query` is `strip_all` by default; `keep` is an opt-in that saves the url
+  as is. Reason: query strings and fragments often carry tokens (magic links, OAuth `code`,
+  presigned signatures), and layouts must hold no credentials; the user asked for the lowest
+  effort, and one strip function needs no name list. Cost if wrong: search results and pages
+  that keep state in the query or fragment reopen without it; with `keep`, a token can land
+  in the file, which the docs must say.
+- **A standard File menu, not a Layouts menu.** Seven items, after the app menu and before
+  View: New Canvas, Open Layout..., Open Recent, Save Layout, Save Layout As..., Restore
+  Previous Session, Reveal Layouts in Finder. Reason: the user asked for a menu bar File menu
+  to save and load layouts, and it is the standard macOS place for them. Cost if wrong:
+  `cmd-n`, `cmd-o`, `cmd-s` and `cmd-shift-s` are taken, and whether they fire while a
+  terminal has focus is unverified.
+
 ## Platform (2026-10-31)
 
 - **A Linux port stays a plan only.** The app is macOS only; a Linux port plan exists as a
@@ -379,3 +413,22 @@ Plan in `docs/superpowers/plans/2026-10-31-canvas-persistence.md`, approved by t
   NSAlert then shows the application icon. CALM itself shows no NSAlert today (close
   confirmation is drawn in GPUI), so no `alert.icon` is set. macOS windows have no per-window
   icon, so the Settings window and status bar get nothing.
+
+## CPU and memory readout (2026-10-31)
+
+- **CPU percent is of one core,** like Activity Monitor and `top`, so it can pass 100%.
+  It is user plus system time over all threads (`ri_user_time + ri_system_time` from
+  `proc_pid_rusage`), converted from Mach ticks with `mach_timebase_info` (on Apple
+  silicon the counters are ticks, not ns; a unit test fails without the conversion),
+  averaged over the sampling interval. No extra smoothing: the interval is the window.
+- **Memory is phys_footprint,** the Activity Monitor number, not RSS. Binary units
+  (1 MB = 1024 * 1024 bytes); `auto` switches to GB at 1 GB.
+- **Scope is CALM alone by default.** `developer.stats.include_children` adds every process
+  below CALM (shells, TUI apps, plugin backends), walked with `proc_listchildpids` and
+  capped at 512. Processes seen in only one of two samples do not count toward CPU.
+  libghostty runs in-process, so terminal rendering is in the self number either way.
+- **cmd-shift-f stays a per-launch toggle** for the whole readout; the persisted
+  `developer.stats.show_fps|show_cpu|show_memory` pick the items. FPS frames are only
+  forced while `show_fps` is on, so CPU-only mode does not measure its own 60 fps repaint.
+  Sampling runs on the background executor on a timer, never in paint, and stops when
+  CPU and memory are both hidden or the readout is off.

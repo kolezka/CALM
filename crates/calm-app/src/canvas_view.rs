@@ -14,12 +14,16 @@ use calm_core::interaction::{
 use calm_core::join::{Axis, JoinLayout, JoinedEdges, Side};
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
+use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
 use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
 use calm_core::terminal_profile::{ResolvedTerminal, TerminalIcon, display_cwd, render_title};
 use calm_core::viewport::{NativePlacement, place_native};
-use calm_native::{BrowserEvent, HostView, NativeChild, StatusBar, show_context_menu};
+use calm_native::{
+    BrowserEvent, HostView, NativeChild, ProcessSample, ProcessSampler, StatusBar,
+    show_context_menu,
+};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, BorderStyle, Bounds, BoxShadow, ContentMask, Context, Corners, CursorStyle, DispatchPhase,
@@ -159,8 +163,15 @@ pub struct CanvasView {
     /// Back-to-front order of native panels (terminals, browsers and plugins) as last stacked.
     native_order: Vec<PanelId>,
     focus_handle: FocusHandle,
-    pub show_fps: bool,
+    /// The stats readout (cmd-shift-f). Which items it shows is `developer.stats`.
+    pub show_stats: bool,
     pub frame_stats: FrameStats,
+    /// Latest CPU and memory reading, from `stats_timer`.
+    pub process_stats: Option<ProcessSample>,
+    /// Samples CPU and memory off the main thread while the readout needs them.
+    stats_timer: Option<Task<()>>,
+    /// (interval ms, include children) the running timer was started with.
+    stats_timer_config: Option<(u64, bool)>,
     /// True while a native context menu is up. Terminals show previews meanwhile.
     menu_open: bool,
     /// Repaints every `PREVIEW_REFRESH_SECS` while any terminal is in `Preview`.
@@ -230,8 +241,11 @@ impl CanvasView {
             browser_listener: None,
             native_order: Vec::new(),
             focus_handle: cx.focus_handle(),
-            show_fps: false,
+            show_stats: false,
             frame_stats: FrameStats::default(),
+            process_stats: None,
+            stats_timer: None,
+            stats_timer_config: None,
             menu_open: false,
             preview_timer: None,
             preview_input_targets: 0,
@@ -263,9 +277,10 @@ impl CanvasView {
             self.settings.settings.canvas.click_empty_clears_focus;
     }
 
-    pub fn set_show_fps(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_fps = show;
+    pub fn set_show_stats(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_stats = show;
         self.frame_stats.reset();
+        self.sync_stats_timer(cx);
         // Rebuild the menu bar so the Show FPS check mark follows the state.
         let settings = self.settings.settings.clone();
         cx.defer(move |cx| cx.set_menus(settings_menu::menus(show, &settings)));
@@ -514,7 +529,7 @@ impl CanvasView {
                     eprintln!("calm: terminal failed to start: {err}");
                 }
             }
-            PanelKind::Browser { url } => {
+            PanelKind::Browser { url, .. } => {
                 if let Err(err) = self.spawn_browser(id, url, window, cx) {
                     eprintln!("calm: browser failed to start: {err}");
                 }
@@ -527,7 +542,7 @@ impl CanvasView {
                     }
                 }
             }
-            PanelKind::Tui { plugin_id } => {
+            PanelKind::Tui { plugin_id, .. } => {
                 if let Err(err) = self.open_tui_panel(id, plugin_id, window, cx) {
                     eprintln!("calm: tui panel failed to open: {err}");
                     if let Some(panel) = self.scene.get_mut(id) {
@@ -535,6 +550,8 @@ impl CanvasView {
                     }
                 }
             }
+            // No native view: the panel draws as chrome only until a placeholder exists.
+            PanelKind::Unsupported { .. } => {}
         }
     }
 
@@ -1025,7 +1042,12 @@ impl CanvasView {
             }
             BrowserEvent::UrlChanged(url) => {
                 panel.title = url.clone();
-                panel.kind = PanelKind::Browser { url };
+                // Navigation keeps the saved page zoom.
+                let page_zoom = match &panel.kind {
+                    PanelKind::Browser { page_zoom, .. } => *page_zoom,
+                    _ => None,
+                };
+                panel.kind = PanelKind::Browser { url, page_zoom };
             }
             BrowserEvent::Clicked => {
                 // The click went to the native view, so GPUI never saw it.
@@ -1051,7 +1073,7 @@ impl CanvasView {
             .iter()
             .map(|(id, browser)| {
                 let scene_url = self.scene.get(*id).and_then(|panel| match &panel.kind {
-                    PanelKind::Browser { url } => Some(url.clone()),
+                    PanelKind::Browser { url, .. } => Some(url.clone()),
                     _ => None,
                 });
                 (
@@ -1136,6 +1158,59 @@ impl CanvasView {
         }));
     }
 
+    /// Starts, restarts or stops CPU and memory sampling to match the readout and its
+    /// settings. Sampling runs on the background executor, never in paint.
+    pub fn sync_stats_timer(&mut self, cx: &mut Context<Self>) {
+        let stats = &self.settings.settings.developer.stats;
+        if !(self.show_stats && (stats.show_cpu || stats.show_memory)) {
+            self.stats_timer = None;
+            self.stats_timer_config = None;
+            self.process_stats = None;
+            return;
+        }
+        let config = (clamp_interval_ms(stats.interval_ms), stats.include_children);
+        if self.stats_timer.is_some() && self.stats_timer_config == Some(config) {
+            return;
+        }
+        let (interval_ms, include_children) = config;
+        self.stats_timer_config = Some(config);
+        self.process_stats = None;
+        self.stats_timer = Some(cx.spawn(async move |this, cx| {
+            let mut sampler = ProcessSampler::new();
+            let mut reported = false;
+            loop {
+                let (back, result) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let result = sampler.sample(include_children);
+                        (sampler, result)
+                    })
+                    .await;
+                sampler = back;
+                let sample = match result {
+                    Ok(sample) => Some(sample),
+                    Err(err) => {
+                        if !reported {
+                            eprintln!("calm: process stats unavailable: {err}");
+                            reported = true;
+                        }
+                        None
+                    }
+                };
+                let updated = this.update(cx, |view, cx| {
+                    view.process_stats = sample;
+                    cx.notify();
+                });
+                if updated.is_err() {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(Duration::from_millis(interval_ms))
+                    .await;
+            }
+        }));
+    }
+
     /// Ids of panels with a native view (terminals, browsers and plugins), back to front.
     fn native_panel_order(&self) -> Vec<PanelId> {
         self.scene
@@ -1187,11 +1262,17 @@ impl CanvasView {
             .map(|path| format!("Saved {path}"))
             .unwrap_or_default();
         let zoom = format!("{:.0}%", self.scene.camera.zoom * 100.0);
-        let fps = if self.show_fps {
-            dev_menu::fps_text(&self.frame_stats)
-        } else {
-            String::new()
-        };
+        let stats = &self.settings.settings.developer.stats;
+        let shown = |item: bool| self.show_stats && item;
+        let fps = shown(stats.show_fps).then(|| dev_menu::fps_text(&self.frame_stats));
+        let cpu = shown(stats.show_cpu)
+            .then(|| cpu_text(self.process_stats.and_then(|sample| sample.cpu_percent)));
+        let memory = shown(stats.show_memory).then(|| match self.process_stats {
+            Some(sample) => memory_text(sample.memory_bytes, stats.memory_unit),
+            None => "-- MB".to_string(),
+        });
+        let [fps, cpu, memory] = stats_items(fps, cpu, memory);
+        // The pill has one text color, so the warning sign marks the plugin item.
         let plugin_errors =
             plugin_host::plugin_problems_text(self.plugin_errors, self.plugin_warnings);
         let text = status_text([
@@ -1199,6 +1280,8 @@ impl CanvasView {
             plugin_errors.as_str(),
             zoom.as_str(),
             fps.as_str(),
+            cpu.as_str(),
+            memory.as_str(),
         ]);
         let viewport = self.viewport;
         let Some(bar) = self.status_bar.as_mut() else {
@@ -2325,7 +2408,7 @@ impl Focusable for CanvasView {
 
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.show_fps {
+        if self.show_stats && self.settings.settings.developer.stats.show_fps {
             // Each render records a frame and asks for the next one, so the readout
             // measures the frame rate the window can sustain. Off means no extra frames.
             self.frame_stats.record(Instant::now());
@@ -2451,7 +2534,7 @@ impl Render for CanvasView {
             )
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(|view, _: &ToggleFps, window, cx| {
-                view.set_show_fps(!view.show_fps, window, cx)
+                view.set_show_stats(!view.show_stats, window, cx)
             }))
             .on_action(cx.listener(|view, _: &ResetFps, window, cx| view.reset_fps(window, cx)))
             .map(|root| settings_menu::bind(root, cx))

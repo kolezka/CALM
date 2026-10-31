@@ -106,7 +106,7 @@ launch right-click it and pick Open. See [docs/release.md](docs/release.md).
 | Move or resize without snapping | Hold `alt` while dragging                 |
 | Settings                        | `cmd-,`                                   |
 | Fullscreen                      | `cmd-ctrl-f`                              |
-| Show FPS                        | `cmd-shift-f`                             |
+| Show FPS, CPU and memory        | `cmd-shift-f`                             |
 
 Scrolling over empty canvas pans it. Scrolling over a terminal scrolls the terminal.
 

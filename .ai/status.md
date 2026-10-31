@@ -111,6 +111,15 @@ Pull requests:
 
 ## In progress (not on `main`)
 
+- `feat/cpu-ram-stats`: CPU and memory next to FPS in the status pill
+  (`FPS 60.0  p95 16.7ms  ·  4.2% CPU  ·  312 MB`). cmd-shift-f (Developer > Show Stats)
+  shows the readout; `developer.stats.*` picks the items, the interval (250 to 10000 ms,
+  default 1000), child processes and the memory unit, also in the Settings window.
+  `calm_native::process_stats` reads `proc_pid_rusage` (V2) on the background executor:
+  about 1.2 us per sample for CALM alone, about 19 us with the child walk (unit test on
+  the dev machine). Smoke prints `stats fps=... cpu=...% mem=...MB` parsed from the pill.
+  Manual GUI pass owed.
+
 - No PR yet: a Linux port plan.
 - `feat/api-v2-p1-errors`, plugin API v2 phase 1: `calm_plugins::api` (`API_VERSION` 2,
   `ErrorCode`, `ApiError`, `Caller`, `Capability`). `BridgeResponse::Err` carries `ApiError`
@@ -118,9 +127,13 @@ Pull requests:
   maps a v1 string to `host_error`. The host injects `window.__calmHost` before the prelude
   and `calm.has` reads it (`plugin_host::served_methods`). Manifest `apiVersion` (above 2
   skips), `capabilities` (unknown words warn, status bar counts warnings), `main` (checked on
-  disk), `backend`, `engines.bun` (syntax only) and `background` are parsed; nothing runs a
-  backend or background page yet. Smoke prints
+  disk), `backend`, `engines.bun` (npm range syntax only, prerelease and build included) and `background` are parsed; nothing runs a
+  backend or background page yet. `storage.set` without `value` rejects `invalid_params`. Smoke prints
   `plugin errors unknown=unknown_method unserved=not_implemented has=[true,false]`.
+- `feat/api-v2-p6-coalescer`: plugin API v2 phase 6 core. `calm_plugins::events` has a pure
+  `Coalescer` (injected `Instant`, per `(event, panel)` latest wins, trailing send, discrete
+  events in order, `panelRemoved` drops a pending `panelChanged`, windows clamped 16 to
+  5000 ms) and `emit_batch_js`. Not wired: the host sends no events through it yet.
 
 ## Not wired yet
 
@@ -135,6 +148,14 @@ Pull requests:
   to the WKWebView.
 - Layouts and session: layout save and load, `--layout`, session autosave and restore are
   not built. Only the core layout format exists. Plugin settings are not saved anywhere.
+  The session restore decision (restore on launch by default, Open replaces after one
+  confirmation, browser urls saved with `strip_all`, a seven item File menu) is recorded
+  in `decisions.md` and the spec; implementation (plan Tasks 3 to 12) is pending.
+  Layout v2 (persistence plan Task 2, PR #31): `saved_at_unix`, per-panel
+  `overrides`, `plugin_version`, browser `page_zoom`, and `PanelKind::Unsupported` that keeps
+  an unknown kind's JSON bytes. v1 files load as v2 and are never rewritten; version 3 and
+  up fail. The resize policy is not saved. Overrides are stored but not applied in the
+  chrome, page zoom is stored but not applied, and an unsupported panel draws chrome only.
 - `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title

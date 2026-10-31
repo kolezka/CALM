@@ -9,6 +9,7 @@ use crate::background::{
 };
 use crate::chrome::parse_hex_color;
 use crate::grid::GridKind;
+use crate::process_stats::{INTERVAL_MS_RANGE, MemoryUnit, clamp_interval_ms};
 use crate::settings::{
     GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
     SNAP_EDGE_RANGE, SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
@@ -61,7 +62,7 @@ pub enum FieldValue {
 /// State shown in the form that does not live in `Settings`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FormContext {
-    pub show_fps: bool,
+    pub show_stats: bool,
     pub settings_path: String,
     /// A problem worth showing at the top, such as a settings file that was set aside.
     pub notice: Option<String>,
@@ -73,7 +74,7 @@ pub struct FormContext {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FormCommand {
     ChooseImage,
-    SetShowFps(bool),
+    SetShowStats(bool),
     OpenConfigFolder,
 }
 
@@ -260,10 +261,42 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
 
     sections.push(section("Terminal", terminal_fields(settings)));
 
+    let stats = &settings.developer.stats;
     sections.push(section(
         "Developer",
         vec![
-            checkbox("developer.show_fps", "Show FPS", context.show_fps),
+            checkbox(
+                "developer.show_stats",
+                "Show stats (cmd-shift-f)",
+                context.show_stats,
+            ),
+            checkbox("developer.stats.show_fps", "FPS", stats.show_fps),
+            checkbox("developer.stats.show_cpu", "CPU", stats.show_cpu),
+            checkbox("developer.stats.show_memory", "Memory", stats.show_memory),
+            checkbox(
+                "developer.stats.include_children",
+                "Count child processes",
+                stats.include_children,
+            ),
+            slider(
+                "developer.stats.interval_ms",
+                "Sample every (ms)",
+                stats.interval_ms as f64,
+                interval_range(),
+                0,
+            ),
+            choice(
+                "developer.stats.memory_unit",
+                "Memory unit",
+                MemoryUnit::ALL
+                    .iter()
+                    .map(|unit| unit.label().to_string())
+                    .collect(),
+                MemoryUnit::ALL
+                    .iter()
+                    .position(|unit| *unit == stats.memory_unit)
+                    .unwrap_or(0),
+            ),
             note(
                 "developer.path",
                 "Settings file",
@@ -575,8 +608,34 @@ pub fn apply_field(
             settings.panels.preview_below_zoom = number(PREVIEW_ZOOM_RANGE, 2).unwrap_or(0.5);
             changed
         }
-        ("developer.show_fps", FieldValue::Bool(on)) => {
-            Ok(FormOutcome::Command(FormCommand::SetShowFps(on)))
+        ("developer.show_stats", FieldValue::Bool(on)) => {
+            Ok(FormOutcome::Command(FormCommand::SetShowStats(on)))
+        }
+        ("developer.stats.show_fps", FieldValue::Bool(on)) => {
+            settings.developer.stats.show_fps = on;
+            changed
+        }
+        ("developer.stats.show_cpu", FieldValue::Bool(on)) => {
+            settings.developer.stats.show_cpu = on;
+            changed
+        }
+        ("developer.stats.show_memory", FieldValue::Bool(on)) => {
+            settings.developer.stats.show_memory = on;
+            changed
+        }
+        ("developer.stats.include_children", FieldValue::Bool(on)) => {
+            settings.developer.stats.include_children = on;
+            changed
+        }
+        ("developer.stats.interval_ms", FieldValue::Number(_)) => {
+            let ms = number(interval_range(), 0).ok_or("bad stats interval")?;
+            settings.developer.stats.interval_ms = clamp_interval_ms(ms as u64);
+            changed
+        }
+        ("developer.stats.memory_unit", FieldValue::Index(index)) => {
+            settings.developer.stats.memory_unit =
+                *MemoryUnit::ALL.get(index).ok_or("bad memory unit")?;
+            changed
         }
         ("developer.open_folder", FieldValue::Pressed) => {
             Ok(FormOutcome::Command(FormCommand::OpenConfigFolder))
@@ -617,13 +676,23 @@ pub fn apply_field(
             | "panels.terminal_width"
             | "panels.terminal_height"
             | "panels.preview_zoom"
-            | "developer.show_fps"
+            | "developer.show_stats"
+            | "developer.stats.show_fps"
+            | "developer.stats.show_cpu"
+            | "developer.stats.show_memory"
+            | "developer.stats.include_children"
+            | "developer.stats.interval_ms"
+            | "developer.stats.memory_unit"
             | "developer.open_folder"
             | "developer.reset",
             _,
         ) => mismatch(),
         _ => Err(format!("unknown settings field {id:?}")),
     }
+}
+
+fn interval_range() -> RangeInclusive<f64> {
+    *INTERVAL_MS_RANGE.start() as f64..=*INTERVAL_MS_RANGE.end() as f64
 }
 
 /// Chrome colors a "Custom title bar colors" switch starts from: the brand cyan accent on
@@ -1124,6 +1193,31 @@ mod tests {
     }
 
     #[test]
+    fn stats_controls_apply_clamped_and_strict() {
+        let mut settings = Settings::default();
+        let interval = "developer.stats.interval_ms";
+        apply_field(&mut settings, interval, FieldValue::Number(10.0)).unwrap();
+        assert_eq!(settings.developer.stats.interval_ms, 250);
+        apply_field(&mut settings, interval, FieldValue::Number(1234.6)).unwrap();
+        assert_eq!(settings.developer.stats.interval_ms, 1235);
+        apply_field(&mut settings, interval, FieldValue::Number(1e9)).unwrap();
+        assert_eq!(settings.developer.stats.interval_ms, 10_000);
+        assert!(apply_field(&mut settings, interval, FieldValue::Number(f64::NAN)).is_err());
+        let unit = "developer.stats.memory_unit";
+        apply_field(&mut settings, unit, FieldValue::Index(1)).unwrap();
+        assert_eq!(settings.developer.stats.memory_unit, MemoryUnit::Mb);
+        assert!(apply_field(&mut settings, unit, FieldValue::Index(3)).is_err());
+        apply_field(
+            &mut settings,
+            "developer.stats.show_cpu",
+            FieldValue::Bool(false),
+        )
+        .unwrap();
+        assert!(!settings.developer.stats.show_cpu);
+        assert_eq!(settings.validate(), Ok(()));
+    }
+
+    #[test]
     fn outcomes_say_when_to_rebuild() {
         let mut settings = Settings::default();
         assert_eq!(
@@ -1140,8 +1234,12 @@ mod tests {
             Ok(FormOutcome::Command(FormCommand::ChooseImage))
         );
         assert_eq!(
-            apply_field(&mut settings, "developer.show_fps", FieldValue::Bool(true)),
-            Ok(FormOutcome::Command(FormCommand::SetShowFps(true)))
+            apply_field(
+                &mut settings,
+                "developer.show_stats",
+                FieldValue::Bool(true)
+            ),
+            Ok(FormOutcome::Command(FormCommand::SetShowStats(true)))
         );
         settings.grid.show = true;
         apply_field(&mut settings, "developer.reset", FieldValue::Pressed).unwrap();

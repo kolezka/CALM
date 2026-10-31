@@ -178,12 +178,14 @@ mod tests {
     fn browser() -> PanelKind {
         PanelKind::Browser {
             url: "https://example.com".into(),
+            page_zoom: None,
         }
     }
 
     fn plugin() -> PanelKind {
         PanelKind::Plugin {
             plugin_id: "fixture".into(),
+            plugin_version: None,
             settings: serde_json::json!({}),
         }
     }

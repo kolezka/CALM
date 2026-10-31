@@ -20,7 +20,7 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 }
 
 /// The first menu becomes the app menu on macOS, so View and Developer come after it.
-pub fn menus(show_fps: bool) -> Vec<Menu> {
+pub fn menus(show_stats: bool) -> Vec<Menu> {
     vec![
         Menu::new("CALM").items([
             MenuItem::action("About CALM", About),
@@ -32,7 +32,7 @@ pub fn menus(show_fps: bool) -> Vec<Menu> {
             MenuItem::action("Fit All Panels", FitAll),
         ]),
         Menu::new("Developer").items([
-            MenuItem::action("Show FPS", ToggleFps).checked(show_fps),
+            MenuItem::action("Show Stats", ToggleFps).checked(show_stats),
             MenuItem::action("Reset FPS Stats", ResetFps),
         ]),
     ]

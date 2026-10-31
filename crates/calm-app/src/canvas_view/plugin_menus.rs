@@ -108,7 +108,10 @@ impl CanvasView {
 
         if is_tui {
             self.pending_tui_args = Some(item.run.clone().unwrap_or_default());
-            let kind = PanelKind::Tui { plugin_id };
+            let kind = PanelKind::Tui {
+                plugin_id,
+                plugin_version: None,
+            };
             self.open_panel_for_command(kind, Rect { origin, size }, window, cx);
             self.pending_tui_args = None;
             return true;
@@ -124,6 +127,7 @@ impl CanvasView {
             None => {
                 let kind = PanelKind::Plugin {
                     plugin_id,
+                    plugin_version: None,
                     settings: serde_json::Value::Object(serde_json::Map::new()),
                 };
                 self.open_panel_for_command(kind, Rect { origin, size }, window, cx)

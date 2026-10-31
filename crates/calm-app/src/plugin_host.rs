@@ -372,6 +372,7 @@ mod tests {
         let mut scene = Scene::default();
         let kind = PanelKind::Plugin {
             plugin_id: "hello-world".to_string(),
+            plugin_version: None,
             settings: json!({}),
         };
         let id = scene.add(kind, Rect::new(0.0, 0.0, 320.0, 200.0));

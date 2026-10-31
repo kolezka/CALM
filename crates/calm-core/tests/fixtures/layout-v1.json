@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "camera": {
+    "offset": {
+      "x": -40.0,
+      "y": 12.5
+    },
+    "zoom": 0.75
+  },
+  "panels": [
+    {
+      "kind": {
+        "type": "terminal",
+        "command": "htop",
+        "cwd": "/tmp"
+      },
+      "rect": {
+        "origin": {
+          "x": 0.0,
+          "y": 0.0
+        },
+        "size": {
+          "width": 400.0,
+          "height": 300.0
+        }
+      },
+      "title": "Terminal",
+      "minimized": false
+    },
+    {
+      "kind": {
+        "type": "plugin",
+        "plugin_id": "github-prs",
+        "settings": {
+          "repos": [
+            "a/b"
+          ]
+        }
+      },
+      "rect": {
+        "origin": {
+          "x": -300.0,
+          "y": 400.0
+        },
+        "size": {
+          "width": 300.0,
+          "height": 200.0
+        }
+      },
+      "title": "github-prs",
+      "minimized": false
+    },
+    {
+      "kind": {
+        "type": "tui",
+        "plugin_id": "top-example"
+      },
+      "rect": {
+        "origin": {
+          "x": 900.0,
+          "y": 0.0
+        },
+        "size": {
+          "width": 480.0,
+          "height": 320.0
+        }
+      },
+      "title": "top-example",
+      "minimized": false
+    },
+    {
+      "kind": {
+        "type": "browser",
+        "url": "https://example.com"
+      },
+      "rect": {
+        "origin": {
+          "x": 500.0,
+          "y": 20.0
+        },
+        "size": {
+          "width": 640.0,
+          "height": 480.0
+        }
+      },
+      "title": "Docs",
+      "minimized": true
+    }
+  ]
+}

@@ -200,6 +200,7 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
         ADD_BROWSER => add(
             PanelKind::Browser {
                 url: "about:blank".to_string(),
+                page_zoom: None,
             },
             DEFAULT_BROWSER_SIZE,
         ),
@@ -216,6 +217,7 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
             add(
                 PanelKind::Tui {
                     plugin_id: plugin_id.to_string(),
+                    plugin_version: None,
                 },
                 *size,
             )
@@ -226,6 +228,7 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
             add(
                 PanelKind::Plugin {
                     plugin_id: plugin_id.to_string(),
+                    plugin_version: None,
                     settings: serde_json::Value::Object(serde_json::Map::new()),
                 },
                 *size,
@@ -339,7 +342,8 @@ mod tests {
             menu_action("add.browser", world, &[]),
             Some(MenuCommand::AddPanel {
                 kind: PanelKind::Browser {
-                    url: "about:blank".to_string()
+                    url: "about:blank".to_string(),
+                    page_zoom: None,
                 },
                 rect: Rect::new(120.0, -40.0, 800.0, 600.0),
             })
@@ -368,6 +372,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 400.0, 300.0),
             title: "Terminal".to_string(),
             minimized,
+            overrides: crate::scene::PanelOverrides::default(),
             resize: crate::resize::ResizePolicy::FREE,
         }
     }
@@ -409,6 +414,7 @@ mod tests {
     fn panel_menu_offers_duplicate_only_for_terminals() {
         let browser = PanelKind::Browser {
             url: "about:blank".to_string(),
+            page_zoom: None,
         };
         let items = panel_menu(&panel(browser, false), false);
         assert!(!items.contains(&action("panel.duplicate", "Duplicate")));
@@ -459,7 +465,8 @@ mod tests {
             menu_action("add.tui.slack", world, &sizes),
             Some(MenuCommand::AddPanel {
                 kind: PanelKind::Tui {
-                    plugin_id: "slack".to_string()
+                    plugin_id: "slack".to_string(),
+                    plugin_version: None,
                 },
                 rect: Rect {
                     origin: world,
@@ -474,6 +481,7 @@ mod tests {
     fn exited_tui_panel_offers_restart_first_and_duplicate() {
         let tui = PanelKind::Tui {
             plugin_id: "slack".to_string(),
+            plugin_version: None,
         };
         let items = panel_menu(&panel(tui.clone(), false), true);
         assert_eq!(items[0], action("panel.restart", "Restart"));
