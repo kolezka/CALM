@@ -280,9 +280,6 @@ Plan in `docs/superpowers/plans/2026-10-31-canvas-persistence.md`, approved by t
   `strip_all`; `keep` is opt-in. Reason: the "no credentials in layouts" rule, and tokens
   often ride in query strings. A name list (`strip_sensitive`) was rejected as best effort.
   Cost: pages that need their query reopen without it.
-- **Layouts move into plugin API v2 as a phase.** The v2 design had layouts as a non-goal;
-  the persistence plan needs `layouts.*` and `session.saveNow`. The design text is in PR #22
-  (open). Cost: a larger v2 surface.
 
 ## Session restore (2026-10-31, approved by the user, implementation pending)
 
@@ -359,3 +356,60 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   action checks the first responder; when a terminal, page or address field holds it,
   Escape stays theirs and focus stays. Same setting. Reason: never steal Escape from a
   running program. Cost: Escape cannot blur a panel whose native view holds the keyboard.
+
+## Plugin context menu items (2026-10-31)
+
+- **Flat `contributes.menus` items, not v2's `commands` plus `menus.canvas/panel`.** Each item
+  carries its own `id`, `title` and `location`, and `when` is a struct (`kind`, `plugin`,
+  `minimized`) instead of the `kind == terminal` string. Reason: the lead's brief for the
+  user's request, one place per item, and strict per-field validation without a parser.
+  Cost: a later `contributes.commands` (for key bindings) needs items to reference commands
+  or keep both shapes.
+- **The payload key is `id`, not v2's `command`,** and it adds `location`, the full `panel`
+  info and `world`. The event name stays `command`.
+- **Built-in items first, plugins cannot remove them.** Plugin sections follow a separator,
+  one per plugin in discovery order. Reason: plugins are trusted, but a broken plugin must
+  not hide Delete. Users hide plugin items with `plugins.menus.hidden`.
+- **Submenu above 3 items per plugin, a setting (`plugins.menus.submenu_above`).** Three
+  items inline keep a short menu flat; more nest under the plugin name.
+- **No background page target.** v2 sends commands to a background page first; those do not
+  exist, so the order is clicked panel, focused panel, frontmost panel, else a new panel.
+  `"open": "new"` skips reuse. The prelude queues commands until a handler registers, and
+  undeliverable commands are logged.
+- **`icon` is text before the title, no `shortcut`.** NSMenu images and key equivalents would
+  need `MenuItem` changes across the menu code; a key shown in a context menu that does not
+  work outside it would mislead. Key bindings belong to v2 `keybindings`.
+- **No runtime `calm.menus.register` yet.** It needs a per-plugin registry the bridge
+  dispatcher can reach, which is being changed in parallel for `github.api`.
+- **`apiVersion` is not required for `contributes`.** The host does not read `apiVersion`
+  yet.
+
+## Plugin API v2 refresh (2026-10-31)
+
+- **Layouts move into plugin API v2 as phase 16.** The v2 design listed layout save and
+  load as a non-goal; the canvas persistence plan needs `layouts.list`, `save`, `open`,
+  `delete` and `session.saveNow`, so the design now has them. `layouts.open` closes live
+  terminals only through the user's confirmation, and the write methods sit in the
+  external socket's `layout` group. The plan's File menu and restore on launch are
+  decided. Cost: phase 16 waits on the plan's PRs 1 to 7.
+
+## Runtime app icon and About panel (2026-10-31)
+
+- **An unbundled run sets the brand icon at runtime.** `calm_native::app_icon` embeds
+  `CALM.iconset/icon_512x512.png` and calls `setApplicationIconImage` at startup, so
+  `cargo run` shows it in the Dock, cmd-tab, About and any NSAlert. When the main bundle
+  names `CFBundleIconFile` it does nothing: the bundle's `CALM.icns` has the hand-tuned 16
+  and 32 px sizes, and one 512 px image would replace them. gpui-pre 0.3.4 has no app icon
+  API, so this is raw AppKit. Cost: the binary carries a 3 KB PNG.
+- **A broken icon logs and keeps the default.** Bytes are fully decoded with the `image`
+  crate first, because NSImage reads only the header and would accept corrupt pixel data.
+  Never a panic, never silent. AppKit stores a re-rendered copy with no name and other
+  bytes, so the install reads the icon back and errors if it still equals the default; the
+  smoke fails unless that readback passed.
+- **"About CALM" is the first app menu item** and opens the standard About panel with the
+  brand icon, the Cargo version and one fixed credits line. No settings: it is app identity,
+  like the brand palette above. "Settings…" now comes after About.
+- **Alerts inherit the icon.** gpui-pre's `prompt` builds `NSAlert::new` without an icon, and
+  NSAlert then shows the application icon. CALM itself shows no NSAlert today (close
+  confirmation is drawn in GPUI), so no `alert.icon` is set. macOS windows have no per-window
+  icon, so the Settings window and status bar get nothing.

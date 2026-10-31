@@ -63,6 +63,7 @@ const FIELDS: &[&str] = &[
     "titleBarColor",
     "titleColor",
     "terminalColors",
+    "contributes",
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

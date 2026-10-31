@@ -97,7 +97,10 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
   var nextId = 1;
   var pending = new Map();
   var handlers = new Map();
-  var EVENTS = ["focus", "blur", "resize", "visibility", "settingsChanged", "themeChanged"];
+  var EVENTS = ["focus", "blur", "resize", "visibility", "settingsChanged", "themeChanged", "command"];
+  // Commands that arrive before the page registered a handler, delivered on registration.
+  var MAX_QUEUED_COMMANDS = 32;
+  var queuedCommands = [];
 
   function call(request) {
     return new Promise(function (resolve, reject) {
@@ -148,6 +151,14 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
     // Called by the host. Never throws back into it: a failing handler is logged.
     emit: function (event, payload) {
       var set = handlers.get(event);
+      if (event === "command" && (!set || set.size === 0)) {
+        if (queuedCommands.length >= MAX_QUEUED_COMMANDS) {
+          log("calm: command " + (payload && payload.id) + " dropped, no command handler");
+          return;
+        }
+        queuedCommands.push(payload);
+        return;
+      }
       if (!set) return;
       Array.from(set).forEach(function (handler) {
         try {
@@ -165,7 +176,11 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
       set: function (value) { return call({ method: "settings.set", params: value }); }
     }),
     storage: Object.freeze({
-      get: function (key) { return call({ method: "storage.get", params: { key: String(key) } }); },
+      // JSON has no undefined: the host answers null for a missing key.
+      get: function (key) {
+        return call({ method: "storage.get", params: { key: String(key) } })
+          .then(function (value) { return value === null ? undefined : value; });
+      },
       set: function (key, value) {
         return call({ method: "storage.set", params: { key: String(key), value: value } });
       },
@@ -207,6 +222,11 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
         if (!set) handlers.set(event, (set = new Set()));
         var entry = function (payload) { handler(payload); };
         set.add(entry);
+        if (event === "command") {
+          queuedCommands.splice(0).forEach(function (payload) {
+            window.__calm.emit("command", payload);
+          });
+        }
         return function () { set.delete(entry); };
       }
     }),
@@ -405,6 +425,24 @@ globalThis.window = { webkit: { messageHandlers: { calm: { postMessage: function
         );
         let last = stdout.lines().last().expect("bun printed nothing");
         Some(serde_json::from_str(last).unwrap())
+    }
+
+    #[test]
+    fn command_before_a_handler_is_queued_then_delivered_in_order() {
+        let harness = r#"var got = [];
+window.__calm.emit("command", { id: "early-1" });
+window.__calm.emit("command", { id: "early-2" });
+var before = got.length;
+window.calm.events.on("command", function (c) { got.push(c.id); });
+window.__calm.emit("command", { id: "late" });
+console.log(JSON.stringify({ before: before, got: got }));"#;
+        let Some(result) = run_prelude_under_bun("command", harness) else {
+            return;
+        };
+        assert_eq!(
+            result,
+            json!({ "before": 0, "got": ["early-1", "early-2", "late"] })
+        );
     }
 
     #[test]

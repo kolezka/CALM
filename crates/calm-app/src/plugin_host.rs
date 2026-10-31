@@ -1,14 +1,15 @@
 //! Plugin panels: discovery at startup, one WKWebView per panel, and the host side of the
-//! `window.calm` bridge for the few methods served so far.
+//! `window.calm` bridge. Calls that block on the host live in `plugin_services`.
 
+use crate::plugin_services::ServiceCall;
 use calm_core::geometry::Size;
 use calm_core::preview::PanelMode;
 use calm_core::scene::{Panel, PanelId, PanelKind};
 use calm_core::viewport::NativePlacement;
 use calm_native::{NativeChild, WebPanel};
 use calm_plugins::{
-    BridgeRequest, BridgeResponse, CALM_PRELUDE_JS, Discovery, InstalledPlugin, discover_search,
-    is_known_method, missing_scripts, plugin_search,
+    BridgeEvent, BridgeRequest, BridgeResponse, CALM_PRELUDE_JS, Discovery, InstalledPlugin,
+    discover_search, is_known_method, missing_scripts, plugin_search,
 };
 use futures::channel::mpsc::UnboundedSender;
 use gpui::Window;
@@ -210,6 +211,11 @@ impl PluginPanel {
     pub fn reply(&mut self, response: &BridgeResponse) {
         self.web.eval_js(&response.to_js());
     }
+
+    /// Fans a host event out to the page's `calm.events.on` handlers.
+    pub fn emit(&mut self, event: &BridgeEvent) {
+        self.web.eval_js(&event.to_js());
+    }
 }
 
 fn not_built_message(plugin: &InstalledPlugin, missing: &[std::path::PathBuf]) -> String {
@@ -290,6 +296,37 @@ pub fn dispatch(panel: &mut Panel, request: &BridgeRequest) -> Option<BridgeResp
     Some(response)
 }
 
+/// Where a bridge call is answered.
+#[derive(Debug, PartialEq)]
+pub enum Route {
+    /// Answered now on the UI thread; `None` means no reply (`log`).
+    Reply(Option<BridgeResponse>),
+    /// Blocks on the host (`gh`, files, `open`): run it on the background executor and
+    /// answer with `service_reply`.
+    Background(ServiceCall),
+}
+
+/// Picks the background services first, then everything `dispatch` answers.
+pub fn route(panel: &mut Panel, request: &BridgeRequest) -> Route {
+    let plugin_id = match &panel.kind {
+        PanelKind::Plugin { plugin_id, .. } => Some(plugin_id.as_str()),
+        _ => None,
+    };
+    match crate::plugin_services::parse(plugin_id, &request.method, &request.params) {
+        Some(Ok(call)) => Route::Background(call),
+        Some(Err(message)) => Route::Reply(Some(BridgeResponse::Err(request.id, message))),
+        None => Route::Reply(dispatch(panel, request)),
+    }
+}
+
+/// The reply for a finished background call.
+pub fn service_reply(id: u64, result: Result<Value, String>) -> BridgeResponse {
+    match result {
+        Ok(value) => BridgeResponse::Ok(id, value),
+        Err(message) => BridgeResponse::Err(id, message),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,7 +396,17 @@ mod tests {
             dispatch(panel, &call(1, "log", json!({ "message": "hi" }))),
             None
         );
-        let served = ["log", "panel.setTitle", "settings.get", "settings.set"];
+        let served = [
+            "log",
+            "panel.setTitle",
+            "settings.get",
+            "settings.set",
+            "github.api",
+            "storage.get",
+            "storage.set",
+            "storage.remove",
+            "openExternal",
+        ];
         for (n, method) in calm_plugins::BRIDGE_METHODS.iter().enumerate() {
             if served.contains(method) {
                 continue;
@@ -375,6 +422,146 @@ mod tests {
             dispatch(panel, &call(99, "nope", Value::Null)),
             Some(BridgeResponse::Err(99, "unknown method: nope".into()))
         );
+    }
+
+    /// What the canvas does with a call, run inline: route, then the background service.
+    fn serve(
+        panel: &mut Panel,
+        request: &BridgeRequest,
+        services: &crate::plugin_services::Services,
+    ) -> Option<BridgeResponse> {
+        match route(panel, request) {
+            Route::Reply(reply) => reply,
+            Route::Background(call) => Some(service_reply(request.id, services.run(call))),
+        }
+    }
+
+    fn gh_services(dir: &std::path::Path, gh_body: &str) -> crate::plugin_services::Services {
+        crate::plugin_services::Services {
+            gh: calm_plugins::GhClient::new(fake_program(dir, "gh", gh_body)),
+            data_dir: dir.join("plugin-data"),
+            opener: dir.join("no-open"),
+        }
+    }
+
+    use crate::plugin_services::tests::{FAKE_GH_LOCK, fake_program};
+
+    const PULLS: &str = "repos/inkitt/flash/pulls?state=open&per_page=30";
+
+    // Regression: github.api answered "not implemented: github.api" and the GitHub PRs
+    // panel showed that instead of pull requests.
+    #[test]
+    fn github_api_runs_gh_and_answers_with_its_json() {
+        let _guard = FAKE_GH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let services = gh_services(
+            dir.path(),
+            &format!(
+                r#"if [ "$1" = api ] && [ "$2" = "{PULLS}" ]; then
+  echo '[{{"number":7,"title":"Fix login","draft":false}}]'
+else
+  echo "unexpected args: $*" >&2; exit 1
+fi"#
+            ),
+        );
+        let (mut scene, id) = plugin_panel();
+        let panel = scene.get_mut(id).unwrap();
+        assert_eq!(
+            serve(
+                panel,
+                &call(5, "github.api", json!({ "path": PULLS })),
+                &services
+            ),
+            Some(BridgeResponse::Ok(
+                5,
+                json!([{ "number": 7, "title": "Fix login", "draft": false }])
+            ))
+        );
+    }
+
+    #[test]
+    fn github_api_errors_say_what_to_do() {
+        let _guard = FAKE_GH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let (mut scene, id) = plugin_panel();
+        let panel = scene.get_mut(id).unwrap();
+        let request = call(6, "github.api", json!({ "path": PULLS }));
+        let message = |services: &crate::plugin_services::Services, panel: &mut Panel| match serve(
+            panel, &request, services,
+        ) {
+            Some(BridgeResponse::Err(6, message)) => message,
+            other => panic!("expected an error reply, got {other:?}"),
+        };
+
+        let mut missing = gh_services(dir.path(), "exit 0");
+        missing.gh = calm_plugins::GhClient::new(dir.path().join("no-such-gh"));
+        assert!(message(&missing, panel).starts_with("gh is not installed"));
+
+        let logged_out = gh_services(
+            dir.path(),
+            r#"echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4"#,
+        );
+        assert!(message(&logged_out, panel).starts_with("gh is not logged in, run gh auth login"));
+
+        let not_found = gh_services(dir.path(), r#"echo "gh: Not Found (HTTP 404)" >&2; exit 1"#);
+        assert_eq!(
+            message(&not_found, panel),
+            "gh api failed: gh: Not Found (HTTP 404)"
+        );
+
+        let bad_path = call(7, "github.api", json!({ "path": "--paginate" }));
+        assert!(matches!(
+            serve(panel, &bad_path, &not_found),
+            Some(BridgeResponse::Err(7, m)) if m.starts_with("invalid gh api path")
+        ));
+    }
+
+    #[test]
+    fn github_api_error_reply_never_carries_the_token() {
+        let _guard = FAKE_GH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let token = "fake-token-for-tests";
+        let mut services = gh_services(
+            dir.path(),
+            r#"echo "gh: Bad credentials for $GH_TOKEN (HTTP 401)" >&2; exit 1"#,
+        );
+        services.gh.token = calm_plugins::GhToken::new(token);
+        let (mut scene, id) = plugin_panel();
+        let panel = scene.get_mut(id).unwrap();
+
+        let reply = serve(
+            panel,
+            &call(8, "github.api", json!({ "path": "user" })),
+            &services,
+        );
+
+        let Some(BridgeResponse::Err(8, message)) = &reply else {
+            panic!("expected an error reply, got {reply:?}");
+        };
+        // Positive control: the fake printed the token, and the reply has the marker instead.
+        assert!(message.contains("<redacted>"), "{message}");
+        assert!(!message.contains(token));
+        assert!(!reply.unwrap().to_js().contains(token));
+        assert!(!format!("{services:?}").contains(token));
+    }
+
+    #[test]
+    fn storage_is_served_for_the_panel_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let services = gh_services(dir.path(), "exit 1");
+        let (mut scene, id) = plugin_panel();
+        let panel = scene.get_mut(id).unwrap();
+        let set = call(1, "storage.set", json!({ "key": "k", "value": [1, 2] }));
+        assert_eq!(
+            serve(panel, &set, &services),
+            Some(BridgeResponse::Ok(1, Value::Null))
+        );
+        let get = call(2, "storage.get", json!({ "key": "k" }));
+        assert_eq!(
+            serve(panel, &get, &services),
+            Some(BridgeResponse::Ok(2, json!([1, 2])))
+        );
+        assert!(dir.path().join("plugin-data/hello-world.json").exists());
     }
 
     #[test]

@@ -100,17 +100,76 @@ impl Default for CanvasSettings {
 }
 
 /// Plugin discovery options. Read once at startup.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PluginSettings {
     /// Also load the plugins shipped with CALM (the repo's `plugins/` in a dev build,
     /// `CALM.app/Contents/Resources/plugins` in a bundle).
     pub builtin: bool,
+    pub menus: PluginMenuSettings,
 }
 
 impl Default for PluginSettings {
     fn default() -> Self {
-        PluginSettings { builtin: true }
+        PluginSettings {
+            builtin: true,
+            menus: PluginMenuSettings::default(),
+        }
+    }
+}
+
+/// A plugin with more context menu items than this gets a submenu named after it.
+pub const DEFAULT_SUBMENU_ABOVE: usize = 3;
+pub const SUBMENU_ABOVE_MAX: usize = 50;
+
+/// How plugin items show in the context menus. Read each time a menu opens.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PluginMenuSettings {
+    /// A plugin id hides all its items; `<plugin-id>/<item-id>` hides one item.
+    pub hidden: Vec<String>,
+    /// 0 puts every plugin's items in a submenu.
+    pub submenu_above: usize,
+}
+
+impl Default for PluginMenuSettings {
+    fn default() -> Self {
+        PluginMenuSettings {
+            hidden: Vec::new(),
+            submenu_above: DEFAULT_SUBMENU_ABOVE,
+        }
+    }
+}
+
+/// `[a-z0-9-]+`, the shape of plugin and menu item ids.
+pub fn is_plugin_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+impl PluginMenuSettings {
+    fn validate(&self) -> Result<(), String> {
+        if self.submenu_above > SUBMENU_ABOVE_MAX {
+            return Err(format!(
+                "\"plugins.menus.submenu_above\" is {}, expected 0 to {SUBMENU_ABOVE_MAX}",
+                self.submenu_above
+            ));
+        }
+        for (index, entry) in self.hidden.iter().enumerate() {
+            let ok = match entry.split_once('/') {
+                Some((plugin, item)) => is_plugin_id(plugin) && is_plugin_id(item),
+                None => is_plugin_id(entry),
+            };
+            if !ok {
+                return Err(format!(
+                    "\"plugins.menus.hidden[{index}]\" is {entry:?}, expected a plugin id or \
+                     <plugin-id>/<item-id>"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -353,7 +412,8 @@ impl Settings {
             panels.preview_below_zoom,
             PREVIEW_ZOOM_RANGE,
         )?;
-        self.terminal.validate()
+        self.terminal.validate()?;
+        self.plugins.menus.validate()
     }
 }
 
@@ -580,6 +640,40 @@ mod tests {
         settings.panels.default_terminal_width = 800.0;
         settings.panels.preview_below_zoom = 0.3;
         settings
+    }
+
+    #[test]
+    fn plugin_menu_settings_default_and_reject_bad_values() {
+        let absent: Settings = serde_json::from_str(r#"{ "version": 2 }"#).unwrap();
+        assert_eq!(absent.plugins.menus, PluginMenuSettings::default());
+        assert_eq!(absent.plugins.menus.submenu_above, 3);
+        let set: Settings = serde_json::from_str(
+            r#"{ "version": 2, "plugins": { "menus": {
+                "hidden": ["github-prs", "hello-world/rename"], "submenu_above": 0 } } }"#,
+        )
+        .unwrap();
+        assert_eq!(set.plugins.menus.hidden.len(), 2);
+        assert!(set.validate().is_ok());
+        for (field, value) in [
+            ("hidden", r#"["Bad Id"]"#),
+            ("hidden", r#"["a/"]"#),
+            ("hidden", r#"["a/b/c"]"#),
+            ("submenu_above", "51"),
+        ] {
+            let json = format!(
+                r#"{{ "version": 2, "plugins": {{ "menus": {{ "{field}": {value} }} }} }}"#
+            );
+            let settings: Settings = serde_json::from_str(&json).unwrap();
+            let err = settings.validate().unwrap_err();
+            assert!(err.contains(&format!("plugins.menus.{field}")), "{err}");
+        }
+        // A misspelled key is an error, not silently ignored.
+        assert!(
+            serde_json::from_str::<Settings>(
+                r#"{ "version": 2, "plugins": { "menus": { "hide": [] } } }"#
+            )
+            .is_err()
+        );
     }
 
     #[test]

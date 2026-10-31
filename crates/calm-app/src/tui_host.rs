@@ -23,6 +23,8 @@ pub struct TuiRun {
     pub status_file: PathBuf,
     /// Exit and Enter events of the current terminal. Replaced on restart.
     pub subscription: Option<Subscription>,
+    /// Appended to the manifest's `args`, from the plugin menu item that opened the panel.
+    pub extra_args: Vec<String>,
 }
 
 impl TuiRun {
@@ -43,6 +45,7 @@ impl TuiRun {
             launches: 0,
             status_file: PathBuf::new(),
             subscription: None,
+            extra_args: Vec::new(),
         })
     }
 
@@ -104,7 +107,7 @@ impl TuiRun {
         let spec = self.spec();
         let launch = LaunchSpec {
             command: spec.command.clone(),
-            args: spec.args.clone(),
+            args: spec.args.iter().chain(&self.extra_args).cloned().collect(),
             env: spec.env.clone().into_iter().collect(),
             shell: spec.shell,
         };

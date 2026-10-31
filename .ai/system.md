@@ -65,7 +65,10 @@ calm-app       GPUI binary: CanvasView, hosts per panel kind, menus, smoke gate
   `$CALM_HOME/settings.json` or `~/.config/calm/settings.json`.
 - `settings_form`: the Settings window as data and `apply_field`.
 - `layout`: layout file format and validation. Not wired into the app.
-- `menu`: context menu model. `frame_stats`, `stats`: FPS and percentiles.
+- `menu`: context menu model.
+- `plugin_menu`: plugin menu items (`MenuContribution`, `MenuWhen`), the merged section after
+  the built-ins, the `command` payload and which panel a command goes to.
+- `frame_stats`, `stats`: FPS and percentiles.
 
 ### calm-native
 
@@ -88,6 +91,7 @@ calm-app       GPUI binary: CanvasView, hosts per panel kind, menus, smoke gate
 - `assets`: checks that an entry page's local scripts exist (the unbuilt `dist/` case).
 - `bridge`: request, response and event types, `BRIDGE_METHODS` (17), `CALM_PRELUDE_JS`.
 - `github`: `GhClient` wrapping `gh api` on the host. Not dispatched by the app yet.
+- `contributes`: `contributes.menus` in either manifest kind, strict per-field errors.
 
 ### calm-app
 
