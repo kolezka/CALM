@@ -11,3 +11,5 @@ bench-results/
 *.log
 dist/
 graphify-out/cache/
+.env
+.env.*

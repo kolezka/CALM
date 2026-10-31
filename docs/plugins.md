@@ -356,6 +356,30 @@ brew install gh
 gh auth login
 ```
 
+Instead of `gh auth login` you can give `gh` a token. CALM looks in this order and uses the
+first one it finds:
+
+1. `GH_TOKEN`, then `GITHUB_TOKEN`, in the environment CALM was started with.
+2. `$CALM_HOME/.env`, by default `~/.config/calm/.env`.
+3. Dev builds only (`cargo run`): `.env` at the root of the checkout. `.gitignore` covers it.
+
+If none is set, `gh` uses its own login. A `.env` file looks like this:
+
+```sh
+# ~/.config/calm/.env
+GITHUB_TOKEN=<your token>
+```
+
+Lines are `KEY=VALUE`, with optional quotes, `#` comments and an `export ` prefix. Only
+`GH_TOKEN` and `GITHUB_TOKEN` are read (`GH_TOKEN` wins within one file); every other key is
+ignored and exported nowhere. A line that does not parse is reported on stderr by its line
+number. Keep the file private with `chmod 600`: CALM warns, naming the path, when other
+users can read it, but still loads it.
+
+The token goes to the `gh` process as `GH_TOKEN` in its environment, never on its command
+line. Plugin JS never sees it, and CALM replaces it with `<redacted>` in error messages and
+responses. Logs name only where it came from.
+
 `path` is the part after `https://api.github.com/`, for example
 `repos/OWNER/NAME/pulls?state=open&per_page=30`. It may only contain letters, digits and
 `_ . / ? = & % -`, and may not start with `-`. Only GET requests are possible, and results are

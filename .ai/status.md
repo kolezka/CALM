@@ -73,6 +73,10 @@ research doc and grid styles. Facts are verified unless marked otherwise.
   GPUI task. `GhClient` kills `gh` after 30 s and refuses output over 8 MiB. The other 8
   methods reject with `not implemented: <method>`. Errors are still v1 strings; the v2
   `{ code, message }` shape is not done.
+- `gh` token: `calm_plugins::gh_token` takes `GH_TOKEN`/`GITHUB_TOKEN` from CALM's env, then
+  `$CALM_HOME/.env`, then (dev builds) the workspace `.env`, else `gh`'s own login. Passed
+  as child env `GH_TOKEN`, never argv; redacted in gh stderr and stdout; Debug and Display
+  of `GhToken` print `<redacted>`.
 - Smoke `github.api ok` runs a fixture page against a fake `gh` script (never the network)
   and checks the PR list, a logged-out error and a storage round trip.
 - Fixed: the prelude posted plain objects, which WebKit delivers as an NSDictionary whose

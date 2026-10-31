@@ -512,6 +512,35 @@ fi"#
     }
 
     #[test]
+    fn github_api_error_reply_never_carries_the_token() {
+        let _guard = FAKE_GH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let token = "fake-token-for-tests";
+        let mut services = gh_services(
+            dir.path(),
+            r#"echo "gh: Bad credentials for $GH_TOKEN (HTTP 401)" >&2; exit 1"#,
+        );
+        services.gh.token = calm_plugins::GhToken::new(token);
+        let (mut scene, id) = plugin_panel();
+        let panel = scene.get_mut(id).unwrap();
+
+        let reply = serve(
+            panel,
+            &call(8, "github.api", json!({ "path": "user" })),
+            &services,
+        );
+
+        let Some(BridgeResponse::Err(8, message)) = &reply else {
+            panic!("expected an error reply, got {reply:?}");
+        };
+        // Positive control: the fake printed the token, and the reply has the marker instead.
+        assert!(message.contains("<redacted>"), "{message}");
+        assert!(!message.contains(token));
+        assert!(!reply.unwrap().to_js().contains(token));
+        assert!(!format!("{services:?}").contains(token));
+    }
+
+    #[test]
     fn storage_is_served_for_the_panel_plugin() {
         let dir = tempfile::tempdir().unwrap();
         let services = gh_services(dir.path(), "exit 1");

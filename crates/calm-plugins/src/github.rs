@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::gh_token::GhToken;
+
 /// How long one `gh api` call may run before it is killed.
 pub const GH_TIMEOUT: Duration = Duration::from_secs(30);
 /// The largest `gh api` response CALM parses.
@@ -20,6 +22,8 @@ pub struct GhClient {
     pub program: PathBuf,
     pub timeout: Duration,
     pub max_output: usize,
+    /// Passed to `gh` as `GH_TOKEN` in its env. `None` leaves `gh` on its own login.
+    pub token: Option<GhToken>,
 }
 
 impl Default for GhClient {
@@ -50,6 +54,7 @@ impl GhClient {
             program: program.into(),
             timeout: GH_TIMEOUT,
             max_output: GH_MAX_OUTPUT,
+            token: None,
         }
     }
 
@@ -59,13 +64,18 @@ impl GhClient {
         if !is_valid_path(path) {
             return Err(GhError::InvalidPath(path.to_string()));
         }
-        let spawned = Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        command
             .arg("api")
             .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
+            .stderr(Stdio::piped());
+        // Env, never argv: argv is visible to every user through `ps`.
+        if let Some(token) = &self.token {
+            command.env("GH_TOKEN", token.expose());
+        }
+        let spawned = command.spawn();
         let mut child = match spawned {
             Ok(child) => child,
             Err(err) if err.kind() == ErrorKind::NotFound => return Err(GhError::NotInstalled),
@@ -98,7 +108,7 @@ impl GhClient {
             return Err(GhError::TooLarge(self.max_output));
         }
         if !status.success() {
-            let stderr = String::from_utf8_lossy(&stderr).trim().to_string();
+            let stderr = self.redact(String::from_utf8_lossy(&stderr).trim());
             if stderr.contains("gh auth login")
                 || stderr.contains("not logged")
                 || stderr.contains("HTTP 401")
@@ -107,8 +117,17 @@ impl GhClient {
             }
             return Err(GhError::Rejected(stderr));
         }
-        serde_json::from_slice(&stdout)
+        // GitHub does not echo tokens, but this answer goes to plugin JS, so make sure.
+        let stdout = self.redact(&String::from_utf8_lossy(&stdout));
+        serde_json::from_str(&stdout)
             .map_err(|err| GhError::Rejected(format!("gh returned invalid JSON: {err}")))
+    }
+
+    fn redact(&self, text: &str) -> String {
+        match &self.token {
+            Some(token) => token.redact(text),
+            None => text.to_string(),
+        }
     }
 }
 
@@ -272,6 +291,58 @@ exit 1"#,
             client.api("user"),
             Ok(json!({ "a": "0123456789012345678901234567890" }))
         );
+    }
+
+    const FAKE_TOKEN: &str = "fake-token-for-tests";
+
+    #[test]
+    fn token_goes_to_gh_env_never_argv_or_output() {
+        let _guard = FAKE_GH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let args = dir.path().join("args");
+        let env = dir.path().join("env");
+        let gh = fake_gh(
+            dir.path(),
+            &format!(
+                "printf '%s\\n' \"$@\" > '{}'\nenv > '{}'\necho \"{{\\\"echo\\\":\\\"$GH_TOKEN\\\"}}\"",
+                args.display(),
+                env.display()
+            ),
+        );
+        let mut client = GhClient::new(gh);
+        client.token = GhToken::new(FAKE_TOKEN);
+
+        let value = client.api("user").unwrap();
+
+        assert_eq!(fs::read_to_string(&args).unwrap(), "api\nuser\n");
+        let env = fs::read_to_string(&env).unwrap();
+        assert!(
+            env.lines().any(|l| l == format!("GH_TOKEN={FAKE_TOKEN}")),
+            "GH_TOKEN not in the child env"
+        );
+        assert_eq!(value, json!({ "echo": "<redacted>" }));
+        assert!(!format!("{client:?}").contains(FAKE_TOKEN));
+    }
+
+    #[test]
+    fn error_text_never_echoes_the_token() {
+        let _guard = FAKE_GH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let gh = fake_gh(
+            dir.path(),
+            r#"echo "gh: bad token $GH_TOKEN (HTTP 403)" >&2; exit 1"#,
+        );
+        let mut client = GhClient::new(gh);
+        client.token = GhToken::new(FAKE_TOKEN);
+
+        let err = client.api("user").unwrap_err();
+
+        // Positive control: the fake did print the token, and it was replaced.
+        assert_eq!(
+            err.to_string(),
+            "gh api failed: gh: bad token <redacted> (HTTP 403)"
+        );
+        assert!(!format!("{err:?}").contains(FAKE_TOKEN));
     }
 
     #[test]

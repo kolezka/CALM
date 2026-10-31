@@ -51,9 +51,27 @@ pub struct Services {
 }
 
 impl Default for Services {
+    /// Loads the `gh` token from env or `.env` (see `calm_plugins::gh_token`). Logs the
+    /// source and any warnings, which name paths and line numbers, never the token.
     fn default() -> Self {
+        let resolved = calm_plugins::load_token();
+        for warning in &resolved.warnings {
+            eprintln!("calm: gh token: {warning}");
+        }
+        match &resolved.source {
+            calm_plugins::TokenSource::ProcessEnv(key) => {
+                eprintln!("calm: gh token from {key} in the environment")
+            }
+            calm_plugins::TokenSource::File { path, key } => {
+                eprintln!("calm: gh token from {key} in {}", path.display())
+            }
+            calm_plugins::TokenSource::GhLogin => {}
+        }
         Self {
-            gh: GhClient::default(),
+            gh: GhClient {
+                token: resolved.token,
+                ..GhClient::default()
+            },
             data_dir: plugin_data_dir(),
             opener: PathBuf::from("/usr/bin/open"),
         }
