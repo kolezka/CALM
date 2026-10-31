@@ -1,0 +1,7 @@
+{
+  "id": "github-prs",
+  "name": "GitHub PRs",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "defaultSize": { "width": 420, "height": 520 }
+}

@@ -60,6 +60,8 @@ failed call rejects with an `Error` whose message comes from the host.
 | `calm.settings.set(obj)`     | Saves `obj` as this panel's settings. Saved with the layout.   |
 | `calm.panel.setTitle(title)` | Sets the panel title.                                          |
 | `calm.log(message)`          | Writes `message` to CALM's stderr, tagged with the plugin.     |
+| `calm.github.api(path)`      | Runs `gh api <path>` on the host, resolves with parsed JSON.   |
+| `calm.openExternal(url)`     | Opens `url` in the system browser.                             |
 
 Settings are stored in the layout file, so never put a token or password in them.
 
@@ -80,9 +82,53 @@ For host and tooling authors. Each call posts one message to the `calm` WebKit m
 | `settings.set`   | the settings object            |
 | `panel.setTitle` | `{ "title": string }`          |
 | `log`            | `{ "message": string }`        |
+| `github.api`     | `{ "path": string }`           |
+| `openExternal`   | `{ "url": string }`            |
 
 The host answers by evaluating `window.__calm.resolve(id, ok, value)` in the page. With `ok`
 true, `value` is the result. With `ok` false, `value` is an error message string.
+
+## GitHub access
+
+`calm.github.api(path)` runs the GitHub CLI on the host as `gh api <path>`. CALM never reads
+or stores the GitHub token: `gh` keeps it, and plugin JS only ever sees the JSON response.
+
+Setup, once per machine:
+
+```sh
+brew install gh
+gh auth login
+```
+
+`path` is the part after `https://api.github.com/`, for example
+`repos/OWNER/NAME/pulls?state=open&per_page=30`. It may only contain letters, digits and
+`_ . / ? = & % -`, and may not start with `-`. Only GET requests are possible, and results are
+not paginated.
+
+A failed call rejects with one of these messages:
+
+| Message starts with                      | Meaning                                                      |
+| ---------------------------------------- | ------------------------------------------------------------ |
+| `gh is not installed`                    | No `gh` on the host. Install it from https://cli.github.com. |
+| `gh is not logged in, run gh auth login` | `gh` has no credentials. Run `gh auth login`.                |
+| `gh api failed:`                         | GitHub or `gh` refused the call, e.g. 404 or no access.      |
+| `invalid gh api path`                    | `path` broke the rules above. `gh` was not run.              |
+
+## TypeScript and TSX
+
+The runtime format is plain HTML and JS. To write a plugin in TypeScript or TSX, compile it to
+JS first. `templates/plugin-tsx` is a starter that uses Preact for JSX and Bun to bundle:
+
+```sh
+cp -R templates/plugin-tsx ~/my-plugins/my-plugin
+cd ~/my-plugins/my-plugin
+bun install
+bun run build    # writes dist/index.js, which index.html loads
+```
+
+Change `id` and `name` in `calm-plugin.json` before installing it. `dist/` is a build output
+and is not committed, so build after every clone and after every source change.
+`src/calm.d.ts` holds the types for `window.calm`.
 
 ## Development loop
 
@@ -99,3 +145,6 @@ Broken manifests are printed to stderr with their path and counted in the toolba
 ## Examples
 
 - `plugins/hello-world`: plain HTML and JS. Shows text and sets the panel title.
+- `plugins/github-prs`: TSX. Lists open pull requests for the repositories saved in its
+  settings (`{ "repos": ["owner/name"] }`), editable in the panel. Clicking a pull request
+  opens it in the browser. Build it first with `bun install && bun run build` in its folder.
