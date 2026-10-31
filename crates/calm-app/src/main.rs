@@ -1,3 +1,4 @@
+mod background;
 mod canvas_view;
 mod dev_menu;
 mod settings_menu;
@@ -281,6 +282,19 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 smoke_fail(&format!("terminals not live at zoom 1.5: {previews:?}"));
             }
         }
+        // The gradient set by `smoke_settings` rendered once per size, off the UI thread.
+        let (renders, idle, error) = cx.update(|cx| {
+            let background = &view.read(cx).background;
+            (
+                background.renders,
+                background.is_idle(),
+                background.error.clone(),
+            )
+        });
+        println!("smoke: background renders={renders} idle={idle} error={error:?}");
+        if renders == 0 || !idle || error.is_some() {
+            smoke_fail("gradient background did not render");
+        }
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
     })
@@ -298,9 +312,7 @@ fn set_zoom(view: &Entity<CanvasView>, zoom: f64, cx: &mut App) {
 /// file is never touched.
 fn startup_settings(smoke: bool) -> SettingsState {
     if !smoke {
-        let path = calm_core::settings::settings_path();
-        let settings = calm_core::settings::load_settings_from(&path);
-        return SettingsState { settings, path };
+        return load_startup_settings(calm_core::settings::settings_path());
     }
     let dir = match tempfile::Builder::new().prefix("calm-smoke-").tempdir() {
         Ok(dir) => dir,
@@ -308,17 +320,64 @@ fn startup_settings(smoke: bool) -> SettingsState {
     };
     let path = dir.path().join("settings.json");
     *SMOKE_DIR.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir);
-    let settings = calm_core::settings::load_settings_from(&path);
-    SettingsState { settings, path }
+    match calm_core::settings::load_settings_from(&path) {
+        Ok(settings) => SettingsState {
+            settings,
+            path,
+            notice: None,
+        },
+        Err(err) => smoke_fail(&format!("settings: {err}")),
+    }
 }
 
-/// Changes two settings through the menu path, then reads the file back.
+/// A rejected file is reported and moved aside before the defaults are used, so the next
+/// save cannot overwrite it.
+fn load_startup_settings(path: std::path::PathBuf) -> SettingsState {
+    use calm_core::settings::{Settings, load_settings_from, set_aside_invalid};
+    let error = match load_settings_from(&path) {
+        Ok(settings) => {
+            return SettingsState {
+                settings,
+                path,
+                notice: None,
+            };
+        }
+        Err(error) => error,
+    };
+    eprintln!("calm: {error}");
+    let notice = match set_aside_invalid(&path) {
+        Ok(moved) => {
+            eprintln!(
+                "calm: moved it to {}; using default settings",
+                moved.display()
+            );
+            format!(
+                "Your settings file could not be read ({error}). It was moved to {} and the defaults are in use.",
+                moved.display()
+            )
+        }
+        Err(move_error) => {
+            eprintln!("calm: {move_error}");
+            format!("Your settings file could not be read ({error}) or moved aside ({move_error}).")
+        }
+    };
+    SettingsState {
+        settings: Settings::default(),
+        path,
+        notice: Some(notice),
+    }
+}
+
+/// Sets a gradient background and the grid through the settings path, reads the file back,
+/// then builds the native Settings window and checks every control was bound.
 fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<CanvasView>) {
-    use calm_core::settings::{BackgroundPreset, read_settings_from};
+    use calm_core::background::BackgroundKind;
+    use calm_core::settings::read_settings_from;
+    use calm_core::settings_form::{Control, settings_form};
     view.update_settings(
         |s| {
-            s.background = BackgroundPreset::MidnightBlue;
-            s.show_grid = true;
+            s.background.kind = BackgroundKind::Gradient;
+            s.grid.show = true;
         },
         window,
         cx,
@@ -332,11 +391,46 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
         smoke_fail(&format!("settings file {saved:?} differs from state"));
     }
     println!(
-        "smoke: settings background={} grid={} path={}",
-        saved.background.label(),
-        saved.show_grid,
+        "smoke: settings background={:?} grid={} path={}",
+        saved.background.kind,
+        saved.grid.show,
         path.display()
     );
+    view.open_settings(window, cx);
+    let first = view.settings_window.as_ref().map(|w| w.window_number());
+    // A second open, as from another entry point, must reuse the same window.
+    view.open_settings(window, cx);
+    let second = view.settings_window.as_ref().map(|w| w.window_number());
+    let count = calm_native::settings_window_count()
+        .unwrap_or_else(|err| smoke_fail(&format!("settings window count: {err}")));
+    println!(
+        "smoke: settings_window opens=2 windows={count} same={}",
+        first == second
+    );
+    if count != 1 || first.is_none() || first != second {
+        smoke_fail("opening Settings twice did not reuse one window");
+    }
+    let expected = settings_form(&view.settings.settings, &view.form_context())
+        .iter()
+        .flat_map(|section| &section.fields)
+        .filter(|field| !matches!(field.control, Control::Note(_)))
+        .count();
+    let Some(settings_window) = &view.settings_window else {
+        smoke_fail("settings window was not created");
+    };
+    let bound = settings_window.bound_controls();
+    println!(
+        "smoke: settings_window visible={} controls={bound}",
+        settings_window.is_visible()
+    );
+    if bound != expected || !settings_window.is_visible() {
+        smoke_fail(&format!(
+            "settings window bound {bound} of {expected} controls"
+        ));
+    }
+    settings_window.hide();
+    // Give focus back to the canvas, as a user closing Settings would.
+    window.activate_window();
 }
 
 fn main() {
@@ -344,6 +438,7 @@ fn main() {
     gpui_platform::application().run(move |cx: &mut App| {
         cx.bind_keys(canvas_view::key_bindings());
         cx.bind_keys(dev_menu::key_bindings());
+        cx.bind_keys(settings_menu::key_bindings());
         dev_menu::install(cx);
         if args.smoke {
             let previous = std::panic::take_hook();
@@ -378,7 +473,7 @@ fn main() {
         let opened = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| {
                 let mut view = CanvasView::new(cx);
-                view.settings = settings;
+                view.set_settings_state(settings);
                 if smoke && let Err(err) = add_smoke_panels(&mut view, window, cx) {
                     smoke_fail(&format!("terminal spawn: {err}"));
                 }
@@ -412,6 +507,9 @@ fn main() {
             }
             view
         });
+        if let Ok(canvas) = &opened {
+            settings_menu::install_open_handler(cx, *canvas);
+        }
         if let Err(err) = opened {
             if smoke {
                 smoke_fail(&format!("open_window: {err:#}"));

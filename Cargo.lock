@@ -708,6 +708,7 @@ dependencies = [
  "gpui-libghostty",
  "gpui-pre",
  "gpui-pre-platform",
+ "image",
  "tempfile",
 ]
 

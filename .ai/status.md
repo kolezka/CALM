@@ -18,6 +18,24 @@ verified unless marked otherwise.
 - Docs: `dev-setup.md`, `architecture.md` (terminals, preview), `plugins.md`,
   `release.md`, `CLAUDE.md`, this folder.
 
+## On branch `feat/settings-modal` (not merged)
+
+- Settings window, a native NSWindow with sections Background, Grid, Canvas and
+  Snapping, Panels, Developer. Opened by `cmd-,`, CALM > Settings… and Settings > Open
+  Settings…, all through one global `OpenSettings` handler; a second open focuses the
+  same window. A top-level menu bar item cannot fire an action in GPUI (each top-level
+  `Menu` becomes an item with a submenu), so the Settings menu stays a menu.
+- Backgrounds: solid color, linear or radial gradient with 2 to 6 stops, image with
+  cover, contain, tile or center and blur, brightness, contrast, saturation, grayscale
+  and dim. Live on the canvas while editing.
+- New options read by the app: grid spacing, color and opacity; snapping on or off, grid
+  step and edge distance; default size of a terminal added from the context menu;
+  preview below zoom.
+- Settings file version 2 with version 1 migration and strict errors.
+- Unverified: manual GUI pass of the window (color panel, open panel, slider feel, image
+  filters on a real photo). The smoke builds the window and checks every control is
+  bound, and renders a gradient background.
+
 ## Verified on hardware
 
 macOS 27.0.1, Apple M4 Pro: smoke passes; two terminals render in zoom views at zoom 1.5;

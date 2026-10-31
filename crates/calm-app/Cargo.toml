@@ -12,3 +12,5 @@ gpui_platform.workspace = true
 calm-native = { path = "../calm-native" }
 gpui-libghostty.workspace = true
 tempfile = "3"
+# Same version gpui-pre uses, so its `image::Frame` and ours are one type.
+image = { version = "=0.25.10", default-features = false }

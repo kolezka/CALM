@@ -39,8 +39,11 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
   `PREVIEW_REFRESH_SECS = 2`.
 - `layout`: layout file format and validation (`LayoutError::Malformed` names path and
   field). Save and load are not wired into the app yet.
-- `settings`: persisted options, path `$CALM_HOME/settings.json` or
-  `~/.config/calm/settings.json`.
+- `settings`: persisted options (version 2, migrates version 1), path
+  `$CALM_HOME/settings.json` or `~/.config/calm/settings.json`.
+- `settings_form`: the Settings window as data (sections, controls) and `apply_field`.
+- `background`: solid, gradient and image backgrounds, gradient raster, image filters,
+  fit rects.
 - `menu`: context menu model (nested Add submenu, panel actions).
 - `frame_stats`, `stats`: FPS and percentile helpers.
 
@@ -55,6 +58,8 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
   message handler, `set_logical_size`.
 - `ContextMenu` and `show_context_menu`: a native NSMenu popped up at a point; returns the
   chosen item id. Native because anything GPUI paints is under the native views.
+- `SettingsWindow`: a separate NSWindow drawing a `settings_form` with AppKit controls;
+  `choose_image_file` runs an NSOpenPanel.
 
 ### calm-plugins
 
@@ -74,7 +79,9 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
   places native views. Key bindings in `key_bindings()`.
 - `terminal/`: `TerminalPanel` with the libghostty adapter (CALM-owned copy of the
   gpui-libghostty 0.3.1 MIT adapter, using `spawn_surface(options, &native_child, scale)`).
-- `dev_menu.rs`, `settings_menu.rs`, `toolbar.rs` (slim status strip), `theme.rs`.
+- `dev_menu.rs`, `settings_menu.rs` (menu and Settings window glue), `background.rs`
+  (renders gradient and image backgrounds once per change), `toolbar.rs` (slim status
+  strip), `theme.rs`.
 
 ## Event and paint flow
 
