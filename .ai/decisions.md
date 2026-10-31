@@ -123,6 +123,19 @@ one means a new entry, not an edit.
   per-launch file and exits 0. 127 means command not found and never auto-restarts. Cost:
   a 127 from the program itself reads as not found; a killed wrapper gives "code unknown".
   The Ghostty fork planned in Plugin API v2 could replace this.
+- **TUI look comes from the manifest; confirmation colors stay fixed.** `accentColor`,
+  `titleBarColor` and `titleColor` override the theme per panel, but a close confirmation
+  always paints the theme's warning bar, border and text, so a plugin cannot hide it. The
+  accent marks focus only, so the unfocused border stays the theme's. Image icons are not
+  tinted. Cost: a plugin cannot restyle the confirmation.
+- **`terminalColors` needs all 16 palette colors.** gpui-libghostty 0.3.1 takes per-surface
+  colors only as a full `TerminalTheme` (background, foreground, 16 colors) laid over the
+  user config, with no way to read the user's palette back. A partial set would silently
+  replace the rest with made-up values. Cost: verbose manifests.
+- **`fontSize`, `fontFamily` and `padding` are rejected, not ignored.** 0.3.1 has no
+  per-surface font or padding option; they wait for the libghostty shim patch. An explicit
+  "planned" error beats a field that does nothing. Cost: manifests written for the future
+  fail today.
 
 ## Process
 

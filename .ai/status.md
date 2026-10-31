@@ -170,6 +170,18 @@ research doc and grid styles. Facts are verified unless marked otherwise.
   Smoke line `smoke: blur focused=none responder=canvas` covers a terminal and the browser.
 - Unverified: manual GUI pass of a real mouse click, and of Escape inside a web page.
 
+## On `feat/tui-customize` (PR open, based on `feat/tui-plugins`)
+
+- TUI manifest look fields: `title` (with `{name}`), image `icon` (`.png`/`.svg` in the
+  plugin folder, checked on disk at discovery), `accentColor`, `titleBarColor`, `titleColor`
+  and `terminalColors`. Chrome colors come from the pure `calm-core::chrome::chrome_colors`,
+  `divider_color` and `icon_tint`. Image icons decode once per path in `icon_image.rs`.
+- Smoke opens the shipped top-example and prints `smoke: tui chrome top-example accent=...`.
+- Not built: per-panel edits after adding (Rename, Change Icon, Accent Color through
+  NSAlert and NSColorPanel, stored as Panel overrides). `fontSize`, `fontFamily` and
+  `padding` are rejected as planned until the libghostty shim patch.
+- Unverified: a manual GUI look at the accent ring, image icon and terminal colors.
+
 ## Verified on hardware
 
 macOS 27.0.1, Apple M4 Pro: smoke passes; two terminals render in zoom views at zoom 1.5;
