@@ -1,8 +1,8 @@
 # Status
 
 Last updated: 2026-10-31. `main` with PRs #1 (recenter), #2 (panel menu actions), #3
-(panel chrome), #4 (bottom bar) and #5 (plugin panels) merged. Facts are verified unless
-marked otherwise.
+(panel chrome), #4 (bottom bar), #5 (plugin panels) and #6 (browser panels) merged. Facts
+are verified unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -54,8 +54,7 @@ marked otherwise.
 - Adding a plugin opens a Plugin panel (`crates/calm-app/src/plugin_host.rs`): a `WebPanel`
   in a `NativeChild`, prelude injected at document start, entry loaded with `load_file`.
   Placed like terminals: Live sets the frame each paint, Preview and Hidden hide the view
-  and draw the flat title rect. Terminals and plugins share one native stack that restacks
-  with the scene order.
+  and draw the flat title rect.
 - Bridge: `log`, `panel.setTitle`, `settings.get`, `settings.set` are served. The other 13
   methods reject with `not implemented: <method>`. `github-prs` renders but its list shows
   that error until `github.api` is dispatched.
@@ -65,7 +64,33 @@ marked otherwise.
 - An entry page whose local `<script src>` is missing (an unbuilt `dist/`) gets an error
   page naming the file and the bun command, a `(not built)` title, and a stderr line.
 - Smoke adds two fixture plugins and prints `plugin loaded=true bridge=ok title=smoke-ok`,
-  `plugin unbuilt reported=true` and a four-panel `plugins zorder` line.
+  `plugin unbuilt reported=true` and a five-panel `plugins zorder` line.
+- Browser panels (PR #6) are live: `calm_native::BrowserView` puts a native address bar (back,
+  forward, reload, text field) and a WKWebView in the panel's zoom view, so the bar scales
+  and clips with the page and GPUI draws nothing over it. App side in
+  `crates/calm-app/src/browser_panel.rs`. No `calm` message handler on browser pages.
+- Address input: `calm_core::browser_url::normalize_address`. Kept schemes load as typed,
+  `localhost` and IPv4 get `http://`, dotted hosts get `https://`, the rest searches
+  DuckDuckGo (`SEARCH_URL_PREFIX`).
+- Links navigate in place. `target=_blank` and `window.open` load in the same panel (UI
+  delegate returns no new web view).
+- While the page or the bar has the keyboard: cmd-[ back, cmd-] forward, cmd-r reload,
+  cmd-l address bar, plus cmd-c/x/v/a/z and cmd-shift-z (an NSEvent local monitor, since
+  GPUI takes key equivalents first and the app has no Edit menu).
+- A click on the page raises and focuses the panel. Title and URL follow the page into the
+  chrome and into `PanelKind::Browser.url`. A new panel opens `about:blank` with the
+  address bar focused. Closing a browser asks for confirmation like a running terminal.
+- Preview and modal UI hide the page and paint a flat rect with the title. No page
+  snapshot yet.
+- Smoke adds one browser that loads a `data:` page which clicks its own link, and checks
+  `smoke: browser loaded=true link=followed url=about:blank#clicked mode=live`. Frame-check
+  failures now print `window_visible=`; failures seen during this work all had the window
+  occluded (`Some(false)`), and GPUI stops painting an occluded window.
+- Not done: cmd+click on a URL in a terminal, non-web schemes (`mailto:` and the like do
+  nothing), page snapshots for previews, downloads. Manual GUI pass pending.
+- Native stack: terminals, browsers and plugins share one native stack that restacks with
+  the scene order (`native_panel_order`, `sync_native_order`, `native_zorder`). Smoke
+  checks it with three native panels, then with five after the plugins.
 
 ## Verified on hardware
 
@@ -75,7 +100,6 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 ## Not wired yet
 
-- Browser panels in the canvas (`WebPanel` exists; Task 10 app wiring pending).
 - Plugin host, rest of the dispatcher: storage, `panel.getBounds/minimize/close`,
   `canvas.*`, `process.exec`, `github.api`, `openExternal`, `theme.get`, and host events.
   Plugin panel settings are not saved anywhere yet (layouts are not wired).
@@ -89,6 +113,8 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 ## Unverified
 
+- Browser panels by hand: typing in the bar at zoom 0.5 and 2, link clicks, `target=_blank`,
+  the keyboard shortcuts, scroll over a page, pinch over a page.
 - Manual GUI pass: mouse selection at zoom 1.0 and 1.7, cmd-v paste, Polish letters through
   the input method, panel resize reflow, Enter to confirm close, pinch feel, `htop`.
 - Camera jumps: math is unit tested in `calm-core`; key delivery with a terminal focused,

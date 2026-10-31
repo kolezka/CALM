@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+async-channel = "=2.5.0"
 calm-core = { path = "../calm-core" }
 gpui.workspace = true
 gpui_platform.workspace = true
