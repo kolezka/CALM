@@ -36,8 +36,8 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 
 /// Every menu bar menu, so the Developer and Settings menus are always set together.
 /// The app menu gets the standard "Settings…" item after About, as macOS apps have it.
-pub fn menus(show_fps: bool, settings: &Settings) -> Vec<Menu> {
-    let mut menus = dev_menu::menus(show_fps);
+pub fn menus(show_stats: bool, settings: &Settings) -> Vec<Menu> {
+    let mut menus = dev_menu::menus(show_stats);
     if let Some(app_menu) = menus.first_mut() {
         // After "About CALM" and its separator.
         let at = app_menu.items.len().min(2);
@@ -125,16 +125,17 @@ impl CanvasView {
         }
         self.apply_settings_to_input();
         self.terminal_settings_changed(cx);
-        let show_fps = self.show_fps;
+        self.sync_stats_timer(cx);
+        let show_stats = self.show_stats;
         let settings = self.settings.settings.clone();
-        cx.defer(move |cx| cx.set_menus(menus(show_fps, &settings)));
+        cx.defer(move |cx| cx.set_menus(menus(show_stats, &settings)));
         window.refresh();
         cx.notify();
     }
 
     pub fn form_context(&self) -> FormContext {
         FormContext {
-            show_fps: self.show_fps,
+            show_stats: self.show_stats,
             settings_path: self.settings.path.display().to_string(),
             notice: self.settings.notice.clone(),
             image_error: self.background.error.clone(),
@@ -201,8 +202,8 @@ impl CanvasView {
                     self.refresh_settings_form();
                 }
             }
-            Ok(FormOutcome::Command(FormCommand::SetShowFps(show))) => {
-                self.set_show_fps(show, window, cx);
+            Ok(FormOutcome::Command(FormCommand::SetShowStats(show))) => {
+                self.set_show_stats(show, window, cx);
             }
             Ok(FormOutcome::Command(FormCommand::OpenConfigFolder)) => {
                 open_config_folder(&self.settings.path);

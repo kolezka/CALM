@@ -13,6 +13,7 @@ pub mod layout;
 pub mod menu;
 pub mod plugin_menu;
 pub mod preview;
+pub mod process_stats;
 pub mod resize;
 pub mod scene;
 pub mod settings;

@@ -413,3 +413,22 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   NSAlert then shows the application icon. CALM itself shows no NSAlert today (close
   confirmation is drawn in GPUI), so no `alert.icon` is set. macOS windows have no per-window
   icon, so the Settings window and status bar get nothing.
+
+## CPU and memory readout (2026-10-31)
+
+- **CPU percent is of one core,** like Activity Monitor and `top`, so it can pass 100%.
+  It is user plus system time over all threads (`ri_user_time + ri_system_time` from
+  `proc_pid_rusage`), converted from Mach ticks with `mach_timebase_info` (on Apple
+  silicon the counters are ticks, not ns; a unit test fails without the conversion),
+  averaged over the sampling interval. No extra smoothing: the interval is the window.
+- **Memory is phys_footprint,** the Activity Monitor number, not RSS. Binary units
+  (1 MB = 1024 * 1024 bytes); `auto` switches to GB at 1 GB.
+- **Scope is CALM alone by default.** `developer.stats.include_children` adds every process
+  below CALM (shells, TUI apps, plugin backends), walked with `proc_listchildpids` and
+  capped at 512. Processes seen in only one of two samples do not count toward CPU.
+  libghostty runs in-process, so terminal rendering is in the self number either way.
+- **cmd-shift-f stays a per-launch toggle** for the whole readout; the persisted
+  `developer.stats.show_fps|show_cpu|show_memory` pick the items. FPS frames are only
+  forced while `show_fps` is on, so CPU-only mode does not measure its own 60 fps repaint.
+  Sampling runs on the background executor on a timer, never in paint, and stops when
+  CPU and memory are both hidden or the readout is off.

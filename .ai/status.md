@@ -111,6 +111,15 @@ Pull requests:
 
 ## In progress (not on `main`)
 
+- `feat/cpu-ram-stats`: CPU and memory next to FPS in the status pill
+  (`FPS 60.0  p95 16.7ms  ·  4.2% CPU  ·  312 MB`). cmd-shift-f (Developer > Show Stats)
+  shows the readout; `developer.stats.*` picks the items, the interval (250 to 10000 ms,
+  default 1000), child processes and the memory unit, also in the Settings window.
+  `calm_native::process_stats` reads `proc_pid_rusage` (V2) on the background executor:
+  about 1.2 us per sample for CALM alone, about 19 us with the child walk (unit test on
+  the dev machine). Smoke prints `stats fps=... cpu=...% mem=...MB` parsed from the pill.
+  Manual GUI pass owed.
+
 - No PR yet: a Linux port plan.
 
 ## Not wired yet
