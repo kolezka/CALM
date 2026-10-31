@@ -5,6 +5,7 @@ pub mod frame_stats;
 pub mod geometry;
 pub mod interaction;
 pub mod layout;
+pub mod menu;
 pub mod preview;
 pub mod scene;
 pub mod stats;

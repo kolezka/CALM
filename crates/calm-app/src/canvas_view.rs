@@ -1,14 +1,15 @@
 //! The canvas: paints panels from the `calm-core` scene and feeds it input.
 
 use calm_core::frame_stats::FrameStats;
-use calm_core::geometry::{Point, Rect};
+use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
     Button, CHROME_BUTTON_SIZE, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, Tool,
     ZoomStep,
 };
+use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::viewport::{NativePlacement, place_native};
-use calm_native::NativeChild;
+use calm_native::{HostView, NativeChild, show_context_menu};
 use gpui::{
     App, BorderStyle, Bounds, ContentMask, Context, DispatchPhase, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
@@ -71,6 +72,10 @@ pub struct CanvasView {
     pub viewport: Rect,
     /// (id, name) per discovered plugin. Task 11 fills it.
     pub plugins: Vec<(String, String)>,
+    /// (id, default panel size) per discovered plugin. Task 11 fills it.
+    pub plugin_sizes: Vec<(String, Size)>,
+    /// Path of the last saved layout, shown in the status strip. Task 13 sets it.
+    pub saved_flash: Option<String>,
     focused: Option<PanelId>,
     /// Live terminals by panel. Dropping an entry ends its process.
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
@@ -90,6 +95,8 @@ impl CanvasView {
             input: InputHandler::default(),
             viewport: Rect::new(0.0, f64::from(TOOLBAR_HEIGHT), 0.0, 0.0),
             plugins: Vec::new(),
+            plugin_sizes: Vec::new(),
+            saved_flash: None,
             focused: None,
             terminals: Vec::new(),
             native_order: Vec::new(),
@@ -152,6 +159,15 @@ impl CanvasView {
                     }
                 }
                 Effect::Redraw => {}
+                Effect::ShowCanvasMenu { screen, world } => {
+                    let items = menu::canvas_menu(&self.plugins);
+                    self.show_menu(items, screen, MenuTarget::Canvas { world }, window, cx);
+                }
+                Effect::ShowPanelMenu { id, screen } => {
+                    let minimized = self.scene.get(id).is_some_and(|panel| panel.minimized);
+                    let items = menu::panel_menu(minimized);
+                    self.show_menu(items, screen, MenuTarget::Panel(id), window, cx);
+                }
                 Effect::ClosePanel(id) => {
                     self.terminals.retain(|(panel, _)| *panel != id);
                     self.scene.remove(id);
@@ -163,6 +179,68 @@ impl CanvasView {
         }
         window.refresh();
         cx.notify();
+    }
+
+    /// Pops up a native menu at the canvas point `screen` and applies the choice.
+    /// The menu tracks modally, so it runs in a task instead of inside this event handler:
+    /// GPUI keeps drawing while the menu is open and must not find the app borrowed.
+    fn show_menu(
+        &mut self,
+        items: Vec<MenuItem>,
+        screen: Point,
+        target: MenuTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let host = match HostView::new(window) {
+            Ok(host) => host,
+            Err(err) => {
+                eprintln!("calm: context menu unavailable: {err}");
+                return;
+            }
+        };
+        let at = Point::new(
+            screen.x + self.viewport.origin.x,
+            screen.y + self.viewport.origin.y,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(id) = show_context_menu(&items, at, &host) else {
+                return;
+            };
+            this.update_in(cx, |view, window, cx| {
+                view.apply_menu_choice(&id, target, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn apply_menu_choice(
+        &mut self,
+        id: &str,
+        target: MenuTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let world = match target {
+            MenuTarget::Canvas { world } => world,
+            MenuTarget::Panel(_) => Point::new(0.0, 0.0),
+        };
+        let effects = match (menu::menu_action(id, world, &self.plugin_sizes), target) {
+            (Some(MenuCommand::AddPanel { kind, rect }), MenuTarget::Canvas { .. }) => {
+                let id = self.scene.add(kind.clone(), rect);
+                let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
+                vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)]
+            }
+            (Some(MenuCommand::Minimize), MenuTarget::Panel(id)) => {
+                vec![Effect::ToggleMinimize(id), Effect::Redraw]
+            }
+            (Some(MenuCommand::Close), MenuTarget::Panel(id)) => {
+                vec![Effect::ClosePanelRequested(id)]
+            }
+            _ => return,
+        };
+        self.apply_effects(effects, window, cx);
     }
 
     fn panel_created(
@@ -265,9 +343,13 @@ impl CanvasView {
         let button = match event.button {
             MouseButton::Left => Button::Left,
             MouseButton::Middle => Button::Middle,
+            MouseButton::Right => Button::Right,
             _ => return,
         };
-        self.focus_handle.focus(window, cx);
+        // A right click on a terminal's content must not take its focus.
+        if button != Button::Right {
+            self.focus_handle.focus(window, cx);
+        }
         let screen = self.to_canvas(event.position);
         self.pointer = screen;
         let effects =
@@ -355,6 +437,16 @@ impl CanvasView {
             window.refresh();
         }
     }
+}
+
+/// What a context menu was opened on.
+#[derive(Clone, Copy, Debug)]
+enum MenuTarget {
+    /// Empty canvas; new panels go at `world`.
+    Canvas {
+        world: Point,
+    },
+    Panel(PanelId),
 }
 
 /// What paint needs, copied out at render time so painting does not borrow the view.
@@ -621,7 +713,7 @@ impl Render for CanvasView {
                 view.set_show_fps(!view.show_fps, window, cx)
             }))
             .on_action(cx.listener(|view, _: &ResetFps, window, cx| view.reset_fps(window, cx)))
-            .child(toolbar(self, cx))
+            .child(toolbar(self))
             .child(
                 div()
                     .flex_1()
@@ -629,6 +721,7 @@ impl Render for CanvasView {
                     .relative()
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                     .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
+                    .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
                     .on_scroll_wheel(cx.listener(Self::scroll))
                     .child(
                         canvas(

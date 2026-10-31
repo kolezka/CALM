@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use calm_core::camera::Camera;
 use calm_core::geometry::{Point, Rect};
+use calm_core::menu::canvas_menu;
 use calm_core::viewport::place_native;
-use calm_native::{NativeChild, WebPanel};
+use calm_native::{ContextMenu, NativeChild, WebPanel};
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
@@ -224,6 +225,16 @@ fn main() {
     println!("native_smoke: bridge message={first}");
     if first != "ping:prelude-ok" {
         fail("bridge message or document-start script did not match");
+    }
+
+    // Built and read back, never popped up: popping up would block on user input.
+    let sample = canvas_menu(&[("hello-world".to_string(), "Hello World".to_string())]);
+    let menu = ContextMenu::build(&sample).unwrap_or_else(|e| fail(&e.to_string()));
+    let (items, submenus) = menu.counts();
+    println!("native_smoke: menu items={items} submenus={submenus}");
+    // Add, then Terminal, Browser, a separator and Hello World inside it.
+    if (items, submenus) != (5, 1) {
+        fail("menu tree does not match the sample spec");
     }
 
     drop(web);
