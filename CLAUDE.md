@@ -56,9 +56,10 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 ## In the app
 
 `t` then drag draws a terminal. Right-click opens Add and panel actions. Space+drag or
-middle-drag pans. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom. `cmd-ctrl-f`
-fullscreen, `cmd-shift-f` FPS. `alt` while dragging disables snapping (default grid 8 world
-units, edge snap within 8). Settings persist in `~/.config/calm/settings.json`; `CALM_HOME`
+middle-drag pans. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom. `cmd-shift-h`
+centers the world origin, `cmd-shift-0` fits all panels (both also in the View menu).
+`cmd-ctrl-f` fullscreen, `cmd-shift-f` FPS. `alt` while dragging disables snapping (default
+grid 8 world units, edge snap within 8). Settings persist in `~/.config/calm/settings.json`; `CALM_HOME`
 overrides the directory. Distant panels become previews refreshed every 2 s.
 
 ## Rules that are easy to break

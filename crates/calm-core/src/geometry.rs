@@ -46,6 +46,15 @@ impl Rect {
         self.origin.y + self.size.height
     }
 
+    /// Smallest rect that covers both.
+    pub fn union(&self, other: &Rect) -> Rect {
+        let left = self.origin.x.min(other.origin.x);
+        let top = self.origin.y.min(other.origin.y);
+        let right = self.right().max(other.right());
+        let bottom = self.bottom().max(other.bottom());
+        Rect::new(left, top, right - left, bottom - top)
+    }
+
     /// Half-open: the left and top edges are inside, the right and bottom edges are not.
     pub fn contains(&self, point: Point) -> bool {
         point.x >= self.origin.x
