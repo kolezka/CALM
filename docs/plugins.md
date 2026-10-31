@@ -44,7 +44,7 @@ Every plugin folder holds a `calm-plugin.json`:
 | Field         | Meaning                                                                  |
 | ------------- | ------------------------------------------------------------------------ |
 | `id`          | Unique id, lowercase letters, digits and `-` only.                       |
-| `name`        | Name shown in the toolbar.                                               |
+| `name`        | Name shown in the Add menu.                                              |
 | `version`     | Plugin version, free form.                                               |
 | `entry`       | HTML file to load, relative to the plugin folder. No `..`, no `/` start. |
 | `defaultSize` | Size of a new panel in canvas points.                                    |
@@ -275,7 +275,7 @@ default size.
 If the entry page loads a local script that does not exist, for example `dist/index.js` of a
 TSX plugin that was never built, the panel shows an error page naming the missing file and
 the build command, its title ends in `(not built)`, and stderr prints the same message.
-Broken manifests are printed to stderr with their path and counted in the toolbar.
+Broken manifests are printed to stderr with their path and counted in the status bar.
 
 Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
 
