@@ -1,24 +1,29 @@
 //! The canvas: paints panels from the `calm-core` scene and feeds it input.
 
+use calm_core::camera::FIT_MARGIN;
+use calm_core::chrome::{
+    CORNER_RADIUS, ChromeButton, PanelIcon, TITLE_BAR_HEIGHT, button_dot, button_strokes,
+    details_visible, hover_target, icon_strokes, title_bar_layout,
+};
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
-    Button, CHROME_BUTTON_SIZE, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, Tool,
-    ZoomStep,
+    Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, Tool, ZoomStep,
 };
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
-use calm_core::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
+use calm_core::scene::{Panel, PanelId, PanelKind, Scene, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{HostView, NativeChild, StatusBar, show_context_menu};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, BorderStyle, Bounds, ContentMask, Context, DispatchPhase, Entity, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, NoAction, ParentElement, PinchEvent, Pixels, Render, RenderImage,
-    ScrollDelta, ScrollWheelEvent, SharedString, Styled, Task, TextAlign, TextRun, WeakEntity,
-    Window, actions, canvas, div, fill, outline, point, px, rgb, size,
+    App, BorderStyle, Bounds, BoxShadow, ContentMask, Context, Corners, DispatchPhase, Edges,
+    Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, ParentElement,
+    PathBuilder, PinchEvent, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
+    SharedString, Styled, Task, TextAlign, TextRun, WeakEntity, Window, actions, canvas, div, fill,
+    outline, point, px, quad, rgb, rgba, size,
 };
 
 use std::collections::HashMap;
@@ -36,6 +41,8 @@ actions!(
         ZoomIn,
         ZoomOut,
         ZoomReset,
+        CenterOnOrigin,
+        FitAll,
         DrawTerminal,
         DrawBrowser,
         Cancel,
@@ -45,12 +52,16 @@ actions!(
 );
 
 pub const KEY_CONTEXT: &str = "Canvas";
-const TITLE_FONT_SIZE: f64 = 13.0;
+const TITLE_FONT_SIZE: f64 = 12.0;
 /// Below this the title is unreadable, so it is skipped.
-const MIN_TITLE_FONT_PX: f64 = 4.0;
+const MIN_TITLE_FONT_PX: f64 = 6.0;
+/// Width of the ring around a panel, in screen pixels at any zoom.
+const BORDER_PX: f64 = 1.0;
 /// Width of the `preview stale` label in the chrome strip, in world units.
 const STALE_LABEL_WIDTH: f64 = 96.0;
 const STALE_LABEL: &str = "preview stale";
+/// Screen pixels left around a panel after Zoom to Fit.
+const ZOOM_TO_FIT_MARGIN: f64 = 40.0;
 /// Added to the refresh timer so its repaint lands just after a snapshot is due.
 const PREVIEW_TIMER_MARGIN: Duration = Duration::from_millis(100);
 const CONFIRM_TITLE: &str = "Close? enter / esc";
@@ -62,6 +73,8 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("cmd-=", ZoomIn, ctx),
         KeyBinding::new("cmd--", ZoomOut, ctx),
         KeyBinding::new("cmd-0", ZoomReset, ctx),
+        KeyBinding::new("cmd-shift-h", CenterOnOrigin, ctx),
+        KeyBinding::new("cmd-shift-0", FitAll, ctx),
         KeyBinding::new("t", DrawTerminal, ctx),
         KeyBinding::new("b", DrawBrowser, ctx),
         KeyBinding::new("escape", Cancel, ctx),
@@ -87,6 +100,8 @@ pub struct CanvasView {
     /// Path of the last saved layout, shown in the status bar. Task 13 sets it.
     pub saved_flash: Option<String>,
     focused: Option<PanelId>,
+    /// Panel under the pointer and the chrome button under it. Shows the buttons.
+    hover: Option<(PanelId, Option<ChromeButton>)>,
     /// Live terminals by panel. Dropping an entry ends its process.
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Back-to-front terminal order the native views were last stacked in.
@@ -117,6 +132,7 @@ impl CanvasView {
             plugin_sizes: Vec::new(),
             saved_flash: None,
             focused: None,
+            hover: None,
             terminals: Vec::new(),
             native_order: Vec::new(),
             focus_handle: cx.focus_handle(),
@@ -193,9 +209,10 @@ impl CanvasView {
                     self.show_menu(items, screen, MenuTarget::Canvas { world }, window, cx);
                 }
                 Effect::ShowPanelMenu { id, screen } => {
-                    let minimized = self.scene.get(id).is_some_and(|panel| panel.minimized);
-                    let items = menu::panel_menu(minimized);
-                    self.show_menu(items, screen, MenuTarget::Panel(id), window, cx);
+                    if let Some(panel) = self.scene.get(id) {
+                        let items = menu::panel_menu(panel);
+                        self.show_menu(items, screen, MenuTarget::Panel(id), window, cx);
+                    }
                 }
                 Effect::ClosePanel(id) => {
                     if let Some(terminal) = self.terminal(id) {
@@ -276,8 +293,41 @@ impl CanvasView {
             (Some(MenuCommand::Minimize), MenuTarget::Panel(id)) => {
                 vec![Effect::ToggleMinimize(id), Effect::Redraw]
             }
-            (Some(MenuCommand::Close), MenuTarget::Panel(id)) => {
+            // Delete takes the normal close path, so a live process still asks first.
+            (Some(MenuCommand::Delete), MenuTarget::Panel(id)) => {
                 vec![Effect::ClosePanelRequested(id)]
+            }
+            (Some(MenuCommand::BringToFront), MenuTarget::Panel(id)) => {
+                self.scene.bring_to_front(id);
+                vec![Effect::Redraw]
+            }
+            (Some(MenuCommand::SendToBack), MenuTarget::Panel(id)) => {
+                self.scene.send_to_back(id);
+                vec![Effect::Redraw]
+            }
+            (Some(MenuCommand::ZoomToFit), MenuTarget::Panel(id)) => {
+                let Some(rect) = self.scene.get(id).map(|panel| panel.rect) else {
+                    return;
+                };
+                self.scene
+                    .camera
+                    .fit(Some(rect), self.viewport.size, ZOOM_TO_FIT_MARGIN);
+                vec![Effect::Redraw]
+            }
+            (Some(MenuCommand::Duplicate), MenuTarget::Panel(id)) => {
+                let Some(copy) = self.scene.duplicate(id) else {
+                    return;
+                };
+                let Some(panel) = self.scene.get(copy) else {
+                    return;
+                };
+                vec![
+                    Effect::CreatePanel {
+                        kind: panel.kind.clone(),
+                        rect: panel.rect,
+                    },
+                    Effect::FocusPanel(copy),
+                ]
             }
             _ => return,
         };
@@ -487,8 +537,13 @@ impl CanvasView {
         let effects = self
             .input
             .mouse_move(screen, to_mods(&event.modifiers), &mut self.scene);
+        let hover = hover_target(&self.scene, self.scene.camera.screen_to_world(screen));
+        let hover_changed = hover != self.hover;
+        self.hover = hover;
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
+        } else if hover_changed {
+            cx.notify();
         }
     }
 
@@ -543,6 +598,19 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// Jumps the camera: `CenterOnOrigin` keeps the zoom, `FitAll` frames every panel.
+    fn frame_view(&mut self, fit_all: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let viewport = self.viewport.size;
+        if fit_all {
+            let bounds = self.scene.bounds();
+            self.scene.camera.fit(bounds, viewport, FIT_MARGIN);
+        } else {
+            self.scene.camera.center_on(Point::new(0.0, 0.0), viewport);
+        }
+        window.refresh();
+        cx.notify();
+    }
+
     fn set_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
         self.input.tool = tool;
         window.refresh();
@@ -592,6 +660,7 @@ struct PaintSnapshot {
     state: Interaction,
     focused: Option<PanelId>,
     confirming: Option<PanelId>,
+    hover: Option<(PanelId, Option<ChromeButton>)>,
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Close confirmation or context menu up: native views must not cover it.
     modal_open: bool,
@@ -767,25 +836,84 @@ impl PaintSnapshot {
     ) {
         let camera = self.scene.camera;
         let zoom = camera.zoom;
-        let chrome_color = if self.focused == Some(panel.id) {
-            theme::CHROME_FOCUSED
-        } else {
-            theme::CHROME
+        let focused = self.focused == Some(panel.id);
+        let confirming = self.confirming == Some(panel.id);
+        let hovered_button = match self.hover {
+            Some((id, button)) if id == panel.id => Some(button),
+            _ => None,
         };
-        let chrome_world = if panel.minimized {
-            chip_rect(panel)
+        let layout = title_bar_layout(panel);
+        let (bar_color, border_color, text_color) = if confirming {
+            (
+                theme::CONFIRM_BAR,
+                theme::CONFIRM_BORDER,
+                theme::CONFIRM_TEXT,
+            )
+        } else if focused {
+            (
+                theme::PANEL_BAR_FOCUSED,
+                theme::ACCENT,
+                theme::TITLE_TEXT_FOCUSED,
+            )
         } else {
-            Rect {
-                origin: panel.rect.origin,
-                size: calm_core::geometry::Size::new(panel.rect.size.width, CHROME_HEIGHT),
-            }
+            (theme::PANEL_BAR, theme::PANEL_BORDER, theme::TITLE_TEXT)
         };
-        let chrome = camera.world_rect_to_screen(chrome_world);
-        window.paint_quad(fill(to_bounds(chrome, origin), rgb(chrome_color)));
+
+        // Shadow and ring sit outside the panel rect, so neither reaches into native content.
+        // Bottom corners stay square on a full panel: the native view below is square.
+        let body = camera.world_rect_to_screen(if panel.minimized {
+            layout.bar
+        } else {
+            panel.rect
+        });
+        let radius = CORNER_RADIUS * zoom;
+        let bottom_radius = if panel.minimized { radius } else { 0.0 };
+        let shadow_color = if focused {
+            theme::SHADOW_FOCUSED
+        } else {
+            theme::SHADOW
+        };
+        window.paint_drop_shadows(
+            to_bounds(body, origin),
+            corners(radius, bottom_radius),
+            &[BoxShadow {
+                color: rgba(shadow_color).into(),
+                offset: point(px(0.), px((4.0 * zoom).clamp(1.0, 6.0) as f32)),
+                blur_radius: px((18.0 * zoom).clamp(2.0, 24.0) as f32),
+                spread_radius: px(0.),
+                inset: false,
+            }],
+        );
+        let ring = Rect::new(
+            body.origin.x - BORDER_PX,
+            body.origin.y - BORDER_PX,
+            body.size.width + 2.0 * BORDER_PX,
+            body.size.height + 2.0 * BORDER_PX,
+        );
+        let ring_bottom = if panel.minimized {
+            bottom_radius + BORDER_PX
+        } else {
+            0.0
+        };
+        window.paint_quad(quad(
+            to_bounds(ring, origin),
+            corners(radius + BORDER_PX, ring_bottom),
+            rgb(bar_color),
+            Edges::all(px(BORDER_PX as f32)),
+            rgb(border_color),
+            BorderStyle::Solid,
+        ));
 
         if !panel.minimized {
             let content_screen = camera.world_rect_to_screen(content_rect(panel));
             let content_bounds = to_bounds(content_screen, origin);
+            let divider = Rect::new(
+                content_screen.origin.x,
+                content_screen.origin.y - BORDER_PX,
+                content_screen.size.width,
+                BORDER_PX,
+            );
+            window.paint_quad(fill(to_bounds(divider, origin), rgb(theme::PANEL_DIVIDER)));
             window.paint_quad(fill(content_bounds, rgb(theme::CONTENT_PLACEHOLDER)));
             match content {
                 Some(TerminalContent::Preview(
@@ -810,12 +938,15 @@ impl PaintSnapshot {
                         content_screen.origin.x + padding,
                         content_screen.origin.y + padding,
                         (content_screen.size.width - 2.0 * padding).max(0.0),
-                        CHROME_HEIGHT * zoom,
+                        TITLE_BAR_HEIGHT * zoom,
                     );
                     paint_text(
                         &panel.title,
                         line,
-                        TextAlign::Left,
+                        TextLook {
+                            align: TextAlign::Left,
+                            color: theme::TITLE_TEXT,
+                        },
                         zoom,
                         origin,
                         window,
@@ -824,69 +955,155 @@ impl PaintSnapshot {
                 }
                 Some(TerminalContent::Live) | None => {}
             }
-            // Same squares as `chrome_hit`: Close rightmost, Minimize to its left.
-            let margin = (CHROME_HEIGHT - CHROME_BUTTON_SIZE) / 2.0;
-            let top = panel.rect.origin.y + margin;
-            let close_left = panel.rect.right() - margin - CHROME_BUTTON_SIZE;
-            let minimize_left = close_left - margin - CHROME_BUTTON_SIZE;
-            for left in [close_left, minimize_left] {
-                let square = Rect::new(left, top, CHROME_BUTTON_SIZE, CHROME_BUTTON_SIZE);
-                window.paint_quad(fill(
-                    to_bounds(camera.world_rect_to_screen(square), origin),
-                    rgb(theme::CHROME_BUTTON),
-                ));
+        }
+
+        if !details_visible(zoom) {
+            return;
+        }
+        let icon_color = match PanelIcon::for_kind(&panel.kind) {
+            PanelIcon::Terminal => theme::ICON_TERMINAL,
+            PanelIcon::Browser => theme::ICON_BROWSER,
+            PanelIcon::Plugin => theme::ICON_PLUGIN,
+        };
+        let stroke = (1.5 * zoom).max(1.0);
+        paint_strokes(
+            &icon_strokes(PanelIcon::for_kind(&panel.kind)),
+            camera.world_rect_to_screen(layout.icon),
+            stroke,
+            icon_color,
+            origin,
+            window,
+        );
+
+        // Buttons show while the pointer is over the panel, and during a close confirmation.
+        if hovered_button.is_some() || confirming {
+            let buttons = [
+                (ChromeButton::Minimize, layout.minimize),
+                (ChromeButton::Close, layout.close),
+            ];
+            for (button, hit) in buttons {
+                let Some(hit) = hit else { continue };
+                let dot = camera.world_rect_to_screen(button_dot(hit));
+                let lit = hovered_button == Some(Some(button))
+                    || (confirming && button == ChromeButton::Close);
+                let (dot_color, glyph_color) = match (lit, button) {
+                    (true, ChromeButton::Close) => {
+                        (theme::BUTTON_CLOSE_HOVER, theme::BUTTON_GLYPH_ON_COLOR)
+                    }
+                    (true, ChromeButton::Minimize) => {
+                        (theme::BUTTON_MINIMIZE_HOVER, theme::BUTTON_GLYPH_ON_COLOR)
+                    }
+                    (false, _) => (theme::BUTTON_IDLE, theme::BUTTON_GLYPH),
+                };
+                window.paint_quad(
+                    fill(to_bounds(dot, origin), rgb(dot_color))
+                        .corner_radii(Corners::all(px((dot.size.width / 2.0) as f32))),
+                );
+                paint_strokes(
+                    &button_strokes(button),
+                    dot,
+                    stroke,
+                    glyph_color,
+                    origin,
+                    window,
+                );
             }
         }
 
-        // Leave room for the two buttons on the right of a full chrome strip.
-        let mut reserved = if panel.minimized {
-            0.0
-        } else {
-            2.0 * CHROME_HEIGHT * zoom
-        };
-        let padding = 8.0 * zoom;
+        let mut middle = camera.world_rect_to_screen(layout.middle);
         let stale = !panel.minimized
             && matches!(content, Some(TerminalContent::Preview(image)) if image.is_stale());
         if stale {
-            // Right end of the strip, just left of the buttons.
-            let width = STALE_LABEL_WIDTH * zoom;
+            let width = (STALE_LABEL_WIDTH * zoom).min(middle.size.width);
             let label = Rect::new(
-                chrome.origin.x + chrome.size.width - reserved - width,
-                chrome.origin.y,
+                middle.right() - width,
+                middle.origin.y,
                 width,
-                chrome.size.height,
+                middle.size.height,
             );
             paint_text(
                 STALE_LABEL,
                 label,
-                TextAlign::Right,
+                TextLook {
+                    align: TextAlign::Right,
+                    color: theme::STALE_TEXT,
+                },
                 zoom,
                 origin,
                 window,
                 cx,
             );
-            reserved += width + padding;
+            middle.size.width = (middle.size.width - width - 8.0 * zoom).max(0.0);
         }
-        let text_rect = Rect::new(
-            chrome.origin.x + padding,
-            chrome.origin.y,
-            (chrome.size.width - padding - reserved).max(0.0),
-            chrome.size.height,
-        );
-        let title = if self.confirming == Some(panel.id) {
+        let title = if confirming {
             CONFIRM_TITLE
         } else {
             panel.title.as_str()
         };
-        paint_text(title, text_rect, TextAlign::Left, zoom, origin, window, cx);
+        paint_text(
+            title,
+            middle,
+            TextLook {
+                align: TextAlign::Left,
+                color: text_color,
+            },
+            zoom,
+            origin,
+            window,
+            cx,
+        );
     }
+}
+
+fn corners(top: f64, bottom: f64) -> Corners<Pixels> {
+    Corners {
+        top_left: px(top as f32),
+        top_right: px(top as f32),
+        bottom_right: px(bottom as f32),
+        bottom_left: px(bottom as f32),
+    }
+}
+
+/// Strokes unit-square polylines (see `calm_core::chrome::icon_strokes`) into `area`.
+fn paint_strokes(
+    strokes: &[Vec<(f64, f64)>],
+    area: Rect,
+    width: f64,
+    color: u32,
+    origin: gpui::Point<f64>,
+    window: &mut Window,
+) {
+    for polyline in strokes {
+        let mut builder = PathBuilder::stroke(px(width as f32));
+        for (index, (x, y)) in polyline.iter().enumerate() {
+            let at = point(
+                px((origin.x + area.origin.x + x * area.size.width) as f32),
+                px((origin.y + area.origin.y + y * area.size.height) as f32),
+            );
+            if index == 0 {
+                builder.move_to(at);
+            } else {
+                builder.line_to(at);
+            }
+        }
+        match builder.build() {
+            Ok(path) => window.paint_path(path, rgb(color)),
+            Err(err) => eprintln!("calm: chrome stroke failed: {err:?}"),
+        }
+    }
+}
+
+/// Alignment and color of one `paint_text` line.
+struct TextLook {
+    align: TextAlign,
+    color: u32,
 }
 
 /// One line of text, aligned and clipped to `rect` (canvas pixels). Skipped when too small.
 fn paint_text(
     text: &str,
     rect: Rect,
-    align: TextAlign,
+    look: TextLook,
     zoom: f64,
     origin: gpui::Point<f64>,
     window: &mut Window,
@@ -900,7 +1117,7 @@ fn paint_text(
     let run = TextRun {
         len: title.len(),
         font: window.text_style().font(),
-        color: rgb(theme::TEXT).into(),
+        color: rgb(look.color).into(),
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -917,7 +1134,7 @@ fn paint_text(
             if let Err(err) = line.paint(
                 text_bounds.origin,
                 px(rect.size.height as f32),
-                align,
+                look.align,
                 Some(text_bounds.size.width),
                 window,
                 cx,
@@ -949,6 +1166,7 @@ impl Render for CanvasView {
             state: self.input.state,
             focused: self.focused,
             confirming: self.input.confirming,
+            hover: self.hover,
             terminals: self.terminals.clone(),
             modal_open: self.input.confirming.is_some() || self.menu_open,
             input_targets: Vec::new(),
@@ -1014,6 +1232,12 @@ impl Render for CanvasView {
             .on_action(cx.listener(|view, _: &ZoomReset, window, cx| {
                 view.key_zoom(ZoomStep::Reset, window, cx)
             }))
+            .on_action(cx.listener(|view, _: &CenterOnOrigin, window, cx| {
+                view.frame_view(false, window, cx)
+            }))
+            .on_action(
+                cx.listener(|view, _: &FitAll, window, cx| view.frame_view(true, window, cx)),
+            )
             .on_action(cx.listener(|view, _: &DrawTerminal, window, cx| {
                 view.set_tool(Tool::DrawTerminal, window, cx)
             }))
