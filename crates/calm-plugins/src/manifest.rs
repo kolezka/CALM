@@ -176,7 +176,27 @@ fn load_manifest(dir: &Path) -> Result<PluginManifest, PluginError> {
         message,
     };
     let text = fs::read_to_string(&path).map_err(|e| invalid(e.to_string()))?;
-    PluginManifest::from_json(&text).map_err(invalid)
+    let manifest = PluginManifest::from_json(&text).map_err(invalid)?;
+    check_entry_on_disk(dir, &manifest.entry).map_err(invalid)?;
+    Ok(manifest)
+}
+
+// The lexical check in from_json cannot see symlinks, so resolve the real path here.
+fn check_entry_on_disk(dir: &Path, entry: &Path) -> Result<(), String> {
+    let shown = entry.display();
+    let real_dir = fs::canonicalize(dir).map_err(|e| format!("cannot resolve plugin dir: {e}"))?;
+    let real_entry = fs::canonicalize(dir.join(entry))
+        .map_err(|e| format!("cannot resolve entry {shown}: {e}"))?;
+    if !real_entry.starts_with(&real_dir) {
+        return Err(format!(
+            "entry {shown} resolves to {}, outside the plugin directory",
+            real_entry.display()
+        ));
+    }
+    if !real_entry.is_file() {
+        return Err(format!("entry {shown} is not a file"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -189,7 +209,69 @@ mod tests {
         let plugin_dir = root.join(dir);
         fs::create_dir_all(&plugin_dir).unwrap();
         fs::write(plugin_dir.join(MANIFEST_FILE), manifest).unwrap();
+        fs::write(plugin_dir.join("index.html"), "<p>hi</p>").unwrap();
         plugin_dir
+    }
+
+    fn only_invalid_path(found: &Discovery) -> Option<&Path> {
+        match &found.errors[..] {
+            [PluginError::Invalid { path, .. }] => Some(path),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn discover_rejects_entry_symlink_escaping_plugin_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.html");
+        fs::write(&secret, "<p>outside</p>").unwrap();
+        let dir = root.path().join("escape");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(MANIFEST_FILE),
+            manifest_json("escape", "index.html"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&secret, dir.join("index.html")).unwrap();
+        write_plugin(root.path(), "good", &manifest_json("good", "index.html"));
+
+        let found = discover(&[root.path().to_path_buf()]);
+
+        let ids: Vec<&str> = found
+            .plugins
+            .iter()
+            .map(|p| p.manifest.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["good"]);
+        assert_eq!(
+            only_invalid_path(&found),
+            Some(dir.join(MANIFEST_FILE).as_path()),
+            "{:?}",
+            found.errors
+        );
+    }
+
+    #[test]
+    fn discover_rejects_entry_that_is_a_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = write_plugin(root.path(), "dot", &manifest_json("dot", "."));
+        write_plugin(root.path(), "good", &manifest_json("good", "index.html"));
+
+        let found = discover(&[root.path().to_path_buf()]);
+
+        let ids: Vec<&str> = found
+            .plugins
+            .iter()
+            .map(|p| p.manifest.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["good"]);
+        assert_eq!(
+            only_invalid_path(&found),
+            Some(dir.join(MANIFEST_FILE).as_path()),
+            "{:?}",
+            found.errors
+        );
     }
 
     fn manifest_json(id: &str, entry: &str) -> String {
