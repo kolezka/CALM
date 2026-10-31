@@ -35,3 +35,14 @@ cargo test --workspace           # before a PR
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
+
+## Make targets
+
+Run `make` or `make help` to list targets. `make setup-check` prints prerequisite versions and checks the local toolchain.
+
+- `make build`, `make test`, `make lint`, and `make fmt` build, test, lint, and format the Rust workspace.
+- `make smoke` runs the GUI smoke gate; `make run ARGS=--fullscreen` launches the app; `make bench N=20 SECONDS=30 ZOOM=1.0` runs a benchmark.
+- `make bundle VERSION=0.1.0 OUT=dist` builds a macOS bundle.
+- `make plugins` installs and builds each plugin package; `make plugins-check` type-checks each package.
+- `make ci` runs lint, tests, smoke, and plugin checks in order; `make graph` refreshes the repo-intel graphs.
+- `make clean` removes Rust and plugin build outputs.
