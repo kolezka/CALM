@@ -68,6 +68,12 @@ Every plugin folder holds a `calm-plugin.json`:
 | `minSize`     | Optional `{ "width", "height" }`. Smallest size a resize may reach.      |
 | `maxSize`     | Optional `{ "width", "height" }`. Largest size a resize may reach.       |
 | `contributes` | Optional. Context menu items, see Context menu contributions.            |
+| `apiVersion`  | Optional integer, default 1. See API version and backend fields.         |
+| `capabilities`| Optional list of words. Shown to the user, never checked.                |
+| `main`        | Optional. Backend entry for bun. Parsed, not run yet.                    |
+| `backend`     | Optional. When the backend starts and restarts. Needs `main`.            |
+| `engines`     | Optional `{ "bun": "<semver range>" }`. Needs `main`.                    |
+| `background`  | Optional `true` or `false`, default `false`. Parsed, not served yet.     |
 
 Every panel can be resized by default, plugins included. Drag the right edge, the bottom
 edge or the corner. The handle reaches a few pixels outside the panel, so it works over a
@@ -183,6 +189,66 @@ plugin `id`, never the command, `args` or `env`.
 `plugins/top-example` runs macOS `top` with its own accent, title and SVG icon.
 `templates/plugin-tui` is a starting point.
 
+### API version and backend fields
+
+These fields come from plugin API v2. CALM reads and checks them today; it does not run a
+backend or a background page yet.
+
+```json
+{
+  "id": "agent-board",
+  "name": "Agent Board",
+  "version": "0.2.0",
+  "entry": "index.html",
+  "defaultSize": { "width": 420, "height": 300 },
+  "apiVersion": 2,
+  "capabilities": ["panels.create", "terminal.write"],
+  "main": "dist/main.js",
+  "backend": { "start": "on-demand", "restart": "on-failure" },
+  "engines": { "bun": ">=1.2" },
+  "background": false
+}
+```
+
+- `apiVersion` is a positive integer. Missing means 1. This host serves version 2. A plugin
+  that asks for more is skipped with `requires API v<n>, host has v<m>`.
+- `capabilities` says what the plugin does, in the words of the table below. It is declared
+  and shown to the user, never a gate: CALM does not check a call against it. A word CALM
+  does not know is a warning, not an error. The plugin still loads, stderr names the words,
+  and the status bar counts it as `plugins: <n> warnings`.
+- `main` is a file relative to the plugin folder, checked on disk like `entry`. A plugin with
+  `main` runs a background program with full access to your files, network and programs.
+  CALM does not start it yet.
+- `backend.start` is `on-demand` (default) or `at-launch`. `backend.restart` is `on-failure`
+  (default) or `never`. These words may still change before backends ship.
+- `engines.bun` is a semver range such as `>=1.2`, `^1.2.3` or `>=1.2 <2`. Only its syntax is
+  checked for now.
+- `backend` and `engines` without `main` are errors.
+- `background` is `true` or `false`. Parsed, not served yet.
+- A TUI app takes `apiVersion` and `capabilities`, and refuses `main`, `backend`, `engines`
+  and `background`.
+- `contributes` does not need `apiVersion` 2.
+
+| Capability         | What it covers                                                        |
+| ------------------ | --------------------------------------------------------------------- |
+| `panels.create`    | Creating panels                                                       |
+| `panels.control`   | Focusing, moving, resizing and restyling other panels                 |
+| `panels.close`     | Closing other panels                                                  |
+| `camera.control`   | Moving the camera                                                     |
+| `terminal.read`    | Reading terminal content                                              |
+| `terminal.write`   | Typing into terminals                                                 |
+| `terminal.control` | Clearing, scrolling and other terminal controls                       |
+| `browser.control`  | Navigating browser panels                                             |
+| `browser.script`   | Running scripts and styles in browser panels                          |
+| `browser.data`     | Browser cookies and site data                                         |
+| `plugins.call`     | Calling other plugins                                                 |
+| `settings.write`   | Changing app settings                                                 |
+| `process.exec`     | Running programs                                                      |
+| `github`           | `calm.github.api`                                                     |
+| `open.external`    | `calm.openExternal`                                                   |
+| `layouts`          | Saving, opening and deleting layouts                                  |
+| `backend`          | A bun backend process (`main`)                                        |
+
 ### Customizing TUI apps
 
 Every part of a TUI panel's look can come from its manifest. Each field is optional and falls
@@ -196,6 +262,8 @@ This Slack panel uses every field:
   "id": "slack",
   "name": "Slack",
   "version": "1.0.0",
+  "apiVersion": 2,
+  "capabilities": ["terminal.read"],
   "description": "Slack in the terminal, through slk.",
   "command": "slk",
   "args": ["--workspace", "my team"],
@@ -344,8 +412,22 @@ v2 design.
 
 CALM injects `window.calm` before any of your scripts run. The types live in one place,
 `packages/calm-plugin-sdk/calm.d.ts` (package `@calm/plugin-sdk`), and this section follows
-it. Every call except `calm.log` and `calm.events.on` returns a Promise. A failed call rejects
-with an `Error` whose message comes from the host.
+it. Every call except `calm.log`, `calm.events.on` and `calm.has` returns a Promise. A failed
+call rejects with an `Error` whose `message` comes from the host and whose `code` is one of the
+words in [Errors](#errors).
+
+`calm.has(method)` answers synchronously whether this host serves a method, for example
+`calm.has("panel.setTitle")`. It reads `window.__calmHost = { apiVersion, methods }`, which the
+host injects before the prelude, so it works before any call. A method the host lists only as
+declared answers `false`.
+
+```js
+try {
+  await calm.panel.close();
+} catch (err) {
+  if (err.code === "not_implemented") console.log("this CALM cannot close panels yet");
+}
+```
 
 The app serves four requests so far. Check [Host support](#host-support) before you rely on one.
 
@@ -369,7 +451,7 @@ does not parse makes every call reject and is left as it is, never replaced by `
 | Call                           | Result                                            |
 | ------------------------------ | ------------------------------------------------- |
 | `calm.storage.get<T>(key)`     | The stored value, or `undefined` if there is none. |
-| `calm.storage.set(key, value)` | Stores a JSON value under `key`.                  |
+| `calm.storage.set(key, value)` | Stores a JSON value under `key`. `undefined` rejects with `invalid_params`; `null` is stored. |
 | `calm.storage.remove(key)`     | Deletes `key`.                                    |
 
 ### Panel
@@ -440,8 +522,8 @@ page in a normal browser while developing.
 The prelude exposes every call above. The app's plugin host (`crates/calm-app/src/plugin_host.rs`)
 serves the methods marked below. `github.api`, `storage.*` and `openExternal` run on a
 background thread, so a slow `gh` never stalls the canvas. Every other method rejects with
-`not implemented: <method>`, so no call hangs. An unknown method rejects with
-`unknown method: <method>`.
+code `not_implemented`, so no call hangs. An unknown method rejects with code
+`unknown_method`.
 
 | `method`             | Host support                              |
 | -------------------- | ----------------------------------------- |
@@ -451,17 +533,49 @@ background thread, so a slow `gh` never stalls the canvas. Every other method re
 | `storage.set`        | Served: atomic write of the plugin file   |
 | `storage.remove`     | Served                                    |
 | `panel.setTitle`     | Served: sets the chrome title             |
-| `panel.getBounds`    | Rejects with `not implemented: <method>` |
-| `panel.minimize`     | Rejects with `not implemented: <method>` |
-| `panel.close`        | Rejects with `not implemented: <method>` |
-| `canvas.createPanel` | Rejects with `not implemented: <method>` |
-| `canvas.focusPanel`  | Rejects with `not implemented: <method>` |
-| `canvas.listPanels`  | Rejects with `not implemented: <method>` |
-| `process.exec`       | Rejects with `not implemented: <method>` |
+| `panel.getBounds`    | Not served yet, rejects with `not_implemented` |
+| `panel.minimize`     | Not served yet, rejects with `not_implemented` |
+| `panel.close`        | Not served yet, rejects with `not_implemented` |
+| `canvas.createPanel` | Not served yet, rejects with `not_implemented` |
+| `canvas.focusPanel`  | Not served yet, rejects with `not_implemented` |
+| `canvas.listPanels`  | Not served yet, rejects with `not_implemented` |
+| `process.exec`       | Not served yet, rejects with `not_implemented` |
 | `github.api`         | Served: `gh api <path>` on the host       |
 | `openExternal`       | Served: `http` and `https` only           |
-| `theme.get`          | Rejects with `not implemented: <method>` |
+| `theme.get`          | Not served yet, rejects with `not_implemented` |
 | `log`                | Served: printed to stderr, no answer       |
+
+### Errors
+
+A rejected call's `Error` has a `code`. The codes below are the whole list for plugin API v2.
+This host produces `unknown_method`, `not_implemented`, `invalid_params`, `too_large`,
+`storage_corrupt`, the four `gh_*` codes, `timeout` and `host_error` today; the rest belong to
+methods that are not served yet.
+
+| `code`             | When                                                                |
+| ------------------ | ------------------------------------------------------------------- |
+| `unknown_method`   | Not a method of the API                                             |
+| `not_implemented`  | Known, but this host does not serve it yet                          |
+| `invalid_params`   | Missing, wrong type or out of range; the message names the field    |
+| `not_found`        | No panel with that id                                               |
+| `wrong_kind`       | A terminal method on a browser panel, and so on                     |
+| `not_alive`        | The terminal process exited                                         |
+| `busy`             | Another close confirmation is pending, or a TUI restart is running  |
+| `cancelled`        | The user cancelled a confirmation                                   |
+| `unavailable`      | Needs a later CALM                                                  |
+| `too_large`        | Payload, storage or output over its limit                           |
+| `storage_corrupt`  | The plugin data file does not parse                                 |
+| `gh_not_installed` | `gh` is not installed                                               |
+| `gh_not_logged_in` | `gh` is not logged in                                               |
+| `gh_failed`        | `gh api` failed; the message has its error                          |
+| `gh_invalid_path`  | The `github.api` path is not a plain API path                       |
+| `timeout`          | The call ran past its limit (`gh api` today)                        |
+| `not_allowed`      | An external caller asked for a method outside its allowlist          |
+| `not_installed`    | `plugins.call` to a plugin that is not installed                    |
+| `not_running`      | `plugins.call` to an export no running page serves                  |
+| `method_not_found` | `plugins.call` to a method the callee does not export               |
+| `remote_error`     | The called plugin's handler threw                                   |
+| `host_error`       | Anything else; the message says what                                |
 
 Only `command` has a host sender so far. Handlers for the other events do not fire until
 their app wiring lands.
@@ -500,9 +614,16 @@ the prelude and `calm.d.ts` in sync.
 | `log`                | `{ "message": string }`                                              |
 
 The host answers by evaluating `window.__calm.resolve(id, ok, value)` in the page. With `ok`
-true, `value` is the result. With `ok` false, `value` is an error message string. The host
-answers a method it does not serve with `ok` false and `not implemented: <method>`
+true, `value` is the result. With `ok` false, `value` is `{ "code": string, "message": string }`
+(`BridgeResponse::Err` carries an `ApiError`). The prelude turns it into an `Error` with that
+`message` and a `code` property. A plain string, the v1 shape, still works and gets
+`code: "host_error"`. The host answers a method it does not serve with
+`{ "code": "not_implemented", "message": "not implemented: <method>" }`
 (`BridgeResponse::not_implemented`).
+
+Before the prelude, the host injects `window.__calmHost = { apiVersion, methods }`
+(`host_info_js`), where `methods` is the list the host serves (`served_methods` in
+`plugin_host.rs`). `calm.has` reads it.
 
 `log` is fire and forget. The prelude posts it with an `id` but keeps no pending entry, so the
 host does not need to answer it, and an answer is ignored.
