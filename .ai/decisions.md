@@ -48,6 +48,16 @@ one means a new entry, not an edit.
 - **Default snap grid is 8 world units, not the requested 3 pixels.** Terminal cells are
   about 8 px wide at zoom 1, so 3 is not a cell multiple. Edge snap within 8, `alt`
   disables. One constant to change if the user wants finer.
+- **Dot and cross grids are back, as tiled textures (reverses "Grid is drawn as lines, not
+  dots").** The user asked for grid styles (lines, dots, crosses, none), mark size and a
+  major grid. Lines stay one quad per line. Dots and crosses are rasterized once per
+  style, color and zoom bucket (12 per doubling) into a tile of at least 256 points and
+  drawn tiled, so a frame draws at most `mark_primitive_bound` images (60 on 1280x800)
+  however many marks are visible; a test fails if a frame draws one image per dot. The
+  minor grid fades out between 16 and 8 screen points while the major grid stays. Cost if
+  wrong: a cached tile is stretched up to about 6 % before the next bucket, so marks can
+  look slightly soft, and a new bucket rasterizes on the UI thread (about 1.8 ms for the
+  largest tile in a debug build, plus upload).
 - **Settings live in a separate native NSWindow, not a GPUI modal.** Option (a) of two:
   a GPUI modal would have to hide every live native view while open, and GPUI has no color
   picker, slider or file dialog. A separate AppKit window never shares a rect with Ghostty
