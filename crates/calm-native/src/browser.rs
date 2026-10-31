@@ -340,6 +340,12 @@ impl BrowserView {
             unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &handler) };
     }
 
+    /// The web view's frame size in logical points, as the last `set_logical_size` left it.
+    pub fn page_size(&self) -> Size {
+        let frame = self.web_view.frame();
+        Size::new(frame.size.width, frame.size.height)
+    }
+
     /// Lays out bar and page for a panel content of `size` logical points. The zoom view is
     /// unflipped, so the bar sits at the top of its bounds.
     pub fn set_logical_size(&mut self, size: Size) {

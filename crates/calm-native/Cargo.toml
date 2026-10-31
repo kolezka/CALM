@@ -52,6 +52,7 @@ objc2-app-kit = { workspace = true, default-features = false, features = [
     "NSParagraphStyle",
     "NSRunningApplication",
     "NSSavePanel",
+    "NSScreen",
     "NSScrollView",
     "NSSlider",
     "NSText",

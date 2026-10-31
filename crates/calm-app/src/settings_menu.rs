@@ -71,9 +71,13 @@ pub fn install(cx: &mut App, settings: &Settings) {
 /// it stays available while the Settings window, which is not a GPUI window, is key.
 pub fn install_open_handler(cx: &mut App, canvas: WindowHandle<CanvasView>) {
     cx.on_action(move |_: &OpenSettings, cx| {
-        canvas
-            .update(cx, |view, window, cx| view.open_settings(window, cx))
-            .ok();
+        // GPUI runs this while it holds the canvas window for the dispatch, so updating
+        // that window here fails with "window not found". Defer until it is released.
+        cx.defer(move |cx| {
+            if let Err(err) = canvas.update(cx, |view, window, cx| view.open_settings(window, cx)) {
+                eprintln!("calm: cannot open Settings: {err:#}");
+            }
+        });
     });
 }
 

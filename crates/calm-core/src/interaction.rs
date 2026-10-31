@@ -1,9 +1,9 @@
-use crate::geometry::{Point, Rect};
+use crate::geometry::{Point, Rect, Size};
+use crate::resize::resize_target;
 use crate::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect};
 use crate::snap::{SnapConfig, snap_draw, snap_move, snap_resize};
 
-/// Width of the resize grab band inside a panel's right and bottom edges, in world units.
-pub const RESIZE_BAND: f64 = 12.0;
+pub use crate::resize::RESIZE_BAND;
 /// Side of each square chrome button hit target, in world units.
 pub const CHROME_BUTTON_SIZE: f64 = crate::chrome::BUTTON_HIT_SIZE;
 pub use crate::chrome::{ChromeButton, chrome_hit};
@@ -143,30 +143,23 @@ impl InputHandler {
         }
 
         let world = scene.camera.screen_to_world(screen);
-        let Some(id) = scene.hit_test(world) else {
-            if self.tool != Tool::Select {
-                self.state = Interaction::Drawing {
-                    start_world: world,
-                    draft: Rect::new(world.x, world.y, 0.0, 0.0),
-                };
-            }
-            return Vec::new();
-        };
-        let Some(panel) = scene.get(id) else {
-            return Vec::new();
-        };
-
-        if panel.minimized {
-            return vec![Effect::ToggleMinimize(id), Effect::Redraw];
-        }
-        match chrome_hit(panel, world) {
-            Some(ChromeButton::Close) => return vec![Effect::ClosePanelRequested(id)],
-            Some(ChromeButton::Minimize) => {
+        let hit = scene.hit_test(world);
+        if let Some(panel) = hit.and_then(|id| scene.get(id)) {
+            let id = panel.id;
+            if panel.minimized {
                 return vec![Effect::ToggleMinimize(id), Effect::Redraw];
             }
-            None => {}
+            match chrome_hit(panel, world) {
+                Some(ChromeButton::Close) => return vec![Effect::ClosePanelRequested(id)],
+                Some(ChromeButton::Minimize) => {
+                    return vec![Effect::ToggleMinimize(id), Effect::Redraw];
+                }
+                None => {}
+            }
         }
-        if let Some(edge) = resize_edge(panel, world) {
+        if let Some((id, edge)) = self.resize_handle(scene, world, hit)
+            && let Some(panel) = scene.get(id)
+        {
             self.state = Interaction::Resizing {
                 id,
                 edge,
@@ -178,6 +171,16 @@ impl InputHandler {
             scene.bring_to_front(id);
             return vec![Effect::FocusPanel(id), Effect::Redraw];
         }
+        let Some(panel) = hit.and_then(|id| scene.get(id)) else {
+            if self.tool != Tool::Select {
+                self.state = Interaction::Drawing {
+                    start_world: world,
+                    draft: Rect::new(world.x, world.y, 0.0, 0.0),
+                };
+            }
+            return Vec::new();
+        };
+        let id = panel.id;
         if world.y < panel.rect.origin.y + CHROME_HEIGHT {
             self.state = Interaction::Dragging {
                 id,
@@ -328,6 +331,33 @@ impl InputHandler {
         }
     }
 
+    /// The resize edge the pointer is over, for the hover cursor. While a resize runs it
+    /// is that resize's edge, wherever the pointer is.
+    pub fn hover_resize(&self, screen: Point, scene: &Scene) -> Option<ResizeEdge> {
+        match self.state {
+            Interaction::Resizing { edge, .. } => Some(edge),
+            Interaction::Idle if !self.space_held => {
+                let world = scene.camera.screen_to_world(screen);
+                self.resize_handle(scene, world, scene.hit_test(world))
+                    .map(|(_, edge)| edge)
+            }
+            _ => None,
+        }
+    }
+
+    /// A press on empty canvas with a draw tool draws, even next to a panel's edge.
+    fn resize_handle(
+        &self,
+        scene: &Scene,
+        world: Point,
+        hit: Option<PanelId>,
+    ) -> Option<(PanelId, ResizeEdge)> {
+        if hit.is_none() && self.tool != Tool::Select {
+            return None;
+        }
+        resize_target(scene, world)
+    }
+
     /// Rect spanned by a draw from `start` to `end`, snapped unless alt is held.
     fn draft_rect(&self, start: Point, end: Point, mods: Modifiers, scene: &Scene) -> Rect {
         let raw = Rect::new(
@@ -392,26 +422,20 @@ fn context_menu(screen: Point, scene: &Scene) -> Vec<Effect> {
     }
 }
 
-fn resize_edge(panel: &Panel, world: Point) -> Option<ResizeEdge> {
-    let near_right = world.x >= panel.rect.right() - RESIZE_BAND;
-    let near_bottom = world.y >= panel.rect.bottom() - RESIZE_BAND;
-    match (near_right, near_bottom) {
-        (true, true) => Some(ResizeEdge::BottomRight),
-        (true, false) => Some(ResizeEdge::Right),
-        (false, true) => Some(ResizeEdge::Bottom),
-        (false, false) => None,
-    }
-}
-
-/// Moves the grabbed edge to `edge_world`, keeping the origin fixed.
+/// Moves the grabbed edge to `edge_world`, keeping the origin fixed, within the panel's
+/// resize limits. A locked panel does not change.
 fn resize_panel(panel: &mut Panel, edge: ResizeEdge, edge_world: Point) {
-    use crate::scene::MIN_PANEL_SIZE;
+    if !panel.resize.resizable {
+        return;
+    }
+    let mut size: Size = panel.rect.size;
     if matches!(edge, ResizeEdge::Right | ResizeEdge::BottomRight) {
-        panel.rect.size.width = (edge_world.x - panel.rect.origin.x).max(MIN_PANEL_SIZE.width);
+        size.width = edge_world.x - panel.rect.origin.x;
     }
     if matches!(edge, ResizeEdge::Bottom | ResizeEdge::BottomRight) {
-        panel.rect.size.height = (edge_world.y - panel.rect.origin.y).max(MIN_PANEL_SIZE.height);
+        size.height = edge_world.y - panel.rect.origin.y;
     }
+    panel.rect.size = panel.resize.clamp(size);
 }
 
 #[cfg(test)]
@@ -492,6 +516,201 @@ mod tests {
             Rect::new(500.0, 0.0, 400.0, 300.0)
         );
         assert_eq!(handler.state, Interaction::Idle);
+    }
+
+    /// A live WKWebView keeps every click inside its rect, so GPUI only sees the mouse
+    /// outside the content rect. For every kind and zoom, a press a few screen pixels
+    /// outside the right edge, bottom edge and corner must start a resize that drags.
+    #[test]
+    fn resize_grab_works_outside_the_native_content_rect_for_every_kind() {
+        let kinds = [
+            terminal(),
+            PanelKind::Browser {
+                url: "https://example.com".into(),
+            },
+            PanelKind::Plugin {
+                plugin_id: "hello-world".into(),
+                settings: serde_json::json!({}),
+            },
+        ];
+        for kind in kinds {
+            for zoom in [0.5, 1.0, 2.0] {
+                for edge in [
+                    ResizeEdge::Right,
+                    ResizeEdge::Bottom,
+                    ResizeEdge::BottomRight,
+                ] {
+                    let mut scene = Scene::default();
+                    scene.camera.zoom = zoom;
+                    // Browser default size.
+                    let id = scene.add(kind.clone(), Rect::new(100.0, 100.0, 800.0, 600.0));
+                    let content = crate::scene::content_rect(scene.get(id).unwrap());
+                    let outside = 3.0 / zoom;
+                    let world = match edge {
+                        ResizeEdge::Right => Point::new(content.right() + outside, 400.0),
+                        ResizeEdge::Bottom => Point::new(500.0, content.bottom() + outside),
+                        ResizeEdge::BottomRight => {
+                            Point::new(content.right() + outside, content.bottom() + outside)
+                        }
+                    };
+                    assert!(!content.contains(world));
+                    let press = scene.camera.world_to_screen(world);
+                    let mut handler = InputHandler::default();
+                    handler.mouse_down(press, Button::Left, no_mods(), &mut scene);
+                    assert!(
+                        matches!(
+                            handler.state,
+                            Interaction::Resizing { id: got, edge: got_edge, .. }
+                                if got == id && got_edge == edge
+                        ),
+                        "{kind:?} zoom {zoom} {edge:?}: {:?}",
+                        handler.state
+                    );
+                    let release = Point::new(press.x + 40.0, press.y + 40.0);
+                    handler.mouse_move(release, free(), &mut scene);
+                    handler.mouse_up(release, free(), &mut scene);
+                    let size = scene.get(id).unwrap().rect.size;
+                    let grown = 40.0 / zoom;
+                    let want_w = if edge == ResizeEdge::Bottom {
+                        800.0
+                    } else {
+                        800.0 + grown
+                    };
+                    let want_h = if edge == ResizeEdge::Right {
+                        600.0
+                    } else {
+                        600.0 + grown
+                    };
+                    assert_eq!(
+                        (size.width, size.height),
+                        (want_w, want_h),
+                        "{kind:?} {edge:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn plugin_kind() -> PanelKind {
+        PanelKind::Plugin {
+            plugin_id: "fixture".into(),
+            settings: serde_json::json!({}),
+        }
+    }
+
+    /// Presses at `press`, drags by `delta` screen pixels and releases.
+    fn drag(scene: &mut Scene, press: Point, delta: Point, mods: Modifiers) -> InputHandler {
+        let mut handler = InputHandler::default();
+        handler.mouse_down(press, Button::Left, no_mods(), scene);
+        let release = Point::new(press.x + delta.x, press.y + delta.y);
+        handler.mouse_move(release, mods, scene);
+        handler.mouse_up(release, mods, scene);
+        handler
+    }
+
+    #[test]
+    fn locked_panel_ignores_edge_drags_inside_and_outside() {
+        use crate::resize::ResizePolicy;
+        let mut scene = Scene::default();
+        let id = scene.add(plugin_kind(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        scene.set_resize_policy(id, ResizePolicy::LOCKED);
+        let before = scene.get(id).unwrap().rect;
+        for press in [
+            Point::new(395.0, 150.0),
+            Point::new(403.0, 150.0),
+            Point::new(200.0, 295.0),
+            Point::new(395.0, 295.0),
+            Point::new(403.0, 303.0),
+        ] {
+            let handler = drag(&mut scene, press, Point::new(80.0, 60.0), free());
+            assert_eq!(scene.get(id).unwrap().rect, before, "press {press:?}");
+            assert_eq!(handler.hover_resize(press, &scene), None, "press {press:?}");
+        }
+    }
+
+    #[test]
+    fn resize_drag_stays_within_min_and_max_with_and_without_snapping() {
+        use crate::resize::{PluginResize, ResizePolicy};
+        let spec = PluginResize {
+            resizable: true,
+            min: Some(Size::new(200.0, 160.0)),
+            max: Some(Size::new(496.0, 400.0)),
+        };
+        // Grid multiples, so a snapped drag lands on the limits too.
+        for mods in [free(), no_mods()] {
+            let mut scene = Scene::default();
+            let id = scene.add(plugin_kind(), Rect::new(0.0, 0.0, 400.0, 300.0));
+            scene.set_resize_policy(id, ResizePolicy::derive(&plugin_kind(), Some(&spec)));
+            drag(
+                &mut scene,
+                Point::new(403.0, 303.0),
+                Point::new(900.0, 900.0),
+                mods,
+            );
+            assert_eq!(scene.get(id).unwrap().rect.size, Size::new(496.0, 400.0));
+            drag(
+                &mut scene,
+                Point::new(499.0, 403.0),
+                Point::new(-900.0, -900.0),
+                mods,
+            );
+            assert_eq!(scene.get(id).unwrap().rect.size, Size::new(200.0, 160.0));
+        }
+    }
+
+    #[test]
+    fn set_resize_policy_moves_a_free_panel_into_its_limits() {
+        use crate::resize::ResizePolicy;
+        let mut scene = Scene::default();
+        let id = scene.add(plugin_kind(), Rect::new(0.0, 0.0, 900.0, 100.0));
+        let policy = ResizePolicy {
+            resizable: true,
+            min: Size::new(200.0, 150.0),
+            max: Some(Size::new(500.0, 400.0)),
+        };
+        scene.set_resize_policy(id, policy);
+        assert_eq!(scene.get(id).unwrap().rect.size, Size::new(500.0, 150.0));
+    }
+
+    #[test]
+    fn hover_reports_the_edge_and_holds_it_during_a_resize() {
+        let mut scene = Scene::default();
+        scene.add(
+            PanelKind::Browser {
+                url: "https://example.com".into(),
+            },
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        let mut handler = InputHandler::default();
+        let corner = Point::new(803.0, 603.0);
+        assert_eq!(
+            handler.hover_resize(corner, &scene),
+            Some(ResizeEdge::BottomRight)
+        );
+        assert_eq!(handler.hover_resize(Point::new(400.0, 300.0), &scene), None);
+        handler.mouse_down(corner, Button::Left, no_mods(), &mut scene);
+        // Far from the panel, the cursor still shows the resize under way.
+        assert_eq!(
+            handler.hover_resize(Point::new(5.0, 5.0), &scene),
+            Some(ResizeEdge::BottomRight)
+        );
+    }
+
+    #[test]
+    fn draw_tool_next_to_an_edge_draws_instead_of_resizing() {
+        let mut scene = Scene::default();
+        scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mut handler = InputHandler {
+            tool: Tool::DrawTerminal,
+            ..InputHandler::default()
+        };
+        handler.mouse_down(
+            Point::new(403.0, 150.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
+        assert!(matches!(handler.state, Interaction::Drawing { .. }));
     }
 
     #[test]
@@ -906,11 +1125,11 @@ mod tests {
             no_mods(),
             &mut scene,
         );
-        // Left edge 205 snaps flush to the neighbor's right edge 200; top 401 to the grid.
+        // Left edge 205 joins the neighbor's right edge 200 one unit off; top 401 to the grid.
         handler.mouse_move(Point::new(215.0, 411.0), no_mods(), &mut scene);
         assert_eq!(
             scene.get(moving).unwrap().rect,
-            Rect::new(200.0, 400.0, 200.0, 100.0)
+            Rect::new(201.0, 400.0, 200.0, 100.0)
         );
     }
 
@@ -958,5 +1177,59 @@ mod tests {
         handler.mouse_move(Point::new(213.0, 121.0), free(), &mut scene);
         handler.mouse_up(Point::new(213.0, 121.0), no_mods(), &mut scene);
         assert_eq!(scene.panels[0].rect, Rect::new(16.0, 24.0, 200.0, 96.0));
+    }
+
+    #[test]
+    fn shared_edge_resize_moves_only_the_left_panel() {
+        let mut scene = Scene::default();
+        let left = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        let right = scene.add(terminal(), Rect::new(201.0, 0.0, 200.0, 100.0));
+        scene.bring_to_front(left);
+        let mut handler = InputHandler::default();
+
+        // A press in the 1 unit gap grabs the left panel's right edge.
+        handler.mouse_down(Point::new(200.5, 50.0), Button::Left, no_mods(), &mut scene);
+        assert!(matches!(
+            handler.state,
+            Interaction::Resizing { id, edge: ResizeEdge::Right, .. } if id == left
+        ));
+        handler.mouse_move(Point::new(150.5, 50.0), free(), &mut scene);
+        handler.mouse_up(Point::new(150.5, 50.0), free(), &mut scene);
+        assert_eq!(
+            scene.get(left).unwrap().rect,
+            Rect::new(0.0, 0.0, 150.0, 100.0)
+        );
+        assert_eq!(
+            scene.get(right).unwrap().rect,
+            Rect::new(201.0, 0.0, 200.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn press_on_joined_neighbor_title_bar_does_not_resize() {
+        let mut scene = Scene::default();
+        let left = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        let right = scene.add(terminal(), Rect::new(201.0, 0.0, 200.0, 100.0));
+        scene.bring_to_front(left);
+        let mut handler = InputHandler::default();
+
+        // Inside the left panel's 8 px outer band, but on the right panel's title bar.
+        let press = Point::new(204.0, 5.0);
+        assert_eq!(handler.hover_resize(press, &scene), None);
+        handler.mouse_down(press, Button::Left, no_mods(), &mut scene);
+        assert!(
+            !matches!(handler.state, Interaction::Resizing { .. }),
+            "got {:?}",
+            handler.state
+        );
+        handler.mouse_up(press, no_mods(), &mut scene);
+        assert_eq!(
+            scene.get(left).unwrap().rect,
+            Rect::new(0.0, 0.0, 200.0, 100.0)
+        );
+        assert_eq!(
+            scene.get(right).unwrap().rect,
+            Rect::new(201.0, 0.0, 200.0, 100.0)
+        );
     }
 }

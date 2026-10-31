@@ -41,6 +41,9 @@ How work on CALM is done. `CLAUDE.md` repeats the ones that are easiest to break
 - Comments explain why, one line is the norm. No commented-out code.
 - Descriptive names. Fail loud: no silent catches, no fail-open defaults in shared layers.
 - Plain writing everywhere: short sentences, everyday words, no long dashes (en or em).
+- Customization first: user-visible look and behavior goes through settings or manifest
+  fields with defaults and strict validation; a hard-coded choice needs a reason in
+  `.ai/decisions.md`.
 
 ## Agents
 
@@ -51,6 +54,9 @@ How work on CALM is done. `CLAUDE.md` repeats the ones that are easiest to break
   from a different family than the one that wrote the code.
 - Briefs carry exact files, commands, the test budget (one run per suite per phase) and
   what is out of scope.
+- Shut down idle agents: once a teammate or subagent is done (result reported and verified,
+  or failed), the lead sends a shutdown request or stops it, confirms it left the agent
+  list, and starts a new session for the next task.
 
 ## Security rules
 
