@@ -86,8 +86,9 @@ has a host sender yet.
 
 ## Non-goals
 
-- A sandbox or a permission system that protects the user from a plugin. Plugins are
-  trusted, explicitly installed code. Capabilities are a declaration, not a wall.
+- A sandbox, a permission system or any gate on what an installed plugin may do. The
+  user decided: plugins may use the full Node and Bun API, and what someone installs is
+  their business. Capabilities are a declaration shown to the user, never enforced.
 - Giving browser panels the bridge. Remote pages stay without host access. A plugin with
   `browser.script` reaches into a page; the page never reaches the host.
 - Exposing CALM's own secrets to plugin JS. The GitHub token stays behind `gh api` on the
@@ -104,10 +105,11 @@ has a host sender yet.
 1. **Calls are attributed.** Every request carries a `Caller`, set by the transport, never
    by a param. `Caller::Panel` is a plugin page: the WebKit channel tags each message with
    the calling `PanelId`, and the host resolves the plugin id through the scene.
-   `Caller::External` is a client of the control socket (phase 11). Capability checks,
-   "self" methods and event delivery all take the `Caller`, so one dispatcher serves both
-   transports and allows methods per origin.
-2. **One dispatcher, pure core.** Parsing, capability checks, snapshots and coalescing are
+   `Caller::Backend` is a plugin's backend process. `Caller::External` is a client of the
+   control socket (phase 11). "Self" methods, event delivery and the external allowlist
+   all take the `Caller`, so one dispatcher serves every transport. Only `External` is ever
+   refused for policy reasons.
+2. **One dispatcher, pure core.** Parsing, the external allowlist, snapshots and coalescing are
    pure Rust with unit tests. `plugin_host.rs` only applies effects to GPUI state.
 3. **Never re-enter GPUI from an AppKit callback.** WebKit and NSMenu callbacks only push
    into a channel. All scene, camera and native view work happens in the GPUI task.
@@ -143,7 +145,9 @@ background page uses `calm.storage`.
   "defaultSize": { "width": 420, "height": 300 },
   "apiVersion": 2,
   "capabilities": ["panels.create", "panels.control", "terminal.write", "camera.control"],
-  "background": true,
+  "main": "dist/main.js",
+  "backend": { "start": "on-demand", "restart": "on-failure" },
+  "engines": { "bun": ">=1.2" },
   "exports": [
     { "name": "spawnAgents", "description": "Open n agent terminals", "uses": ["panels.create"] }
   ],
@@ -162,40 +166,49 @@ background page uses `calm.storage`.
 | Field          | Meaning                                                                       |
 | -------------- | ----------------------------------------------------------------------------- |
 | `apiVersion`   | Integer. Missing means 1. The host refuses a manifest above its own version.  |
-| `capabilities` | Strings from the capability table. Unknown strings fail the manifest.         |
-| `background`   | Opt-in hidden page started at launch. Default false. See below.               |
+| `capabilities` | Declarative. Strings from the capability table, shown to the user. Never a gate. |
+| `main`         | Backend entry run under bun, relative to the plugin folder. See Plugin backend. |
+| `backend`      | `start`: `on-demand` (default) or `at-launch`; `restart`: `on-failure` (default) or `never`. |
+| `engines.bun`  | Semver range of bun the backend needs. Checked before start.                  |
+| `background`   | Opt-in hidden page. Default false. Mostly replaced by `main`, see below.      |
 | `exports`      | Methods other plugins may call through `calm.plugins.call`. See plugin RPC.   |
 | `requires`     | Plugin ids with a semver range of their `version`. See plugin RPC.            |
 | `contributes`  | Commands, menu entries and key bindings. Requires `apiVersion` 2.             |
 
-**Background pages (decided: opt-in).** A plugin with `"background": true` gets one hidden
+**Background pages (decided: opt-in; now secondary to backends).** A plugin with
+`"background": true` gets one hidden
 WKWebView, started at launch, never placed on the canvas, with the same prelude and bridge
 as its panels. It serves contributed commands, events, bus messages and RPC calls when no
 panel of the plugin is open. Its `Caller` is `Panel` with a reserved per-plugin id that is
 never in the scene, so `panel.*` self methods reject with `wrong_kind`. Cost: one web
-content process per such plugin, so it stays opt-in.
+content process per such plugin, so it stays opt-in. With backend processes (below), the
+recommendation is to use `main` for headless work and keep background pages only for
+headless code that needs the web platform (DOM, WebAudio, canvas rendering). They move to
+the last phase and are built only if a plugin needs one.
 
 Validation stays in `PluginManifest::validate` and reports the path and field, like every
 other manifest error. A broken `contributes` block skips the plugin, it does not half load.
 
 ## Capabilities
 
-A capability is a word in the manifest that names a group of methods. The host checks it on
-every call and rejects an undeclared one with `capability_missing`.
+**Reversed: capabilities are declarative only.** The earlier draft rejected undeclared calls
+with `capability_missing`. The user decided plugins are unrestricted ("plugins may use the
+full node/bun API, we don't restrict, what someone installs and uses is their business"),
+and a plugin with a backend can do anything the user can without asking CALM at all. A gate
+on the bridge would only inconvenience honest plugins. So `capabilities` is a list the
+author writes to tell the user what the plugin does. CALM shows it at install (the plugin
+list and a plugin info view) and never checks a call against it. There is no
+`capability_missing` error.
 
-**Decision: undeclared calls are rejected.** Why: the declared list is only useful to the
-user if it is true. A warn-only check lets the manifest drift from the code and turns the
-list into decoration. A hard reject fails on the author's first test run, which is the
-cheapest moment to fix it. This is not a security boundary: a trusted plugin with
-`process.exec` can do anything the user can. Docs must say so in those words. Cost if
-wrong: a little author friction; reversing it later to warn-only is a one-line change.
+Discovery warns, without skipping the plugin, when `capabilities` names an unknown string, so
+typos still surface. A plugin with a backend gets a fixed note in its info view: "runs a
+background program with full access to your files, network and programs".
 
-v1 manifests (no `apiVersion`) get the implicit set `v1` below, so nothing that works today
-breaks. Methods with no capability are always allowed.
+The table names what each word stands for:
 
 | Capability        | Methods                                                                     |
 | ----------------- | --------------------------------------------------------------------------- |
-| (none)            | `log`, `app.info`, `plugins.list`, `plugins.serve`, `panel.*` on the plugin's own panel, `settings.*` (own panel), `storage.*`, `panels.list`, `panels.get`, `camera.get`, `app.getSettings`, `theme.get`, `bus.*`, `events.*`, `ui.notify` |
+| (no word needed)  | `log`, `app.info`, `plugins.list`, `plugins.serve`, `panel.*` on the plugin's own panel, `settings.*` (own panel), `storage.*`, `panels.list`, `panels.get`, `camera.get`, `app.getSettings`, `theme.get`, `bus.*`, `events.*`, `ui.notify`, `backend.*` |
 | `panels.create`   | `panels.create`, `canvas.createPanel`                                       |
 | `panels.control`  | `panels.focus`, `move`, `resize`, `setRect`, `setTitle`, `minimize`, `restore`, `bringToFront`, `sendToBack` on other panels; `canvas.focusPanel` |
 | `panels.close`    | `panels.close` on other panels                                              |
@@ -211,9 +224,9 @@ breaks. Methods with no capability are always allowed.
 | `process.exec`    | `process.exec`                                                              |
 | `github`          | `github.api`                                                                |
 | `open.external`   | `openExternal`                                                              |
+| `backend`         | implied by `main`: a bun process with the full Node and Bun API             |
 
-Implicit `v1` set: `panels.create`, `panels.control`, `process.exec`, `github`,
-`open.external`. That matches what v1 already promises.
+The browser table's "Capability" column below uses these words as labels, not checks.
 
 ## Namespaces and methods
 
@@ -275,7 +288,7 @@ export interface AppInfo {
   platform: "macos";
   pluginId: string;
   panelId: PanelId;                     // the calling panel
-  capabilities: string[];               // as declared, or the implicit v1 set
+  capabilities: string[];               // as declared; informational
   methods: string[];                    // methods this host serves
 }
 
@@ -488,7 +501,7 @@ panel resize. It never changes camera zoom, and camera zoom never changes it.
 
 `write` and `sendKeys` are input, not paste: `"ls\r"` runs `ls`. They work on any terminal,
 not only ones the plugin created, because a plugin with `process.exec` already has that
-power. The capability makes it visible.
+power. The declared capability makes it visible.
 
 ### `calm.browsers` (native browser API)
 
@@ -558,38 +571,141 @@ The bus is fan-out with no answer. Plugin RPC is a call with a result.
 export interface PluginEntry {
   id: string; name: string; version: string; apiVersion: number;
   exports: { name: string; description?: string; uses: string[] }[];
-  running: { background: boolean; panels: PanelId[] };
+  capabilities: string[];
+  running: { backend: "stopped" | "starting" | "ready" | "failed"; background: boolean; panels: PanelId[] };
   requires: Record<string, string>;
 }
 ```
 
 Manifest `exports` lists the methods others may call: `name` matches
 `[a-zA-Z][a-zA-Z0-9_.]*`, `uses` lists the capabilities the method uses on the callee's
-side. `requires` maps plugin ids to semver ranges of their `version`. A plugin whose
+side, for the caller's author and the user to read. It is not checked. `requires` maps plugin ids to semver ranges of their `version`. A plugin whose
 `requires` is not met (missing plugin, version outside the range, non-semver version) is
 skipped at discovery with an error naming the dependency, like any broken manifest. Optional
 dependencies are not declared; the plugin checks `plugins.list()` instead.
 
 Call flow:
 
-1. The caller needs `plugins.call`. It also needs every capability in the export's `uses`,
-   so a plugin cannot borrow a capability it did not declare by calling a plugin that has
-   it. This is how "capability checks apply to the caller" is enforced. The callee's own
-   host calls are still checked against the callee's manifest.
-2. The host picks the serving page: the callee's background page if it has registered
-   `method`, otherwise the callee's most recently focused panel that has, otherwise none.
-   The host never opens a panel to serve a call.
-3. The host sends the call to that page as an internal event; the prelude runs the handler
-   and answers with an internal `plugins.reply`. The caller's Promise settles with the
+1. No capability check. The earlier "capability checks apply to the caller" rule went
+   with enforcement; `uses` is shown in the plugin info view instead.
+2. The host picks the server: the callee's backend if it declares `main` (started on
+   demand if it is not running, waiting up to 5 s for it to be ready), else its background
+   page if it has registered `method`, else its most recently focused panel that has, else
+   none. The host never opens a panel to serve a call.
+3. The host sends the call to the backend over its IPC channel, or to a page as an internal
+   event; the backend SDK or the prelude runs the handler and answers with an internal
+   `plugins.reply`. The caller's Promise settles with the
    result, or with the callee's error.
 4. Params and results are JSON, at most 1 MiB each. Default timeout 10 s, max 60 s.
-5. If the serving page closes mid-call, the call rejects with `not_running`.
+5. If the serving page closes or the backend exits mid-call, the call rejects with
+   `not_running`.
 
 Errors: `not_installed` (no such plugin), `not_running` (exported, but no running page has
 registered it), `method_not_found` (not in the callee's `exports`), `timeout`,
-`remote_error` (the handler threw; `cause` carries its code and message),
-`capability_missing` (the caller lacks `plugins.call` or a `uses` entry). External callers
+`remote_error` (the handler threw; `cause` carries its code and message). External callers
 (phase 11) cannot call plugins.
+
+### Plugin backend process
+
+**User decision:** plugins may use the full Node and Bun API, unrestricted.
+
+A plugin may declare `"main"` in its manifest. CALM runs that file as a child process under
+bun, with the full Node and Bun API: `fs`, `child_process`, `net`, HTTP servers, native
+modules, anything bun runs. CALM does not restrict, inspect or proxy what it does.
+
+**Process.** `bun run <main>` with the plugin folder as working directory, in its own
+process group, with stdin closed. Environment: the user's environment as CALM got it, plus
+`CALM_PLUGIN_ID`, `CALM_PLUGIN_DIR`, `CALM_DATA_DIR` (`$CALM_HOME/plugin-data/<id>/`, the
+backend's own folder), `CALM_API_VERSION` and `CALM_IPC_FD=3`. CALM's own secrets are not
+in it: no socket token, no `gh` token. `main` follows the same path rules as `entry`
+(relative, inside the folder, a regular file).
+
+**Lifecycle.**
+
+- `backend.start: "on-demand"` (default): started on the first of these: a panel of the
+  plugin opens, a page calls `calm.backend.*`, a `plugins.call` targets the plugin, or a
+  contributed command fires. `"at-launch"`: started when CALM starts.
+- Ready when the backend's SDK sends its `hello` frame. Calls arriving before that wait up to
+  5 s, then reject with `timeout`.
+- Restart (`backend.restart: "on-failure"`, default): on a nonzero exit or a signal, restart
+  after 1, 2, 4, 8 and 16 s. More than 5 failures within 60 s stops the retries; the
+  backend is marked `failed`, the status bar error count goes up, and pages get
+  `backendStatus { state: "failed", code, signal }`. A page call or a contributed command
+  retries a failed backend once. A clean exit (code 0) is not restarted. `"never"` never
+  restarts.
+- Stop at quit: SIGTERM to the process group, SIGKILL after 3 s. Anything the backend
+  spawned in its group goes too, consistent with "processes do not survive app quit". A
+  backend that deliberately detaches its own children is its business.
+- No idle stop in v2. A running backend runs until quit or until it exits.
+- Logs: stdout and stderr go to `$CALM_HOME/logs/plugins/<id>.log` (rotated at 5 MiB, one
+  old file kept) and to CALM's stderr prefixed `calm: plugin <id>:`. The log is the
+  plugin's output; CALM does not filter it, and the docs tell authors not to print secrets.
+
+**IPC.** An inherited socket pair on fd 3: no path on disk, no token, nothing another
+process can connect to, and it closes when either side dies. Frames are newline-delimited
+JSON with the same shapes as the page bridge: `BridgeRequest` (`{ id, method, params }`),
+`{ id, ok, value | error }` and `{ event, payload }`. Max 1 MiB per frame. Fallback if bun
+cannot use an inherited fd as a stream (to verify in phase 14): a per-plugin Unix socket at
+`$CALM_HOME/run/plugins/<id>.sock`, directory 0700, socket 0600, path in
+`CALM_IPC_SOCKET`, with a one-time nonce in the environment that the backend sends first.
+stdio stays for logs, so a stray `console.log` never corrupts the channel.
+
+**Host API from the backend.** The backend SDK module `@calm/plugin-sdk/backend` exports a
+`calm` object with the same namespaces as `window.calm` (panels, camera, terminals,
+browsers, app, storage, bus, plugins, ui, events), so a backend can spawn panels, drive
+terminals and browsers and read the scene. Calls run as `Caller::Backend { plugin_id }`. The
+`panel.*` self methods and per-panel `settings.*` reject with `wrong_kind`: a backend has no
+panel. `process.exec` and `github.api` exist for symmetry, but a backend can just use
+`child_process` and run `gh` itself.
+
+**Pages and backend.**
+
+```ts
+// in a plugin page (window.calm)
+calm.backend.call(method: string, params?: unknown, opts?: { timeoutMs?: number }): Promise<unknown>;
+calm.backend.on(event: string, handler: (payload: unknown) => void): () => void;
+calm.backend.status(): Promise<{ state: "stopped" | "starting" | "ready" | "failed" }>;
+
+// in the backend (@calm/plugin-sdk/backend)
+import { calm, pages } from "@calm/plugin-sdk/backend";
+pages.handle(method: string, handler: (params: unknown, from: { panelId: PanelId }) => unknown | Promise<unknown>): () => void;
+pages.emit(event: string, payload: unknown, opts?: { panelId?: PanelId }): void;  // all pages of the plugin, or one
+calm.plugins.serve(method, handler);                                               // exports, see plugin RPC
+```
+
+Page to backend traffic goes through the host: page bridge, host, fd 3, and back. Only the
+plugin's own pages reach its backend; other plugins go through `exports`. Errors:
+`not_running` (backend failed or exited), `method_not_found` (no `pages.handle` for it),
+`timeout` (default 10 s, max 60 s), `remote_error`. A backend crash rejects every pending
+call with `not_running`.
+
+**Backends and exports.** A backend serves `exports` with `calm.plugins.serve`, without any
+hidden page. Recommendation: backends replace hidden background pages for most cases
+(services, watchers, servers, RPC, contributed commands). Contributed commands go to the
+backend first when `main` is declared. Background pages stay in the design for headless
+code that needs the web platform, built last and only on demand.
+
+**Bun runtime source.** For the user to decide. Two options:
+
+| | A: bun on the user's system (recommended) | B: pinned bun inside CALM.app |
+| --- | --- | --- |
+| Setup | user installs bun once (`brew install oven-sh/bun/bun` or the install script) | none |
+| App size | no change | tens of MB more per arch (measure before quoting) |
+| Signing | nothing new | the nested binary must be signed and notarized with the app, once CALM is distributed signed |
+| Updates | bun security fixes arrive when the user updates bun | fixes wait for a CALM release; CALM owns bun upkeep |
+| Version drift | plugins may meet different bun versions; `engines.bun` catches mismatches | one known version, fewer surprises |
+| Fits today | yes: first-party plugins already need bun to build, and the macOS zip is built locally | adds a download and packaging step to `gmake release-upload` |
+
+Recommendation: **A**, with a fixed lookup order and a loud failure. Order: the
+`plugins.bun_path` setting if set, then `PATH` from a login shell (`$SHELL -lc 'command -v
+bun'`, run once at startup, because an app started from Finder does not get the shell
+`PATH`), then `~/.bun/bin/bun`, `/opt/homebrew/bin/bun`, `/usr/local/bin/bun`. If none is
+found, or `bun --version` is outside `engines.bun`, the backend does not start, the plugin's
+panels show "bun not found: install it with `brew install oven-sh/bun/bun` or set
+`plugins.bun_path`", and the status bar error count goes up. Reason: CALM's users are
+developers, the toolchain already requires bun, and B adds size, signing and an upkeep duty
+for little gain today. B stays possible later if CALM is distributed to non-developers; the
+lookup order would then end with the bundled copy.
 
 ### `calm.storage` (v1, now served)
 
@@ -716,7 +832,6 @@ works and gets `code: "host_error"`.
 | `unknown_method`     | Not in `BRIDGE_METHODS`                                           |
 | `not_implemented`    | Known but not served by this host                                 |
 | `invalid_params`     | Missing, wrong type or out of range; message names the field      |
-| `capability_missing` | Not declared; message names the capability to add                 |
 | `not_found`          | No panel with that id                                             |
 | `wrong_kind`         | Terminal method on a browser, and so on                           |
 | `not_alive`          | Terminal process exited                                           |
@@ -764,12 +879,14 @@ pub enum ApiRequest {
 impl ApiRequest {
     /// v1 aliases map here too. Errors carry `ErrorCode::InvalidParams` and the field.
     pub fn parse(method: &str, params: &Value) -> Result<ApiRequest, ApiError>;
-    pub fn capability(&self, caller: &Caller) -> Option<Capability>;
+    /// The capability word that describes this call, for the plugin info view and logs.
+    pub fn capability(&self) -> Option<Capability>;
 }
 
 /// Set by the transport, never parsed from params.
 pub enum Caller {
     Panel { panel: PanelId, plugin_id: String },
+    Backend { plugin_id: String },            // a plugin's bun process
     External { client: ClientId },            // phase 11
 }
 
@@ -779,9 +896,9 @@ pub enum Capability { PanelsCreate, PanelsControl, PanelsClose, CameraControl,
 
 pub struct ApiError { pub code: ErrorCode, pub message: String }
 
-/// `Caller::Panel` checks the manifest's capabilities. `Caller::External` checks the
-/// external allowlist from settings (phase 11) and rejects with `not_allowed`.
-pub fn check(policy: &Policy, request: &ApiRequest, caller: &Caller) -> Result<(), ApiError>;
+/// Only `Caller::External` is checked: against the external allowlist from settings
+/// (phase 11), rejecting with `not_allowed`. `Panel` and `Backend` always pass.
+pub fn check(allowlist: &ExternalAllowlist, request: &ApiRequest, caller: &Caller) -> Result<(), ApiError>;
 
 /// Pure snapshot from the scene plus the host's per-panel extras (mode, focus, url).
 pub fn panel_info(scene: &Scene, id: PanelId, extras: &PanelExtras) -> Option<PanelInfo>;
@@ -805,8 +922,8 @@ fn dispatch(view: &mut CanvasView, caller: &Caller, request: ApiRequest,
 ```
 
 `PendingReply` is the caller plus the request id, held by the view. For a panel it settles
-through `eval_js`; for an external client (phase 11) through a oneshot sender back to the
-socket thread. Close confirmations settle it
+through `eval_js`; for a backend through a frame on its IPC channel; for an external client
+(phase 11) through a oneshot sender back to the socket thread. Close confirmations settle it
 from the Enter or Escape handler. Background work settles it from a GPUI task. A page that
 closes drops its pending replies; nothing is evaluated in a dead web view.
 
@@ -828,23 +945,35 @@ closes drops its pending replies; nothing is evaluated in a dead web view.
   re-enters the dispatcher in the same stack.
 - Blocking work (`process.exec`, `gh api`, storage file I/O over 64 KiB) runs on the
   background executor and settles through a `PendingReply`.
+- Each backend's IPC channel is read and written by one thread per backend (blocking I/O
+  on fd 3). It only parses frames and sends `(Caller::Backend, BridgeRequest)` into the same
+  channel; it never touches GPUI. Process spawn, wait and restart timers run on the
+  background executor and report through the channel too.
 - Order: requests from one page are dispatched in arrival order. Replies for pending
   requests can arrive out of order; the prelude matches by id.
 
 ## Security rules that still hold
 
-- CALM's own secrets never reach plugin JS. `gh` keeps the GitHub token, `github.api`
-  returns JSON only. The control socket token is never in an API result. `app.getSettings`
-  has no secret fields. `terminals.info` does not include `env`.
+- CALM does not hand its own secrets to plugins: no API result, page script or backend
+  environment contains the GitHub token or the control socket token. `gh` keeps the GitHub
+  token, `github.api` returns JSON only. `app.getSettings` has no secret fields.
+  `terminals.info` does not include `env`. This is about CALM not leaking, not about
+  stopping plugins: a backend can run `gh` itself, and it can read any file the user can,
+  including the socket token file.
 - Browser panels never get the `calm` message handler or the prelude. Plugin scripts run in
   a CALM content world the page cannot see. The `calmPage` handler exists only in that
   world.
 
-### Threat model for plugin capabilities
+### Threat model for plugins
 
-*[lead's reading, confirm in review]*
-
-Plugins are trusted code. Capabilities make reach visible; they do not contain it. Plainly:
+**An installed plugin has the same power as any program the user runs.** With a backend it
+is a program the user runs: it can read and write the user's files, use the network, start
+processes, read the keychain items the user's login allows, and talk to CALM over the
+bridge. Without a backend, a plugin page still reaches the host through `process.exec`.
+CALM enforces nothing against installed plugins. Capabilities tell the user what the
+author says the plugin does; they are not checked. The only protection is the user's choice
+of what to install, which is why install stays explicit. What follows describes reach, so
+the docs can say it next to each capability word:
 
 - `browser.script` and `browser.data` expose the user's logged-in sessions on every site
   open in a browser panel to that plugin: it can read pages, act as the user on them, and
@@ -856,15 +985,19 @@ Plugins are trusted code. Capabilities make reach visible; they do not contain i
   read results.
 - `terminal.write` and `process.exec` run commands as the user. `terminal.control` changes
   what the user sees but runs nothing.
-- `plugins.call` cannot be used to borrow capabilities: the caller must hold every
-  capability in the export's `uses`. A callee that lies in `uses` is a trusted plugin lying,
-  which no check prevents; the declared list makes it reviewable.
+- `plugins.call` lets one plugin use another's exports with no check; `uses` shows the
+  reach in the info view.
+- `backend` (any `main`): full user rights, as above.
 - The host never logs params or results for `terminals.write`, `sendKeys`, `read*`,
   `browsers.eval`, `readText`, `readHtml`, `cookies.*`, `storage.set`, `bus.publish` or
   `plugins.call`.
-- Plugins are trusted. Docs say capabilities are a declaration for clarity, not a sandbox.
-- A plugin cannot end a live terminal process without the user's confirmation, unless the
-  user has turned `confirm_close` off, and it cannot turn that setting off.
+- Plugins are trusted and unrestricted. Docs say capabilities are a declaration, not a
+  sandbox and not a permission.
+- The API never ends a live terminal process without the user's confirmation, unless the
+  user has turned `confirm_close` off, and the API cannot turn that setting off. This is
+  kept on purpose: it protects the user's running work from a plugin bug, not the user
+  from the plugin. It is not a guarantee: a backend can find the shell's pid and kill it,
+  or edit `settings.json`. Flagged for review, kept as the lead asked.
 - The host never logs request params for `terminals.write`, `storage.set`, `bus.publish` or
   terminal `env`. Logs carry the method and the error code only.
 
@@ -984,7 +1117,7 @@ panel; it names `panelId`). A method outside `allow` rejects with `not_allowed`.
 ### Panel status
 
 `panel.setStatus({ panelId?, state, text?, detail? })`, available to both origins. A plugin
-page sets its own panel, and `panelId` naming another panel needs `panels.control`. An
+page sets its own panel or names another with `panelId`; a backend names `panelId`. An
 external caller must name `panelId`. `state` is `"idle" | "running" | "waiting" | "error" |
 "done"`, `text` at most 80 characters, `detail` at most 1 KiB, `null` clears. The status is
 drawn in the panel's chrome strip as a colored dot and the text. The strip is GPUI paint
@@ -1031,8 +1164,9 @@ in a temp dir and checks 401 with no or wrong token, 200 with the right one, and
 Each phase ends with `cargo test` for the touched crates and lands as its own commit.
 
 1. **Error codes and manifest.** `ApiError`, `ErrorCode`, structured rejects in the prelude
-   with v1 string fallback. Manifest `apiVersion`, `capabilities`, `background`,
-   `contributes` parsing and validation. Capability table and `check`. Pure, tested.
+   with v1 string fallback. Manifest `apiVersion`, `capabilities` (declarative, unknown
+   words warn), `main`, `backend`, `engines`, `background`, `contributes` parsing and
+   validation. The `Caller` type. Pure, tested.
 2. **Request parsing.** `ApiRequest::parse` for every method and v1 alias, with a test per
    method for a good and a bad param. `BRIDGE_METHODS`, prelude, `calm.d.ts` extended;
    conformance tests updated.
@@ -1052,8 +1186,8 @@ Each phase ends with `cargo test` for the touched crates and lands as its own co
    discrete ordering.
 7. **Storage, bus, process, github, openExternal.** Atomic storage file with limits and
    corrupt-file error. Bus fan out. Background executor for exec and gh.
-8. **Contributions and background pages.** Commands, menu items, key bindings, `command`
-   event routing, opt-in background pages.
+8. **Contributions.** Commands, menu items, key bindings, `command` event routing
+   (backend first, then last focused panel, then a new panel).
 9. **SDK, docs, examples, smoke.** `calm.d.ts`, `docs/plugins.md`, `templates/plugin-tsx`,
    an example plugin that spawns a terminal and a browser, lists panels and reacts to
    `panelAdded`. Smoke fixture plugin: create a terminal through the bridge, list panels and
@@ -1075,9 +1209,16 @@ Each phase ends with `cargo test` for the touched crates and lands as its own co
     HTML, snapshot, navigation rules and hook, history, user agent, page zoom, per-panel
     data stores, cookies and clear data, `browserNavigation` and `browserMessage`.
 13. **Plugin RPC.** `exports`, `requires` with semver ranges at discovery, `plugins.list`,
-    `call`, `serve`, the `uses` check, serving page choice, timeouts, `pluginsChanged`.
+    `call`, `serve`, server choice (backend, background page, panel), timeouts,
+    `pluginsChanged`.
+14. **Plugin backend.** bun lookup and `engines.bun` check, spawn in a process group, fd 3
+    IPC (or the socket fallback), `hello` handshake, restart policy, logs, stop at quit,
+    `@calm/plugin-sdk/backend`, `calm.backend.*` in pages, `backendStatus`. Tests: a fixture
+    backend that answers a page call, spawns a terminal through `calm.panels.create`, and
+    a crash fixture that checks restart and the `failed` state.
+15. **Background pages,** only if a plugin needs headless web platform code.
 
-Order: 1 to 9, then 13 and 12, then 10 and 11 as the merged PRs allow. 10 can start any
+Order: 1 to 9, then 14, 13 and 12, then 10 and 11 as the merged PRs allow. 10 can start any
 time because it only touches the fork.
 
 Phase 1 also lands the `Caller` type and phase 4 the `near`/`side` placement, so phase 11
@@ -1097,17 +1238,25 @@ From the user, through the lead:
    terminal panels. The `calm-bridge` mod lives in this repo with a `marketplace.json`.
 3. Terminal title and cwd ship later through the Ghostty shim patch, now a planned phase
    (10) because the user wants the full native terminal API.
-4. Background pages are opt-in hidden pages.
+4. Background pages are opt-in hidden pages. Superseded in practice by decision 7:
+   backends cover most headless needs, background pages are built last if at all.
 5. Custom backgrounds: settings schema v2 from PR #7, no plugin-specific format.
-6. Undeclared capability calls are rejected (design decision, not reversed).
+6. **Reversed:** capabilities are declarative only, shown at install and in the plugin
+   info view, never a gate. There is no `capability_missing`. `confirm_close` stays
+   user-owned in the API.
+7. Plugins may use the full Node and Bun API, unrestricted, through an optional backend
+   process (`main`) run under bun.
+8. Unchanged by 6 and 7: the external socket allowlist (it governs outside processes, not
+   installed plugins), browser panels never get the `calm` bridge, and CALM never hands its
+   own credentials to plugins.
 
 ## Open points for review
 
 1. The four *[lead's reading, confirm in review]* sections: free-form panels, native browser API, native terminal API,
    plugin RPC.
-2. "No credentials reach plugin JS" narrows to CALM's own secrets, because `browser.script`,
-   `browser.data` and `terminal.read` expose site sessions and printed secrets to the
-   plugins that declare them. `CLAUDE.md` says "Plugin JS never sees a token"; that line
+2. "No credentials reach plugin JS" narrows to "CALM never hands over its own secrets",
+   because plugins are unrestricted: the browser and terminal APIs expose site sessions and
+   printed secrets, and a backend can read any file the user can. `CLAUDE.md` says "Plugin JS never sees a token"; that line
    should name the GitHub and socket tokens explicitly when the implementation lands.
 3. `terminalOutput` is a text diff at 250 ms, not a byte stream. Enough for agent boards and
    log watchers, not for a terminal recorder.
@@ -1116,3 +1265,8 @@ From the user, through the lead:
 5. `terminals.setFontSize` changes a terminal's grid. `CLAUDE.md` says only a panel resize
    changes the logical grid; that rule should read "only a panel resize or a font size
    change, never camera zoom" once phase 10 lands.
+6. Bun runtime source: A (bun on the system, recommended) or B (pinned bun in the app).
+   The user decides.
+7. The `confirm_close` line in the API stays, but a backend can bypass it by killing the
+   shell's process. Keep it as a guard against plugin bugs, or drop it as theater.
+8. Whether fd 3 IPC works with bun as a stream, or the per-plugin socket fallback is needed.

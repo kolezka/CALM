@@ -114,3 +114,20 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   `PWD` and other actions and does not expose `read_text`, `size`, `foreground_pid` or
   `binding_action`. A CALM-owned fork through `[patch.crates-io]` adds them. Cost: upkeep
   on every upstream bump.
+- **Plugins may use the full Node and Bun API, unrestricted.** The user: "what someone
+  installs and uses is their business". A plugin may declare `main`, which CALM runs as a
+  bun child process with the same `calm.*` host API, talking to the plugin's pages and
+  serving `exports`. Backends cover most headless needs, so background pages move to the
+  last phase. Cost: an installed plugin has the same power as any program the user runs;
+  install stays explicit.
+- **Reversed: capabilities are declarative only, never enforced.** This replaces
+  "capabilities are enforced" above. The manifest list is shown at install and in a plugin
+  info view; no call is rejected for an undeclared capability, and `capability_missing` is
+  gone. Reason: a plugin with a backend bypasses any bridge gate, so the gate only slowed
+  honest plugins. Cost: the list can drift from the code; unknown words still warn.
+- **Still holds after the reversal:** the external socket allowlist (it governs outside
+  processes), no `calm` bridge in browser panels, CALM never hands its own secrets to
+  plugins, and the API never closes a live terminal without the user's confirmation (a
+  guard for the user's work against plugin bugs; a backend could still kill the process).
+- **Bun runtime source: pending the user.** Recommended: bun on the user's system with a
+  fixed lookup order and a loud failure, not a bundled copy.
