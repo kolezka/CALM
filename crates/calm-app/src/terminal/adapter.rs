@@ -10,10 +10,10 @@ use calm_core::preview::{PanelMode, PreviewImage, refresh_due};
 use calm_core::viewport::{NativePlacement, unzoom_mouse_position};
 use calm_native::NativeChild;
 use gpui::{
-    AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyDownEvent, KeyUpEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Render, RenderImage, ScrollDelta, ScrollWheelEvent, Styled as _, Subscription, Task, Window,
-    div,
+    AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent, Styled as _,
+    Subscription, Task, Window, div,
 };
 use gpui_libghostty::__private::{
     KeyAction, Modifiers, MouseButton, MouseState, NativeSurface, TerminalThemeState,

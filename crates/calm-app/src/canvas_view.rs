@@ -39,8 +39,8 @@ use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::plugin_host::{self, BridgeSender, PluginPanel};
 use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalEvent, TerminalPanel};
-use crate::tui_host::{self, TuiRun};
 use crate::theme;
+use crate::tui_host::{self, TuiRun};
 
 actions!(
     calm,
@@ -576,7 +576,13 @@ impl CanvasView {
     }
 
     /// `manual` is a user's Restart, which only works once the process has exited.
-    pub fn restart_tui(&mut self, id: PanelId, manual: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn restart_tui(
+        &mut self,
+        id: PanelId,
+        manual: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(run) = self.tui_run_mut(id) else {
             return;
         };

@@ -71,7 +71,12 @@ impl TuiRun {
         match std::fs::remove_file(&self.status_file) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(format!("cannot clear {}: {err}", self.status_file.display())),
+            Err(err) => {
+                return Err(format!(
+                    "cannot clear {}: {err}",
+                    self.status_file.display()
+                ));
+            }
         }
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
         let spec = self.spec();
@@ -99,10 +104,7 @@ impl TuiRun {
         );
         self.started_at = Instant::now();
         self.supervisor.started();
-        Ok(terminal::options(
-            Some(&tui::command_line(&argv)),
-            cwd,
-        ))
+        Ok(terminal::options(Some(&tui::command_line(&argv)), cwd))
     }
 }
 
@@ -112,7 +114,10 @@ pub fn read_exit_code(path: &Path) -> Option<i32> {
         Ok(text) => match text.trim().parse() {
             Ok(code) => Some(code),
             Err(_) => {
-                eprintln!("calm: tui status {} is not a number: {text:?}", path.display());
+                eprintln!(
+                    "calm: tui status {} is not a number: {text:?}",
+                    path.display()
+                );
                 None
             }
         },

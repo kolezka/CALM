@@ -416,7 +416,8 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
 
 const SMOKE_TUI_TIMEOUT: Duration = Duration::from_secs(10);
 /// Prints a marker, proves it ran by writing `$1`, exits 0.
-const SMOKE_TUI_SCRIPT: &str = "#!/bin/sh\nprintf 'calm-smoke-tui-marker\\n'\nprintf ran > \"$1\"\nexit 0\n";
+const SMOKE_TUI_SCRIPT: &str =
+    "#!/bin/sh\nprintf 'calm-smoke-tui-marker\\n'\nprintf ran > \"$1\"\nexit 0\n";
 
 /// Two TUI fixtures: a script that runs and exits 0 (restart "prompt", run directly), and
 /// a missing command through the login shell (restart "on-exit", which must not loop).
@@ -447,7 +448,10 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
     ];
     let written = manifests.iter().try_for_each(|(dir, manifest)| {
         std::fs::create_dir_all(root.join(dir))?;
-        std::fs::write(root.join(dir).join("calm-plugin.json"), manifest.to_string())
+        std::fs::write(
+            root.join(dir).join("calm-plugin.json"),
+            manifest.to_string(),
+        )
     });
     let written = written.and_then(|()| {
         use std::os::unix::fs::PermissionsExt as _;
@@ -459,7 +463,10 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
     }
     let discovery = calm_plugins::discover(&[root.to_path_buf()]);
     if discovery.plugins.len() != 2 || !discovery.errors.is_empty() {
-        smoke_fail(&format!("tui fixtures not discovered: {:?}", discovery.errors));
+        smoke_fail(&format!(
+            "tui fixtures not discovered: {:?}",
+            discovery.errors
+        ));
     }
     let opened = cx.update_window(window, |_, window, cx| {
         view.update(cx, |view, cx| {
@@ -498,7 +505,10 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
                 let status = cx.update(|cx| view.read(cx).tui_status());
                 let ran = std::fs::read_to_string(&marker).is_ok_and(|text| text == "ran");
                 let done = match status.as_slice() {
-                    [(ok_title, TuiState::Exited(Some(0)), true, ok_launches), (missing_title, TuiState::NotFound, true, 1)] => {
+                    [
+                        (ok_title, TuiState::Exited(Some(0)), true, ok_launches),
+                        (missing_title, TuiState::NotFound, true, 1),
+                    ] => {
                         *ok_launches == launches
                             && ok_title == "Smoke TUI: exited, code 0"
                             && missing_title
@@ -542,7 +552,9 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
     });
     match closed {
         Ok(0) => {}
-        other => smoke_fail(&format!("exited tui panels did not close without asking: {other:?}")),
+        other => smoke_fail(&format!(
+            "exited tui panels did not close without asking: {other:?}"
+        )),
     }
     println!("smoke: tui ran=ok exit=0 missing=reported restarted=ok closed=ok");
     if let Err(err) = fixtures.close() {

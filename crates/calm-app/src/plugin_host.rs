@@ -88,15 +88,14 @@ impl PluginPanel {
             Err(err) => Some(err),
         };
         match &load_error {
-            None => web.load_file(
-                &plugin.dir.join(
-                    plugin
-                        .manifest
-                        .entry()
-                        .ok_or_else(|| format!("plugin {} has no HTML entry", plugin.manifest.id))?,
-                ),
-                &plugin.dir,
-            ),
+            None => {
+                web.load_file(
+                    &plugin.dir.join(plugin.manifest.entry().ok_or_else(|| {
+                        format!("plugin {} has no HTML entry", plugin.manifest.id)
+                    })?),
+                    &plugin.dir,
+                )
+            }
             Some(message) => {
                 eprintln!("calm: plugin {}: {message}", plugin.manifest.id);
                 let page = error_page_url(&plugin.manifest.name, message);
@@ -357,8 +356,14 @@ mod tests {
             dir: "/tmp/hello-world".into(),
         }];
         let entries = menu_entries(&plugins);
-        assert_eq!(entries.web, vec![("hello-world".into(), "Hello World".into())]);
+        assert_eq!(
+            entries.web,
+            vec![("hello-world".into(), "Hello World".into())]
+        );
         assert_eq!(entries.apps, vec![]);
-        assert_eq!(entries.sizes, vec![("hello-world".into(), Size::new(320.0, 200.0))]);
+        assert_eq!(
+            entries.sizes,
+            vec![("hello-world".into(), Size::new(320.0, 200.0))]
+        );
     }
 }
