@@ -19,4 +19,5 @@ pub mod settings_form;
 pub mod snap;
 pub mod stats;
 pub mod status_bar;
+pub mod tui;
 pub mod viewport;

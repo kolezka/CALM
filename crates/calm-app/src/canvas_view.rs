@@ -40,8 +40,9 @@ use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::grid_paint::{self, GridFrame, GridTextures};
 use crate::plugin_host::{self, BridgeSender, PluginPanel};
 use crate::settings_menu::{self, SettingsState};
-use crate::terminal::{self, TerminalPanel};
+use crate::terminal::{self, TerminalEvent, TerminalPanel};
 use crate::theme;
+use crate::tui_host::{self, TuiRun};
 
 actions!(
     calm,
@@ -101,8 +102,10 @@ pub struct CanvasView {
     pub input: InputHandler,
     /// Window points of the canvas area, the whole window. Set during prepaint.
     pub viewport: Rect,
-    /// (id, name) per discovered plugin, for the Add menu.
+    /// (id, name) per discovered web plugin, for the Add menu.
     pub plugins: Vec<(String, String)>,
+    /// (id, name) per discovered TUI plugin, listed next to Terminal in the Add menu.
+    pub apps: Vec<(String, String)>,
     /// (id, default panel size) per discovered plugin.
     pub plugin_sizes: Vec<(String, Size)>,
     /// Plugins found at startup. A new plugin needs an app restart to show up.
@@ -127,6 +130,8 @@ pub struct CanvasView {
     resize_cursor: Option<ResizeEdge>,
     /// Live terminals by panel. Dropping an entry ends its process.
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
+    /// Restart state of TUI panels. Their terminal is in `terminals`.
+    tui_runs: Vec<(PanelId, TuiRun)>,
     /// Live browser panels. Dropping an entry closes its page.
     browsers: Vec<(PanelId, BrowserPanel)>,
     /// Sender for page events; the receiving task starts with the first browser.
@@ -161,7 +166,7 @@ impl CanvasView {
     pub fn new(builtin_plugins: bool, cx: &mut Context<Self>) -> Self {
         let (discovery, plugin_search_dirs) = plugin_host::discover_installed(builtin_plugins);
         let plugin_counts = (discovery.builtin_count, discovery.user_count());
-        let (plugins, plugin_sizes) = plugin_host::menu_entries(&discovery.plugins);
+        let entries = plugin_host::menu_entries(&discovery.plugins);
         let (bridge, mut messages) = futures::channel::mpsc::unbounded::<(PanelId, String)>();
         let bridge_task = cx.spawn(async move |this, cx| {
             while let Some((id, text)) = messages.next().await {
@@ -177,8 +182,9 @@ impl CanvasView {
             scene: Scene::default(),
             input: InputHandler::default(),
             viewport: Rect::new(0.0, 0.0, 0.0, 0.0),
-            plugins,
-            plugin_sizes,
+            plugins: entries.web,
+            apps: entries.apps,
+            plugin_sizes: entries.sizes,
             installed_plugins: discovery.plugins,
             plugin_search_dirs,
             plugin_counts,
@@ -191,6 +197,7 @@ impl CanvasView {
             hover: None,
             resize_cursor: None,
             terminals: Vec::new(),
+            tui_runs: Vec::new(),
             browsers: Vec::new(),
             browser_events: None,
             browser_listener: None,
@@ -298,7 +305,10 @@ impl CanvasView {
                 }
                 Effect::ShowPanelMenu { id, screen } => {
                     if let Some(panel) = self.scene.get(id) {
-                        let items = menu::panel_menu(panel);
+                        let can_restart = self
+                            .tui_run(id)
+                            .is_some_and(|run| run.supervisor.can_restart());
+                        let items = menu::panel_menu(panel, can_restart);
                         self.show_menu(items, screen, MenuTarget::Panel(id), window, cx);
                     }
                 }
@@ -307,6 +317,7 @@ impl CanvasView {
                         terminal.update(cx, |terminal, _| terminal.release_preview(window));
                     }
                     self.terminals.retain(|(panel, _)| *panel != id);
+                    self.tui_runs.retain(|(panel, _)| *panel != id);
                     self.browsers.retain(|(panel, _)| *panel != id);
                     self.plugin_panels.retain(|(panel, _)| *panel != id);
                     self.scene.remove(id);
@@ -383,6 +394,10 @@ impl CanvasView {
                 let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
                 vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)]
             }
+            (Some(MenuCommand::Restart), MenuTarget::Panel(id)) => {
+                self.restart_tui(id, true, window, cx);
+                vec![Effect::Redraw]
+            }
             (Some(MenuCommand::Minimize), MenuTarget::Panel(id)) => {
                 vec![Effect::ToggleMinimize(id), Effect::Redraw]
             }
@@ -455,7 +470,170 @@ impl CanvasView {
                     }
                 }
             }
+            PanelKind::Tui { plugin_id } => {
+                if let Err(err) = self.open_tui_panel(id, plugin_id, window, cx) {
+                    eprintln!("calm: tui panel failed to open: {err}");
+                    if let Some(panel) = self.scene.get_mut(id) {
+                        panel.title = format!("{plugin_id}: failed to open");
+                    }
+                }
+            }
         }
+    }
+
+    /// Starts a TUI plugin's command in a terminal for a panel already in the scene.
+    pub fn open_tui_panel(
+        &mut self,
+        id: PanelId,
+        plugin_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let plugin = self
+            .installed_plugins
+            .iter()
+            .find(|plugin| plugin.manifest.id == plugin_id)
+            .ok_or_else(|| format!("plugin {plugin_id} is not installed"))?
+            .clone();
+        let run = TuiRun::new(plugin)?;
+        self.tui_runs.push((id, run));
+        self.launch_tui(id, window, cx)
+    }
+
+    fn tui_run(&self, id: PanelId) -> Option<&TuiRun> {
+        self.tui_runs
+            .iter()
+            .find(|(panel, _)| *panel == id)
+            .map(|(_, run)| run)
+    }
+
+    fn tui_run_mut(&mut self, id: PanelId) -> Option<&mut TuiRun> {
+        self.tui_runs
+            .iter_mut()
+            .find(|(panel, _)| *panel == id)
+            .map(|(_, run)| run)
+    }
+
+    /// Spawns the next process of a TUI panel. An old, exited terminal is dropped first.
+    fn launch_tui(
+        &mut self,
+        id: PanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let run = self
+            .tui_run_mut(id)
+            .ok_or_else(|| format!("panel {} has no tui state", id.0))?;
+        let mut options = run.next_launch(id)?;
+        let title = run.title();
+        settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
+        if let Some(old) = self.terminal(id) {
+            old.update(cx, |terminal, _| terminal.release_preview(window));
+            self.terminals.retain(|(panel, _)| *panel != id);
+        }
+        self.spawn_terminal(id, options, window, cx)?;
+        let terminal = self
+            .terminal(id)
+            .ok_or("terminal missing right after spawn")?;
+        let subscription = cx.subscribe_in(
+            &terminal,
+            window,
+            move |view: &mut Self, _, event: &TerminalEvent, window, cx| match event {
+                TerminalEvent::Exited => view.tui_exited(id, window, cx),
+                TerminalEvent::RestartRequested => view.restart_tui(id, true, window, cx),
+            },
+        );
+        if let Some(run) = self.tui_run_mut(id) {
+            run.subscription = Some(subscription);
+        }
+        if let Some(panel) = self.scene.get_mut(id) {
+            panel.title = title;
+        }
+        // The new native view was added on top; restack on the next paint.
+        self.native_order.clear();
+        Ok(())
+    }
+
+    fn tui_exited(&mut self, id: PanelId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(run) = self.tui_run_mut(id) else {
+            return;
+        };
+        let code = tui_host::read_exit_code(&run.status_file);
+        let action = run.supervisor.exited(code, run.started_at.elapsed());
+        let title = run.title();
+        let launches = run.launches;
+        if run.supervisor.state == calm_core::tui::TuiState::NotFound {
+            eprintln!(
+                "calm: tui {}: command not found: {} (plugin dir {})",
+                run.plugin.manifest.id,
+                run.spec().command,
+                run.plugin.dir.display()
+            );
+        }
+        if let Some(panel) = self.scene.get_mut(id) {
+            panel.title = title;
+        }
+        if let calm_core::tui::ExitAction::RestartAfter(delay) = action {
+            cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(delay).await;
+                this.update_in(cx, |view, window, cx| {
+                    // Skip if the panel closed or was restarted by hand meanwhile.
+                    if view.tui_run(id).is_some_and(|run| run.launches == launches) {
+                        view.restart_tui(id, false, window, cx);
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
+        window.refresh();
+        cx.notify();
+    }
+
+    /// `manual` is a user's Restart, which only works once the process has exited.
+    pub fn restart_tui(
+        &mut self,
+        id: PanelId,
+        manual: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(run) = self.tui_run_mut(id) else {
+            return;
+        };
+        if manual && !run.supervisor.restart_requested() {
+            return;
+        }
+        if let Err(err) = self.launch_tui(id, window, cx) {
+            eprintln!("calm: tui panel failed to restart: {err}");
+            if let Some(panel) = self.scene.get_mut(id) {
+                panel.title = format!("{}: failed to restart", panel.title);
+            }
+        }
+        if let Some(terminal) = self.terminal(id) {
+            terminal.update(cx, |terminal, cx| terminal.focus(window, cx));
+        }
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Per TUI panel in creation order: chrome title, state, Restart offered, launches.
+    pub fn tui_status(&self) -> Vec<(String, calm_core::tui::TuiState, bool, u64)> {
+        self.tui_runs
+            .iter()
+            .map(|(id, run)| {
+                let title = self
+                    .scene
+                    .get(*id)
+                    .map_or_else(String::new, |panel| panel.title.clone());
+                (
+                    title,
+                    run.supervisor.state,
+                    run.supervisor.can_restart(),
+                    run.launches,
+                )
+            })
+            .collect()
     }
 
     /// Opens the web view for a plugin panel already in the scene. The chrome shows the
@@ -491,15 +669,16 @@ impl CanvasView {
 
     /// Installs plugins found outside the startup scan, e.g. the smoke's fixture.
     pub fn install_plugins(&mut self, plugins: Vec<InstalledPlugin>) {
-        let (names, sizes) = plugin_host::menu_entries(&plugins);
-        self.plugins.extend(names);
-        self.plugin_sizes.extend(sizes);
+        let entries = plugin_host::menu_entries(&plugins);
+        self.plugins.extend(entries.web);
+        self.apps.extend(entries.apps);
+        self.plugin_sizes.extend(entries.sizes);
         self.installed_plugins.extend(plugins);
     }
 
     /// The Add menu as the user would see it now.
     pub fn canvas_menu(&self) -> Vec<menu::MenuItem> {
-        menu::canvas_menu(&self.plugins, &self.plugin_search_dirs)
+        menu::canvas_menu(&self.plugins, &self.apps, &self.plugin_search_dirs)
     }
 
     /// (loading, load error) per plugin panel, in creation order.
@@ -1084,6 +1263,8 @@ struct PaintSnapshot {
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Panels with a plugin web view.
     plugin_ids: Vec<PanelId>,
+    /// TUI panels whose manifest has an `icon`, drawn as text in place of the icon strokes.
+    glyphs: Vec<(PanelId, String)>,
     /// Close confirmation or context menu up: native views must not cover it.
     modal_open: bool,
     /// Terminals that got an input div in this render.
@@ -1586,14 +1767,30 @@ impl PaintSnapshot {
             PanelIcon::Plugin => theme::ICON_PLUGIN,
         };
         let stroke = (1.5 * zoom).max(1.0);
-        paint_strokes(
-            &icon_strokes(PanelIcon::for_kind(&panel.kind)),
-            camera.world_rect_to_screen(layout.icon),
-            stroke,
-            icon_color,
-            origin,
-            window,
-        );
+        let icon_rect = camera.world_rect_to_screen(layout.icon);
+        if let Some((_, glyph)) = self.glyphs.iter().find(|(id, _)| *id == panel.id) {
+            paint_text(
+                glyph,
+                icon_rect,
+                TextLook {
+                    align: TextAlign::Center,
+                    color: icon_color,
+                },
+                zoom,
+                origin,
+                window,
+                cx,
+            );
+        } else {
+            paint_strokes(
+                &icon_strokes(PanelIcon::for_kind(&panel.kind)),
+                icon_rect,
+                stroke,
+                icon_color,
+                origin,
+                window,
+            );
+        }
 
         // Buttons show while the pointer is over the panel, and during a close confirmation.
         if hovered_button.is_some() || confirming {
@@ -1820,6 +2017,11 @@ impl Render for CanvasView {
             hover: self.hover,
             terminals: self.terminals.clone(),
             plugin_ids: self.plugin_panels.iter().map(|(id, _)| *id).collect(),
+            glyphs: self
+                .tui_runs
+                .iter()
+                .filter_map(|(id, run)| run.glyph().map(|glyph| (*id, glyph.to_string())))
+                .collect(),
             modal_open: self.input.confirming.is_some() || self.menu_open,
             input_targets: Vec::new(),
             settings: self.settings.settings.clone(),

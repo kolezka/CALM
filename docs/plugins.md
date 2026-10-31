@@ -93,6 +93,88 @@ and the plugin is skipped with a message on stderr; CALM never guesses a default
 }
 ```
 
+## TUI apps
+
+A TUI app plugin is a terminal panel that runs one command. Use it for programs with a text
+interface, such as a Slack client, `htop` or `lazygit`. It needs no HTML and no build step: the
+plugin folder holds only `calm-plugin.json`, with `"kind": "tui"`. It lives in the same plugin
+folders as HTML plugins.
+
+For example, to add "Slack" running the `slk` client, make
+`~/.config/calm/plugins/slack/calm-plugin.json`:
+
+```json
+{
+  "kind": "tui",
+  "id": "slack",
+  "name": "Slack",
+  "command": "slk",
+  "icon": "#"
+}
+```
+
+Restart CALM. "Slack" now shows in the right-click Add menu, next to Terminal. Choosing it opens
+a terminal panel titled "Slack" that runs `slk`.
+
+| Field         | Required | Meaning                                                              |
+| ------------- | -------- | -------------------------------------------------------------------- |
+| `kind`        | yes      | `"tui"`. Without `kind` a manifest is an HTML plugin (`"web"`).      |
+| `id`          | yes      | Unique id, lowercase letters, digits and `-` only.                   |
+| `name`        | yes      | Name in the Add menu and the panel title.                            |
+| `command`     | yes      | Program to run: a name looked up on `PATH`, or an absolute path.     |
+| `args`        | no       | Array of strings, passed as they are. Spaces and quotes are safe.    |
+| `cwd`         | no       | Working directory, absolute or starting with `~/`. Default: home.    |
+| `env`         | no       | Object of string values, set for the command only.                   |
+| `defaultSize` | no       | `{ "width", "height" }` in canvas points. Default 640 by 400.        |
+| `icon`        | no       | 1 to 4 characters, drawn in the title bar in place of the icon.      |
+| `description` | no       | Free text for people reading the manifest.                           |
+| `restart`     | no       | `"prompt"` (default), `"on-exit"` or `"never"`. See below.           |
+| `shell`       | no       | `true` (default) runs through your login shell. See below.           |
+| `version`     | no       | Free form.                                                           |
+
+Any other field, or a value of the wrong type, is an error: the plugin is skipped and listed
+with the other plugin errors on stderr and in the status bar count. `entry` is an error too,
+since a TUI app has no page. `command` may not start with `-` or contain `=`.
+
+### PATH and the login shell
+
+An app started from Finder or the Dock does not get the `PATH` your shell sets up, so a program
+installed with Homebrew or `cargo install` would not be found. With `"shell": true` CALM starts
+the command through your login shell (`$SHELL`, else `/bin/zsh`) as
+`$SHELL -lc 'exec "$0" "$@"' command args...`, so your profile runs first and sets `PATH`. Every
+argument is passed as its own word; nothing is pasted into a shell string. The login shell must
+understand POSIX `sh` syntax (zsh, bash, sh and ksh do). With fish, use `"shell": false` and an
+absolute `command`.
+
+With `"shell": false` the command runs directly, with the `PATH` CALM itself has.
+
+`env` values are set with `/usr/bin/env` right before the command, after your profile ran, so
+they win over it. They are visible in the process list (`ps`) to other programs, so never put a
+token or password in `env`. Let the app keep its own credentials, as `slk` and most TUIs do.
+
+### When the program exits
+
+The panel stays open. The terminal shows the program's last output and a line such as
+`[calm] slk exited with code 0`, and the panel title says `Slack: exited, code 0`.
+
+| `restart`  | After the program exits                                                     |
+| ---------- | --------------------------------------------------------------------------- |
+| `prompt`   | Stays exited. Restart from the panel's right-click menu, or press Enter.     |
+| `on-exit`  | Starts again after 1 s. Quick exits (under 10 s) in a row wait 1, 2, 4, 8 s; after 5 in a row it gives up and offers Restart. |
+| `never`    | Stays exited. No Restart.                                                   |
+
+Enter only restarts once the program has exited; while it runs, every key goes to it.
+
+If the command is not found, the terminal shows `[calm] command not found: slk` and the plugin
+folder, and the title says `Slack: command not found: slk`. CALM never restarts that on its own:
+install the program or fix `PATH`, then use Restart.
+
+A TUI panel is a terminal in every other way: it moves, resizes, minimizes and turns into a
+preview like one, and closing it while the program runs asks first. Layouts store only the
+plugin `id`, never the command, `args` or `env`.
+
+`plugins/top-example` runs macOS `top`. `templates/plugin-tui` is a starting point.
+
 ## The `window.calm` API
 
 CALM injects `window.calm` before any of your scripts run. The types live in one place,
@@ -330,6 +412,7 @@ Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
 
 ## Examples
 
+- `plugins/top-example`: a TUI app running macOS `top`, sorted by CPU.
 - `plugins/hello-world`: plain HTML and JS. Shows text and sets the panel title.
 - `plugins/github-prs`: TSX. Lists open pull requests for the repositories saved in its
   settings (`{ "repos": ["owner/name"] }`), editable in the panel. Clicking a pull request

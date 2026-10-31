@@ -72,22 +72,31 @@ pub fn discover_installed(builtin: bool) -> (Discovery, Vec<String>) {
     (discovery, searched)
 }
 
-/// (id, name) and (id, default size) lists, as `CanvasView` keeps them.
-type MenuEntries = (Vec<(String, String)>, Vec<(String, Size)>);
+/// Menu lists as `CanvasView` keeps them, in the shape `calm_core::menu` takes.
+#[derive(Debug, Default, PartialEq)]
+pub struct MenuEntries {
+    /// (id, name) per web plugin.
+    pub web: Vec<(String, String)>,
+    /// (id, name) per TUI plugin.
+    pub apps: Vec<(String, String)>,
+    /// (id, default size) per plugin of either kind.
+    pub sizes: Vec<(String, Size)>,
+}
 
-/// (id, name) and (id, default size) per plugin, in the shape `calm_core::menu` takes.
 pub fn menu_entries(plugins: &[InstalledPlugin]) -> MenuEntries {
-    plugins
-        .iter()
-        .map(|plugin| {
-            let manifest = &plugin.manifest;
-            let size = Size::new(manifest.default_size.width, manifest.default_size.height);
-            (
-                (manifest.id.clone(), manifest.name.clone()),
-                (manifest.id.clone(), size),
-            )
-        })
-        .unzip()
+    let mut entries = MenuEntries::default();
+    for plugin in plugins {
+        let manifest = &plugin.manifest;
+        let name = (manifest.id.clone(), manifest.name.clone());
+        if manifest.tui().is_some() {
+            entries.apps.push(name);
+        } else {
+            entries.web.push(name);
+        }
+        let size = Size::new(manifest.default_size.width, manifest.default_size.height);
+        entries.sizes.push((manifest.id.clone(), size));
+    }
+    entries
 }
 
 /// A plugin page in a WKWebView, placed through the same clip and zoom views as terminals.
@@ -125,7 +134,14 @@ impl PluginPanel {
             Err(err) => Some(err),
         };
         match &load_error {
-            None => web.load_file(&plugin.dir.join(&plugin.manifest.entry), &plugin.dir),
+            None => {
+                web.load_file(
+                    &plugin.dir.join(plugin.manifest.entry().ok_or_else(|| {
+                        format!("plugin {} has no HTML entry", plugin.manifest.id)
+                    })?),
+                    &plugin.dir,
+                )
+            }
             Some(message) => {
                 eprintln!("calm: plugin {}: {message}", plugin.manifest.id);
                 let page = error_page_url(&plugin.manifest.name, message);
@@ -385,8 +401,15 @@ mod tests {
             manifest,
             dir: "/tmp/hello-world".into(),
         }];
-        let (names, sizes) = menu_entries(&plugins);
-        assert_eq!(names, vec![("hello-world".into(), "Hello World".into())]);
-        assert_eq!(sizes, vec![("hello-world".into(), Size::new(320.0, 200.0))]);
+        let entries = menu_entries(&plugins);
+        assert_eq!(
+            entries.web,
+            vec![("hello-world".into(), "Hello World".into())]
+        );
+        assert_eq!(entries.apps, vec![]);
+        assert_eq!(
+            entries.sizes,
+            vec![("hello-world".into(), Size::new(320.0, 200.0))]
+        );
     }
 }

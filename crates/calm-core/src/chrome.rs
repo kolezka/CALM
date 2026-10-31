@@ -38,7 +38,7 @@ pub enum PanelIcon {
 impl PanelIcon {
     pub fn for_kind(kind: &PanelKind) -> Self {
         match kind {
-            PanelKind::Terminal { .. } => PanelIcon::Terminal,
+            PanelKind::Terminal { .. } | PanelKind::Tui { .. } => PanelIcon::Terminal,
             PanelKind::Browser { .. } => PanelIcon::Browser,
             PanelKind::Plugin { .. } => PanelIcon::Plugin,
         }

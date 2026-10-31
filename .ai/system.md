@@ -26,7 +26,7 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
 
 - `geometry`: `Point`, `Size`, `Rect`.
 - `camera`: world to screen mapping, zoom limits, zoom about a point.
-- `scene`: `Scene` of `Panel`s with `PanelId`, `PanelKind` (Terminal, Browser, Plugin),
+- `scene`: `Scene` of `Panel`s with `PanelId`, `PanelKind` (Terminal, Browser, Plugin, Tui),
   back-to-front order, `hit_test`, `bring_to_front`, `content_rect`, `chip_rect`.
 - `interaction`: `InputHandler` state machine (`Idle`, `Drawing`, `Dragging`, `Resizing`,
   `Panning`) that turns mouse and key input plus a `Tool` into `Effect`s: `CreatePanel`,
@@ -49,6 +49,8 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
 - `background`: solid, gradient and image backgrounds, gradient raster, image filters,
   fit rects.
 - `menu`: context menu model (nested Add submenu, panel actions).
+- `tui`: TUI launch argv (status wrapper, login shell, POSIX quoting) and the restart
+  `Supervisor` (prompt, on-exit with backoff and give-up, never).
 - `frame_stats`, `stats`: FPS and percentile helpers.
 
 ### calm-native
@@ -75,6 +77,7 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
 - `bridge`: `BridgeRequest`, `BridgeResponse`, `BridgeEvent`, `BRIDGE_METHODS` (17 names),
   `CALM_PRELUDE_JS` injected at document start to define `window.calm`.
 - `github`: `GhClient` wrapping `gh api` on the host. Plugin JS never sees a token.
+- `tui`: `"kind": "tui"` manifests (`TuiSpec`): a terminal panel running one command.
 
 ### calm-app
 

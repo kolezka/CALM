@@ -24,6 +24,9 @@ pan, zoom or minimize it. Only an explicit, confirmed close ends it.
   both also in the View menu.
 - Distant panels turn into still previews that refresh every 2 seconds.
 - A translucent status pill at the bottom shows zoom, FPS and plugin errors.
+- TUI apps: a plugin folder with one manifest turns a terminal program into an Add menu entry,
+  for example "Slack" running `slk`. It runs through your login shell, shows when it exited and
+  can restart.
 - Fullscreen mode and an FPS counter.
 
 ### Panels
@@ -114,6 +117,10 @@ From a clone, `gmake plugins && cargo run -p calm-app` builds the first-party pl
 them under right-click > Add. A development build reads the repository's `plugins/` folder
 directly; installed plugins go in `~/.config/calm/plugins`. Set `CALM_NO_BUILTIN_PLUGINS=1` to
 hide the built-in ones.
+
+A TUI app plugin needs no HTML: its manifest names a command, and CALM runs it in a terminal
+panel. See "TUI apps" in [docs/plugins.md](docs/plugins.md#tui-apps) and
+`templates/plugin-tui`.
 
 ```json
 {

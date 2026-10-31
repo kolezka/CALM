@@ -1,0 +1,14 @@
+{
+  "kind": "tui",
+  "id": "my-app",
+  "name": "My App",
+  "description": "What this app is.",
+  "command": "my-app",
+  "args": [],
+  "cwd": "~",
+  "env": {},
+  "icon": "M",
+  "defaultSize": { "width": 800, "height": 500 },
+  "restart": "prompt",
+  "shell": true
+}

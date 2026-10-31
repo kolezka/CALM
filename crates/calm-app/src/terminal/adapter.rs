@@ -10,10 +10,10 @@ use calm_core::preview::{PanelMode, PreviewImage, refresh_due};
 use calm_core::viewport::{NativePlacement, unzoom_mouse_position};
 use calm_native::NativeChild;
 use gpui::{
-    AppContext as _, ClipboardItem, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyDownEvent, KeyUpEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Render, RenderImage, ScrollDelta, ScrollWheelEvent, Styled as _, Subscription, Task, Window,
-    div,
+    AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent, Styled as _,
+    Subscription, Task, Window, div,
 };
 use gpui_libghostty::__private::{
     KeyAction, Modifiers, MouseButton, MouseState, NativeSurface, TerminalThemeState,
@@ -21,6 +21,14 @@ use gpui_libghostty::__private::{
 use gpui_libghostty::TerminalOptions;
 
 pub const KEY_CONTEXT: &str = "Terminal";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalEvent {
+    /// The process ended. Sent once per terminal.
+    Exited,
+    /// Enter was pressed after the process ended.
+    RestartRequested,
+}
 
 /// A GPUI entity backed by Ghostty's Metal surface inside a CALM container view.
 pub struct TerminalPanel {
@@ -41,9 +49,12 @@ pub struct TerminalPanel {
     /// Snapshot attempts so far, for smoke.
     snapshot_count: u64,
     snapshot_error_logged: bool,
+    exit_reported: bool,
     _subscriptions: Vec<Subscription>,
     host: NativeChild,
 }
+
+impl EventEmitter<TerminalEvent> for TerminalPanel {}
 
 impl TerminalPanel {
     /// Spawns the command with its native surface inside `host`'s zoom view.
@@ -92,6 +103,7 @@ impl TerminalPanel {
                 snapshot_at: None,
                 snapshot_count: 0,
                 snapshot_error_logged: false,
+                exit_reported: false,
                 _subscriptions: subscriptions,
                 host,
             };
@@ -241,6 +253,7 @@ impl TerminalPanel {
         }
         self.surface.tick();
         self.service_clipboard(cx);
+        self.check_exit(cx);
         let wakeup = self.surface.wakeup();
         let terminal = cx.entity().downgrade();
         self.tick_task = Some(cx.spawn(async move |_, cx| {
@@ -250,12 +263,21 @@ impl TerminalPanel {
                     // Ghostty draws its native view during the tick; GPUI repaints nothing.
                     terminal.surface.tick();
                     terminal.service_clipboard(cx);
+                    terminal.check_exit(cx);
                 });
                 if updated.is_err() {
                     break;
                 }
             }
         }));
+    }
+
+    // Ghostty wakes the app when the child exits, so the tick right after sees it.
+    fn check_exit(&mut self, cx: &mut Context<Self>) {
+        if !self.exit_reported && !self.surface.is_alive() {
+            self.exit_reported = true;
+            cx.emit(TerminalEvent::Exited);
+        }
     }
 
     fn service_clipboard(&mut self, cx: &mut Context<Self>) {
@@ -270,6 +292,12 @@ impl TerminalPanel {
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        // Only once the process is gone, so Enter never leaves a live program.
+        if self.exit_reported && event.keystroke.key == "enter" && !event.is_held {
+            cx.emit(TerminalEvent::RestartRequested);
+            cx.stop_propagation();
+            return;
+        }
         let action = if event.is_held {
             KeyAction::Repeat
         } else {

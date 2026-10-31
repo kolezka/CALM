@@ -105,6 +105,25 @@ one means a new entry, not an edit.
   with the divider drawn on chrome only, which leaves two terminals visually fused.
   Cost if wrong: the 1 unit offset breaks exact grid alignment of the second panel.
 
+## TUI app plugins (2026-10-31)
+
+- **A TUI app is `PanelKind::Tui { plugin_id }`, not `Terminal` with a launch spec.** The
+  manifest owns command, args, env and restart policy, so a layout stores only the id and
+  never holds env values (which may be secrets despite the docs). The panel still lives in
+  the shared `terminals` list, so placement, z-order, preview, minimize, resize and close are
+  the terminal code. Cost: one more arm in each `PanelKind` match.
+- **Commands are built as an argv and joined with POSIX single quotes.** Ghostty takes one
+  string and on macOS runs `bash -c "exec -l <string>"`. `shell: true` adds
+  `$SHELL -lc 'exec "$0" "$@"'` so the login profile sets `PATH`; env goes through
+  `/usr/bin/env K=V` after it, since 0.3.1 has no env option. A leading `/usr/bin/env`
+  absorbs the `-` that `exec -l` adds to argv[0]. Cost: the login shell must speak POSIX sh
+  (fish users set `shell: false`), and env values show in `ps`.
+- **Exit codes come from a status wrapper, not Ghostty.** 0.3.1 drops `SHOW_CHILD_EXITED`
+  and has no exit code accessor. A `/bin/sh` wrapper runs the command, writes `$?` to a
+  per-launch file and exits 0. 127 means command not found and never auto-restarts. Cost:
+  a 127 from the program itself reads as not found; a killed wrapper gives "code unknown".
+  The Ghostty fork planned in Plugin API v2 could replace this.
+
 ## Process
 
 - **Agent Teams with disjoint write scopes.** SDD forbids parallel implementers; lanes run

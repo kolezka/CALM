@@ -148,6 +148,20 @@ research doc and grid styles. Facts are verified unless marked otherwise.
 - Unverified: manual GUI pass of the cursor and of a resize by hand over a live web view,
   and of a joined shared edge between two web views.
 
+## On `feat/tui-plugins` (PR open, not merged)
+
+- TUI app plugins: `"kind": "tui"` manifests (`calm-plugins::tui`, strict per-field errors),
+  `PanelKind::Tui { plugin_id }`, launch argv and restart state machine in
+  `calm-core::tui`, app glue in `calm-app/src/tui_host.rs`. Apps are listed next to Terminal
+  in the Add menu. Exited panels offer Restart in the panel menu and on Enter.
+- Exit codes come from a `/bin/sh` status wrapper writing a per-launch file under
+  `$TMPDIR/calm-<pid>/`, because gpui-libghostty 0.3.1 exposes no exit code.
+- Smoke covers a script fixture (ran, exit 0, restart, close without asking) and a missing
+  command (`smoke: tui ...` line). `plugins/top-example`, `templates/plugin-tui`.
+- Unverified: a manual GUI pass, a real `slk`, fish as login shell (documented as
+  unsupported for `shell: true`), and the glyph icon at all zoom levels.
+- Not wired: TUI panels in saved layouts (layout save and load are not wired at all).
+
 ## Verified on hardware
 
 macOS 27.0.1, Apple M4 Pro: smoke passes; two terminals render in zoom views at zoom 1.5;
