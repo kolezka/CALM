@@ -1,7 +1,7 @@
 # Status
 
-Last updated: 2026-10-31. `main` with PR #1 (recenter) and PR #2 (panel menu actions)
-merged. Facts are verified unless marked otherwise.
+Last updated: 2026-10-31. `main` with PRs #1 (recenter), #2 (panel menu actions) and #3
+(panel chrome) merged. Facts are verified unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -34,6 +34,16 @@ merged. Facts are verified unless marked otherwise.
   from the title strip and the chip. Right click on content in preview mode does nothing.
 - Rename is not offered: it needs a native text input, which does not exist yet.
 - Manual GUI pass of each panel menu action is pending.
+- Panel chrome (PR #3). Geometry lives in `calm-core::chrome` (`title_bar_layout`,
+  `chrome_hit`, `hover_target`, `details_visible`, icon and button strokes), which paint
+  and hit testing share. `TitleBarLayout::middle` is the free area between the kind icon
+  and the buttons, meant for a future address field.
+- Look: 28 unit title bar, 8 unit rounded top corners, 1 px ring and soft drop shadow
+  outside the panel rect, accent ring and brighter bar on focus, vector icon per kind,
+  round minimize and close buttons that show on hover (amber and red when pointed at),
+  red tinted bar during "Close? enter / esc". Icon, title and buttons hide below 12 px of
+  bar height on screen. Colors in `calm-app/src/theme.rs`.
+- Unverified: the look itself. Only smoke ran; a manual GUI pass is the user's.
 
 ## Verified on hardware
 
@@ -69,6 +79,10 @@ CI run on `main` green (linux-arch success, macos skipped).
 - Smoke fails on `main` (7d53cbb and later) under heavy load (load average 17 to 40) with
   only `preview_snapshots_in_3s=[0,0]`; every other smoke line passes. Cause unconfirmed.
 - Escape on the close confirmation does not trigger a redraw until the next event.
+- Panel bottom corners are square because the native view is square. Rounding them needs a
+  corner radius on the clip view layer in `calm-native`.
+- Chrome hover is tracked from GPUI mouse moves only. Over a live native view GPUI may get
+  no moves, so the buttons can stay visible until the pointer crosses GPUI area again.
 - A transitive `block 0.1.6` future-incompatibility warning from a dependency.
 - repo-intel 0.1.8 prints `tmp: nieustawiona zmienna` on its error path (for example after
   an interrupted build). Upstream bug; harmless when the build succeeds.
