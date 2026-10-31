@@ -8,8 +8,10 @@ mod terminal;
 mod theme;
 
 use calm_core::geometry::Rect;
+use calm_core::join::JOIN_SNAP_GAP;
 use calm_core::preview::PanelMode;
-use calm_core::scene::PanelKind;
+use calm_core::scene::{PanelId, PanelKind};
+use calm_core::snap::{SnapConfig, snap_move};
 use std::sync::{Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -189,6 +191,48 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             }
             if raised.elapsed() > SMOKE_ZORDER_TIMEOUT {
                 smoke_fail(&format!("native order does not match the scene: {line}"));
+            }
+        }
+
+        // Drop the second terminal 5 units right of the first through the real snap path:
+        // it must land one unit off and render as one joined pair with a visible divider.
+        let gap = cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                let mut ids: Vec<PanelId> = view.scene.panels.iter().map(|p| p.id).collect();
+                ids.sort();
+                let anchor = view.scene.get(ids[0]).map(|p| p.rect)?;
+                let moving = view.scene.get_mut(ids[1])?;
+                let dropped = Rect::new(
+                    anchor.right() + 5.0,
+                    anchor.origin.y,
+                    moving.rect.size.width,
+                    moving.rect.size.height,
+                );
+                moving.rect = snap_move(dropped, &[anchor], &SnapConfig::default());
+                let gap = moving.rect.origin.x - anchor.right();
+                cx.notify();
+                Some(gap)
+            })
+        });
+        if gap != Some(JOIN_SNAP_GAP) {
+            smoke_fail(&format!(
+                "flush drop landed at gap {gap:?}, not {JOIN_SNAP_GAP}"
+            ));
+        }
+        let moved = Instant::now();
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let (pairs, dividers) = cx.update(|cx| view.read(cx).join_counts);
+            if (pairs, dividers) == (1, 1) {
+                println!("smoke: join pairs={pairs} dividers={dividers} gap={JOIN_SNAP_GAP}");
+                break;
+            }
+            if moved.elapsed() > SMOKE_ZORDER_TIMEOUT {
+                smoke_fail(&format!(
+                    "flush pair not joined: pairs={pairs} dividers={dividers}"
+                ));
             }
         }
 
