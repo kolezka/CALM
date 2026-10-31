@@ -15,6 +15,30 @@ export interface Rect {
   height: number;
 }
 
+/** A size in canvas points. */
+export interface Size {
+  width: number;
+  height: number;
+}
+
+/**
+ * The shape of `calm-plugin.json`. CALM rejects a manifest with a bad value; it never
+ * falls back to a default. Sizes include the panel's title bar.
+ */
+export interface CalmPluginManifest {
+  id: string;
+  name: string;
+  version: string;
+  entry: string;
+  defaultSize: Size;
+  /** `false` keeps the panel at the size it was created with. Absent means `true`. */
+  resizable?: boolean;
+  /** Smallest size a resize may reach. At least 120x80; not allowed with `resizable: false`. */
+  minSize?: Size;
+  /** Largest size a resize may reach. At least `minSize`; not allowed with `resizable: false`. */
+  maxSize?: Size;
+}
+
 export type PanelKind = "terminal" | "browser" | "plugin";
 
 export type PanelSpec =

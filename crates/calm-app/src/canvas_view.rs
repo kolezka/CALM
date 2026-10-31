@@ -8,20 +8,21 @@ use calm_core::chrome::{
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
-    Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, Tool, ZoomStep,
+    Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool, ZoomStep,
 };
 use calm_core::join::{Axis, JoinLayout, JoinedEdges, Side};
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
+use calm_core::resize::ResizePolicy;
 use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{BrowserEvent, HostView, NativeChild, StatusBar, show_context_menu};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, BorderStyle, Bounds, BoxShadow, ContentMask, Context, Corners, DispatchPhase, Edges,
-    Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, ParentElement,
+    App, BorderStyle, Bounds, BoxShadow, ContentMask, Context, Corners, CursorStyle, DispatchPhase,
+    Edges, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
+    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, ParentElement,
     PathBuilder, PinchEvent, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
     SharedString, Styled, Task, TextAlign, TextRun, WeakEntity, Window, actions, canvas, div, fill,
     outline, point, px, quad, rgb, rgba, size,
@@ -36,6 +37,7 @@ use std::time::{Duration, Instant};
 use crate::background::{self, BackgroundRenderer, BackgroundTexture};
 use crate::browser_panel::{BrowserEvents, BrowserPanel};
 use crate::dev_menu::{self, ResetFps, ToggleFps};
+use crate::grid_paint::{self, GridFrame, GridTextures};
 use crate::plugin_host::{self, BridgeSender, PluginPanel};
 use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalEvent, TerminalPanel};
@@ -108,6 +110,10 @@ pub struct CanvasView {
     pub plugin_sizes: Vec<(String, Size)>,
     /// Plugins found at startup. A new plugin needs an app restart to show up.
     installed_plugins: Vec<InstalledPlugin>,
+    /// Plugin dirs searched at startup, shown in the Add menu when none was found.
+    plugin_search_dirs: Vec<String>,
+    /// (built-in, user) plugins found at startup. The smoke prints it.
+    pub plugin_counts: (usize, usize),
     /// Plugin folders skipped at startup, shown in the status bar; stderr names each one.
     pub plugin_errors: usize,
     /// Live plugin pages by panel. Dropping an entry closes the page.
@@ -120,6 +126,8 @@ pub struct CanvasView {
     focused: Option<PanelId>,
     /// Panel under the pointer and the chrome button under it. Shows the buttons.
     hover: Option<(PanelId, Option<ChromeButton>)>,
+    /// Resize edge under the pointer, or of the resize under way. Sets the cursor.
+    resize_cursor: Option<ResizeEdge>,
     /// Live terminals by panel. Dropping an entry ends its process.
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Restart state of TUI panels. Their terminal is in `terminals`.
@@ -144,6 +152,7 @@ pub struct CanvasView {
     /// Created on first `cmd-,`, then hidden and shown.
     pub settings_window: Option<calm_native::SettingsWindow>,
     pub background: BackgroundRenderer,
+    pub grid: GridTextures,
     /// Native bar floating over the bottom of the canvas. Created on the first paint.
     status_bar: Option<StatusBar>,
     /// Set when the status bar could not be created, so paint stops retrying.
@@ -153,8 +162,10 @@ pub struct CanvasView {
 }
 
 impl CanvasView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let discovery = plugin_host::discover_installed();
+    /// `builtin_plugins` is the `plugins.builtin` setting, read once here.
+    pub fn new(builtin_plugins: bool, cx: &mut Context<Self>) -> Self {
+        let (discovery, plugin_search_dirs) = plugin_host::discover_installed(builtin_plugins);
+        let plugin_counts = (discovery.builtin_count, discovery.user_count());
         let entries = plugin_host::menu_entries(&discovery.plugins);
         let (bridge, mut messages) = futures::channel::mpsc::unbounded::<(PanelId, String)>();
         let bridge_task = cx.spawn(async move |this, cx| {
@@ -175,6 +186,8 @@ impl CanvasView {
             apps: entries.apps,
             plugin_sizes: entries.sizes,
             installed_plugins: discovery.plugins,
+            plugin_search_dirs,
+            plugin_counts,
             plugin_errors: discovery.errors.len(),
             plugin_panels: Vec::new(),
             bridge,
@@ -182,6 +195,7 @@ impl CanvasView {
             saved_flash: None,
             focused: None,
             hover: None,
+            resize_cursor: None,
             terminals: Vec::new(),
             tui_runs: Vec::new(),
             browsers: Vec::new(),
@@ -201,6 +215,7 @@ impl CanvasView {
             },
             settings_window: None,
             background: BackgroundRenderer::default(),
+            grid: GridTextures::default(),
             status_bar: None,
             status_bar_error: None,
             join_counts: (0, 0),
@@ -285,7 +300,7 @@ impl CanvasView {
                 }
                 Effect::Redraw => {}
                 Effect::ShowCanvasMenu { screen, world } => {
-                    let items = menu::canvas_menu(&self.plugins, &self.apps);
+                    let items = self.canvas_menu();
                     self.show_menu(items, screen, MenuTarget::Canvas { world }, window, cx);
                 }
                 Effect::ShowPanelMenu { id, screen } => {
@@ -639,8 +654,14 @@ impl CanvasView {
             Some(_) => format!("{} (not built)", plugin.manifest.name),
             None => plugin.manifest.name.clone(),
         };
+        let resize = self.scene.get(id).map(|scene_panel| {
+            ResizePolicy::derive(&scene_panel.kind, Some(&plugin.manifest.resize()))
+        });
         if let Some(scene_panel) = self.scene.get_mut(id) {
             scene_panel.title = title;
+        }
+        if let Some(policy) = resize {
+            self.scene.set_resize_policy(id, policy);
         }
         self.plugin_panels.push((id, panel));
         Ok(())
@@ -653,6 +674,11 @@ impl CanvasView {
         self.apps.extend(entries.apps);
         self.plugin_sizes.extend(entries.sizes);
         self.installed_plugins.extend(plugins);
+    }
+
+    /// The Add menu as the user would see it now.
+    pub fn canvas_menu(&self) -> Vec<menu::MenuItem> {
+        menu::canvas_menu(&self.plugins, &self.apps, &self.plugin_search_dirs)
     }
 
     /// (loading, load error) per plugin panel, in creation order.
@@ -1042,9 +1068,10 @@ impl CanvasView {
         let hover = hover_target(&self.scene, self.scene.camera.screen_to_world(screen));
         let hover_changed = hover != self.hover;
         self.hover = hover;
+        let cursor_changed = self.update_resize_cursor(screen);
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
-        } else if hover_changed {
+        } else if hover_changed || cursor_changed {
             cx.notify();
         }
     }
@@ -1053,14 +1080,84 @@ impl CanvasView {
         if !matches!(event.button, MouseButton::Left | MouseButton::Middle) {
             return;
         }
-        let effects = self.input.mouse_up(
-            self.to_canvas(event.position),
-            to_mods(&event.modifiers),
-            &mut self.scene,
-        );
+        let screen = self.to_canvas(event.position);
+        let effects = self
+            .input
+            .mouse_up(screen, to_mods(&event.modifiers), &mut self.scene);
+        let cursor_changed = self.update_resize_cursor(screen);
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
+        } else if cursor_changed {
+            cx.notify();
         }
+    }
+
+    /// The resize cursor follows the same handle lookup as a press. True if it changed.
+    fn update_resize_cursor(&mut self, screen: Point) -> bool {
+        let cursor = self.input.hover_resize(screen, &self.scene);
+        let changed = cursor != self.resize_cursor;
+        self.resize_cursor = cursor;
+        changed
+    }
+
+    /// Drives a press, a move by `delta` canvas pixels and a release through the real
+    /// mouse handlers, starting at `from_world`. Alt is held so snapping stays out of the
+    /// numbers. Only the smoke uses it.
+    pub fn smoke_drag(
+        &mut self,
+        from_world: Point,
+        delta: Point,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let start = self.scene.camera.world_to_screen(from_world);
+        let position = |x: f64, y: f64| {
+            point(
+                px((x + self.viewport.origin.x) as f32),
+                px((y + self.viewport.origin.y) as f32),
+            )
+        };
+        let modifiers = gpui::Modifiers {
+            alt: true,
+            ..gpui::Modifiers::default()
+        };
+        let from = position(start.x, start.y);
+        let to = position(start.x + delta.x, start.y + delta.y);
+        let down = MouseDownEvent {
+            button: MouseButton::Left,
+            position: from,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        };
+        self.mouse_down(&down, window, cx);
+        let moved = MouseMoveEvent {
+            position: to,
+            pressed_button: Some(MouseButton::Left),
+            modifiers,
+        };
+        self.mouse_move(&moved, window, cx);
+        let up = MouseUpEvent {
+            button: MouseButton::Left,
+            position: to,
+            modifiers,
+            click_count: 1,
+        };
+        self.mouse_up(&up, window, cx);
+    }
+
+    /// The resize edge a hover at `world` shows a cursor for.
+    pub fn resize_cursor_at(&self, world: Point) -> Option<ResizeEdge> {
+        let screen = self.scene.camera.world_to_screen(world);
+        self.input.hover_resize(screen, &self.scene)
+    }
+
+    /// (panel, web view frame size) per browser, in creation order.
+    pub fn browser_page_sizes(&self) -> Vec<(PanelId, Size)> {
+        self.browsers
+            .iter()
+            .map(|(id, browser)| (*id, browser.page_size()))
+            .collect()
     }
 
     fn scroll(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1175,6 +1272,7 @@ struct PaintSnapshot {
     settings: calm_core::settings::Settings,
     /// Rendered gradient or image, if one is ready.
     background: Option<BackgroundTexture>,
+    grid: GridFrame,
     /// Computed once per render from `scene`.
     joins: JoinLayout,
 }
@@ -1245,9 +1343,7 @@ impl PaintSnapshot {
                 background::paint_background(texture, bounds, window);
             }
             let camera = self.scene.camera;
-            if self.settings.grid.show {
-                settings_menu::paint_grid(bounds, &camera, &self.settings.grid, window);
-            }
+            grid_paint::paint_grid(&self.grid, bounds, window);
             let viewport = Rect::new(
                 origin.x,
                 origin.y,
@@ -1905,6 +2001,12 @@ impl Render for CanvasView {
         let background = self
             .background
             .texture(&self.settings.settings.background, canvas_size);
+        let grid = self.grid.prepare(
+            &self.settings.settings.grid,
+            &self.scene.camera,
+            canvas_size,
+            window,
+        );
         let entity = cx.entity().downgrade();
         let paint_entity = entity.clone();
         let mut snapshot = PaintSnapshot {
@@ -1924,6 +2026,7 @@ impl Render for CanvasView {
             input_targets: Vec::new(),
             settings: self.settings.settings.clone(),
             background,
+            grid,
             joins: JoinLayout::compute(&self.scene.panels),
         };
         self.join_counts = (
@@ -2022,6 +2125,13 @@ impl Render for CanvasView {
                     .flex_1()
                     .w_full()
                     .relative()
+                    .when_some(self.resize_cursor, |canvas, edge| {
+                        canvas.cursor(match edge {
+                            ResizeEdge::Right => CursorStyle::ResizeLeftRight,
+                            ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
+                            ResizeEdge::BottomRight => CursorStyle::ResizeUpLeftDownRight,
+                        })
+                    })
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                     .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
                     .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))

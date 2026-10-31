@@ -1,8 +1,8 @@
 # Status
 
-Last updated: 2026-10-31. `main` with PRs #1 to #7 merged: recenter, panel menu actions,
-panel chrome, bottom bar, plugin panels, browser panels and the Settings window. Facts are
-verified unless marked otherwise.
+Last updated: 2026-10-31. `main` with PRs #1 to #7, #9 and #11 merged: recenter, panel menu actions,
+panel chrome, bottom bar, plugin panels, browser panels, the Settings window, the mods
+research doc and grid styles. Facts are verified unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -58,6 +58,11 @@ verified unless marked otherwise.
   checks the bar is visible and above both terminals after a restack.
 - Plugin panels (PR #5): discovery at startup fills the right-click Add menu. Skipped
   plugin folders print to stderr and show as `⚠ plugins: N errors` in the status bar pill.
+- Built-in plugin dirs (fix/dev-plugin-discovery): user dirs first, then the workspace
+  `plugins/` in a dev build and `CALM.app/Contents/Resources/plugins` in a bundle. A user
+  plugin shadows a built-in with the same id. Off with `plugins.builtin=false` (file only,
+  not in the Settings window) or `CALM_NO_BUILTIN_PLUGINS=1`. Empty Add menu says
+  "No plugins found" and lists searched dirs. Smoke prints `plugins builtin=N user=M`.
 - Adding a plugin opens a Plugin panel (`crates/calm-app/src/plugin_host.rs`): a `WebPanel`
   in a `NativeChild`, prelude injected at document start, entry loaded with `load_file`.
   Placed like terminals: Live sets the frame each paint, Preview and Hidden hide the view
@@ -117,6 +122,31 @@ verified unless marked otherwise.
 - Unverified: manual GUI pass of the window (color panel, open panel, slider feel, image
   filters on a real photo). The smoke builds the window and checks every control is
   bound, and renders a gradient background.
+- Grid styles (PR #11): lines, dots, crosses or none; mark size 1 to 4 points; major grid every N
+  cells (0 off, the default) with its own opacity. Color and opacity apply to every
+  style. Controls in the Grid section of the Settings window, live on the canvas.
+- New fields load from older version 2 files with defaults that draw the old grid; bad
+  values are explicit errors.
+- Smoke draws dots by default (`CALM_SMOKE_GRID` picks the style) and fails if a dot or
+  cross frame draws more than `mark_primitive_bound` grid primitives.
+- Unverified: manual look of dots, crosses and the major grid while zooming.
+
+## On `fix/panel-resize` (PR open, not merged)
+
+- Fixed: browser panels could not be resized. The 12 unit grab band sat inside the
+  content rect; Ghostty's view returns nil from `hitTest`, so terminals passed the click to
+  GPUI, but a WKWebView keeps it. Plugin panels had the same bug.
+- `calm-core::resize`: `ResizePolicy { resizable, min, max }` from
+  `ResizePolicy::derive(kind, plugin)`, `resize_target` for press and cursor, an outer grab
+  band of 8 screen px outside the right and bottom edges. Drag clamps to the policy.
+- Plugin manifest: optional `resizable`, `minSize`, `maxSize`, strictly validated.
+  `calm-plugins` now depends on `calm-core`.
+- Resize cursor on hover (left-right, up-down, diagonal). The smoke drags a browser and a
+  locked plugin through the real mouse handlers and prints `smoke: resize ...`.
+- Merged with #12 and #13: the outer band does not reach into a joined neighbor
+  (`resize_target`); the shared edge resizes from the join gap or the inner band.
+- Unverified: manual GUI pass of the cursor and of a resize by hand over a live web view,
+  and of a joined shared edge between two web views.
 
 ## On `feat/tui-plugins` (PR open, not merged)
 

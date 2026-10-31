@@ -14,18 +14,33 @@ plugin could read private data. Only install plugins you have read or whose auth
 
 ## Where plugins live
 
-CALM looks for plugins in these folders, in this order:
+CALM looks for plugins in these folders, in this order. The first three are user folders,
+the last two are built-in folders with the plugins that ship with CALM:
 
 1. Every entry of `CALM_PLUGIN_PATH` (a `:` separated list, like `PATH`).
 2. `$CALM_HOME/plugins` if `CALM_HOME` is set, otherwise `~/.config/calm/plugins`.
+3. Built-in, development: the repository's own `plugins/` folder. Used by a debug build, or
+   by any build that runs from a cargo `target` folder (`cargo run`, `cargo run --release`).
+   The path is fixed when CALM is compiled.
+4. Built-in, app bundle: `CALM.app/Contents/Resources/plugins`. `gmake bundle` copies the
+   built first-party plugins there.
+
+Built-in folders that do not exist are skipped. Turn built-ins off with
+`"plugins": { "builtin": false }` in `settings.json`, or for one run with
+`CALM_NO_BUILTIN_PLUGINS=1`. Both are read once at startup.
 
 Each plugin is one subfolder of those folders. To install a plugin, copy or symlink its folder
 into `~/.config/calm/plugins`. Folders whose name starts with `.` are ignored. A missing plugin
 folder is fine and is not an error.
 
-If two plugins use the same `id`, the first one found wins and the second is reported as a
-duplicate. A subfolder without a manifest, or with a broken one, is reported with its path and
-skipped; the other plugins still load.
+A user plugin with the same `id` as a built-in one wins, and stderr says which built-in it
+hides. Any other repeated `id` is an error: the first one found wins and the second is reported
+as a duplicate. A subfolder without a manifest, or with a broken one, is reported with its path
+and skipped; the other plugins still load.
+
+At startup stderr lists every folder searched (`calm: plugin dir user ...`,
+`calm: plugin dir builtin ...`) and every plugin found, hidden or skipped. When no plugin is
+found, the Add menu shows "No plugins found" and a Searched Folders submenu with the same list.
 
 ## Manifest
 
@@ -48,6 +63,35 @@ Every plugin folder holds a `calm-plugin.json`:
 | `version`     | Plugin version, free form.                                               |
 | `entry`       | HTML file to load, relative to the plugin folder. No `..`, no `/` start. |
 | `defaultSize` | Size of a new panel in canvas points.                                    |
+| `resizable`   | Optional. `false` keeps the panel at the size it was created with.       |
+| `minSize`     | Optional `{ "width", "height" }`. Smallest size a resize may reach.      |
+| `maxSize`     | Optional `{ "width", "height" }`. Largest size a resize may reach.       |
+
+Every panel can be resized by default, plugins included. Drag the right edge, the bottom
+edge or the corner. The handle reaches a few pixels outside the panel, so it works over a
+web view too. Sizes include the 28 point title bar.
+
+The resize fields are checked when CALM loads the plugin. A bad value is a manifest error,
+and the plugin is skipped with a message on stderr; CALM never guesses a default. Errors:
+
+- `resizable` that is not `true` or `false`, or any field set to `null`;
+- a size that is not an object with exactly `width` and `height` as positive numbers;
+- a `minSize` or `maxSize` below the smallest panel, 120 by 80;
+- a `maxSize` smaller than `minSize` on either axis;
+- `minSize` or `maxSize` together with `"resizable": false`;
+- a `defaultSize` outside `minSize` and `maxSize`.
+
+```json
+{
+  "id": "clock",
+  "name": "Clock",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "defaultSize": { "width": 240, "height": 160 },
+  "minSize": { "width": 200, "height": 120 },
+  "maxSize": { "width": 480, "height": 320 }
+}
+```
 
 ## TUI apps
 
@@ -343,11 +387,16 @@ sources. Type check with `bunx tsc --noEmit -p .`.
 
 ## Development loop
 
-Point CALM at the plugins in this repository and start it:
+Build the plugins in this repository and start CALM from it:
 
 ```sh
-CALM_PLUGIN_PATH=./plugins cargo run -p calm-app
+gmake plugins          # needs bun; fails with a message when bun is missing
+cargo run -p calm-app
 ```
+
+The repository's `plugins/` folder is a built-in folder in a development build, so its plugins
+are in the Add menu with no further setup. To work on a plugin somewhere else, add its parent
+folder to `CALM_PLUGIN_PATH`.
 
 No rebuild of CALM is needed. HTML and JS changes show up in a newly opened panel. Manifest
 changes need a CALM restart, because discovery runs at startup. Installed plugins appear in

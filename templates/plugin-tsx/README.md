@@ -4,6 +4,8 @@ A starting point for a CALM plugin written in TypeScript and TSX, with Preact as
 
 1. Copy this folder and rename it.
 2. In `calm-plugin.json`, set a unique `id` (lowercase letters, digits, `-`) and a `name`.
+   The panel is resizable. Add `"resizable": false` to lock its size, or `minSize` and
+   `maxSize` (`{ "width", "height" }`) to limit it. See `docs/plugins.md`.
 3. Build: `bun install && bun run build`. This writes `dist/index.js`, which `index.html` loads.
 4. Run CALM with the parent folder on the plugin path, for example
    `CALM_PLUGIN_PATH=/path/to/my-plugins cargo run -p calm-app`.

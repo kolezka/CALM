@@ -22,8 +22,18 @@ pub const PANEL_DELETE: &str = "panel.delete";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MenuItem {
-    Action { id: String, label: String },
-    Submenu { label: String, items: Vec<MenuItem> },
+    Action {
+        id: String,
+        label: String,
+    },
+    Submenu {
+        label: String,
+        items: Vec<MenuItem>,
+    },
+    /// Shown greyed out, picks nothing. Used to explain an empty list.
+    Disabled {
+        label: String,
+    },
     Separator,
 }
 
@@ -46,20 +56,42 @@ fn action(id: &str, label: &str) -> MenuItem {
     }
 }
 
+fn disabled(label: &str) -> MenuItem {
+    MenuItem::Disabled {
+        label: label.to_string(),
+    }
+}
+
 /// Right click on empty canvas. `plugins` is (id, name) per installed web plugin and
 /// `apps` the same per TUI plugin. Apps sit next to Terminal: they are terminals too.
-pub fn canvas_menu(plugins: &[(String, String)], apps: &[(String, String)]) -> Vec<MenuItem> {
+/// `searched_dirs` is shown when no plugin of either kind was found, so the user knows
+/// where to put one.
+pub fn canvas_menu(
+    plugins: &[(String, String)],
+    apps: &[(String, String)],
+    searched_dirs: &[String],
+) -> Vec<MenuItem> {
     let mut items = vec![
         action(ADD_TERMINAL, "Terminal"),
         action(ADD_BROWSER, "Browser"),
+        MenuItem::Separator,
     ];
-    if !apps.is_empty() {
-        items.push(MenuItem::Separator);
-    }
     for (plugin_id, name) in apps {
         items.push(action(&format!("{ADD_TUI_PREFIX}{plugin_id}"), name));
     }
-    if !plugins.is_empty() {
+    if plugins.is_empty() && apps.is_empty() {
+        items.push(disabled("No plugins found"));
+        let searched: Vec<MenuItem> = if searched_dirs.is_empty() {
+            vec![disabled("(no folders)")]
+        } else {
+            searched_dirs.iter().map(|dir| disabled(dir)).collect()
+        };
+        items.push(MenuItem::Submenu {
+            label: "Searched Folders".to_string(),
+            items: searched,
+        });
+    }
+    if !apps.is_empty() && !plugins.is_empty() {
         items.push(MenuItem::Separator);
     }
     for (plugin_id, name) in plugins {
@@ -175,7 +207,7 @@ mod tests {
     #[test]
     fn canvas_menu_lists_add_submenu_with_terminal_browser_and_plugins() {
         assert_eq!(
-            canvas_menu(&plugins(), &[]),
+            canvas_menu(&plugins(), &[], &["/unused".to_string()]),
             vec![MenuItem::Submenu {
                 label: "Add".to_string(),
                 items: vec![
@@ -190,16 +222,33 @@ mod tests {
     }
 
     #[test]
-    fn canvas_menu_without_plugins_has_no_trailing_separator() {
+    fn canvas_menu_without_plugins_says_so_and_lists_searched_dirs() {
+        let dirs = ["/u/plugins".to_string(), "/repo/plugins".to_string()];
         assert_eq!(
-            canvas_menu(&[], &[]),
+            canvas_menu(&[], &[], &dirs),
             vec![MenuItem::Submenu {
                 label: "Add".to_string(),
                 items: vec![
                     action("add.terminal", "Terminal"),
                     action("add.browser", "Browser"),
+                    MenuItem::Separator,
+                    disabled("No plugins found"),
+                    MenuItem::Submenu {
+                        label: "Searched Folders".to_string(),
+                        items: vec![disabled("/u/plugins"), disabled("/repo/plugins")],
+                    },
                 ],
             }]
+        );
+        let Some(MenuItem::Submenu { items, .. }) = canvas_menu(&[], &[], &[]).pop() else {
+            panic!("no Add submenu");
+        };
+        assert_eq!(
+            items.last(),
+            Some(&MenuItem::Submenu {
+                label: "Searched Folders".to_string(),
+                items: vec![disabled("(no folders)")],
+            })
         );
     }
 
@@ -249,6 +298,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 400.0, 300.0),
             title: "Terminal".to_string(),
             minimized,
+            resize: crate::resize::ResizePolicy::FREE,
         }
     }
 
@@ -327,7 +377,7 @@ mod tests {
     #[test]
     fn tui_apps_sit_next_to_terminal_and_add_a_tui_panel() {
         let apps = vec![("slack".to_string(), "Slack".to_string())];
-        let [MenuItem::Submenu { items, .. }] = &canvas_menu(&plugins(), &apps)[..] else {
+        let [MenuItem::Submenu { items, .. }] = &canvas_menu(&plugins(), &apps, &[])[..] else {
             panic!("expected one Add submenu");
         };
         assert_eq!(items[2], MenuItem::Separator);

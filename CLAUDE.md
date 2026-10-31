@@ -74,7 +74,9 @@ overrides the directory. Distant panels become previews refreshed every 2 s.
 - Native z-order follows scene order. Every placement calls `set_frame` and `bring_to_front`.
 - A panel's process keeps running through pan, zoom, preview, minimize and culling. Only an
   explicit, confirmed close ends it.
-- Grid is drawn as lines, not dots. The dot grid stalled paint and stopped preview refresh.
+- Grid lines are quads. Dots and crosses are a cached texture drawn tiled, never one quad
+  or image per dot: about 1500 dot quads once stalled paint and stopped preview refresh.
+  The grid's draw count must not grow with the number of marks (`mark_primitive_bound`).
 - No credentials in layouts, manifests, docs, logs or tests. GitHub goes through `gh api` on
   the host. Plugin JS never sees a token.
 - Plugins are trusted, explicitly installed code. Do not call them sandboxed anywhere.

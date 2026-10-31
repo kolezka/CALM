@@ -7,9 +7,10 @@ use crate::background::{
     BackgroundKind, GradientKind, GradientStop, ImageFit, MAX_BLUR, MAX_FILTER_FACTOR,
     MAX_GRADIENT_STOPS, MIN_GRADIENT_STOPS, Rgb,
 };
+use crate::grid::GridKind;
 use crate::settings::{
-    GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE, SNAP_EDGE_RANGE, SNAP_GRID_STEPS, Settings,
-    TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
+    GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
+    SNAP_EDGE_RANGE, SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -142,21 +143,51 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
     sections.push(section("Background", background_fields(settings, context)));
 
     let grid = &settings.grid;
-    sections.push(section(
-        "Grid",
-        vec![
-            checkbox("grid.show", "Show grid", grid.show),
-            slider(
-                "grid.spacing",
-                "Spacing",
-                grid.spacing,
-                GRID_SPACING_RANGE,
-                0,
-            ),
-            color("grid.color", "Line color", grid.color),
-            slider("grid.opacity", "Line opacity", grid.opacity, 0.0..=1.0, 2),
-        ],
+    let kinds = GridKind::ALL
+        .iter()
+        .map(|k| k.label().to_string())
+        .collect();
+    let selected_kind = GridKind::ALL
+        .iter()
+        .position(|kind| *kind == grid.kind)
+        .unwrap_or(0);
+    let mut grid_fields = vec![
+        checkbox("grid.show", "Show grid", grid.show),
+        choice("grid.kind", "Style", kinds, selected_kind),
+        slider(
+            "grid.spacing",
+            "Spacing",
+            grid.spacing,
+            GRID_SPACING_RANGE,
+            0,
+        ),
+        color("grid.color", "Color", grid.color),
+        slider("grid.opacity", "Opacity", grid.opacity, 0.0..=1.0, 2),
+    ];
+    if matches!(grid.kind, GridKind::Dots | GridKind::Crosses) {
+        grid_fields.push(slider(
+            "grid.mark_size",
+            "Mark size",
+            grid.mark_size,
+            GRID_MARK_SIZE_RANGE,
+            0,
+        ));
+    }
+    grid_fields.push(slider(
+        "grid.major_every",
+        "Major every (0 off)",
+        f64::from(grid.major_every),
+        0.0..=f64::from(GRID_MAJOR_EVERY_MAX),
+        0,
     ));
+    grid_fields.push(slider(
+        "grid.major_opacity",
+        "Major opacity",
+        grid.major_opacity,
+        0.0..=1.0,
+        2,
+    ));
+    sections.push(section("Grid", grid_fields));
 
     let snap = &settings.snap;
     let steps: Vec<String> = SNAP_GRID_STEPS
@@ -475,6 +506,25 @@ pub fn apply_field(
             settings.grid.opacity = number(0.0..=1.0, 2).unwrap_or_default();
             changed
         }
+        ("grid.kind", FieldValue::Index(index)) => {
+            settings.grid.kind = *GridKind::ALL.get(index).ok_or("bad grid style")?;
+            // The mark size control comes and goes with the style.
+            rebuilt
+        }
+        ("grid.mark_size", FieldValue::Number(_)) => {
+            settings.grid.mark_size = number(GRID_MARK_SIZE_RANGE, 0).unwrap_or(2.0);
+            changed
+        }
+        ("grid.major_every", FieldValue::Number(_)) => {
+            let every = number(0.0..=f64::from(GRID_MAJOR_EVERY_MAX), 0).unwrap_or_default();
+            // 1 would make every line major; the slider's low end means off.
+            settings.grid.major_every = if every < 2.0 { 0 } else { every as u32 };
+            changed
+        }
+        ("grid.major_opacity", FieldValue::Number(_)) => {
+            settings.grid.major_opacity = number(0.0..=1.0, 2).unwrap_or_default();
+            changed
+        }
         ("snap.enabled", FieldValue::Bool(on)) => {
             settings.snap.enabled = on;
             changed
@@ -538,6 +588,10 @@ pub fn apply_field(
             | "grid.spacing"
             | "grid.color"
             | "grid.opacity"
+            | "grid.kind"
+            | "grid.mark_size"
+            | "grid.major_every"
+            | "grid.major_opacity"
             | "snap.enabled"
             | "snap.grid"
             | "snap.edge"
@@ -707,6 +761,70 @@ mod tests {
             assert!(apply_field(&mut settings, id, value).is_err(), "{id}");
         }
         assert_eq!(settings, before, "a rejected change must not edit settings");
+    }
+
+    #[test]
+    fn grid_style_controls_edit_the_grid() {
+        let context = FormContext::default();
+        let mut settings = Settings::default();
+        let lines = ids(&settings_form(&settings, &context));
+        for id in [
+            "grid.kind",
+            "grid.color",
+            "grid.opacity",
+            "grid.major_every",
+        ] {
+            assert!(lines.contains(&id.to_string()), "{id}");
+        }
+        assert!(
+            !lines.contains(&"grid.mark_size".to_string()),
+            "lines have no marks"
+        );
+        // Index 1 is Dots; the mark size control appears, so the form rebuilds.
+        assert_eq!(
+            apply_field(&mut settings, "grid.kind", FieldValue::Index(1)),
+            Ok(FormOutcome::Changed { rebuild: true })
+        );
+        assert_eq!(settings.grid.kind, GridKind::Dots);
+        let dots = ids(&settings_form(&settings, &context));
+        assert!(dots.contains(&"grid.mark_size".to_string()));
+        apply_field(&mut settings, "grid.mark_size", FieldValue::Number(3.4)).unwrap();
+        assert_eq!(settings.grid.mark_size, 3.0);
+        apply_field(&mut settings, "grid.mark_size", FieldValue::Number(99.0)).unwrap();
+        assert_eq!(settings.grid.mark_size, 4.0);
+        apply_field(&mut settings, "grid.major_every", FieldValue::Number(7.6)).unwrap();
+        assert_eq!(settings.grid.major_every, 8);
+        apply_field(&mut settings, "grid.major_every", FieldValue::Number(1.0)).unwrap();
+        assert_eq!(
+            settings.grid.major_every, 0,
+            "1 means off, never every line"
+        );
+        apply_field(
+            &mut settings,
+            "grid.major_opacity",
+            FieldValue::Number(0.333),
+        )
+        .unwrap();
+        assert_eq!(settings.grid.major_opacity, 0.33);
+        assert_eq!(settings.validate(), Ok(()));
+        let before = settings.clone();
+        assert!(apply_field(&mut settings, "grid.kind", FieldValue::Index(4)).is_err());
+        assert!(apply_field(&mut settings, "grid.mark_size", FieldValue::Bool(true)).is_err());
+        assert_eq!(settings, before);
+        // Every grid control applies from every style and keeps the settings valid.
+        for kind in GridKind::ALL {
+            let mut settings = Settings::default();
+            settings.grid.kind = kind;
+            for field in settings_form(&settings.clone(), &context)
+                .iter()
+                .filter(|section| section.title == "Grid")
+                .flat_map(|section| &section.fields)
+            {
+                let value = sample_value(&field.control).unwrap();
+                apply_field(&mut settings, &field.id, value).unwrap();
+                assert_eq!(settings.validate(), Ok(()), "{kind:?} {}", field.id);
+            }
+        }
     }
 
     #[test]

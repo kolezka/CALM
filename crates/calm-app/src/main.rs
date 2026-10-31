@@ -2,13 +2,16 @@ mod background;
 mod browser_panel;
 mod canvas_view;
 mod dev_menu;
+mod grid_paint;
 mod plugin_host;
 mod settings_menu;
 mod terminal;
 mod theme;
 mod tui_host;
 
-use calm_core::geometry::Rect;
+use calm_core::geometry::{Point, Rect, Size};
+use calm_core::grid::{GridKind, mark_primitive_bound};
+use calm_core::interaction::ResizeEdge;
 use calm_core::join::JOIN_SNAP_GAP;
 use calm_core::preview::PanelMode;
 use calm_core::scene::{PanelId, PanelKind};
@@ -333,6 +336,30 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 "preview refresh outside 1..=3 snapshots: {line} window_visible={visible:?}"
             ));
         }
+        // The grid painted every frame of that window; its draw count must not follow the
+        // number of dots on screen.
+        let (kind, last, most, rasters, canvas) = cx.update(|cx| {
+            let view = view.read(cx);
+            let grid = &view.grid;
+            (
+                view.settings.settings.grid.kind,
+                grid.last_primitives,
+                grid.max_primitives,
+                grid.rasters,
+                Size::new(view.viewport.size.width, view.viewport.size.height),
+            )
+        });
+        let bound = mark_primitive_bound(canvas);
+        println!(
+            "smoke: grid kind={kind:?} primitives={last} max_primitives={most} bound={bound} \
+             rasters={rasters}"
+        );
+        if kind != GridKind::None && last == 0 {
+            smoke_fail("the grid drew nothing during the preview window");
+        }
+        if matches!(kind, GridKind::Dots | GridKind::Crosses) && most > bound {
+            smoke_fail(&format!("grid drew {most} primitives, over {bound}"));
+        }
         // Input divs over a preview would steal its scroll and keys from the canvas.
         println!("smoke: preview_input_targets={targets}");
         if targets != 0 {
@@ -406,6 +433,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             }
         }
 
+        smoke_resize(&view, window, cx).await;
         smoke_settings_dispatch(&view, window, cx).await;
 
         remove_smoke_dir();
@@ -562,6 +590,140 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
     }
 }
 
+/// Drags the browser's bottom-right handle just outside its web view, and every edge of a
+/// fixture plugin with `"resizable": false`, through the real mouse handlers. The browser
+/// grows and its web view follows; the locked plugin keeps its rect.
+async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
+    let fixtures = match tempfile::Builder::new()
+        .prefix("calm-smoke-resize-")
+        .tempdir()
+    {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("resize temp dir: {err}")),
+    };
+    let locked_html = "<!doctype html><body>locked</body>";
+    if let Err(err) = write_smoke_plugin(
+        fixtures.path(),
+        "smoke-locked",
+        locked_html,
+        r#","resizable":false"#,
+    ) {
+        smoke_fail(&format!("plugin fixture smoke-locked: {err}"));
+    }
+    let discovery = calm_plugins::discover(&[fixtures.path().to_path_buf()]);
+    if discovery.plugins.len() != 1 || !discovery.errors.is_empty() {
+        smoke_fail(&format!(
+            "locked fixture not discovered: {:?}",
+            discovery.errors
+        ));
+    }
+    let delta = Point::new(80.0, 60.0);
+    let started = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            // Zoom 1 at the origin: screen pixels equal world units, all panels on screen.
+            view.scene.camera = calm_core::camera::Camera::default();
+            view.install_plugins(discovery.plugins);
+            let kind = PanelKind::Plugin {
+                plugin_id: "smoke-locked".to_string(),
+                settings: serde_json::json!({}),
+            };
+            let locked = view.scene.add(kind, Rect::new(20.0, 460.0, 300.0, 120.0));
+            view.open_plugin_panel(locked, "smoke-locked", window)?;
+            let browser = view
+                .scene
+                .panels
+                .iter()
+                .find(|panel| matches!(panel.kind, PanelKind::Browser { .. }))
+                .map(|panel| (panel.id, panel.rect))
+                .ok_or("no browser panel")?;
+            let locked_rect = view.scene.get(locked).map(|panel| panel.rect);
+            let locked_rect = locked_rect.ok_or("locked panel missing")?;
+
+            // Just outside the browser's corner: pixels the web view does not cover.
+            let grab = Point::new(browser.1.right() + 3.0, browser.1.bottom() + 3.0);
+            let cursor = view.resize_cursor_at(grab);
+            if cursor != Some(ResizeEdge::BottomRight) {
+                return Err(format!("browser corner shows cursor {cursor:?}"));
+            }
+            view.smoke_drag(grab, delta, window, cx);
+
+            let right = locked_rect.right();
+            let bottom = locked_rect.bottom();
+            let middle_y = locked_rect.origin.y + locked_rect.size.height / 2.0;
+            for press in [
+                Point::new(right - 4.0, middle_y),
+                Point::new(right + 3.0, middle_y),
+                Point::new(right - 4.0, bottom - 4.0),
+                Point::new(right + 3.0, bottom + 3.0),
+            ] {
+                if let Some(edge) = view.resize_cursor_at(press) {
+                    return Err(format!("locked plugin shows {edge:?} cursor at {press:?}"));
+                }
+                view.smoke_drag(press, delta, window, cx);
+            }
+            cx.notify();
+            Ok::<_, String>((browser.0, browser.1, locked, locked_rect))
+        })
+    });
+    let (browser, before, locked, locked_before) = match started {
+        Ok(Ok(ids)) => ids,
+        Ok(Err(err)) => smoke_fail(&format!("resize: {err}")),
+        Err(err) => smoke_fail(&format!("resize: {err:#}")),
+    };
+    let want = Size::new(before.size.width + delta.x, before.size.height + delta.y);
+    let started = Instant::now();
+    loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let (rect, page, locked_rect) = cx.update(|cx| {
+            let view = view.read(cx);
+            let rect = view.scene.get(browser).map(|panel| panel.rect);
+            let page = view
+                .browser_page_sizes()
+                .into_iter()
+                .find(|(id, _)| *id == browser)
+                .map(|(_, size)| size);
+            (rect, page, view.scene.get(locked).map(|panel| panel.rect))
+        });
+        let Some(rect) = rect else {
+            smoke_fail("browser left the scene during resize");
+        };
+        if rect.size != want {
+            smoke_fail(&format!("browser rect {rect:?}, want size {want:?}"));
+        }
+        if locked_rect != Some(locked_before) {
+            smoke_fail(&format!(
+                "locked plugin moved: {locked_rect:?} from {locked_before:?}"
+            ));
+        }
+        // The web view fills the content below the address bar.
+        let content = Size::new(
+            rect.size.width,
+            rect.size.height - calm_core::scene::CHROME_HEIGHT,
+        );
+        let want_page = Size::new(
+            content.width,
+            content.height - calm_native::BROWSER_BAR_HEIGHT,
+        );
+        if page == Some(want_page) {
+            println!(
+                "smoke: resize browser=ok plugin_locked=ok browser={}x{} page={}x{}",
+                rect.size.width, rect.size.height, want_page.width, want_page.height
+            );
+            break;
+        }
+        if started.elapsed() > SMOKE_FRAME_TIMEOUT {
+            smoke_fail(&format!(
+                "browser web view did not follow the resize: page={page:?} want={want_page:?}"
+            ));
+        }
+    }
+    if let Err(err) = fixtures.close() {
+        eprintln!("smoke: could not remove the resize temp dir: {err}");
+    }
+}
+
 /// Whether AppKit has the window on screen. GPUI stops painting an occluded window, so a
 /// failed frame check with `Some(false)` points at the desktop, not the code.
 fn window_visible(window: AnyWindowHandle, cx: &mut App) -> Option<bool> {
@@ -579,14 +741,56 @@ calm.panel.setTitle("smoke-1").then(function () { return calm.panel.setTitle("sm
 const SMOKE_UNBUILT_HTML: &str =
     r#"<!doctype html><body><script src="dist/index.js"></script></body>"#;
 
-fn write_smoke_plugin(root: &std::path::Path, id: &str, html: &str) -> std::io::Result<()> {
+/// `extra` is appended to the manifest object, e.g. `,"resizable":false`.
+fn write_smoke_plugin(
+    root: &std::path::Path,
+    id: &str,
+    html: &str,
+    extra: &str,
+) -> std::io::Result<()> {
     let dir = root.join(id);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("index.html"), html)?;
     let manifest = format!(
-        r#"{{"id":"{id}","name":"{id}","version":"0.1.0","entry":"index.html","defaultSize":{{"width":300,"height":160}}}}"#
+        r#"{{"id":"{id}","name":"{id}","version":"0.1.0","entry":"index.html","defaultSize":{{"width":300,"height":160}}{extra}}}"#
     );
     std::fs::write(dir.join("calm-plugin.json"), manifest)
+}
+
+/// Checks the startup scan: the workspace's first-party plugins are in the Add menu,
+/// unless built-ins were turned off.
+fn smoke_startup_plugins(view: &Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
+    let (counts, items) = cx.update(|cx| {
+        let view = view.read(cx);
+        (view.plugin_counts, view.canvas_menu())
+    });
+    let (builtin, user) = counts;
+    println!("smoke: plugins builtin={builtin} user={user}");
+    let mut ids = Vec::new();
+    let mut stack = items;
+    while let Some(item) = stack.pop() {
+        match item {
+            calm_core::menu::MenuItem::Submenu { items, .. } => stack.extend(items),
+            calm_core::menu::MenuItem::Action { id, .. } => ids.push(id),
+            _ => {}
+        }
+    }
+    let builtin_off =
+        std::env::var_os(calm_plugins::NO_BUILTIN_ENV).is_some_and(|v| !v.is_empty() && v != "0");
+    if builtin_off {
+        if builtin != 0 {
+            smoke_fail(&format!("built-ins off but {builtin} loaded"));
+        }
+        return;
+    }
+    for plugin_id in ["hello-world", "github-prs"] {
+        let menu_id = format!("{}{plugin_id}", calm_core::menu::ADD_PLUGIN_PREFIX);
+        if !ids.contains(&menu_id) {
+            smoke_fail(&format!(
+                "workspace plugin {plugin_id} not in the Add menu: {ids:?}"
+            ));
+        }
+    }
 }
 
 /// Adds a working and an unbuilt plugin panel from temp fixtures, waits for the working one
@@ -596,6 +800,7 @@ async fn smoke_plugins(
     window: AnyWindowHandle,
     cx: &mut gpui::AsyncApp,
 ) {
+    smoke_startup_plugins(view, cx);
     let fixtures = match tempfile::Builder::new()
         .prefix("calm-smoke-plugins-")
         .tempdir()
@@ -607,7 +812,7 @@ async fn smoke_plugins(
         ("smoke-plugin", SMOKE_PLUGIN_HTML),
         ("smoke-unbuilt", SMOKE_UNBUILT_HTML),
     ] {
-        if let Err(err) = write_smoke_plugin(fixtures.path(), id, html) {
+        if let Err(err) = write_smoke_plugin(fixtures.path(), id, html, "") {
             smoke_fail(&format!("plugin fixture {id}: {err}"));
         }
     }
@@ -768,6 +973,16 @@ fn load_startup_settings(path: std::path::PathBuf) -> SettingsState {
     }
 }
 
+/// The grid style the smoke draws: `CALM_SMOKE_GRID` (lines, dots, crosses, none), default
+/// dots, the style whose per-dot quads once stalled preview refresh.
+fn smoke_grid_kind() -> GridKind {
+    let wanted = std::env::var("CALM_SMOKE_GRID").unwrap_or_else(|_| "dots".to_string());
+    GridKind::ALL
+        .into_iter()
+        .find(|kind| kind.label().eq_ignore_ascii_case(&wanted))
+        .unwrap_or_else(|| smoke_fail(&format!("CALM_SMOKE_GRID={wanted:?} is not a grid style")))
+}
+
 /// Opens Settings the way a menu click or `cmd-,` does: `OpenSettings` dispatched on the
 /// canvas window, so handlers run while GPUI holds that window. Calling `open_settings`
 /// directly skips that path, which is how a dead menu item once passed the smoke.
@@ -834,10 +1049,13 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
     use calm_core::background::BackgroundKind;
     use calm_core::settings::read_settings_from;
     use calm_core::settings_form::{Control, settings_form};
+    let grid_kind = smoke_grid_kind();
     view.update_settings(
         |s| {
             s.background.kind = BackgroundKind::Gradient;
             s.grid.show = true;
+            s.grid.kind = grid_kind;
+            s.grid.major_every = 8;
         },
         window,
         cx,
@@ -851,9 +1069,10 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
         smoke_fail(&format!("settings file {saved:?} differs from state"));
     }
     println!(
-        "smoke: settings background={:?} grid={} path={}",
+        "smoke: settings background={:?} grid={} grid_kind={:?} path={}",
         saved.background.kind,
         saved.grid.show,
+        saved.grid.kind,
         path.display()
     );
     view.open_settings(window, cx);
@@ -936,9 +1155,10 @@ fn main() {
             ..Default::default()
         };
         let smoke = args.smoke;
+        let builtin_plugins = settings.settings.plugins.builtin;
         let opened = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| {
-                let mut view = CanvasView::new(cx);
+                let mut view = CanvasView::new(builtin_plugins, cx);
                 view.set_settings_state(settings);
                 if smoke && let Err(err) = add_smoke_panels(&mut view, window, cx) {
                     smoke_fail(&format!("terminal spawn: {err}"));

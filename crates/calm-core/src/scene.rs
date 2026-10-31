@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::camera::Camera;
 use crate::geometry::{Point, Rect, Size};
+use crate::resize::ResizePolicy;
 
 pub const MIN_PANEL_SIZE: Size = Size::new(120.0, 80.0);
 /// Height of the title strip at the top of every panel, in world units.
@@ -54,6 +55,9 @@ pub struct Panel {
     pub rect: Rect,
     pub title: String,
     pub minimized: bool,
+    /// Set from the kind on add; a plugin's manifest can change it through
+    /// `Scene::set_resize_policy`.
+    pub resize: ResizePolicy,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -87,14 +91,27 @@ impl Scene {
             ),
         };
         let title = kind.default_title();
+        let resize = ResizePolicy::derive(&kind, None);
         self.panels.push(Panel {
             id,
             kind,
             rect,
             title,
             minimized: false,
+            resize,
         });
         id
+    }
+
+    /// Applies a panel's resize policy. A resizable panel's size moves into the new
+    /// limits at once; a locked panel keeps the size it was created with.
+    pub fn set_resize_policy(&mut self, id: PanelId, policy: ResizePolicy) {
+        if let Some(panel) = self.get_mut(id) {
+            panel.resize = policy;
+            if policy.resizable {
+                panel.rect.size = policy.clamp(panel.rect.size);
+            }
+        }
     }
 
     pub fn remove(&mut self, id: PanelId) -> Option<Panel> {

@@ -48,6 +48,16 @@ one means a new entry, not an edit.
 - **Default snap grid is 8 world units, not the requested 3 pixels.** Terminal cells are
   about 8 px wide at zoom 1, so 3 is not a cell multiple. Edge snap within 8, `alt`
   disables. One constant to change if the user wants finer.
+- **Dot and cross grids are back, as tiled textures (reverses "Grid is drawn as lines, not
+  dots").** The user asked for grid styles (lines, dots, crosses, none), mark size and a
+  major grid. Lines stay one quad per line. Dots and crosses are rasterized once per
+  style, color and zoom bucket (12 per doubling) into a tile of at least 256 points and
+  drawn tiled, so a frame draws at most `mark_primitive_bound` images (60 on 1280x800)
+  however many marks are visible; a test fails if a frame draws one image per dot. The
+  minor grid fades out between 16 and 8 screen points while the major grid stays. Cost if
+  wrong: a cached tile is stretched up to about 6 % before the next bucket, so marks can
+  look slightly soft, and a new bucket rasterizes on the UI thread (about 1.8 ms for the
+  largest tile in a debug build, plus upload).
 - **Settings live in a separate native NSWindow, not a GPUI modal.** Option (a) of two:
   a GPUI modal would have to hide every live native view while open, and GPUI has no color
   picker, slider or file dialog. A separate AppKit window never shares a rect with Ghostty
@@ -189,3 +199,36 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   `engines.bun`, fails loud with an install hint in the panel and the status bar error count.
   Reason: developers already need bun; bundling adds size, signing and delayed security
   fixes. Cost if wrong: a bundled copy can be added later as the last lookup step.
+
+## Panel resize (2026-10-31)
+
+- **One resize policy for every kind, in `calm-core::resize`.** `ResizePolicy::derive`
+  takes the kind and, for plugins, the manifest's `resizable`, `minSize` and `maxSize`.
+  Press, drag clamp and the hover cursor all read it through `resize_target` and
+  `InputHandler::hover_resize`. Terminals and browsers are always free. Bad manifest values
+  are errors in `calm-plugins`, never defaults. Cost: `calm-plugins` depends on `calm-core`.
+- **Resize handles live outside the panel, in GPUI pixels.** A band of 8 screen px past the
+  right and bottom edges, plus the old 12 unit band inside (which only reaches GPUI over
+  terminals and previews). Rejected: insetting the web view from its edges, which would
+  break "zoom view bounds equal the panel's logical size", and painting over the native
+  rect. Cost: a press just outside a panel resizes it instead of hitting what is behind,
+  and over a joined or overlapping neighbor that is a live web view, the web view still
+  wins the click.
+- **On a joined edge the outer band stops at the neighbor.** Merged with PR #12: the band
+  skips any point inside a panel joined to this one, so a press on the neighbor's title bar
+  or content goes to the neighbor. The inner band and the 1 unit join gap still resize the
+  left or top panel, and only that panel moves. Unjoined edges keep the full 8 px band.
+  Cost: over a joined web view the shared edge is grabbable only in the 1 unit gap and the
+  inner band, which a web view keeps for itself.
+- **Only right, bottom and corner handles.** Left and top edges would move the origin and
+  touch `snap_resize`, which PR #12 rewrites. Cost: no resize from the left or top yet.
+- **No `aspectRatio`.** Snapping and two clamped axes make it more than cheap.
+
+## Built-in plugin dirs (2026-10-31)
+
+- **First-party plugins load without install.** A dev build (debug, or a binary in a cargo
+  `target` dir) searches the workspace `plugins/`; a bundle searches
+  `Contents/Resources/plugins`. Both come after the user dirs, so a user copy with the same id
+  wins and the shadowing is logged. Off with `plugins.builtin=false` or
+  `CALM_NO_BUILTIN_PLUGINS=1`. Reason: `gmake plugins && cargo run` showed no plugins. Cost:
+  the dev path is baked in at compile time, so a moved checkout needs a rebuild.

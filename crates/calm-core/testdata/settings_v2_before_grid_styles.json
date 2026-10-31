@@ -1,0 +1,51 @@
+{
+  "version": 2,
+  "background": {
+    "kind": "gradient",
+    "solid": "#151515",
+    "gradient": {
+      "kind": "linear",
+      "angle_deg": 135.0,
+      "stops": [
+        {
+          "color": "#101827",
+          "position": 0.0
+        },
+        {
+          "color": "#2b2b2e",
+          "position": 1.0
+        }
+      ]
+    },
+    "image": {
+      "path": null,
+      "fit": "cover",
+      "filters": {
+        "blur": 0.0,
+        "brightness": 1.0,
+        "contrast": 1.0,
+        "saturation": 1.0,
+        "grayscale": false,
+        "dim": 0.0
+      }
+    }
+  },
+  "grid": {
+    "show": true,
+    "spacing": 48.0,
+    "color": "#88ccff",
+    "opacity": 0.2
+  },
+  "snap": {
+    "enabled": true,
+    "grid": 8.0,
+    "edge_distance": 8.0
+  },
+  "panels": {
+    "confirm_close": true,
+    "terminal_user_config": true,
+    "default_terminal_width": 640.0,
+    "default_terminal_height": 400.0,
+    "preview_below_zoom": 0.5
+  }
+}

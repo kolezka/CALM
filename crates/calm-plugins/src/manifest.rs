@@ -3,7 +3,9 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use calm_core::resize::PluginResize;
+use calm_core::scene::MIN_PANEL_SIZE;
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use crate::tui::{self, TuiSpec};
@@ -11,9 +13,16 @@ use crate::tui::{self, TuiSpec};
 pub const MANIFEST_FILE: &str = "calm-plugin.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Size {
     pub width: f64,
     pub height: f64,
+}
+
+impl Size {
+    fn core(self) -> calm_core::geometry::Size {
+        calm_core::geometry::Size::new(self.width, self.height)
+    }
 }
 
 /// What a plugin panel shows: an HTML page, or a terminal running one command.
@@ -30,6 +39,12 @@ pub struct PluginManifest {
     pub version: String,
     pub default_size: Size,
     pub content: PluginContent,
+    /// `false` locks the panel at the size it was created with. Absent means true.
+    pub resizable: Option<bool>,
+    /// Smallest size a user resize may reach, chrome included.
+    pub min_size: Option<Size>,
+    /// Largest size a user resize may reach, chrome included.
+    pub max_size: Option<Size>,
 }
 
 /// The `"kind": "web"` manifest as it was before `kind` existed.
@@ -41,6 +56,21 @@ struct WebManifestJson {
     version: String,
     entry: PathBuf,
     default_size: Size,
+    #[serde(default, deserialize_with = "present")]
+    resizable: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    min_size: Option<Size>,
+    #[serde(default, deserialize_with = "present")]
+    max_size: Option<Size>,
+}
+
+/// An optional field that, when written, must hold a value: `null` is an error, not absent.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 impl PluginManifest {
@@ -61,6 +91,9 @@ impl PluginManifest {
                     version: web.version,
                     default_size: web.default_size,
                     content: PluginContent::Web { entry: web.entry },
+                    resizable: web.resizable,
+                    min_size: web.min_size,
+                    max_size: web.max_size,
                 }
             }
             "tui" => {
@@ -72,6 +105,10 @@ impl PluginManifest {
                     version: tui.version,
                     default_size: tui.default_size,
                     content: PluginContent::Tui(tui.spec),
+                    // TUI panels resize freely, like terminals.
+                    resizable: None,
+                    min_size: None,
+                    max_size: None,
                 }
             }
             other => {
@@ -99,7 +136,65 @@ impl PluginManifest {
         }
     }
 
+    /// The validated resize settings, as calm-core's policy takes them.
+    pub fn resize(&self) -> PluginResize {
+        PluginResize {
+            resizable: self.resizable.unwrap_or(true),
+            min: self.min_size.map(Size::core),
+            max: self.max_size.map(Size::core),
+        }
+    }
+
+    fn validate_resize(&self) -> Result<(), String> {
+        let limited = self.min_size.is_some() || self.max_size.is_some();
+        if self.resizable == Some(false) && limited {
+            return Err(
+                "minSize and maxSize apply only to a resizable panel; remove them or \
+                 \"resizable\": false"
+                    .to_string(),
+            );
+        }
+        for (field, size) in [("minSize", self.min_size), ("maxSize", self.max_size)] {
+            let Some(size) = size else { continue };
+            for (axis, value) in [("width", size.width), ("height", size.height)] {
+                if !value.is_finite() || value <= 0.0 {
+                    return Err(format!(
+                        "{field}.{axis} must be a positive number, got {value}"
+                    ));
+                }
+            }
+            if size.width < MIN_PANEL_SIZE.width || size.height < MIN_PANEL_SIZE.height {
+                return Err(format!(
+                    "{field} {}x{} is below the smallest panel, {}x{}",
+                    size.width, size.height, MIN_PANEL_SIZE.width, MIN_PANEL_SIZE.height
+                ));
+            }
+        }
+        let min = self.min_size.map(Size::core).unwrap_or(MIN_PANEL_SIZE);
+        if let Some(max) = self.max_size
+            && (max.width < min.width || max.height < min.height)
+        {
+            return Err(format!(
+                "maxSize {}x{} is smaller than minSize {}x{}",
+                max.width, max.height, min.width, min.height
+            ));
+        }
+        let size = self.default_size;
+        let below = size.width < min.width || size.height < min.height;
+        let above = self
+            .max_size
+            .is_some_and(|max| size.width > max.width || size.height > max.height);
+        if limited && (below || above) {
+            return Err(format!(
+                "defaultSize {}x{} is outside minSize and maxSize",
+                size.width, size.height
+            ));
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<(), String> {
+        self.validate_resize()?;
         let id_ok = !self.id.is_empty()
             && self
                 .id
@@ -146,18 +241,108 @@ pub enum PluginError {
     },
 }
 
+/// A built-in plugin hidden because a user dir has a plugin with the same id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shadowed {
+    pub id: String,
+    pub kept: PathBuf,
+    pub hidden: PathBuf,
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Discovery {
     pub plugins: Vec<InstalledPlugin>,
     pub errors: Vec<PluginError>,
+    pub shadowed: Vec<Shadowed>,
+    /// How many of `plugins` came from built-in dirs. They come after the user plugins.
+    pub builtin_count: usize,
 }
 
-pub fn plugin_dirs() -> Vec<PathBuf> {
-    plugin_dirs_from(
+impl Discovery {
+    pub fn user_count(&self) -> usize {
+        self.plugins.len() - self.builtin_count
+    }
+}
+
+/// Where plugins are looked for. User dirs come first, so a user copy wins over a built-in.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct PluginSearch {
+    pub user: Vec<PathBuf>,
+    pub builtin: Vec<PathBuf>,
+    /// Why built-ins are off, if they are.
+    pub builtin_disabled_by: Option<&'static str>,
+}
+
+/// Env var that turns built-in plugin dirs off when set to anything but empty or `0`.
+pub const NO_BUILTIN_ENV: &str = "CALM_NO_BUILTIN_PLUGINS";
+
+/// The repo's own `plugins/` folder, fixed at compile time.
+pub fn workspace_plugins_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins")
+}
+
+/// The search for this process. `builtin_setting` is the `plugins.builtin` setting.
+pub fn plugin_search(builtin_setting: bool) -> PluginSearch {
+    let user = plugin_dirs_from(
         std::env::var_os("CALM_PLUGIN_PATH"),
         std::env::var_os("CALM_HOME"),
         std::env::var_os("HOME"),
-    )
+    );
+    let env_off = std::env::var_os(NO_BUILTIN_ENV).is_some_and(|v| !v.is_empty() && v != "0");
+    let builtin_disabled_by = if env_off {
+        Some(NO_BUILTIN_ENV)
+    } else if !builtin_setting {
+        Some("setting plugins.builtin=false")
+    } else {
+        None
+    };
+    let builtin = match builtin_disabled_by {
+        Some(_) => Vec::new(),
+        None => builtin_dirs_from(
+            cfg!(debug_assertions),
+            std::env::current_exe().ok().as_deref(),
+            &workspace_plugins_dir(),
+        ),
+    };
+    PluginSearch {
+        user,
+        builtin,
+        builtin_disabled_by,
+    }
+}
+
+/// User dirs, then built-in dirs, with built-ins on.
+pub fn plugin_dirs() -> Vec<PathBuf> {
+    let search = plugin_search(true);
+    search.user.into_iter().chain(search.builtin).collect()
+}
+
+/// Built-in dirs that exist: the workspace `plugins/` in a dev build (debug, or a binary
+/// inside a cargo `target` dir), and `Contents/Resources/plugins` next to a bundled binary.
+fn builtin_dirs_from(
+    debug_build: bool,
+    exe: Option<&Path>,
+    workspace_plugins: &Path,
+) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let in_target_dir = exe.is_some_and(|exe| {
+        exe.ancestors()
+            .any(|a| a.file_name().is_some_and(|name| name == "target"))
+    });
+    if (debug_build || in_target_dir) && workspace_plugins.is_dir() {
+        dirs.push(fs::canonicalize(workspace_plugins).unwrap_or(workspace_plugins.to_path_buf()));
+    }
+    let macos_dir = exe.and_then(Path::parent);
+    if let Some(contents) = macos_dir
+        .filter(|dir| dir.file_name().is_some_and(|name| name == "MacOS"))
+        .and_then(Path::parent)
+    {
+        let bundled = contents.join("Resources/plugins");
+        if bundled.is_dir() {
+            dirs.push(bundled);
+        }
+    }
+    dirs
 }
 
 fn plugin_dirs_from(
@@ -182,9 +367,24 @@ fn plugin_dirs_from(
 
 /// Scans each root for plugin subdirectories. The first plugin with a given id wins.
 pub fn discover(dirs: &[PathBuf]) -> Discovery {
+    discover_search(&PluginSearch {
+        user: dirs.to_vec(),
+        ..PluginSearch::default()
+    })
+}
+
+/// Scans user dirs, then built-in dirs. A built-in whose id a user plugin already has is
+/// recorded in `shadowed`, not as an error. Other repeated ids are errors.
+pub fn discover_search(search: &PluginSearch) -> Discovery {
     let mut found = Discovery::default();
-    let mut seen: HashMap<String, PathBuf> = HashMap::new();
-    for root in dirs {
+    // id -> (dir, came from a built-in dir)
+    let mut seen: HashMap<String, (PathBuf, bool)> = HashMap::new();
+    let roots = search
+        .user
+        .iter()
+        .map(|root| (root, false))
+        .chain(search.builtin.iter().map(|root| (root, true)));
+    for (root, builtin) in roots {
         for dir in plugin_subdirs(root, &mut found.errors) {
             let manifest = match load_manifest(&dir) {
                 Ok(manifest) => manifest,
@@ -193,15 +393,26 @@ pub fn discover(dirs: &[PathBuf]) -> Discovery {
                     continue;
                 }
             };
-            if let Some(first) = seen.get(&manifest.id) {
-                found.errors.push(PluginError::DuplicateId {
-                    id: manifest.id,
-                    first: first.clone(),
-                    second: dir,
-                });
+            if let Some((first, first_builtin)) = seen.get(&manifest.id) {
+                if builtin && !first_builtin {
+                    found.shadowed.push(Shadowed {
+                        id: manifest.id,
+                        kept: first.clone(),
+                        hidden: dir,
+                    });
+                } else {
+                    found.errors.push(PluginError::DuplicateId {
+                        id: manifest.id,
+                        first: first.clone(),
+                        second: dir,
+                    });
+                }
                 continue;
             }
-            seen.insert(manifest.id.clone(), dir.clone());
+            seen.insert(manifest.id.clone(), (dir.clone(), builtin));
+            if builtin {
+                found.builtin_count += 1;
+            }
             found.plugins.push(InstalledPlugin { manifest, dir });
         }
     }
@@ -379,9 +590,106 @@ mod tests {
                     content: PluginContent::Web {
                         entry: PathBuf::from("index.html")
                     },
+                    resizable: None,
+                    min_size: None,
+                    max_size: None,
                 },
                 dir,
             }]
+        );
+    }
+
+    fn with_fields(extra: &str) -> String {
+        format!(
+            r#"{{ "id": "p", "name": "P", "version": "0.1.0", "entry": "index.html",
+                 "defaultSize": {{ "width": 320, "height": 200 }}{extra} }}"#
+        )
+    }
+
+    #[test]
+    fn resize_fields_are_optional_and_default_to_free() {
+        let manifest = PluginManifest::from_json(&with_fields("")).unwrap();
+        assert_eq!(manifest.resize(), PluginResize::default());
+    }
+
+    #[test]
+    fn resize_fields_parse_opt_out_and_limits() {
+        let locked = PluginManifest::from_json(&with_fields(r#", "resizable": false"#)).unwrap();
+        assert!(!locked.resize().resizable);
+        let limited = PluginManifest::from_json(&with_fields(
+            r#", "resizable": true, "minSize": { "width": 200, "height": 120 },
+               "maxSize": { "width": 900, "height": 700 }"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            limited.resize(),
+            PluginResize {
+                resizable: true,
+                min: Some(calm_core::geometry::Size::new(200.0, 120.0)),
+                max: Some(calm_core::geometry::Size::new(900.0, 700.0)),
+            }
+        );
+    }
+
+    /// Each bad value is its own explicit error, never a quiet fallback to free resizing.
+    #[test]
+    fn bad_resize_fields_are_manifest_errors() {
+        let cases = [
+            (r#", "resizable": "no""#, "invalid type"),
+            (r#", "resizable": null"#, "invalid type: null"),
+            (r#", "minSize": null"#, "invalid type: null"),
+            (r#", "minSize": { "w": 200, "h": 120 }"#, "unknown field"),
+            (r#", "minSize": { "width": 200 }"#, "missing field `height`"),
+            (
+                r#", "minSize": { "width": -5, "height": 120 }"#,
+                "minSize.width must be a positive",
+            ),
+            (
+                r#", "maxSize": { "width": 300, "height": 0 }"#,
+                "maxSize.height must be a positive",
+            ),
+            (
+                r#", "minSize": { "width": 60, "height": 120 }"#,
+                "below the smallest panel",
+            ),
+            (
+                r#", "minSize": { "width": 300, "height": 150 }, "maxSize": { "width": 250, "height": 400 }"#,
+                "smaller than minSize",
+            ),
+            (
+                r#", "resizable": false, "maxSize": { "width": 400, "height": 400 }"#,
+                "apply only to a resizable panel",
+            ),
+            (
+                r#", "minSize": { "width": 400, "height": 120 }"#,
+                "defaultSize 320x200 is outside",
+            ),
+            (
+                r#", "maxSize": { "width": 300, "height": 400 }"#,
+                "defaultSize 320x200 is outside",
+            ),
+        ];
+        for (extra, want) in cases {
+            let err = PluginManifest::from_json(&with_fields(extra)).unwrap_err();
+            assert!(err.contains(want), "{extra}: {err}");
+        }
+    }
+
+    #[test]
+    fn bad_resize_fields_skip_the_plugin_at_discovery() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = write_plugin(
+            root.path(),
+            "bad",
+            &with_fields(r#", "resizable": "sometimes""#).replace(r#""id": "p""#, r#""id": "bad""#),
+        );
+        let found = discover(&[root.path().to_path_buf()]);
+        assert!(found.plugins.is_empty());
+        assert_eq!(
+            only_invalid_path(&found),
+            Some(dir.join(MANIFEST_FILE).as_path()),
+            "{:?}",
+            found.errors
         );
     }
 
@@ -473,6 +781,209 @@ mod tests {
 
         assert_eq!(found.errors, vec![]);
         assert_eq!(found.plugins.len(), 1);
+    }
+
+    const DEV_CHILD_ENV: &str = "CALM_TEST_DEV_DISCOVERY_CHILD";
+
+    /// Runs one test of this binary in a child process with `env`, so no test mutates its
+    /// own environment. Returns the child's combined output and whether it passed.
+    fn run_child_test(name: &str, env: &[(&str, &std::ffi::OsStr)]) -> (bool, String) {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([name, "--exact", "--nocapture", "--test-threads=1"])
+            .env(DEV_CHILD_ENV, "1")
+            .env_remove("CALM_PLUGIN_PATH")
+            .env_remove("CALM_NO_BUILTIN_PLUGINS");
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let output = command.output().unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (output.status.success(), text)
+    }
+
+    fn discovered_ids_in_child() -> Vec<String> {
+        discover(&plugin_dirs())
+            .plugins
+            .into_iter()
+            .map(|p| p.manifest.id)
+            .collect()
+    }
+
+    #[test]
+    fn child_dev_discovery_finds_workspace_plugins() {
+        if std::env::var_os(DEV_CHILD_ENV).is_none() {
+            return;
+        }
+        let ids = discovered_ids_in_child();
+        for id in ["hello-world", "github-prs"] {
+            assert!(ids.iter().any(|found| found == id), "{id} missing: {ids:?}");
+        }
+    }
+
+    // Regression: a dev build with an empty CALM_HOME found no plugins, because the repo's
+    // own plugins/ folder was never searched.
+    #[test]
+    fn dev_build_discovers_workspace_plugins_with_empty_user_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let (passed, output) = run_child_test(
+            "manifest::tests::child_dev_discovery_finds_workspace_plugins",
+            &[("CALM_HOME", home.path().as_os_str())],
+        );
+        assert!(passed, "{output}");
+        assert!(
+            output.contains("1 passed"),
+            "child test did not run: {output}"
+        );
+    }
+
+    #[test]
+    fn child_no_builtin_env_hides_workspace_plugins() {
+        if std::env::var_os(DEV_CHILD_ENV).is_none() {
+            return;
+        }
+        let search = plugin_search(true);
+        assert_eq!(search.builtin, Vec::<PathBuf>::new());
+        assert_eq!(search.builtin_disabled_by, Some(NO_BUILTIN_ENV));
+        assert_eq!(discovered_ids_in_child(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn no_builtin_env_disables_builtin_dirs() {
+        let home = tempfile::tempdir().unwrap();
+        let (passed, output) = run_child_test(
+            "manifest::tests::child_no_builtin_env_hides_workspace_plugins",
+            &[
+                ("CALM_HOME", home.path().as_os_str()),
+                (NO_BUILTIN_ENV, std::ffi::OsStr::new("1")),
+            ],
+        );
+        assert!(passed, "{output}");
+        assert!(
+            output.contains("1 passed"),
+            "child test did not run: {output}"
+        );
+    }
+
+    #[test]
+    fn builtin_setting_off_disables_builtin_dirs() {
+        let search = plugin_search(false);
+        assert_eq!(search.builtin, Vec::<PathBuf>::new());
+        assert!(search.builtin_disabled_by.is_some());
+        assert!(plugin_search(true).builtin.len() <= 2);
+    }
+
+    #[test]
+    fn builtin_dirs_cover_dev_build_target_dir_and_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("ws/plugins");
+        fs::create_dir_all(&workspace).unwrap();
+        let workspace = fs::canonicalize(&workspace).unwrap();
+        let app = root.path().join("CALM.app/Contents");
+        fs::create_dir_all(app.join("MacOS")).unwrap();
+        fs::create_dir_all(app.join("Resources/plugins")).unwrap();
+        let bundled_exe = app.join("MacOS/calm-app");
+        let cargo_exe = root.path().join("ws/target/release/calm-app");
+        let other_exe = root.path().join("bin/calm-app");
+
+        assert_eq!(
+            builtin_dirs_from(true, Some(&other_exe), &workspace),
+            vec![workspace.clone()]
+        );
+        assert_eq!(
+            builtin_dirs_from(false, Some(&cargo_exe), &workspace),
+            vec![workspace.clone()]
+        );
+        assert_eq!(
+            builtin_dirs_from(false, Some(&bundled_exe), &workspace),
+            vec![app.join("Resources/plugins")]
+        );
+        assert_eq!(
+            builtin_dirs_from(false, Some(&other_exe), &workspace),
+            Vec::<PathBuf>::new()
+        );
+        // Dirs that do not exist at runtime are left out, not reported.
+        let missing = root.path().join("gone/plugins");
+        assert_eq!(
+            builtin_dirs_from(true, Some(&other_exe), &missing),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn user_plugin_shadows_builtin_with_same_id() {
+        let user = tempfile::tempdir().unwrap();
+        let builtin = tempfile::tempdir().unwrap();
+        let mine = write_plugin(
+            user.path(),
+            "mine",
+            &manifest_json("hello-world", "index.html"),
+        );
+        let shipped = write_plugin(
+            builtin.path(),
+            "hello-world",
+            &manifest_json("hello-world", "index.html"),
+        );
+        write_plugin(
+            builtin.path(),
+            "other",
+            &manifest_json("other", "index.html"),
+        );
+
+        let found = discover_search(&PluginSearch {
+            user: vec![user.path().to_path_buf()],
+            builtin: vec![builtin.path().to_path_buf()],
+            builtin_disabled_by: None,
+        });
+
+        let dirs: Vec<&Path> = found.plugins.iter().map(|p| p.dir.as_path()).collect();
+        assert_eq!(
+            dirs,
+            vec![mine.as_path(), builtin.path().join("other").as_path()]
+        );
+        assert_eq!(found.errors, vec![]);
+        assert_eq!(
+            found.shadowed,
+            vec![Shadowed {
+                id: "hello-world".into(),
+                kept: mine,
+                hidden: shipped,
+            }]
+        );
+        assert_eq!((found.user_count(), found.builtin_count), (1, 1));
+    }
+
+    #[test]
+    fn duplicate_within_builtin_dirs_is_still_an_error() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        write_plugin(first.path(), "a", &manifest_json("same", "index.html"));
+        write_plugin(second.path(), "b", &manifest_json("same", "index.html"));
+
+        let found = discover_search(&PluginSearch {
+            user: vec![],
+            builtin: vec![first.path().to_path_buf(), second.path().to_path_buf()],
+            builtin_disabled_by: None,
+        });
+
+        assert_eq!(found.plugins.len(), 1);
+        assert_eq!(found.shadowed, vec![]);
+        assert!(matches!(
+            &found.errors[..],
+            [PluginError::DuplicateId { .. }]
+        ));
+    }
+
+    #[test]
+    fn plugin_dirs_lists_user_dirs_before_builtin_dirs() {
+        let search = plugin_search(true);
+        let dirs = plugin_dirs();
+        assert_eq!(dirs[..search.user.len()], search.user[..]);
+        assert_eq!(dirs[search.user.len()..], search.builtin[..]);
     }
 
     #[test]

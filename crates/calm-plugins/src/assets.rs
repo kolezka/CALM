@@ -100,6 +100,9 @@ mod tests {
                 content: PluginContent::Web {
                     entry: "index.html".into(),
                 },
+                resizable: None,
+                min_size: None,
+                max_size: None,
             },
             dir: dir.path().to_path_buf(),
         };
