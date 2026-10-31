@@ -134,9 +134,15 @@ is possible, but small plugins gain little from it **[inferred]**. I do not reco
 6. **Long-poll for the reverse direction.** `events.poll({ since, timeoutMs <= 25000 })`, because mods cannot keep a socket open.
 7. **Prerequisite.** The plugin host and dispatcher (Tasks 11 and 12) are not wired **[repo]**. Ideas 2 to 5 depend on them. Idea 1 needs only the socket and chrome.
 
-These needs were sent to the `plugin-api` agent. Its draft
-(`.worktrees/plugin-api/docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`) did not
-exist when I checked, so this doc does not reflect it.
+These needs were sent to the `plugin-api` agent. Its reply maps them onto the v2 design
+(`docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`, commit 80b0d87 on
+`feat/plugin-api`). I have not read that draft myself, so this mapping is as reported by that
+agent:
+
+- Fits already, or with a small change: the shared dispatcher, with callers attributed as `Caller::{Panel(PanelId, plugin_id), External(client_id)}`; `near`/`side` placement and terminal `cwd` on `PanelSpec`; panel events (`panelAdded`, `panelRemoved`, `panelChanged`, coalesced at 100 ms per panel) in place of `panelsChanged`; `external` events as bus publishes `from: { external: client_id }`; auth handled before dispatch on a server thread that only feeds the existing channel.
+- New work: terminal env vars, `panel.setStatus` with chrome and a `panelStatusChanged` event, and `events.poll` with a per-client cursor and a bounded backlog that reports `gap: true` when it drops events.
+- Errors in v2 are `{ code, message }`. An unknown method keeps the message `not implemented: <method>` and adds `code: "not_implemented"`.
+- Whether the external channel goes into v2 at all is waiting on the lead.
 
 ## Security
 
@@ -149,7 +155,7 @@ Proposal **[inferred]** unless tagged:
 - **Filesystem permissions are the main gate.** Directory `$CALM_HOME/run` (default `~/.config/calm/run`) mode 0700, socket 0600, created under `umask 0177` **[poc]** (socket was `srw-------`). Keep the path short: macOS `sun_path` is 104 bytes. Check the owner and refuse to start if the directory is a symlink or owned by someone else.
 - **Per-launch token as a second check.** 32 random bytes, hex, in `run/token` mode 0600, replaced on each launch and deleted on quit. `Authorization: Bearer` is required on every request, compared in constant time, 401 before dispatch **[poc]** (wrong token got 401). Terminals get the token file path, not the token, so it does not show up in `env` dumps or process listings.
 - **Be honest about the limit.** Same-user processes can read the 0600 token anyway. The token protects against other users, stale sockets and accidental clients. It does not protect against malware running as you.
-- **Capability split.** External callers get `observe` (list panels, set status, publish events, open browser panels at http/https URLs, open empty terminals at a cwd) by default. Terminals with `command`, `process.exec` and `github.api` are `drive` methods, off for the external origin unless the user turns them on in Settings.
+- **Capability allowlist per origin.** External capabilities are an explicit allowlist in Settings. The default is read-only methods plus `panel.setStatus` and `events.*`. Everything that can make a terminal run something counts as one capability: `createPanel` with `command`, writing input to a terminal (v2 `terminals.write`), and `process.exec`. These are refused or allowed together. Refusing `command` alone means nothing while a client can open a plain shell and type into it (point raised by the plugin-api design). Opening browser panels and empty terminals is a separate opt-in, and `github.api` stays plugin-only.
 - **No credentials cross the channel.** GitHub stays on `gh api` on the host. Status text and events are display data. They must never be logged with tokens and never written to layouts.
 - **Mod-side rule.** A mod tool that opens panels must not accept a shell command, so Claude cannot route around Claude Code's permission prompt and sandbox (see direction a).
 - **Untrusted input.** Status text comes from model output. Render it as plain text in GPUI chrome, cap its length, and never eval it into a plugin page without the existing JSON escaping (`BridgeEvent::to_js`) **[repo]**.
