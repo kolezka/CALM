@@ -9,6 +9,8 @@ pub const MIN_PANEL_SIZE: Size = Size::new(120.0, 80.0);
 /// Height of the title strip at the top of every panel, in world units.
 pub const CHROME_HEIGHT: f64 = 28.0;
 pub const MINIMIZED_CHIP: Size = Size::new(200.0, 28.0);
+/// How far a duplicate sits from its source, in world units. A multiple of the snap grid.
+pub const DUPLICATE_OFFSET: f64 = 32.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PanelId(pub u64);
@@ -110,6 +112,28 @@ impl Scene {
         }
     }
 
+    pub fn send_to_back(&mut self, id: PanelId) {
+        if let Some(index) = self.index_of(id) {
+            let panel = self.panels.remove(index);
+            self.panels.insert(0, panel);
+        }
+    }
+
+    /// Adds a copy of `id` on top, shifted by `DUPLICATE_OFFSET`, never minimized.
+    /// Only the kind and size are copied, so a duplicated terminal gets a fresh process.
+    pub fn duplicate(&mut self, id: PanelId) -> Option<PanelId> {
+        let source = self.get(id)?;
+        let kind = source.kind.clone();
+        let rect = Rect {
+            origin: Point::new(
+                source.rect.origin.x + DUPLICATE_OFFSET,
+                source.rect.origin.y + DUPLICATE_OFFSET,
+            ),
+            size: source.rect.size,
+        };
+        Some(self.add(kind, rect))
+    }
+
     /// Topmost panel under `world`. A minimized panel only hits its chip.
     pub fn hit_test(&self, world: Point) -> Option<PanelId> {
         self.panels
@@ -187,6 +211,48 @@ mod tests {
         let order: Vec<PanelId> = scene.panels.iter().map(|panel| panel.id).collect();
         assert_eq!(order, vec![front, back]);
         assert_eq!(scene.hit_test(Point::new(150.0, 150.0)), Some(back));
+    }
+
+    #[test]
+    fn send_to_back_reorders() {
+        let mut scene = Scene::default();
+        let back = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        let front = scene.add(terminal(), Rect::new(100.0, 100.0, 200.0, 200.0));
+        scene.send_to_back(front);
+        let order: Vec<PanelId> = scene.panels.iter().map(|panel| panel.id).collect();
+        assert_eq!(order, vec![front, back]);
+        assert_eq!(scene.hit_test(Point::new(150.0, 150.0)), Some(back));
+        scene.send_to_back(PanelId(99));
+        assert_eq!(scene.panels.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_copies_kind_and_size_offset_on_top() {
+        let mut scene = Scene::default();
+        let kind = PanelKind::Terminal {
+            command: Some("htop".into()),
+            cwd: Some(PathBuf::from("/tmp")),
+        };
+        let source = scene.add(kind.clone(), Rect::new(10.0, 20.0, 300.0, 200.0));
+        let _other = scene.add(terminal(), Rect::new(900.0, 0.0, 200.0, 200.0));
+        scene.get_mut(source).unwrap().minimized = true;
+        let copy = scene.duplicate(source).unwrap();
+        assert_ne!(copy, source);
+        assert_eq!(scene.panels.last().map(|panel| panel.id), Some(copy));
+        let panel = scene.get(copy).unwrap();
+        assert_eq!(panel.kind, kind);
+        assert_eq!(
+            panel.rect,
+            Rect::new(
+                10.0 + DUPLICATE_OFFSET,
+                20.0 + DUPLICATE_OFFSET,
+                300.0,
+                200.0
+            )
+        );
+        assert!(!panel.minimized);
+        assert!(scene.get(source).unwrap().minimized);
+        assert_eq!(scene.duplicate(PanelId(99)), None);
     }
 
     #[test]

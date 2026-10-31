@@ -57,6 +57,24 @@ impl Camera {
             anchor_world.y - anchor_screen.y / self.zoom,
         );
     }
+
+    /// Centers `world` in a viewport of `viewport` pixels, as large as fits with `margin`
+    /// pixels on each side. Zoom stays within the camera limits.
+    pub fn fit_rect(&mut self, world: Rect, viewport: Size, margin: f64) {
+        let avail_w = (viewport.width - 2.0 * margin).max(1.0);
+        let avail_h = (viewport.height - 2.0 * margin).max(1.0);
+        let zoom_w = avail_w / world.size.width.max(1.0);
+        let zoom_h = avail_h / world.size.height.max(1.0);
+        self.zoom = zoom_w.min(zoom_h).clamp(MIN_ZOOM, MAX_ZOOM);
+        let center = Point::new(
+            world.origin.x + world.size.width / 2.0,
+            world.origin.y + world.size.height / 2.0,
+        );
+        self.offset = Point::new(
+            center.x - viewport.width / 2.0 / self.zoom,
+            center.y - viewport.height / 2.0 / self.zoom,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -94,6 +112,43 @@ mod tests {
         camera.zoom_by(1.5, anchor);
         assert!((camera.zoom - 1.8).abs() < 1e-9);
         assert_close(camera.screen_to_world(anchor), before);
+    }
+
+    #[test]
+    fn fit_rect_centers_and_fills_the_tighter_axis() {
+        let mut camera = Camera::default();
+        let world = Rect::new(100.0, 200.0, 400.0, 100.0);
+        camera.fit_rect(world, Size::new(1000.0, 800.0), 50.0);
+        // Width limits: (1000 - 100) / 400 = 2.25.
+        assert!((camera.zoom - 2.25).abs() < 1e-9);
+        assert_close(
+            camera.world_to_screen(Point::new(300.0, 250.0)),
+            Point::new(500.0, 400.0),
+        );
+        let screen = camera.world_rect_to_screen(world);
+        assert!((screen.origin.x - 50.0).abs() < 1e-9);
+        assert!(screen.origin.y > 50.0);
+    }
+
+    #[test]
+    fn fit_rect_clamps_zoom_for_tiny_and_huge_rects() {
+        let mut camera = Camera::default();
+        camera.fit_rect(
+            Rect::new(0.0, 0.0, 10.0, 10.0),
+            Size::new(1000.0, 800.0),
+            40.0,
+        );
+        assert_eq!(camera.zoom, MAX_ZOOM);
+        assert_close(
+            camera.world_to_screen(Point::new(5.0, 5.0)),
+            Point::new(500.0, 400.0),
+        );
+        camera.fit_rect(
+            Rect::new(0.0, 0.0, 100_000.0, 100.0),
+            Size::new(1000.0, 800.0),
+            40.0,
+        );
+        assert_eq!(camera.zoom, MIN_ZOOM);
     }
 
     #[test]

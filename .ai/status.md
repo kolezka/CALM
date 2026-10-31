@@ -18,6 +18,18 @@ verified unless marked otherwise.
 - Docs: `dev-setup.md`, `architecture.md` (terminals, preview), `plugins.md`,
   `release.md`, `CLAUDE.md`, this folder.
 
+## On branch `feat/menu-panel-actions` (not merged)
+
+- Panel context menu on the title strip or a minimized chip: Minimize or Restore, Zoom to
+  Fit (hidden while minimized), Bring to Front, Send to Back, Duplicate (terminals only, a
+  new terminal of the same size 32 units down and right, fresh process), Delete.
+- Delete uses the normal close path: a live terminal shows the close confirmation unless
+  `confirm_close` is off in settings.
+- Right click on a live Ghostty view goes to Ghostty, not to CALM, so the menu opens only
+  from the title strip and the chip. Right click on content in preview mode does nothing.
+- Rename is not offered: it needs a native text input, which does not exist yet.
+- Manual GUI pass of each action is pending.
+
 ## Verified on hardware
 
 macOS 27.0.1, Apple M4 Pro: smoke passes; two terminals render in zoom views at zoom 1.5;
