@@ -4,10 +4,41 @@
 //! value is an error, never a silent default.
 
 use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Map, Value};
 
 use crate::manifest::Size;
+
+/// Longest `title`, in characters.
+pub const MAX_TITLE_CHARS: usize = 120;
+
+/// The one placeholder `title` may use. It becomes the manifest `name`.
+pub const TITLE_NAME_PLACEHOLDER: &str = "{name}";
+
+/// File types an image `icon` may have. Anything else is read as a text icon.
+pub const ICON_IMAGE_EXTENSIONS: &[&str] = &["png", "svg"];
+
+/// Ghostty appearance fields CALM cannot pass per terminal yet. gpui-libghostty 0.3.1 only
+/// takes colors per surface; fonts and padding need the planned shim patch.
+const PLANNED_FIELDS: &[&str] = &["fontSize", "fontFamily", "padding"];
+
+/// What the title bar shows in the icon slot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TuiIcon {
+    /// 1 to 4 characters, drawn as text.
+    Text(String),
+    /// A PNG or SVG inside the plugin folder, relative to it.
+    Image(PathBuf),
+}
+
+/// Terminal colors for this plugin's surface. Colors are 0xRRGGBB.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TuiTerminalColors {
+    pub background: u32,
+    pub foreground: u32,
+    pub palette: [u32; 16],
+}
 
 /// Size of a new TUI panel when the manifest has no `defaultSize`.
 pub const DEFAULT_TUI_SIZE: Size = Size {
@@ -32,6 +63,11 @@ const FIELDS: &[&str] = &[
     "description",
     "restart",
     "shell",
+    "title",
+    "accentColor",
+    "titleBarColor",
+    "titleColor",
+    "terminalColors",
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -49,11 +85,39 @@ pub struct TuiSpec {
     /// As written; `~` is expanded at launch.
     pub cwd: Option<String>,
     pub env: BTreeMap<String, String>,
-    pub icon: Option<String>,
+    pub icon: Option<TuiIcon>,
     pub description: Option<String>,
     pub restart: TuiRestart,
     /// Run through the user's login shell, so its `PATH` applies.
     pub shell: bool,
+    /// Chrome title template. `None` shows the manifest `name`.
+    pub title: Option<String>,
+    /// 0xRRGGBBAA. Focus ring, join divider and icon tint.
+    pub accent_color: Option<u32>,
+    /// 0xRRGGBBAA.
+    pub title_bar_color: Option<u32>,
+    /// 0xRRGGBBAA.
+    pub title_color: Option<u32>,
+    /// Boxed: 72 bytes of palette would bloat every `PluginContent`.
+    pub terminal_colors: Option<Box<TuiTerminalColors>>,
+}
+
+impl TuiSpec {
+    /// The chrome title for a plugin named `name`: the `title` template, else `name`.
+    pub fn chrome_title(&self, name: &str) -> String {
+        match &self.title {
+            Some(template) => template.replace(TITLE_NAME_PLACEHOLDER, name),
+            None => name.to_string(),
+        }
+    }
+
+    /// The image icon's path, if the icon is an image.
+    pub fn icon_image(&self) -> Option<&Path> {
+        match &self.icon {
+            Some(TuiIcon::Image(path)) => Some(path),
+            _ => None,
+        }
+    }
 }
 
 /// The parts of a TUI manifest shared with web manifests.
@@ -69,6 +133,10 @@ pub(crate) fn parse(object: &Map<String, Value>) -> Result<TuiManifest, String> 
     if let Some(key) = object.keys().find(|key| !FIELDS.contains(&key.as_str())) {
         return Err(match key.as_str() {
             "entry" => "a tui plugin has no entry: it runs `command`".to_string(),
+            planned if PLANNED_FIELDS.contains(&planned) => format!(
+                "{planned} is planned but not supported yet: CALM cannot set Ghostty fonts or \
+                 padding per terminal until the libghostty shim patch lands"
+            ),
             other => format!("unknown field {other:?} for kind \"tui\""),
         });
     }
@@ -136,18 +204,21 @@ pub(crate) fn parse(object: &Map<String, Value>) -> Result<TuiManifest, String> 
         None => DEFAULT_TUI_SIZE,
         Some(value) => parse_size(value)?,
     };
-    let icon = optional_string(object, "icon")?;
-    if let Some(icon) = &icon {
-        let chars = icon.chars().count();
-        if chars == 0
-            || chars > MAX_ICON_CHARS
-            || icon.chars().any(|c| c.is_whitespace() || c.is_control())
-        {
-            return Err(format!(
-                "icon {icon:?} must be 1 to {MAX_ICON_CHARS} characters without spaces"
-            ));
-        }
+    let icon = optional_string(object, "icon")?
+        .map(|icon| parse_icon(&icon))
+        .transpose()?;
+    let title = optional_string(object, "title")?;
+    if let Some(title) = &title {
+        check_title(title)?;
     }
+    let accent_color = optional_color(object, "accentColor")?;
+    let title_bar_color = optional_color(object, "titleBarColor")?;
+    let title_color = optional_color(object, "titleColor")?;
+    let terminal_colors = object
+        .get("terminalColors")
+        .map(parse_terminal_colors)
+        .transpose()?
+        .map(Box::new);
     let description = optional_string(object, "description")?;
     let restart = match object.get("restart") {
         None => TuiRestart::default(),
@@ -192,7 +263,144 @@ pub(crate) fn parse(object: &Map<String, Value>) -> Result<TuiManifest, String> 
             description,
             restart,
             shell,
+            title,
+            accent_color,
+            title_bar_color,
+            title_color,
+            terminal_colors,
         },
+    })
+}
+
+fn parse_icon(icon: &str) -> Result<TuiIcon, String> {
+    let path = Path::new(icon);
+    let is_image = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ICON_IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()));
+    if is_image {
+        let inside = path
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
+        if !inside || icon.contains('\0') {
+            return Err(format!(
+                "icon {icon:?} must be a relative path inside the plugin folder"
+            ));
+        }
+        return Ok(TuiIcon::Image(path.to_path_buf()));
+    }
+    let chars = icon.chars().count();
+    if chars == 0
+        || chars > MAX_ICON_CHARS
+        || icon.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(format!(
+            "icon {icon:?} must be 1 to {MAX_ICON_CHARS} characters without spaces, \
+             or a .png or .svg path"
+        ));
+    }
+    Ok(TuiIcon::Text(icon.to_string()))
+}
+
+fn check_title(title: &str) -> Result<(), String> {
+    if title.trim().is_empty() {
+        return Err("title must not be empty".to_string());
+    }
+    if title.chars().count() > MAX_TITLE_CHARS {
+        return Err(format!(
+            "title must be at most {MAX_TITLE_CHARS} characters"
+        ));
+    }
+    if title.chars().any(char::is_control) {
+        return Err(format!(
+            "title {title:?} must not contain control characters"
+        ));
+    }
+    if title
+        .replace(TITLE_NAME_PLACEHOLDER, "")
+        .contains(['{', '}'])
+    {
+        return Err(format!(
+            "title {title:?} may only use the {TITLE_NAME_PLACEHOLDER} placeholder"
+        ));
+    }
+    Ok(())
+}
+
+/// `#rrggbb` or `#rrggbbaa` to 0xRRGGBBAA.
+pub fn parse_hex_color(text: &str) -> Option<u32> {
+    let hex = text.strip_prefix('#')?;
+    if !(hex.len() == 6 || hex.len() == 8) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let value = u32::from_str_radix(hex, 16).ok()?;
+    Some(if hex.len() == 6 {
+        (value << 8) | 0xff
+    } else {
+        value
+    })
+}
+
+fn optional_color(object: &Map<String, Value>, key: &str) -> Result<Option<u32>, String> {
+    optional_string(object, key)?
+        .map(|text| {
+            parse_hex_color(&text)
+                .ok_or_else(|| format!("{key} {text:?} must be #rrggbb or #rrggbbaa"))
+        })
+        .transpose()
+}
+
+/// Ghostty surface colors have no alpha, so only `#rrggbb` is accepted. Returns 0xRRGGBB.
+fn opaque_color(value: &Value, key: &str) -> Result<u32, String> {
+    match value {
+        Value::String(text) if text.len() == 7 => parse_hex_color(text)
+            .map(|rgba| rgba >> 8)
+            .ok_or_else(|| format!("{key} {text:?} must be #rrggbb")),
+        Value::String(text) => Err(format!("{key} {text:?} must be #rrggbb")),
+        other => Err(format!(
+            "{key} must be a #rrggbb string, got {}",
+            type_name(other)
+        )),
+    }
+}
+
+fn parse_terminal_colors(value: &Value) -> Result<TuiTerminalColors, String> {
+    let Value::Object(object) = value else {
+        return Err(format!(
+            "terminalColors must be an object, got {}",
+            type_name(value)
+        ));
+    };
+    if let Some(key) = object
+        .keys()
+        .find(|key| !["background", "foreground", "palette"].contains(&key.as_str()))
+    {
+        return Err(format!("unknown field terminalColors.{key}"));
+    }
+    let required = |key: &str| {
+        object
+            .get(key)
+            .ok_or_else(|| format!("terminalColors.{key} is required"))
+    };
+    let background = opaque_color(required("background")?, "terminalColors.background")?;
+    let foreground = opaque_color(required("foreground")?, "terminalColors.foreground")?;
+    let Value::Array(items) = required("palette")? else {
+        return Err("terminalColors.palette must be an array of 16 #rrggbb colors".to_string());
+    };
+    if items.len() != 16 {
+        return Err(format!(
+            "terminalColors.palette must have 16 colors, got {}",
+            items.len()
+        ));
+    }
+    let mut palette = [0; 16];
+    for (index, item) in items.iter().enumerate() {
+        palette[index] = opaque_color(item, &format!("terminalColors.palette[{index}]"))?;
+    }
+    Ok(TuiTerminalColors {
+        background,
+        foreground,
+        palette,
     })
 }
 
@@ -309,12 +517,265 @@ mod tests {
                 args: vec!["--workspace".into(), "my team".into()],
                 cwd: Some("~/work".into()),
                 env: BTreeMap::from([("SLK_THEME".into(), "dark".into())]),
-                icon: Some("#".into()),
+                icon: Some(TuiIcon::Text("#".into())),
                 description: Some("Slack in the terminal".into()),
                 restart: TuiRestart::OnExit,
                 shell: false,
+                title: None,
+                accent_color: None,
+                title_bar_color: None,
+                title_color: None,
+                terminal_colors: None,
             })
         );
+    }
+
+    const PALETTE: &str = r##"["#000000","#cd3131","#0dbc79","#e5e510","#2472c8","#bc3fbc",
+        "#11a8cd","#e5e5e5","#666666","#f14c4c","#23d18b","#f5f543","#3b8eea","#d670d6",
+        "#29b8db","#ffffff"]"##;
+
+    #[test]
+    fn parses_every_appearance_field() {
+        let json = format!(
+            r##"{{ "kind": "tui", "id": "slack", "name": "Slack", "command": "slk",
+            "title": "{{name}} (work)", "icon": "icons/slack.svg",
+            "accentColor": "#4A154B", "titleBarColor": "#1a1d21cc", "titleColor": "#ffffff",
+            "terminalColors": {{ "background": "#1a1d21", "foreground": "#d1d2d3",
+                "palette": {PALETTE} }} }}"##
+        );
+        let manifest = PluginManifest::from_json(&json).unwrap();
+        let spec = manifest.tui().unwrap();
+        assert_eq!(spec.chrome_title(&manifest.name), "Slack (work)");
+        assert_eq!(spec.icon, Some(TuiIcon::Image("icons/slack.svg".into())));
+        assert_eq!(spec.icon_image(), Some(Path::new("icons/slack.svg")));
+        assert_eq!(spec.accent_color, Some(0x4a154bff));
+        assert_eq!(spec.title_bar_color, Some(0x1a1d21cc));
+        assert_eq!(spec.title_color, Some(0xffffffff));
+        let colors = spec.terminal_colors.as_ref().unwrap();
+        assert_eq!(colors.background, 0x1a1d21);
+        assert_eq!(colors.foreground, 0xd1d2d3);
+        assert_eq!(colors.palette[1], 0xcd3131);
+        assert_eq!(colors.palette[15], 0xffffff);
+    }
+
+    #[test]
+    fn title_defaults_to_name_and_text_icon_stays_text() {
+        let manifest = PluginManifest::from_json(&with_field(r#""icon": "▲""#)).unwrap();
+        let spec = manifest.tui().unwrap();
+        assert_eq!(spec.chrome_title("T"), "T");
+        assert_eq!(spec.icon, Some(TuiIcon::Text("▲".into())));
+        assert_eq!(spec.icon_image(), None);
+        let plain = PluginManifest::from_json(&with_field(r#""title": "Chat""#)).unwrap();
+        assert_eq!(plain.tui().unwrap().chrome_title("T"), "Chat");
+    }
+
+    #[test]
+    fn documented_slack_example_parses_and_uses_every_field() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let docs = std::fs::read_to_string(repo.join("docs/plugins.md")).unwrap();
+        let section = docs
+            .split_once("### Customizing TUI apps")
+            .expect("docs have the customizing section")
+            .1;
+        let json = section
+            .split_once("```json\n")
+            .and_then(|(_, rest)| rest.split_once("```"))
+            .expect("section has a json example")
+            .0;
+        let value: Value = serde_json::from_str(json).unwrap();
+        let keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        for field in FIELDS {
+            assert!(keys.contains(field), "docs example lacks {field}");
+        }
+        let manifest = PluginManifest::from_json(json).unwrap();
+        let spec = manifest.tui().unwrap();
+        assert_eq!(spec.chrome_title(&manifest.name), "Slack (work)");
+        assert!(spec.terminal_colors.is_some() && spec.icon_image().is_some());
+    }
+
+    #[test]
+    fn hex_colors_parse_strictly() {
+        assert_eq!(parse_hex_color("#5b8def"), Some(0x5b8defff));
+        assert_eq!(parse_hex_color("#5B8DEF80"), Some(0x5b8def80));
+        for bad in [
+            "5b8def",
+            "#5b8de",
+            "#5b8deff",
+            "#gggggg",
+            "#5b8def801",
+            "red",
+            "",
+            "#",
+        ] {
+            assert_eq!(parse_hex_color(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn each_bad_appearance_field_names_itself() {
+        let palette_of = |n: usize| {
+            format!(
+                r##""terminalColors": {{ "background": "#000000", "foreground": "#ffffff", "palette": [{}] }}"##,
+                vec![r##""#101010""##; n].join(",")
+            )
+        };
+        let cases = [
+            (
+                with_field(r##""title": """##),
+                "title must not be empty".to_string(),
+            ),
+            (
+                with_field(r##""title": "   ""##),
+                "title must not be empty".into(),
+            ),
+            (
+                with_field(r##""title": 3"##),
+                "title must be a string, got a number".into(),
+            ),
+            (
+                with_field(r##""title": "{id} chat""##),
+                "may only use the {name} placeholder".into(),
+            ),
+            (
+                with_field(r##""title": "a\nb""##),
+                "must not contain control characters".into(),
+            ),
+            (
+                with_field(&format!(
+                    r##""title": "{}""##,
+                    "x".repeat(MAX_TITLE_CHARS + 1)
+                )),
+                format!("title must be at most {MAX_TITLE_CHARS} characters"),
+            ),
+            (
+                with_field(r##""accentColor": "red""##),
+                "accentColor \"red\" must be #rrggbb or #rrggbbaa".into(),
+            ),
+            (
+                with_field(r##""accentColor": "#12345""##),
+                "accentColor \"#12345\" must be".into(),
+            ),
+            (
+                with_field(r##""accentColor": 255"##),
+                "accentColor must be a string, got a number".into(),
+            ),
+            (
+                with_field(r##""titleBarColor": "#zzzzzz""##),
+                "titleBarColor \"#zzzzzz\" must be".into(),
+            ),
+            (
+                with_field(r##""titleColor": "fff""##),
+                "titleColor \"fff\" must be".into(),
+            ),
+            (
+                with_field(r##""icon": "../up.png""##),
+                "icon \"../up.png\" must be a relative path inside the plugin folder".into(),
+            ),
+            (
+                with_field(r##""icon": "/tmp/x.svg""##),
+                "icon \"/tmp/x.svg\" must be a relative path inside".into(),
+            ),
+            (
+                with_field(r##""icon": "icon.gif""##),
+                "or a .png or .svg path".into(),
+            ),
+            (
+                with_field(r##""terminalColors": "dark""##),
+                "terminalColors must be an object, got a string".into(),
+            ),
+            (
+                with_field(r##""terminalColors": { "foreground": "#ffffff", "palette": [] }"##),
+                "terminalColors.background is required".into(),
+            ),
+            (
+                with_field(&palette_of(15)),
+                "terminalColors.palette must have 16 colors, got 15".into(),
+            ),
+            (
+                with_field(
+                    r##""terminalColors": { "background": "#00000080", "foreground": "#ffffff", "palette": [] }"##,
+                ),
+                "terminalColors.background \"#00000080\" must be #rrggbb".into(),
+            ),
+            (
+                with_field(
+                    r##""terminalColors": { "background": "#000000", "foreground": "#ffffff", "palette": [], "cursor": "#ffffff" }"##,
+                ),
+                "unknown field terminalColors.cursor".into(),
+            ),
+            (
+                with_field(r##""fontSize": 13"##),
+                "fontSize is planned but not supported yet".into(),
+            ),
+            (
+                with_field(r##""fontFamily": "Iosevka""##),
+                "fontFamily is planned but not supported yet".into(),
+            ),
+            (
+                with_field(r##""padding": 4"##),
+                "padding is planned but not supported yet".into(),
+            ),
+        ];
+        for (json, expected) in cases {
+            let error = error_for(&json);
+            assert!(
+                error.contains(&expected),
+                "{json}\n  expected {expected:?}\n  got {error:?}"
+            );
+        }
+        // Positive control: the same fixture shape with 16 colors is accepted.
+        PluginManifest::from_json(&with_field(&palette_of(16))).unwrap();
+    }
+
+    #[test]
+    fn discover_checks_icon_file_on_disk() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("evil.png"), b"png").unwrap();
+        let manifest = |id: &str, icon: &str| {
+            format!(
+                r#"{{ "kind": "tui", "id": "{id}", "name": "N", "command": "top", "icon": "{icon}" }}"#
+            )
+        };
+        for (dir, icon) in [
+            ("good", "icon.png"),
+            ("missing", "nope.svg"),
+            ("escape", "link.png"),
+            ("folder", "dir.png"),
+        ] {
+            let plugin = root.path().join(dir);
+            std::fs::create_dir_all(&plugin).unwrap();
+            std::fs::write(
+                plugin.join(crate::manifest::MANIFEST_FILE),
+                manifest(dir, icon),
+            )
+            .unwrap();
+        }
+        std::fs::write(root.path().join("good/icon.png"), b"png").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("evil.png"),
+            root.path().join("escape/link.png"),
+        )
+        .unwrap();
+        std::fs::create_dir(root.path().join("folder/dir.png")).unwrap();
+        let found = discover(&[root.path().to_path_buf()]);
+        let ids: Vec<&str> = found
+            .plugins
+            .iter()
+            .map(|p| p.manifest.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["good"]);
+        let errors: Vec<String> = found.errors.iter().map(ToString::to_string).collect();
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        let find = |needle: &str| errors.iter().any(|e| e.contains(needle));
+        assert!(find("cannot resolve icon nope.svg"), "{errors:?}");
+        assert!(find("icon link.png resolves to"), "{errors:?}");
+        assert!(find("icon dir.png is not a file"), "{errors:?}");
     }
 
     #[test]

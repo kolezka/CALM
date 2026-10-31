@@ -2,8 +2,9 @@
 
 use calm_core::camera::FIT_MARGIN;
 use calm_core::chrome::{
-    CORNER_RADIUS, ChromeButton, PanelIcon, TITLE_BAR_HEIGHT, button_dot, button_strokes,
-    details_visible, hover_target, icon_strokes, title_bar_layout,
+    CORNER_RADIUS, ChromeButton, ChromeOverrides, ChromePalette, ChromeState, PanelIcon,
+    TITLE_BAR_HEIGHT, button_dot, button_strokes, chrome_colors, details_visible, divider_color,
+    hover_target, icon_strokes, icon_tint, title_bar_layout,
 };
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
@@ -124,6 +125,9 @@ pub struct CanvasView {
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Restart state of TUI panels. Their terminal is in `terminals`.
     tui_runs: Vec<(PanelId, TuiRun)>,
+    /// Decoded TUI image icons by absolute path, `None` when decoding failed. Decoded once,
+    /// never per frame.
+    tui_icons: HashMap<std::path::PathBuf, Option<Arc<RenderImage>>>,
     /// Live browser panels. Dropping an entry closes its page.
     browsers: Vec<(PanelId, BrowserPanel)>,
     /// Sender for page events; the receiving task starts with the first browser.
@@ -184,6 +188,7 @@ impl CanvasView {
             hover: None,
             terminals: Vec::new(),
             tui_runs: Vec::new(),
+            tui_icons: HashMap::new(),
             browsers: Vec::new(),
             browser_events: None,
             browser_listener: None,
@@ -481,6 +486,13 @@ impl CanvasView {
             .ok_or_else(|| format!("plugin {plugin_id} is not installed"))?
             .clone();
         let run = TuiRun::new(plugin)?;
+        if let Some(path) = run.icon_path() {
+            self.tui_icons.entry(path).or_insert_with_key(|path| {
+                crate::icon_image::load(path)
+                    .inspect_err(|err| eprintln!("calm: tui icon: {err}"))
+                    .ok()
+            });
+        }
         self.tui_runs.push((id, run));
         self.launch_tui(id, window, cx)
     }
@@ -512,6 +524,9 @@ impl CanvasView {
         let mut options = run.next_launch(id)?;
         let title = run.title();
         settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
+        if let Some(run) = self.tui_run(id) {
+            run.apply_terminal_colors(&mut options);
+        }
         if let Some(old) = self.terminal(id) {
             old.update(cx, |terminal, _| terminal.release_preview(window));
             self.terminals.retain(|(panel, _)| *panel != id);
@@ -600,6 +615,27 @@ impl CanvasView {
         }
         window.refresh();
         cx.notify();
+    }
+
+    /// The chrome look paint uses for a panel. Read by the smoke.
+    pub fn panel_look(&self, id: PanelId) -> PanelLook {
+        let Some(run) = self.tui_run(id) else {
+            return PanelLook::default();
+        };
+        let icon = match (run.glyph(), run.icon_path()) {
+            (Some(text), _) => Some(IconLook::Text(text.to_string())),
+            (None, Some(path)) => self
+                .tui_icons
+                .get(&path)
+                .cloned()
+                .flatten()
+                .map(IconLook::Image),
+            (None, None) => None,
+        };
+        PanelLook {
+            overrides: run.chrome_overrides(),
+            icon,
+        }
     }
 
     /// Per TUI panel in creation order: chrome title, state, Restart offered, launches.
@@ -1157,6 +1193,39 @@ enum MenuTarget {
 }
 
 /// What paint needs, copied out at render time so painting does not borrow the view.
+/// A panel's own chrome colors and icon, over the theme.
+#[derive(Clone, Debug, Default)]
+pub struct PanelLook {
+    pub overrides: ChromeOverrides,
+    pub icon: Option<IconLook>,
+}
+
+#[derive(Clone, Debug)]
+pub enum IconLook {
+    Text(String),
+    Image(Arc<RenderImage>),
+}
+
+/// A theme 0xRRGGBB color as 0xRRGGBBAA.
+const fn opaque(rgb: u32) -> u32 {
+    (rgb << 8) | 0xff
+}
+
+/// Theme chrome colors as 0xRRGGBBAA.
+pub(crate) fn chrome_palette() -> ChromePalette {
+    ChromePalette {
+        bar: opaque(theme::PANEL_BAR),
+        bar_focused: opaque(theme::PANEL_BAR_FOCUSED),
+        border: opaque(theme::PANEL_BORDER),
+        accent: opaque(theme::ACCENT),
+        title: opaque(theme::TITLE_TEXT),
+        title_focused: opaque(theme::TITLE_TEXT_FOCUSED),
+        confirm_bar: opaque(theme::CONFIRM_BAR),
+        confirm_border: opaque(theme::CONFIRM_BORDER),
+        confirm_title: opaque(theme::CONFIRM_TEXT),
+    }
+}
+
 struct PaintSnapshot {
     scene: Scene,
     state: Interaction,
@@ -1166,8 +1235,8 @@ struct PaintSnapshot {
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Panels with a plugin web view.
     plugin_ids: Vec<PanelId>,
-    /// TUI panels whose manifest has an `icon`, drawn as text in place of the icon strokes.
-    glyphs: Vec<(PanelId, String)>,
+    /// Panels with custom chrome colors or icon. Others use the theme.
+    looks: HashMap<PanelId, PanelLook>,
     /// Close confirmation or context menu up: native views must not cover it.
     modal_open: bool,
     /// Terminals that got an input div in this render.
@@ -1496,6 +1565,15 @@ impl PaintSnapshot {
         }
     }
 
+    fn overrides(&self, id: PanelId) -> &ChromeOverrides {
+        const THEME: ChromeOverrides = ChromeOverrides {
+            accent: None,
+            title_bar: None,
+            title: None,
+        };
+        self.looks.get(&id).map_or(&THEME, |look| &look.overrides)
+    }
+
     /// Fills the gap of a join. It sits between the two panels, so it never covers a native
     /// view. Where both title bars face each other it is at least one pixel wide, so a
     /// joined pair still shows a seam through the bar strip when the gap is 0 or tiny.
@@ -1507,16 +1585,17 @@ impl PaintSnapshot {
     ) {
         let camera = self.scene.camera;
         let zoom = camera.zoom;
-        let involved = |id: Option<PanelId>| id == Some(join.first) || id == Some(join.second);
-        let color = if involved(self.confirming) {
-            theme::CONFIRM_BORDER
-        } else if involved(self.focused) {
-            theme::ACCENT
-        } else {
-            theme::PANEL_BORDER
-        };
+        let color = rgba(divider_color(
+            [join.first, join.second].map(|id| {
+                (
+                    ChromeState::of(self.focused == Some(id), self.confirming == Some(id)),
+                    self.overrides(id),
+                )
+            }),
+            &chrome_palette(),
+        ));
         let gap = camera.world_rect_to_screen(join.divider);
-        window.paint_quad(fill(to_bounds(gap, origin), rgb(color)));
+        window.paint_quad(fill(to_bounds(gap, origin), color));
         if join.axis != Axis::Row || join.gap * zoom >= BORDER_PX {
             return;
         }
@@ -1536,7 +1615,7 @@ impl PaintSnapshot {
         let bottom = camera.world_to_screen(Point::new(0.0, bars_bottom)).y;
         let center = gap.origin.x + gap.size.width / 2.0;
         let seam = Rect::new(center - BORDER_PX / 2.0, top, BORDER_PX, bottom - top);
-        window.paint_quad(fill(to_bounds(seam, origin), rgb(color)));
+        window.paint_quad(fill(to_bounds(seam, origin), color));
     }
 
     fn paint_panel(
@@ -1556,21 +1635,13 @@ impl PaintSnapshot {
             _ => None,
         };
         let layout = title_bar_layout(panel);
-        let (bar_color, border_color, text_color) = if confirming {
-            (
-                theme::CONFIRM_BAR,
-                theme::CONFIRM_BORDER,
-                theme::CONFIRM_TEXT,
-            )
-        } else if focused {
-            (
-                theme::PANEL_BAR_FOCUSED,
-                theme::ACCENT,
-                theme::TITLE_TEXT_FOCUSED,
-            )
-        } else {
-            (theme::PANEL_BAR, theme::PANEL_BORDER, theme::TITLE_TEXT)
-        };
+        let look = self.looks.get(&panel.id);
+        let overrides = self.overrides(panel.id);
+        let colors = chrome_colors(
+            ChromeState::of(focused, confirming),
+            overrides,
+            &chrome_palette(),
+        );
 
         // The ring sits outside the panel rect, so it never reaches into native content.
         // On a joined side it has no border and reaches halfway across the gap, where the
@@ -1595,18 +1666,18 @@ impl PaintSnapshot {
         window.paint_quad(quad(
             to_bounds(ring, origin),
             panel_corners(panel, edges, zoom, BORDER_PX),
-            rgb(bar_color),
+            rgba(colors.bar),
             Edges {
                 top: border(Side::Top),
                 right: border(Side::Right),
                 bottom: border(Side::Bottom),
                 left: border(Side::Left),
             },
-            rgb(border_color),
+            rgba(colors.border),
             BorderStyle::Solid,
         ));
         if let Some(edges) = edges {
-            self.paint_open_ring(body, edges, rgb(border_color), origin, window);
+            self.paint_open_ring(body, edges, rgba(colors.border), origin, window);
         }
 
         if !panel.minimized {
@@ -1650,7 +1721,7 @@ impl PaintSnapshot {
                         line,
                         TextLook {
                             align: TextAlign::Left,
-                            color: theme::TITLE_TEXT,
+                            color: opaque(theme::TITLE_TEXT),
                         },
                         zoom,
                         origin,
@@ -1665,14 +1736,22 @@ impl PaintSnapshot {
         if !details_visible(zoom) {
             return;
         }
-        let icon_color = match PanelIcon::for_kind(&panel.kind) {
+        let kind_color = match PanelIcon::for_kind(&panel.kind) {
             PanelIcon::Terminal => theme::ICON_TERMINAL,
             PanelIcon::Browser => theme::ICON_BROWSER,
             PanelIcon::Plugin => theme::ICON_PLUGIN,
         };
+        let icon_color = icon_tint(overrides, opaque(kind_color));
         let stroke = (1.5 * zoom).max(1.0);
         let icon_rect = camera.world_rect_to_screen(layout.icon);
-        if let Some((_, glyph)) = self.glyphs.iter().find(|(id, _)| *id == panel.id) {
+        if let Some(IconLook::Image(image)) = look.and_then(|look| look.icon.as_ref()) {
+            let bounds = to_bounds(icon_rect, origin);
+            if let Err(err) =
+                window.paint_image(bounds, bounds, Default::default(), image.clone(), 0, false)
+            {
+                eprintln!("calm: icon paint failed: {err:#}");
+            }
+        } else if let Some(IconLook::Text(glyph)) = look.and_then(|look| look.icon.as_ref()) {
             paint_text(
                 glyph,
                 icon_rect,
@@ -1724,7 +1803,7 @@ impl PaintSnapshot {
                     &button_strokes(button),
                     dot,
                     stroke,
-                    glyph_color,
+                    opaque(glyph_color),
                     origin,
                     window,
                 );
@@ -1747,7 +1826,7 @@ impl PaintSnapshot {
                 label,
                 TextLook {
                     align: TextAlign::Right,
-                    color: theme::STALE_TEXT,
+                    color: opaque(theme::STALE_TEXT),
                 },
                 zoom,
                 origin,
@@ -1766,7 +1845,7 @@ impl PaintSnapshot {
             middle,
             TextLook {
                 align: TextAlign::Left,
-                color: text_color,
+                color: colors.title,
             },
             zoom,
             origin,
@@ -1828,7 +1907,7 @@ fn paint_strokes(
             }
         }
         match builder.build() {
-            Ok(path) => window.paint_path(path, rgb(color)),
+            Ok(path) => window.paint_path(path, rgba(color)),
             Err(err) => eprintln!("calm: chrome stroke failed: {err:?}"),
         }
     }
@@ -1837,6 +1916,7 @@ fn paint_strokes(
 /// Alignment and color of one `paint_text` line.
 struct TextLook {
     align: TextAlign,
+    /// 0xRRGGBBAA.
     color: u32,
 }
 
@@ -1858,7 +1938,7 @@ fn paint_text(
     let run = TextRun {
         len: title.len(),
         font: window.text_style().font(),
-        color: rgb(look.color).into(),
+        color: rgba(look.color).into(),
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -1915,10 +1995,10 @@ impl Render for CanvasView {
             hover: self.hover,
             terminals: self.terminals.clone(),
             plugin_ids: self.plugin_panels.iter().map(|(id, _)| *id).collect(),
-            glyphs: self
+            looks: self
                 .tui_runs
                 .iter()
-                .filter_map(|(id, run)| run.glyph().map(|glyph| (*id, glyph.to_string())))
+                .map(|(id, _)| (*id, self.panel_look(*id)))
                 .collect(),
             modal_open: self.input.confirming.is_some() || self.menu_open,
             input_targets: Vec::new(),

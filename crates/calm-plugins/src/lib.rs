@@ -15,4 +15,4 @@ pub use manifest::{
     Discovery, InstalledPlugin, PluginContent, PluginError, PluginManifest, Size, discover,
     plugin_dirs,
 };
-pub use tui::{DEFAULT_TUI_SIZE, TuiRestart, TuiSpec};
+pub use tui::{DEFAULT_TUI_SIZE, TuiIcon, TuiRestart, TuiSpec, TuiTerminalColors, parse_hex_color};

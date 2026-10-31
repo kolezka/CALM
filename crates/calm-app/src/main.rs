@@ -2,6 +2,7 @@ mod background;
 mod browser_panel;
 mod canvas_view;
 mod dev_menu;
+mod icon_image;
 mod plugin_host;
 mod settings_menu;
 mod terminal;
@@ -421,6 +422,61 @@ const SMOKE_TUI_SCRIPT: &str =
 
 /// Two TUI fixtures: a script that runs and exits 0 (restart "prompt", run directly), and
 /// a missing command through the login shell (restart "on-exit", which must not loop).
+/// Opens the shipped top-example and checks its manifest look reaches the chrome model:
+/// the focused ring takes its accent and the icon slot gets its decoded image.
+fn smoke_tui_chrome(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
+    use calm_core::chrome::{ChromeState, chrome_colors};
+    let plugins = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins");
+    let discovery = calm_plugins::discover(&[plugins]);
+    let Some(top) = discovery
+        .plugins
+        .into_iter()
+        .find(|plugin| plugin.manifest.id == "top-example")
+    else {
+        smoke_fail(&format!(
+            "top-example not discovered: {:?}",
+            discovery.errors
+        ));
+    };
+    let Some(expected) = top.manifest.tui().and_then(|spec| spec.accent_color) else {
+        smoke_fail("top-example has no accentColor");
+    };
+    let checked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.install_plugins(vec![top]);
+            let kind = PanelKind::Tui {
+                plugin_id: "top-example".to_string(),
+            };
+            let id = view.scene.add(kind, Rect::new(720.0, 460.0, 300.0, 160.0));
+            view.open_tui_panel(id, "top-example", window, cx)?;
+            let look = view.panel_look(id);
+            let ring = chrome_colors(
+                ChromeState::Focused,
+                &look.overrides,
+                &crate::canvas_view::chrome_palette(),
+            )
+            .border;
+            let image = matches!(look.icon, Some(crate::canvas_view::IconLook::Image(_)));
+            let title = view.scene.get(id).map(|panel| panel.title.clone());
+            // `top` is still running: close as if the user confirmed.
+            view.apply_effects(
+                vec![calm_core::interaction::Effect::ClosePanel(id)],
+                window,
+                cx,
+            );
+            Ok::<_, String>((ring, image, title, view.tui_status().len()))
+        })
+    });
+    match checked {
+        Ok(Ok((ring, true, Some(title), 0))) if ring == expected => println!(
+            "smoke: tui chrome top-example accent=#{expected:08x} ring=#{ring:08x} icon=image title={title:?} closed=ok"
+        ),
+        other => smoke_fail(&format!(
+            "top-example chrome: expected ring #{expected:08x} and an image icon, got {other:?}"
+        )),
+    }
+}
+
 async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
     let fixtures = match tempfile::Builder::new().prefix("calm-smoke-tui-").tempdir() {
         Ok(dir) => dir,
@@ -557,6 +613,7 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
         )),
     }
     println!("smoke: tui ran=ok exit=0 missing=reported restarted=ok closed=ok");
+    smoke_tui_chrome(view, window, cx);
     if let Err(err) = fixtures.close() {
         eprintln!("smoke: could not remove the tui temp dir: {err}");
     }
