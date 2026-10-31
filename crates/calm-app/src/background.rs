@@ -251,7 +251,7 @@ fn repeat_tile(tile: &RgbaImage) -> RgbaImage {
 }
 
 /// GPUI textures are BGRA.
-fn to_render_image(mut rgba: RgbaImage) -> Arc<RenderImage> {
+pub fn to_render_image(mut rgba: RgbaImage) -> Arc<RenderImage> {
     for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }

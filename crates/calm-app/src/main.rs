@@ -1,12 +1,14 @@
 mod background;
 mod canvas_view;
 mod dev_menu;
+mod grid_paint;
 mod settings_menu;
 mod terminal;
 mod theme;
 mod toolbar;
 
-use calm_core::geometry::Rect;
+use calm_core::geometry::{Rect, Size};
+use calm_core::grid::{GridKind, mark_primitive_bound};
 use calm_core::preview::PanelMode;
 use calm_core::scene::PanelKind;
 use std::sync::{Mutex, PoisonError, TryLockError};
@@ -251,6 +253,30 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         {
             smoke_fail(&format!("preview refresh outside 1..=3 snapshots: {line}"));
         }
+        // The grid painted every frame of that window; its draw count must not follow the
+        // number of dots on screen.
+        let (kind, last, most, rasters, canvas) = cx.update(|cx| {
+            let view = view.read(cx);
+            let grid = &view.grid;
+            (
+                view.settings.settings.grid.kind,
+                grid.last_primitives,
+                grid.max_primitives,
+                grid.rasters,
+                Size::new(view.viewport.size.width, view.viewport.size.height),
+            )
+        });
+        let bound = mark_primitive_bound(canvas);
+        println!(
+            "smoke: grid kind={kind:?} primitives={last} max_primitives={most} bound={bound} \
+             rasters={rasters}"
+        );
+        if kind != GridKind::None && last == 0 {
+            smoke_fail("the grid drew nothing during the preview window");
+        }
+        if matches!(kind, GridKind::Dots | GridKind::Crosses) && most > bound {
+            smoke_fail(&format!("grid drew {most} primitives, over {bound}"));
+        }
         // Input divs over a preview would steal its scroll and keys from the canvas.
         println!("smoke: preview_input_targets={targets}");
         if targets != 0 {
@@ -368,16 +394,29 @@ fn load_startup_settings(path: std::path::PathBuf) -> SettingsState {
     }
 }
 
+/// The grid style the smoke draws: `CALM_SMOKE_GRID` (lines, dots, crosses, none), default
+/// dots, the style whose per-dot quads once stalled preview refresh.
+fn smoke_grid_kind() -> GridKind {
+    let wanted = std::env::var("CALM_SMOKE_GRID").unwrap_or_else(|_| "dots".to_string());
+    GridKind::ALL
+        .into_iter()
+        .find(|kind| kind.label().eq_ignore_ascii_case(&wanted))
+        .unwrap_or_else(|| smoke_fail(&format!("CALM_SMOKE_GRID={wanted:?} is not a grid style")))
+}
+
 /// Sets a gradient background and the grid through the settings path, reads the file back,
 /// then builds the native Settings window and checks every control was bound.
 fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<CanvasView>) {
     use calm_core::background::BackgroundKind;
     use calm_core::settings::read_settings_from;
     use calm_core::settings_form::{Control, settings_form};
+    let grid_kind = smoke_grid_kind();
     view.update_settings(
         |s| {
             s.background.kind = BackgroundKind::Gradient;
             s.grid.show = true;
+            s.grid.kind = grid_kind;
+            s.grid.major_every = 8;
         },
         window,
         cx,
@@ -391,9 +430,10 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
         smoke_fail(&format!("settings file {saved:?} differs from state"));
     }
     println!(
-        "smoke: settings background={:?} grid={} path={}",
+        "smoke: settings background={:?} grid={} grid_kind={:?} path={}",
         saved.background.kind,
         saved.grid.show,
+        saved.grid.kind,
         path.display()
     );
     view.open_settings(window, cx);

@@ -1,17 +1,15 @@
-//! The Settings menu bar menu, the Settings window glue and the canvas grid.
+//! The Settings menu bar menu and the Settings window glue.
 
 use std::path::{Path, PathBuf};
 
-use calm_core::camera::Camera;
-use calm_core::geometry::Point;
-use calm_core::settings::{GridSettings, Settings, grid_line_offsets, save_settings_to};
+use calm_core::settings::{Settings, save_settings_to};
 use calm_core::settings_form::{
     FieldValue, FormCommand, FormContext, FormOutcome, apply_field, settings_form,
 };
 use calm_native::{SettingsWindow, choose_image_file};
 use gpui::{
-    App, AppContext as _, Bounds, Context, InteractiveElement, KeyBinding, Menu, MenuItem, Pixels,
-    Window, WindowHandle, actions, fill, point, px, rgba, size,
+    App, AppContext as _, Context, InteractiveElement, KeyBinding, Menu, MenuItem, Window,
+    WindowHandle, actions,
 };
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions};
 
@@ -22,8 +20,6 @@ actions!(
     calm,
     [OpenSettings, ToggleGrid, OpenConfigFolder, ResetSettings]
 );
-
-const GRID_LINE_PX: f32 = 1.0;
 
 /// Settings plus the file they persist to. The smoke points `path` at a temp dir.
 pub struct SettingsState {
@@ -266,35 +262,6 @@ fn open_config_folder(settings_path: &Path) {
 pub fn apply_terminal_config(options: &mut TerminalOptions, settings: &Settings) {
     if !settings.panels.terminal_user_config {
         options.configuration = TerminalConfiguration::Default;
-    }
-}
-
-/// Lines every `grid.spacing` world units inside `bounds`. Paint it before panels.
-/// One quad per line: a quad per dot cost about 11 ms a frame at zoom 0.4 in a debug build
-/// and starved preview refresh.
-pub fn paint_grid(
-    bounds: Bounds<Pixels>,
-    camera: &Camera,
-    grid: &GridSettings,
-    window: &mut Window,
-) {
-    let width = f64::from(f32::from(bounds.size.width));
-    let height = f64::from(f32::from(bounds.size.height));
-    let zero = camera.world_to_screen(Point::new(0.0, 0.0));
-    let color = rgba(grid.line_rgba());
-    for x in grid_line_offsets(zero.x, grid.spacing, camera.zoom, width) {
-        let line = Bounds {
-            origin: point(bounds.origin.x + px(x as f32), bounds.origin.y),
-            size: size(px(GRID_LINE_PX), bounds.size.height),
-        };
-        window.paint_quad(fill(line, color));
-    }
-    for y in grid_line_offsets(zero.y, grid.spacing, camera.zoom, height) {
-        let line = Bounds {
-            origin: point(bounds.origin.x, bounds.origin.y + px(y as f32)),
-            size: size(bounds.size.width, px(GRID_LINE_PX)),
-        };
-        window.paint_quad(fill(line, color));
     }
 }
 
