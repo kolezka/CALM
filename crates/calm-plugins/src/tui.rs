@@ -32,13 +32,8 @@ pub enum TuiIcon {
     Image(PathBuf),
 }
 
-/// Terminal colors for this plugin's surface. Colors are 0xRRGGBB.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TuiTerminalColors {
-    pub background: u32,
-    pub foreground: u32,
-    pub palette: [u32; 16],
-}
+/// Terminal colors for this plugin's surface, 0xRRGGBB. The same type plain terminals use.
+pub use calm_core::terminal_profile::TerminalColors as TuiTerminalColors;
 
 /// Size of a new TUI panel when the manifest has no `defaultSize`.
 pub const DEFAULT_TUI_SIZE: Size = Size {
@@ -68,6 +63,7 @@ const FIELDS: &[&str] = &[
     "titleBarColor",
     "titleColor",
     "terminalColors",
+    "contributes",
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -327,19 +323,7 @@ fn check_title(title: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `#rrggbb` or `#rrggbbaa` to 0xRRGGBBAA.
-pub fn parse_hex_color(text: &str) -> Option<u32> {
-    let hex = text.strip_prefix('#')?;
-    if !(hex.len() == 6 || hex.len() == 8) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let value = u32::from_str_radix(hex, 16).ok()?;
-    Some(if hex.len() == 6 {
-        (value << 8) | 0xff
-    } else {
-        value
-    })
-}
+pub use calm_core::chrome::parse_hex_color;
 
 fn optional_color(object: &Map<String, Value>, key: &str) -> Result<Option<u32>, String> {
     optional_string(object, key)?

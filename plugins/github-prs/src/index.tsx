@@ -89,6 +89,25 @@ function App({ calm }: { calm: Calm }) {
   const [inputError, setInputError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
 
+  // Menu items from contributes.menus. "new-panel" needs no code: CALM opens the panel.
+  useEffect(
+    () =>
+      calm.events.on("command", (command) => {
+        if (command.id !== "open-repo") return;
+        calm.settings
+          .get()
+          .then((value) => {
+            for (const repo of readSettings(value).repos) {
+              calm.openExternal(`https://github.com/${repo}`).catch((err) => {
+                calm.log(`open ${repo}: ${errorText(err)}`);
+              });
+            }
+          })
+          .catch((err) => calm.log(`open-repo: ${errorText(err)}`));
+      }),
+    [calm],
+  );
+
   useEffect(() => {
     calm.panel.setTitle("GitHub PRs");
     calm.settings

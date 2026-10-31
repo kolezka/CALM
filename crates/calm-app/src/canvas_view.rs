@@ -17,6 +17,7 @@ use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_m
 use calm_core::resize::ResizePolicy;
 use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
+use calm_core::terminal_profile::{ResolvedTerminal, TerminalIcon, display_cwd, render_title};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{BrowserEvent, HostView, NativeChild, StatusBar, show_context_menu};
 use gpui::prelude::FluentBuilder as _;
@@ -39,11 +40,15 @@ use crate::background::{self, BackgroundRenderer, BackgroundTexture};
 use crate::browser_panel::{BrowserEvents, BrowserPanel};
 use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::grid_paint::{self, GridFrame, GridTextures};
-use crate::plugin_host::{self, BridgeSender, PluginPanel};
+use crate::plugin_host::{self, BridgeSender, PluginPanel, Route};
+use crate::plugin_services::{self, ServiceCall};
 use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalEvent, TerminalPanel};
+use crate::terminal_profiles::{self, TerminalMeta};
 use crate::theme;
 use crate::tui_host::{self, TuiRun};
+
+mod plugin_menus;
 
 actions!(
     calm,
@@ -122,6 +127,8 @@ pub struct CanvasView {
     bridge: BridgeSender,
     /// Feeds bridge messages from plugin pages into `plugin_message`.
     _bridge_task: Task<()>,
+    /// What background bridge calls (`gh`, storage, `open`) run against. The smoke swaps it.
+    pub plugin_services: Arc<plugin_services::Services>,
     /// Path of the last saved layout, shown in the status bar. Task 13 sets it.
     pub saved_flash: Option<String>,
     focused: Option<PanelId>,
@@ -133,6 +140,12 @@ pub struct CanvasView {
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Restart state of TUI panels. Their terminal is in `terminals`.
     tui_runs: Vec<(PanelId, TuiRun)>,
+    /// Plain terminals opened from the `terminal` settings. Their terminal is in `terminals`.
+    terminal_meta: Vec<(PanelId, TerminalMeta)>,
+    /// Profile asked for by a menu item or a duplicate, read when the panel is created.
+    requested_profiles: HashMap<PanelId, String>,
+    /// Plain terminals opened so far, for `{n}`.
+    terminals_opened: u64,
     /// Decoded TUI image icons by absolute path, `None` when decoding failed. Decoded once,
     /// never per frame.
     tui_icons: HashMap<std::path::PathBuf, Option<Arc<RenderImage>>>,
@@ -163,6 +176,8 @@ pub struct CanvasView {
     status_bar_error: Option<String>,
     /// Joins and visible dividers in the last render. Read by the smoke.
     pub join_counts: (usize, usize),
+    /// `run` args of the plugin menu item opening a TUI panel right now.
+    pending_tui_args: Option<Vec<String>>,
 }
 
 impl CanvasView {
@@ -196,12 +211,16 @@ impl CanvasView {
             plugin_panels: Vec::new(),
             bridge,
             _bridge_task: bridge_task,
+            plugin_services: Arc::new(plugin_services::Services::default()),
             saved_flash: None,
             focused: None,
             hover: None,
             resize_cursor: None,
             terminals: Vec::new(),
             tui_runs: Vec::new(),
+            terminal_meta: Vec::new(),
+            requested_profiles: HashMap::new(),
+            terminals_opened: 0,
             tui_icons: HashMap::new(),
             browsers: Vec::new(),
             browser_events: None,
@@ -224,6 +243,7 @@ impl CanvasView {
             status_bar: None,
             status_bar_error: None,
             join_counts: (0, 0),
+            pending_tui_args: None,
         }
     }
 
@@ -236,6 +256,8 @@ impl CanvasView {
     /// Pushes the settings the input handler reads.
     pub fn apply_settings_to_input(&mut self) {
         self.input.snap = self.settings.settings.snap.config();
+        self.input.click_empty_clears_focus =
+            self.settings.settings.canvas.click_empty_clears_focus;
     }
 
     pub fn set_show_fps(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -285,6 +307,14 @@ impl CanvasView {
                         }
                     }
                 }
+                Effect::ClearFocus => {
+                    self.focused = None;
+                    // GPUI focus alone leaves a web view or Ghostty surface holding the keys.
+                    if !calm_native::focus_host_view(window) {
+                        eprintln!("focus: the canvas could not take the first responder");
+                    }
+                    self.focus_handle.focus(window, cx);
+                }
                 Effect::ClosePanelRequested(id) => {
                     // A browser's page is state too, so it confirms like a running terminal.
                     let alive = self
@@ -309,11 +339,7 @@ impl CanvasView {
                     self.show_menu(items, screen, MenuTarget::Canvas { world }, window, cx);
                 }
                 Effect::ShowPanelMenu { id, screen } => {
-                    if let Some(panel) = self.scene.get(id) {
-                        let can_restart = self
-                            .tui_run(id)
-                            .is_some_and(|run| run.supervisor.can_restart());
-                        let items = menu::panel_menu(panel, can_restart);
+                    if let Some(items) = self.panel_menu(id) {
                         self.show_menu(items, screen, MenuTarget::Panel(id), window, cx);
                     }
                 }
@@ -323,6 +349,7 @@ impl CanvasView {
                     }
                     self.terminals.retain(|(panel, _)| *panel != id);
                     self.tui_runs.retain(|(panel, _)| *panel != id);
+                    self.terminal_meta.retain(|(panel, _)| *panel != id);
                     self.browsers.retain(|(panel, _)| *panel != id);
                     self.plugin_panels.retain(|(panel, _)| *panel != id);
                     self.scene.remove(id);
@@ -379,23 +406,34 @@ impl CanvasView {
         .detach();
     }
 
-    fn apply_menu_choice(
+    /// Runs the item the native menu returned. The smoke calls this with an id from the
+    /// built menu, the same path a real click takes after the NSMenu closes.
+    pub(crate) fn apply_menu_choice(
         &mut self,
         id: &str,
         target: MenuTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.apply_plugin_choice(id, target, window, cx) {
+            window.refresh();
+            cx.notify();
+            return;
+        }
         let world = match target {
             MenuTarget::Canvas { world } => world,
             MenuTarget::Panel(_) => Point::new(0.0, 0.0),
         };
+        let profile = menu::terminal_profile_choice(id).map(str::to_string);
         let effects = match (menu::menu_action(id, world, &self.plugin_sizes), target) {
             (Some(MenuCommand::AddPanel { kind, mut rect }), MenuTarget::Canvas { .. }) => {
                 if matches!(kind, PanelKind::Terminal { .. }) {
                     rect.size = self.settings.settings.panels.default_terminal_size();
                 }
                 let id = self.scene.add(kind.clone(), rect);
+                if let Some(profile) = profile {
+                    self.requested_profiles.insert(id, profile);
+                }
                 let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
                 vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)]
             }
@@ -431,6 +469,10 @@ impl CanvasView {
                 let Some(copy) = self.scene.duplicate(id) else {
                     return;
                 };
+                if let Some(profile) = self.terminal_meta(id).and_then(|meta| meta.profile.clone())
+                {
+                    self.requested_profiles.insert(copy, profile);
+                }
                 let Some(panel) = self.scene.get(copy) else {
                     return;
                 };
@@ -456,9 +498,16 @@ impl CanvasView {
     ) {
         match kind {
             PanelKind::Terminal { command, cwd } => {
-                let mut options = terminal::options(command.as_deref(), cwd.clone());
-                settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
-                if let Err(err) = self.spawn_terminal(id, options, window, cx) {
+                let profile = self.requested_profiles.remove(&id);
+                let opened = self.open_plain_terminal(
+                    id,
+                    profile,
+                    command.as_deref(),
+                    cwd.clone(),
+                    window,
+                    cx,
+                );
+                if let Err(err) = opened {
                     eprintln!("calm: terminal failed to start: {err}");
                 }
             }
@@ -486,6 +535,123 @@ impl CanvasView {
         }
     }
 
+    /// Starts a plain terminal for a panel already in the scene, from `profile` (else the
+    /// default profile) over the `terminal` defaults. A command or cwd stored on the panel
+    /// wins over the profile's.
+    pub fn open_plain_terminal(
+        &mut self,
+        id: PanelId,
+        profile: Option<String>,
+        command: Option<&str>,
+        cwd: Option<std::path::PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let resolved = self.resolve_terminal(profile.as_deref());
+        if let Some(asked) = &profile
+            && resolved.profile.as_ref() != Some(asked)
+        {
+            eprintln!("calm: terminal profile {asked:?} not found, using the defaults");
+        }
+        let home = terminal_profiles::home_dir();
+        let inherited = self
+            .focused
+            .and_then(|focused| self.terminal_meta(focused))
+            .map(|meta| meta.cwd.clone());
+        let start = cwd.unwrap_or_else(|| {
+            terminal_profiles::start_dir(&resolved.cwd, inherited.as_deref(), &home)
+        });
+        let options = terminal_profiles::options(&resolved, command, start.clone());
+        let configuration = terminal_profiles::configuration_name(&options.configuration);
+        self.spawn_terminal(id, options, window, cx)?;
+        self.terminals_opened += 1;
+        self.terminal_meta.push((
+            id,
+            TerminalMeta {
+                profile,
+                index: self.terminals_opened,
+                cwd: start,
+                applied_colors: resolved.colors,
+                configuration,
+            },
+        ));
+        self.refresh_terminal_chrome(id, &resolved);
+        Ok(())
+    }
+
+    pub fn terminal_meta(&self, id: PanelId) -> Option<&TerminalMeta> {
+        self.terminal_meta
+            .iter()
+            .find(|(panel, _)| *panel == id)
+            .map(|(_, meta)| meta)
+    }
+
+    fn resolve_terminal(&self, profile: Option<&str>) -> ResolvedTerminal {
+        let settings = &self.settings.settings;
+        settings
+            .terminal
+            .resolve(profile, settings.panels.terminal_user_config)
+    }
+
+    fn settings_dir(&self) -> std::path::PathBuf {
+        self.settings
+            .path
+            .parent()
+            .map_or_else(std::path::PathBuf::new, std::path::Path::to_path_buf)
+    }
+
+    /// Sets the title and decodes an image icon once. Decoding and path problems are logged
+    /// once per path; the panel then shows the terminal icon.
+    fn refresh_terminal_chrome(&mut self, id: PanelId, resolved: &ResolvedTerminal) {
+        let Some(meta) = self.terminal_meta(id) else {
+            return;
+        };
+        let cwd = display_cwd(&meta.cwd, &terminal_profiles::home_dir());
+        let title = render_title(&resolved.title_template, meta.index, &cwd);
+        if let Some(panel) = self.scene.get_mut(id) {
+            panel.title = title;
+        }
+        if let Some(TerminalIcon::Image(relative)) = &resolved.icon {
+            let dir = self.settings_dir();
+            self.tui_icons.entry(dir.join(relative)).or_insert_with(|| {
+                terminal_profiles::icon_file(&dir, relative)
+                    .and_then(|path| crate::icon_image::load(&path))
+                    .inspect_err(|err| eprintln!("calm: {err}"))
+                    .ok()
+            });
+        }
+    }
+
+    /// After a settings change: every plain terminal's title and chrome follow at once, and
+    /// a changed palette recolors the running surface. Removing a palette, or switching the
+    /// Ghostty user config, needs a new terminal: libghostty only takes a new theme.
+    pub fn terminal_settings_changed(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<PanelId> = self.terminal_meta.iter().map(|(id, _)| *id).collect();
+        for id in ids {
+            let Some(meta) = self.terminal_meta(id) else {
+                continue;
+            };
+            let applied = meta.applied_colors;
+            let resolved = self.resolve_terminal(meta.profile.clone().as_deref());
+            self.refresh_terminal_chrome(id, &resolved);
+            let Some(colors) = resolved.colors.filter(|colors| Some(*colors) != applied) else {
+                continue;
+            };
+            let Some(terminal) = self.terminal(id) else {
+                continue;
+            };
+            let theme = terminal_profiles::theme(&colors);
+            match terminal.update(cx, |terminal, _| terminal.apply_theme(&theme)) {
+                Ok(()) => {
+                    if let Some((_, meta)) = self.terminal_meta.iter_mut().find(|(p, _)| *p == id) {
+                        meta.applied_colors = Some(colors);
+                    }
+                }
+                Err(err) => eprintln!("calm: terminal recolor failed: {err}"),
+            }
+        }
+    }
+
     /// Starts a TUI plugin's command in a terminal for a panel already in the scene.
     pub fn open_tui_panel(
         &mut self,
@@ -500,7 +666,8 @@ impl CanvasView {
             .find(|plugin| plugin.manifest.id == plugin_id)
             .ok_or_else(|| format!("plugin {plugin_id} is not installed"))?
             .clone();
-        let run = TuiRun::new(plugin)?;
+        let mut run = TuiRun::new(plugin)?;
+        run.extra_args = self.pending_tui_args.take().unwrap_or_default();
         if let Some(path) = run.icon_path() {
             self.tui_icons.entry(path).or_insert_with_key(|path| {
                 crate::icon_image::load(path)
@@ -634,6 +801,23 @@ impl CanvasView {
 
     /// The chrome look paint uses for a panel. Read by the smoke.
     pub fn panel_look(&self, id: PanelId) -> PanelLook {
+        if let Some(meta) = self.terminal_meta(id) {
+            let resolved = self.resolve_terminal(meta.profile.as_deref());
+            let icon = match resolved.icon {
+                Some(TerminalIcon::Text(text)) => Some(IconLook::Text(text)),
+                Some(TerminalIcon::Image(relative)) => self
+                    .tui_icons
+                    .get(&self.settings_dir().join(relative))
+                    .cloned()
+                    .flatten()
+                    .map(IconLook::Image),
+                None => None,
+            };
+            return PanelLook {
+                overrides: resolved.overrides,
+                icon,
+            };
+        }
         let Some(run) = self.tui_run(id) else {
             return PanelLook::default();
         };
@@ -712,11 +896,6 @@ impl CanvasView {
         self.installed_plugins.extend(plugins);
     }
 
-    /// The Add menu as the user would see it now.
-    pub fn canvas_menu(&self) -> Vec<menu::MenuItem> {
-        menu::canvas_menu(&self.plugins, &self.apps, &self.plugin_search_dirs)
-    }
-
     /// (loading, load error) per plugin panel, in creation order.
     pub fn plugin_status(&self) -> Vec<(bool, Option<String>)> {
         self.plugin_panels
@@ -737,13 +916,44 @@ impl CanvasView {
         let Some(panel) = self.scene.get_mut(id) else {
             return;
         };
-        let Some(response) = plugin_host::dispatch(panel, &request) else {
-            return;
+        let response = match plugin_host::route(panel, &request) {
+            Route::Reply(Some(response)) => response,
+            Route::Reply(None) => return,
+            Route::Background(call) => return self.serve_in_background(id, request.id, call, cx),
         };
-        if let Some((_, plugin)) = self.plugin_panels.iter_mut().find(|(p, _)| *p == id) {
-            plugin.reply(&response);
-        }
+        self.reply_to_plugin(id, &response);
         cx.notify();
+    }
+
+    fn reply_to_plugin(&mut self, id: PanelId, response: &calm_plugins::BridgeResponse) {
+        if let Some((_, plugin)) = self.plugin_panels.iter_mut().find(|(p, _)| *p == id) {
+            plugin.reply(response);
+        }
+    }
+
+    /// Runs a blocking bridge call on the background executor and answers from a fresh
+    /// task, never from inside the message callback. A panel closed meanwhile gets nothing.
+    fn serve_in_background(
+        &mut self,
+        id: PanelId,
+        request_id: u64,
+        call: ServiceCall,
+        cx: &mut Context<Self>,
+    ) {
+        let services = self.plugin_services.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { services.run(call) })
+                .await;
+            let response = plugin_host::service_reply(request_id, result);
+            // Err means the canvas is gone, so there is no page left to answer.
+            let _ = this.update(cx, |view, cx| {
+                view.reply_to_plugin(id, &response);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Applies each plugin panel's mode for this frame. Called right after paint with the
@@ -1252,14 +1462,60 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// Escape that reached the canvas. A native view with the keyboard keeps it, and its
+    /// panel keeps focus: Escape belongs to the program or page in there.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.input.confirming.is_some() {
-            if let Some(effect) = self.input.confirm_key(ConfirmKey::Escape) {
-                self.apply_effects(vec![effect], window, cx);
-            }
-            return;
-        }
-        self.set_tool(Tool::Select, window, cx);
+        let native_keyboard = calm_native::host_view_is_first_responder(window) != Some(true);
+        let effects = self.input.escape(native_keyboard);
+        self.apply_effects(effects, window, cx);
+    }
+
+    /// A world point on screen over no panel, chrome or resize band. Only the smoke uses it.
+    pub fn smoke_empty_point(&self) -> Option<Point> {
+        let size = self.viewport.size;
+        let steps = |len: f64| (1..(len / 20.0) as usize).map(|i| i as f64 * 20.0);
+        steps(size.height)
+            .flat_map(|y| steps(size.width).map(move |x| Point::new(x, y)))
+            .map(|screen| self.scene.camera.screen_to_world(screen))
+            .find(|world| {
+                self.scene.hit_test(*world).is_none() && self.resize_cursor_at(*world).is_none()
+            })
+    }
+
+    pub fn focused(&self) -> Option<PanelId> {
+        self.focused
+    }
+
+    /// Presses and releases `button` at `world` through the real mouse handlers, without
+    /// moving. Only the smoke uses it.
+    pub fn smoke_click(
+        &mut self,
+        world: Point,
+        button: MouseButton,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let screen = self.scene.camera.world_to_screen(world);
+        let position = point(
+            px((screen.x + self.viewport.origin.x) as f32),
+            px((screen.y + self.viewport.origin.y) as f32),
+        );
+        let modifiers = gpui::Modifiers::default();
+        let down = MouseDownEvent {
+            button,
+            position,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        };
+        self.mouse_down(&down, window, cx);
+        let up = MouseUpEvent {
+            button,
+            position,
+            modifiers,
+            click_count: 1,
+        };
+        self.mouse_up(&up, window, cx);
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1281,7 +1537,7 @@ impl CanvasView {
 
 /// What a context menu was opened on.
 #[derive(Clone, Copy, Debug)]
-enum MenuTarget {
+pub(crate) enum MenuTarget {
     /// Empty canvas; new panels go at `world`.
     Canvas {
         world: Point,

@@ -40,6 +40,9 @@ pan, zoom or minimize it. Only an explicit, confirmed close ends it.
 - Right-click a title bar for Minimize or Restore, Zoom to Fit, Bring to Front, Send to Back,
   Duplicate (terminals) and Delete.
 - Closing a running terminal or a browser asks first. This can be turned off.
+- A click on empty canvas, left or right, drops panel focus: the focus ring goes and typing
+  goes back to the canvas. Pans and zooms keep focus. Off with
+  `canvas.click_empty_clears_focus=false` (Settings, Canvas and Snapping).
 
 ### Browser
 
@@ -139,11 +142,17 @@ from the TSX template in [templates/plugin-tsx](templates/plugin-tsx/README.md).
 
 ## Configuration
 
-- Settings live in `~/.config/calm/settings.json`.
+- Settings live in `~/.config/calm/settings.json`. Terminal defaults and profiles are
+  described in [docs/configuration.md](docs/configuration.md).
 - `CALM_HOME` replaces `~/.config/calm` for settings and plugins.
 - `CALM_PLUGIN_PATH` adds plugin folders, `:` separated like `PATH`. For development:
   `CALM_PLUGIN_PATH=./plugins cargo run -p calm-app`.
 - Without it, plugins load from `$CALM_HOME/plugins` or `~/.config/calm/plugins`.
+- GitHub access for plugins goes through `gh`. Either run `gh auth login`, or put
+  `GITHUB_TOKEN=<your token>` in `~/.config/calm/.env` (`chmod 600` it). Order:
+  `GH_TOKEN` or `GITHUB_TOKEN` in CALM's environment, then `$CALM_HOME/.env`, then in dev
+  builds the checkout's `.env`, then `gh`'s own login. Details in
+  [docs/plugins.md](docs/plugins.md#github-access).
 
 ## Project status
 
@@ -164,6 +173,7 @@ and most of the plugin bridge.
 
 - [Developer setup](docs/dev-setup.md): prerequisites, running, tests, make targets.
 - [Architecture](docs/architecture.md): terminals, native views and previews.
+- [Configuration](docs/configuration.md): `settings.json`, terminal defaults and profiles.
 - [Plugins](docs/plugins.md): manifest, `window.calm` API and the trust model.
 - [Releases and CI](docs/release.md): CI jobs, cutting a release, the macOS bundle.
 - [Design spec](docs/superpowers/specs/2026-10-31-calm-design.md) and

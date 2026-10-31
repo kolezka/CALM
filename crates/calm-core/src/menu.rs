@@ -10,6 +10,9 @@ pub const ADD_TERMINAL: &str = "add.terminal";
 pub const ADD_BROWSER: &str = "add.browser";
 pub const ADD_PLUGIN_PREFIX: &str = "add.plugin.";
 pub const ADD_TUI_PREFIX: &str = "add.tui.";
+/// A plain terminal opened with the named profile from `terminal.profiles`.
+pub const ADD_TERMINAL_PROFILE_PREFIX: &str = "add.terminal_profile.";
+pub const TERMINAL_PROFILES_LABEL: &str = "Terminal Profiles";
 /// Starts a TUI panel's command again after it exited.
 pub const PANEL_RESTART: &str = "panel.restart";
 pub const PANEL_MINIMIZE: &str = "panel.minimize";
@@ -103,6 +106,41 @@ pub fn canvas_menu(
     }]
 }
 
+/// Adds a "Terminal Profiles" submenu right after Terminal in the Add menu, one item per
+/// (id, name) profile. No profiles leaves the menu as it is.
+pub fn with_terminal_profiles(
+    mut items: Vec<MenuItem>,
+    profiles: &[(String, String)],
+) -> Vec<MenuItem> {
+    if profiles.is_empty() {
+        return items;
+    }
+    let submenu = MenuItem::Submenu {
+        label: TERMINAL_PROFILES_LABEL.to_string(),
+        items: profiles
+            .iter()
+            .map(|(id, name)| action(&format!("{ADD_TERMINAL_PROFILE_PREFIX}{id}"), name))
+            .collect(),
+    };
+    for item in &mut items {
+        if let MenuItem::Submenu { items: add, .. } = item {
+            let at = add.iter().position(
+                |entry| matches!(entry, MenuItem::Action { id, .. } if id == ADD_TERMINAL),
+            );
+            if let Some(at) = at {
+                add.insert(at + 1, submenu);
+                break;
+            }
+        }
+    }
+    items
+}
+
+/// The profile id a menu choice asks for, if it is a profile item.
+pub fn terminal_profile_choice(id: &str) -> Option<&str> {
+    id.strip_prefix(ADD_TERMINAL_PROFILE_PREFIX)
+}
+
 /// Right click on a panel's chrome strip or minimized chip.
 /// Zoom to Fit needs the full panel, so a minimized panel omits it. Duplicate is offered
 /// for terminals only: browser and plugin panels have no native view in the app yet.
@@ -149,6 +187,9 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
         })
     };
     match id {
+        _ if terminal_profile_choice(id).is_some() => {
+            menu_action(ADD_TERMINAL, world, plugin_sizes)
+        }
         ADD_TERMINAL => add(
             PanelKind::Terminal {
                 command: None,
@@ -196,6 +237,35 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_profiles_get_a_submenu_after_terminal() {
+        let base = canvas_menu(&[], &[], &[]);
+        assert_eq!(with_terminal_profiles(base.clone(), &[]), base);
+        let profiles = [("neon".to_string(), "Neon".to_string())];
+        let [MenuItem::Submenu { items, .. }] = &with_terminal_profiles(base, &profiles)[..] else {
+            panic!("expected the Add submenu");
+        };
+        assert!(matches!(&items[0], MenuItem::Action { id, .. } if id == ADD_TERMINAL));
+        let MenuItem::Submenu {
+            label,
+            items: entries,
+        } = &items[1]
+        else {
+            panic!("expected the profiles submenu second, got {:?}", items[1]);
+        };
+        assert_eq!(label, TERMINAL_PROFILES_LABEL);
+        assert_eq!(entries, &vec![action("add.terminal_profile.neon", "Neon")]);
+        assert_eq!(
+            terminal_profile_choice("add.terminal_profile.neon"),
+            Some("neon")
+        );
+        assert_eq!(terminal_profile_choice(ADD_TERMINAL), None);
+        assert_eq!(
+            menu_action("add.terminal_profile.neon", Point::new(0.0, 0.0), &[]),
+            menu_action(ADD_TERMINAL, Point::new(0.0, 0.0), &[])
+        );
+    }
 
     fn plugins() -> Vec<(String, String)> {
         vec![

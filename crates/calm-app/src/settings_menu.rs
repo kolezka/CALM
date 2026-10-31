@@ -124,6 +124,7 @@ impl CanvasView {
             eprintln!("calm: {err}");
         }
         self.apply_settings_to_input();
+        self.terminal_settings_changed(cx);
         let show_fps = self.show_fps;
         let settings = self.settings.settings.clone();
         cx.defer(move |cx| cx.set_menus(menus(show_fps, &settings)));

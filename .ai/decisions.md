@@ -10,7 +10,9 @@ one means a new entry, not an edit.
 - **No tmux integration.** A terminal panel can run tmux itself. Cost: no session survival
   across app quit, which the user accepted.
 - **Processes need not survive app quit.** Fresh canvas after reboot, optional saved
-  layouts whose terminals start empty.
+  layouts whose terminals start empty. The "fresh canvas" part is superseded by "Restore
+  the last session on launch" (Canvas persistence, below) once that plan lands; processes
+  still do not survive.
 - **Plugins are HTML/JS (TSX) and trusted.** Minimal effort, no sandbox, explicitly
   installed. Cost: a malicious plugin has host access; mitigated by explicit install only.
 - **GitHub through `gh` on the host.** Plugin JS never sees a token. Cost: users must have
@@ -39,11 +41,12 @@ one means a new entry, not an edit.
   changed; `set_frame` runs on every placement and the crate dedupes.
 - **Context menu is a native NSMenu.** A GPUI popover would be covered by native views.
   "Add" creates a panel at the click point with a default size (terminal 640x400, browser
-  800x600). The toolbar shrank to a status strip.
+  800x600). The toolbar shrank to a status strip (since replaced by the bottom status pill,
+  below).
 - **Preview cadence is one snapshot per 2 s per terminal.** Entering preview does not
   force a snapshot; a failed refresh keeps the last image marked `preview stale`. The smoke
   enforces 1 to 3 snapshots in its window.
-- **Grid is drawn as lines, not dots.** About 1500 dot quads stalled paint, which stopped
+- **Superseded by "Dot and cross grids are back" below.** **Grid is drawn as lines, not dots.** About 1500 dot quads stalled paint, which stopped
   preview refresh. Cost: a different look than the brief; the user can veto.
 - **Default snap grid is 8 world units, not the requested 3 pixels.** Terminal cells are
   about 8 px wide at zoom 1, so 3 is not a cell multiple. Edge snap within 8, `alt`
@@ -175,7 +178,7 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   `calm` bridge; plugin scripts run in a separate content world. Cost: such a plugin can
   act as the user on every site open in a browser panel. That fits trusted plugins and is
   documented next to the capability.
-- **Capabilities are enforced: undeclared calls are rejected** with `capability_missing`.
+- **Superseded by "capabilities are declarative only" below.** **Capabilities are enforced: undeclared calls are rejected** with `capability_missing`.
   The manifest list is only useful if it is true. It is a declaration, not a sandbox.
   Manifests without `apiVersion` get the implicit v1 set. Cost: author friction.
 - **External control socket approved, with PR #9's allowlist.** Default is read-only plus
@@ -253,6 +256,108 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   wins and the shadowing is logged. Off with `plugins.builtin=false` or
   `CALM_NO_BUILTIN_PLUGINS=1`. Reason: `gmake plugins && cargo run` showed no plugins. Cost:
   the dev path is baked in at compile time, so a moved checkout needs a rebuild.
+
+## Agents (2026-10-31)
+
+- **Shut down idle agents at once.** When a teammate or subagent has reported a verified
+  result, or failed, the lead stops it and confirms it left the agent list. A new task gets
+  a new session. The user's rule (PR #14); no reason was recorded with it. Cost: a
+  follow-up question needs a fresh agent that rebuilds context.
+
+## Canvas persistence (2026-10-31, plan, not built)
+
+Plan in `docs/superpowers/plans/2026-10-31-canvas-persistence.md`, approved by the user.
+
+- **Restore the last session on launch, on by default.** `session.restore_on_launch` is
+  `on`, `off` or `ask`; `--layout` and `--no-restore` override it. Only the arrangement comes
+  back (kind, rect, order, settings); processes start fresh. Reverses the spec line "a fresh
+  launch starts with an empty canvas"; the plan's first PR amends the spec. Cost if wrong:
+  a bad session file greets every launch, so a failed restore moves it aside and starts empty.
+- **Layouts live in a standard File menu.** New Canvas, Open Layout, Open Recent, Save
+  Layout, Save Layout As, Restore Previous Session, Reveal Layouts in Finder, before View. It
+  replaces a Layouts menu from an earlier draft. Cost: `cmd-n`, `cmd-o` and `cmd-s` are taken.
+- **Browser URLs lose query and fragment on save.** `session.browser_query` defaults to
+  `strip_all`; `keep` is opt-in. Reason: the "no credentials in layouts" rule, and tokens
+  often ride in query strings. A name list (`strip_sensitive`) was rejected as best effort.
+  Cost: pages that need their query reopen without it.
+
+## Platform (2026-10-31)
+
+- **A Linux port stays a plan only.** The app is macOS only; a Linux port plan exists as a
+  proposal and nothing is built. Linux CI keeps testing the portable crates. Reason: the
+  native layer (Ghostty parenting, WKWebView, NSMenu, NSWindow) has no Linux backend, and the
+  macOS prototype is not done. Cost: no Linux users until a backend is designed.
+
+## Terminal profiles (2026-10-31)
+
+- **Terminal options live in `settings.json` under `terminal`, snake_case like the rest of the
+  file.** Defaults at the top level, named `profiles` beside them. No version bump: a file
+  without the section loads as before. Cost: TUI manifests say `accentColor`, settings say
+  `accent_color`.
+- **Unknown keys in `terminal` are errors.** Serde flatten collects them so `validate` can
+  name them. Other sections still ignore unknown keys. Cost: inconsistent strictness.
+- **`use_ghostty_user_config` is per profile; the global switch stays
+  `panels.terminal_user_config`.** One global knob, not two. `terminal_colors` lays over the
+  user config when it is on, over Ghostty defaults when off, same as TUI.
+- **`command` and `args` are one unit.** The layer that sets `command` gives the args; args
+  alone are an error. `env` merges key by key. Other fields are taken whole.
+- **Env goes through `/usr/bin/env` in argv.** gpui-libghostty 0.3.1 has no env option.
+  Values are never printed, and Settings masks them, but `ps` shows them. Documented.
+- **Live recolor uses `TerminalThemeState::apply`.** It exists in 0.3.1 and keeps the process.
+  It cannot remove a theme or flip the user config, so those apply to new terminals.
+- **The panel's profile is kept beside the scene, not in `PanelKind`.** Layouts are not
+  wired and other branches edit `PanelKind` users. Move it into the kind with layout save.
+
+## Blur on outside click (2026-10-31)
+
+- **A click on nothing drops focus.** A left press and release on empty canvas within
+  `CLICK_SLOP` (4 points), or a right click there, emits `Effect::ClearFocus`: the scene
+  forgets the focused panel and the GPUI host view becomes the AppKit first responder, so a
+  Ghostty surface, web view or address field stops getting keys. Drawing with a tool clears
+  focus on press. Pans (space, middle button, scroll, pinch) never do. Setting
+  `canvas.click_empty_clears_focus`, default true. Reason: the focus ring and the keyboard
+  stayed with the last panel after clicking away. Cost: a click on empty canvas while typing
+  into a terminal moves the keyboard away, like any other app.
+- **Escape clears focus only when no native view has the keyboard.** The canvas `Cancel`
+  action checks the first responder; when a terminal, page or address field holds it,
+  Escape stays theirs and focus stays. Same setting. Reason: never steal Escape from a
+  running program. Cost: Escape cannot blur a panel whose native view holds the keyboard.
+
+## Plugin context menu items (2026-10-31)
+
+- **Flat `contributes.menus` items, not v2's `commands` plus `menus.canvas/panel`.** Each item
+  carries its own `id`, `title` and `location`, and `when` is a struct (`kind`, `plugin`,
+  `minimized`) instead of the `kind == terminal` string. Reason: the lead's brief for the
+  user's request, one place per item, and strict per-field validation without a parser.
+  Cost: a later `contributes.commands` (for key bindings) needs items to reference commands
+  or keep both shapes.
+- **The payload key is `id`, not v2's `command`,** and it adds `location`, the full `panel`
+  info and `world`. The event name stays `command`.
+- **Built-in items first, plugins cannot remove them.** Plugin sections follow a separator,
+  one per plugin in discovery order. Reason: plugins are trusted, but a broken plugin must
+  not hide Delete. Users hide plugin items with `plugins.menus.hidden`.
+- **Submenu above 3 items per plugin, a setting (`plugins.menus.submenu_above`).** Three
+  items inline keep a short menu flat; more nest under the plugin name.
+- **No background page target.** v2 sends commands to a background page first; those do not
+  exist, so the order is clicked panel, focused panel, frontmost panel, else a new panel.
+  `"open": "new"` skips reuse. The prelude queues commands until a handler registers, and
+  undeliverable commands are logged.
+- **`icon` is text before the title, no `shortcut`.** NSMenu images and key equivalents would
+  need `MenuItem` changes across the menu code; a key shown in a context menu that does not
+  work outside it would mislead. Key bindings belong to v2 `keybindings`.
+- **No runtime `calm.menus.register` yet.** It needs a per-plugin registry the bridge
+  dispatcher can reach, which is being changed in parallel for `github.api`.
+- **`apiVersion` is not required for `contributes`.** The host does not read `apiVersion`
+  yet.
+
+## Plugin API v2 refresh (2026-10-31)
+
+- **Layouts move into plugin API v2 as phase 16.** The v2 design listed layout save and
+  load as a non-goal; the canvas persistence plan needs `layouts.list`, `save`, `open`,
+  `delete` and `session.saveNow`, so the design now has them. `layouts.open` closes live
+  terminals only through the user's confirmation, and the write methods sit in the
+  external socket's `layout` group. The plan's File menu and restore on launch are
+  decided. Cost: phase 16 waits on the plan's PRs 1 to 7.
 
 ## Runtime app icon and About panel (2026-10-31)
 
