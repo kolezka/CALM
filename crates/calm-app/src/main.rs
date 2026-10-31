@@ -220,8 +220,12 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 .join(",")
         );
         println!("smoke: {line}");
-        if taken.len() != 2 || taken.iter().any(|count| *count > SMOKE_MAX_SNAPSHOTS) {
-            smoke_fail(&format!("too many preview snapshots: {line}"));
+        if taken.len() != 2
+            || taken
+                .iter()
+                .any(|count| *count == 0 || *count > SMOKE_MAX_SNAPSHOTS)
+        {
+            smoke_fail(&format!("preview refresh outside 1..=3 snapshots: {line}"));
         }
         // Input divs over a preview would steal its scroll and keys from the canvas.
         println!("smoke: preview_input_targets={targets}");

@@ -785,7 +785,7 @@ mod tests {
             &mut scene,
         );
         assert!(below.is_empty());
-        handler.mouse_up(Point::new(100.0, 100.0), &mut scene);
+        handler.mouse_up(Point::new(100.0, 100.0), no_mods(), &mut scene);
 
         let effects =
             handler.mouse_down(Point::new(100.0, 10.0), Button::Left, no_mods(), &mut scene);
