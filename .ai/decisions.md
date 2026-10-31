@@ -148,3 +148,21 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   guard for the user's work against plugin bugs; a backend could still kill the process).
 - **Bun runtime source: pending the user.** Recommended: bun on the user's system with a
   fixed lookup order and a loud failure, not a bundled copy.
+
+## Panel resize (2026-10-31)
+
+- **One resize policy for every kind, in `calm-core::resize`.** `ResizePolicy::derive`
+  takes the kind and, for plugins, the manifest's `resizable`, `minSize` and `maxSize`.
+  Press, drag clamp and the hover cursor all read it through `resize_target` and
+  `InputHandler::hover_resize`. Terminals and browsers are always free. Bad manifest values
+  are errors in `calm-plugins`, never defaults. Cost: `calm-plugins` depends on `calm-core`.
+- **Resize handles live outside the panel, in GPUI pixels.** A band of 8 screen px past the
+  right and bottom edges, plus the old 12 unit band inside (which only reaches GPUI over
+  terminals and previews). Rejected: insetting the web view from its edges, which would
+  break "zoom view bounds equal the panel's logical size", and painting over the native
+  rect. Cost: a press just outside a panel resizes it instead of hitting what is behind,
+  and over a joined or overlapping neighbor that is a live web view, the web view still
+  wins the click.
+- **Only right, bottom and corner handles.** Left and top edges would move the origin and
+  touch `snap_resize`, which PR #12 rewrites. Cost: no resize from the left or top yet.
+- **No `aspectRatio`.** Snapping and two clamped axes make it more than cheap.

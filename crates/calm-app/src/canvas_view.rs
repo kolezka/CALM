@@ -8,19 +8,20 @@ use calm_core::chrome::{
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
-    Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, Tool, ZoomStep,
+    Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool, ZoomStep,
 };
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
+use calm_core::resize::ResizePolicy;
 use calm_core::scene::{Panel, PanelId, PanelKind, Scene, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{BrowserEvent, HostView, NativeChild, StatusBar, show_context_menu};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, BorderStyle, Bounds, BoxShadow, ContentMask, Context, Corners, DispatchPhase, Edges,
-    Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, ParentElement,
+    App, BorderStyle, Bounds, BoxShadow, ContentMask, Context, Corners, CursorStyle, DispatchPhase,
+    Edges, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
+    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, ParentElement,
     PathBuilder, PinchEvent, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
     SharedString, Styled, Task, TextAlign, TextRun, WeakEntity, Window, actions, canvas, div, fill,
     outline, point, px, quad, rgb, rgba, size,
@@ -116,6 +117,8 @@ pub struct CanvasView {
     focused: Option<PanelId>,
     /// Panel under the pointer and the chrome button under it. Shows the buttons.
     hover: Option<(PanelId, Option<ChromeButton>)>,
+    /// Resize edge under the pointer, or of the resize under way. Sets the cursor.
+    resize_cursor: Option<ResizeEdge>,
     /// Live terminals by panel. Dropping an entry ends its process.
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Live browser panels. Dropping an entry closes its page.
@@ -173,6 +176,7 @@ impl CanvasView {
             saved_flash: None,
             focused: None,
             hover: None,
+            resize_cursor: None,
             terminals: Vec::new(),
             browsers: Vec::new(),
             browser_events: None,
@@ -457,8 +461,14 @@ impl CanvasView {
             Some(_) => format!("{} (not built)", plugin.manifest.name),
             None => plugin.manifest.name.clone(),
         };
+        let resize = self.scene.get(id).map(|scene_panel| {
+            ResizePolicy::derive(&scene_panel.kind, Some(&plugin.manifest.resize()))
+        });
         if let Some(scene_panel) = self.scene.get_mut(id) {
             scene_panel.title = title;
+        }
+        if let Some(policy) = resize {
+            self.scene.set_resize_policy(id, policy);
         }
         self.plugin_panels.push((id, panel));
         Ok(())
@@ -859,9 +869,10 @@ impl CanvasView {
         let hover = hover_target(&self.scene, self.scene.camera.screen_to_world(screen));
         let hover_changed = hover != self.hover;
         self.hover = hover;
+        let cursor_changed = self.update_resize_cursor(screen);
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
-        } else if hover_changed {
+        } else if hover_changed || cursor_changed {
             cx.notify();
         }
     }
@@ -870,14 +881,84 @@ impl CanvasView {
         if !matches!(event.button, MouseButton::Left | MouseButton::Middle) {
             return;
         }
-        let effects = self.input.mouse_up(
-            self.to_canvas(event.position),
-            to_mods(&event.modifiers),
-            &mut self.scene,
-        );
+        let screen = self.to_canvas(event.position);
+        let effects = self
+            .input
+            .mouse_up(screen, to_mods(&event.modifiers), &mut self.scene);
+        let cursor_changed = self.update_resize_cursor(screen);
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
+        } else if cursor_changed {
+            cx.notify();
         }
+    }
+
+    /// The resize cursor follows the same handle lookup as a press. True if it changed.
+    fn update_resize_cursor(&mut self, screen: Point) -> bool {
+        let cursor = self.input.hover_resize(screen, &self.scene);
+        let changed = cursor != self.resize_cursor;
+        self.resize_cursor = cursor;
+        changed
+    }
+
+    /// Drives a press, a move by `delta` canvas pixels and a release through the real
+    /// mouse handlers, starting at `from_world`. Alt is held so snapping stays out of the
+    /// numbers. Only the smoke uses it.
+    pub fn smoke_drag(
+        &mut self,
+        from_world: Point,
+        delta: Point,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let start = self.scene.camera.world_to_screen(from_world);
+        let position = |x: f64, y: f64| {
+            point(
+                px((x + self.viewport.origin.x) as f32),
+                px((y + self.viewport.origin.y) as f32),
+            )
+        };
+        let modifiers = gpui::Modifiers {
+            alt: true,
+            ..gpui::Modifiers::default()
+        };
+        let from = position(start.x, start.y);
+        let to = position(start.x + delta.x, start.y + delta.y);
+        let down = MouseDownEvent {
+            button: MouseButton::Left,
+            position: from,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        };
+        self.mouse_down(&down, window, cx);
+        let moved = MouseMoveEvent {
+            position: to,
+            pressed_button: Some(MouseButton::Left),
+            modifiers,
+        };
+        self.mouse_move(&moved, window, cx);
+        let up = MouseUpEvent {
+            button: MouseButton::Left,
+            position: to,
+            modifiers,
+            click_count: 1,
+        };
+        self.mouse_up(&up, window, cx);
+    }
+
+    /// The resize edge a hover at `world` shows a cursor for.
+    pub fn resize_cursor_at(&self, world: Point) -> Option<ResizeEdge> {
+        let screen = self.scene.camera.world_to_screen(world);
+        self.input.hover_resize(screen, &self.scene)
+    }
+
+    /// (panel, web view frame size) per browser, in creation order.
+    pub fn browser_page_sizes(&self) -> Vec<(PanelId, Size)> {
+        self.browsers
+            .iter()
+            .map(|(id, browser)| (*id, browser.page_size()))
+            .collect()
     }
 
     fn scroll(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -1650,6 +1731,13 @@ impl Render for CanvasView {
                     .flex_1()
                     .w_full()
                     .relative()
+                    .when_some(self.resize_cursor, |canvas, edge| {
+                        canvas.cursor(match edge {
+                            ResizeEdge::Right => CursorStyle::ResizeLeftRight,
+                            ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
+                            ResizeEdge::BottomRight => CursorStyle::ResizeUpLeftDownRight,
+                        })
+                    })
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                     .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
                     .on_mouse_down(MouseButton::Right, cx.listener(Self::mouse_down))
