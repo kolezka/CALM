@@ -204,6 +204,110 @@ Buttons: `Terminal`, `Browser`, one per discovered plugin (Task 11 fills the lis
 
 ---
 
+### Task 6b: Developer menu with an FPS overlay (`calm-app`)
+
+Added 2026-10-31 at the user's request. Runs after Task 8 merges, because it touches the same app files.
+
+**Files:**
+- Create: `crates/calm-core/src/frame_stats.rs`, `crates/calm-app/src/dev_menu.rs`
+- Modify: `crates/calm-app/src/main.rs`, `crates/calm-app/src/canvas_view.rs`, `crates/calm-app/src/toolbar.rs`
+
+**Interfaces:**
+- Produces (`calm-core/frame_stats.rs`, pure, tested): `FrameStats::new(window: Duration)` (default window 1 s), `fn record(&mut self, now: Instant)`, `fn fps(&self) -> Option<f64>` (frames in the trailing window divided by the window span, `None` until two frames), `fn p95_ms(&self) -> Option<f64>`, `fn reset(&mut self)`. Task 14 reuses it for the benchmark.
+- Produces (`calm-app`): a macOS menu bar menu `Developer` (via `cx.set_menus`) with the items `Show FPS` (checkbox state, `cmd-shift-f`), `Reset FPS Stats`; a `ToggleFps` / `ResetFps` GPUI action pair; `CanvasView.show_fps: bool` and `frame_stats: FrameStats`. When `show_fps` is on, the canvas requests a frame every tick (`window.request_animation_frame()` in the `on_next_frame` loop) and draws `FPS 60.0  p95 16.7ms` at the right end of the toolbar strip in `theme` text color; when off, no extra frames are requested and nothing is drawn. The overlay lives in the toolbar strip only, never over the canvas viewport (native views cover it).
+
+- [ ] **Step 1: Write failing tests** (`calm-core`): `fps_is_none_before_two_frames`, `fps_counts_frames_in_trailing_window` (61 frames 16 ms apart over 0.96 s gives fps within 0.5 of 62.5), `old_frames_fall_out_of_window`, `p95_of_mixed_intervals`, `reset_clears`.
+- [ ] **Step 2: Run** `cargo test -p calm-core` Expected: FAIL. **Step 3: Implement.** **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Implement the menu and overlay** in `calm-app`. Extend `--smoke`: after the two panels render, toggle `show_fps` on programmatically, wait for 10 more frames, print `smoke: fps=<value>` (value > 0) and keep exit 0 only if the value is present.
+- [ ] **Step 6: Verify** `cargo run -p calm-app -- --smoke; echo rc=$?` rc=0 with the fps line; `cargo clippy --workspace --all-targets -- -D warnings; echo rc=$?`; `cargo fmt --all -- --check; echo rc=$?`. Manual: open the app, pick Developer > Show FPS, confirm the readout appears in the toolbar and updates while panning; pick it again to hide it.
+- [ ] **Step 7: Commit** `feat(app): add Developer menu with FPS overlay`
+
+---
+
+### Task 6c: Right-click context menu replaces the element toolbar (`calm-core`, `calm-native`, `calm-app`)
+
+Added 2026-10-31 at the user's request. Runs after Task 8 merges (same app files as 6b; implement 6b and 6c in one dispatch).
+
+**Files:**
+- Create: `crates/calm-core/src/menu.rs`, `crates/calm-native/src/menu.rs`
+- Modify: `crates/calm-core/src/interaction.rs`, `crates/calm-app/src/canvas_view.rs`, `crates/calm-app/src/toolbar.rs`, `crates/calm-native/examples/native_smoke.rs`
+
+**Interfaces:**
+- Produces (`calm-core/menu.rs`, pure, tested): `MenuItem::{ Action { id: String, label: String }, Submenu { label: String, items: Vec<MenuItem> }, Separator }`; `fn canvas_menu(plugins: &[(String, String)]) -> Vec<MenuItem>` = `Submenu "Add"` with `Action { id: "add.terminal", label: "Terminal" }`, `Action { id: "add.browser", label: "Browser" }`, then a `Separator` and one `Action { id: "add.plugin.<plugin_id>", label: <name> }` per plugin (no separator when there are no plugins); `fn panel_menu(minimized: bool) -> Vec<MenuItem>` = `Action "panel.minimize"` labelled `Minimize` or `Restore`, `Separator`, `Action "panel.close"` labelled `Close`; `fn menu_action(id: &str, world: Point, plugins: &[(String, String)]) -> Option<MenuCommand>` mapping ids to `MenuCommand::{ AddPanel { kind: PanelKind, rect: Rect }, Minimize, Close }`, where the new rect's origin is the right-click world point and the size is `DEFAULT_TERMINAL_SIZE = 640x400`, `DEFAULT_BROWSER_SIZE = 800x600`, or the plugin's default size passed in by the caller (extend the signature with `plugin_default_sizes: &[(String, Size)]` if simpler).
+- Produces (`calm-native/menu.rs`): `fn show_context_menu(items: &[MenuItem], screen_point: Point, host_view: &NativeView /* the GPUI window content view */) -> Option<String>` using `NSMenu` and `popUpMenuPositioningItem:atLocation:inView:`; nested `Submenu` items become `NSMenu` submenus; returns the chosen action id or `None` when dismissed. Native menus render above native views, which is why the menu is not GPUI-painted.
+- Interaction (`calm-core/interaction.rs`): right mouse button (`Button::Right`) down on empty canvas emits `Effect::ShowCanvasMenu { screen, world }`; right down on a panel's chrome emits `Effect::ShowPanelMenu { id, screen }`; right down on a panel's content rect emits nothing (the content owns its right clicks). The app runs `show_context_menu`, maps the id with `menu_action`, and applies: `AddPanel` creates the panel at the click point with the default size and focuses it (no drag needed); `Minimize` toggles; `Close` goes through `request_close`.
+- Toolbar: remove the element buttons (`Terminal`, `Browser`, plugin buttons); keep a slim status strip with the zoom percentage, the `Saved <path>` flash and the FPS readout from Task 6b. Keyboard draw tools (`t`, `b`, `escape`) stay as a secondary path.
+
+- [ ] **Step 1: Write failing tests** (`calm-core`): `canvas_menu_lists_add_submenu_with_terminal_browser_and_plugins`, `canvas_menu_without_plugins_has_no_trailing_separator`, `menu_action_add_terminal_places_default_rect_at_click`, `menu_action_add_plugin_uses_plugin_default_size`, `panel_menu_labels_restore_when_minimized`, `right_click_on_empty_canvas_emits_canvas_menu`, `right_click_on_chrome_emits_panel_menu`, `right_click_on_content_emits_nothing`.
+- [ ] **Step 2: Run** `cargo test -p calm-core` Expected: FAIL. **Step 3: Implement.** **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Implement `calm-native/menu.rs`** and extend `native_smoke` with a non-interactive check that builds the `NSMenu` tree from a sample spec and prints `native_smoke: menu items=<n> submenus=<m>` (do not pop it up in the smoke).
+- [ ] **Step 6: Wire the app**, remove the element toolbar buttons, keep the status strip.
+- [ ] **Step 7: Verify** `cargo run -p calm-app -- --smoke; echo rc=$?`, `cargo run -p calm-native --example native_smoke; echo rc=$?`, clippy and fmt once each. Manual: right-click empty canvas, Add > Terminal creates a shell at the click point; Add > Browser; Add > Hello World once plugins are wired; right-click a chrome strip shows Minimize/Close; right-click inside a terminal does not open the CALM menu.
+- [ ] **Step 8: Commit** `feat(app): right-click context menu with Add submenu replaces the element toolbar`
+
+---
+
+### Task 6d: Trackpad pinch zoom (`calm-core`, `calm-app`)
+
+Added 2026-10-31 at the user's request. Implemented in the same dispatch as 6b and 6c.
+
+**Files:**
+- Modify: `crates/calm-core/src/interaction.rs`, `crates/calm-app/src/canvas_view.rs`
+
+**Interfaces:**
+- Verified in the pinned GPUI (gpui-pre 0.3.4 `interactive.rs:571`, `elements/div.rs:1032`, gpui-pre-macos `events.rs:237`): `div().on_pinch(|event: &PinchEvent, window, cx| ..)` receives macOS magnify gestures with `position: Point<Pixels>` (window coordinates), `delta: f32` (fractional change per event, `0.1` = 10 % in, negative = out), `modifiers`, `phase: TouchPhase`.
+- Produces (`calm-core`): `InputHandler::pinch(&mut self, screen: Point, delta: f64, scene: &mut Scene) -> Vec<Effect>`: ignores non-finite deltas, clamps `delta` to `[-0.5, 0.5]`, then `scene.camera.zoom_by(1.0 + delta, screen)` (anchored at the pinch center, clamped to `MIN_ZOOM..=MAX_ZOOM` by `zoom_by`), returns `vec![Effect::Redraw]`; a zero delta returns an empty vec and leaves the camera unchanged. Pinch works in every interaction state except `Drawing` and `Resizing` (ignored there so a gesture cannot corrupt an in-progress rectangle).
+- App: the canvas root `div` gets `.on_pinch(..)` converting `event.position` to canvas coordinates (subtract the canvas origin) like the scroll handler, calling `input.pinch`, then `apply_effects`. Pinch over a terminal's content rect still zooms the canvas (Ghostty's view is hit-test transparent, so the gesture reaches GPUI). Existing zoom paths (`cmd` + scroll, `cmd-=`, `cmd--`, `cmd-0`) stay.
+
+- [ ] **Step 1: Write failing tests** (`calm-core`): `pinch_in_zooms_at_center` (delta 0.1 at (300,200): zoom becomes 1.1 and `screen_to_world((300,200))` is unchanged), `pinch_out_zooms_out` (delta -0.1 gives zoom 0.9), `pinch_clamps_large_delta` (delta 5.0 gives zoom 1.5), `pinch_ignores_nan_and_zero`, `pinch_ignored_while_drawing`.
+- [ ] **Step 2: Run** `cargo test -p calm-core` Expected: FAIL. **Step 3: Implement.** **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Wire `on_pinch`** in `canvas_view.rs`.
+- [ ] **Step 6: Verify** `cargo run -p calm-app -- --smoke; echo rc=$?` (unchanged lines), clippy and fmt once each. Manual: two-finger pinch on the trackpad zooms around the fingers, both over empty canvas and over a terminal; the terminal grid does not reflow.
+- [ ] **Step 7: Commit** `feat(app): trackpad pinch zoom`
+
+---
+
+### Task 6e: Settings menu with persisted options and canvas background (`calm-core`, `calm-app`)
+
+Added 2026-10-31 at the user's request. Runs in parallel with Task 9 in its own worktree; write scope is the two new files plus minimal touch points.
+
+**Files:**
+- Create: `crates/calm-core/src/settings.rs`, `crates/calm-app/src/settings_menu.rs`
+- Modify (minimal, a few lines each): `crates/calm-app/src/main.rs` (load settings at startup, register the menu), `crates/calm-app/src/canvas_view.rs` (read background and grid from settings when painting; apply setting actions), `crates/calm-app/src/theme.rs` (background becomes a settings value), `crates/calm-core/src/lib.rs`
+
+**Interfaces:**
+- Produces (`calm-core/settings.rs`, pure, tested): `Settings { background: BackgroundPreset, show_grid: bool, confirm_close: bool, terminal_user_config: bool, version: u32 /* = 1 */ }` with `Default` = `DarkGray`, `false`, `true`, `true`; `BackgroundPreset::{ DarkGray /* 0x151515 */, Black /* 0x000000 */, Graphite /* 0x2b2b2e */, MidnightBlue /* 0x101827 */, Forest /* 0x0f1a14 */ }` with `fn rgb(self) -> u32`, `fn label(self) -> &'static str`, `fn all() -> &'static [BackgroundPreset]`; `settings_path() -> PathBuf` (`$CALM_HOME/settings.json` else `~/.config/calm/settings.json`); `load_settings() -> Settings` (missing file gives `Default`; malformed or unknown version prints one warning to stderr naming the path and gives `Default`, never panics); `save_settings(&Settings) -> Result<PathBuf, SettingsError>` (pretty JSON, temp file + rename like layouts); `GRID_STEP_WORLD: f64 = 64.0`.
+- Produces (`calm-app/settings_menu.rs`): a top-level menu bar menu `Settings` (via the same `cx.set_menus` mechanism as the Developer menu; keep both menus registered from one place) with: `Background` submenu listing every preset as a checkable item (the current one checked); `Show Grid` (checkable); `Confirm Before Closing Panels` (checkable); `Terminal Uses Ghostty User Config` (checkable; applies to terminals spawned afterwards); separator; `Open Config Folder` (opens the settings directory in Finder via `open`); `Reset to Defaults`. GPUI actions `SetBackground(BackgroundPreset)`, `ToggleGrid`, `ToggleConfirmClose`, `ToggleTerminalUserConfig`, `OpenConfigFolder`, `ResetSettings`. Every change saves immediately and rebuilds the menus so check marks follow the state.
+- App behavior: the canvas background fill uses `settings.background.rgb()`; when `show_grid` is on, paint a dot grid every `GRID_STEP_WORLD` world units (screen spacing = step * zoom; skip when spacing < 8 px) in a color 12 % lighter than the background, under everything else; `confirm_close == false` makes `request_close` close immediately (pass `alive && settings.confirm_close`); `terminal_user_config == false` spawns terminals with `TerminalConfiguration::Default`.
+
+- [ ] **Step 1: Write failing tests** (`calm-core`): `default_settings_values`, `load_missing_file_gives_default`, `load_malformed_file_gives_default_without_panic`, `save_then_load_roundtrip`, `preset_rgb_and_labels_cover_all`, `grid_spacing_skips_below_8px` (pure helper `grid_screen_spacing(zoom) -> Option<f64>`).
+- [ ] **Step 2: Run** `cargo test -p calm-core` Expected: FAIL. **Step 3: Implement.** **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Implement the menu and wiring** with the minimal touch points above. Extend `--smoke`: print `smoke: settings background=<label> grid=<bool> path=<path>` using a `CALM_HOME` temp dir so the user's real settings are untouched.
+- [ ] **Step 6: Verify** `cargo run -p calm-app -- --smoke; echo rc=$?`, `cargo test --workspace; echo rc=$?`, clippy and fmt once each. Manual: Settings > Background > Midnight Blue recolors the canvas immediately and survives a restart; Show Grid draws dots that scale with zoom; Reset to Defaults restores Dark Gray.
+- [ ] **Step 7: Commit** `feat(app): add Settings menu with persisted options and canvas background`
+
+---
+
+### Task 6f: Panel snapping (`calm-core`, `calm-app`)
+
+Added 2026-10-31 at the user's request: snapping while moving, resizing and drawing panels so terminals line up on a grid and against each other. Pure logic in calm-core; a one-line change at the app boundary. The Settings menu entry for the snap step is added after Task 6e merges (follow-up, not this task).
+
+**Files:**
+- Create: `crates/calm-core/src/snap.rs`
+- Modify: `crates/calm-core/src/interaction.rs`, `crates/calm-core/src/lib.rs`, `crates/calm-app/src/canvas_view.rs` (pass modifiers to `mouse_move`)
+
+**Interfaces:**
+- Produces (`snap.rs`, pure, tested): `SnapConfig { grid: Option<f64> /* world units, None = off */, edge_distance: f64 /* world units */ }` with `Default` = `grid: Some(DEFAULT_SNAP_GRID)`, `edge_distance: DEFAULT_SNAP_EDGE`; `DEFAULT_SNAP_GRID: f64 = 8.0`; `DEFAULT_SNAP_EDGE: f64 = 8.0`; `SNAP_STEPS: &[f64] = &[0.0 /* off */, 4.0, 8.0, 16.0, 32.0]` (menu choices for the later Settings entry); `fn snap_value(v: f64, grid: Option<f64>) -> f64` (nearest multiple; identity when off); `fn snap_move(rect: Rect, others: &[Rect], cfg: &SnapConfig) -> Rect` (origin snaps to the grid; then, if any of the moving rect's left/right/top/bottom edges is within `edge_distance` of a neighbor's opposite or same edge, the rect shifts so those edges coincide; edge snap wins over grid snap; size unchanged); `fn snap_resize(rect: Rect, edge: ResizeEdge, others: &[Rect], cfg: &SnapConfig) -> Rect` (only the dragged edges move; same grid-then-edge rule; `MIN_PANEL_SIZE` still enforced by the caller); `fn snap_draw(rect: Rect, others: &[Rect], cfg: &SnapConfig) -> Rect` (both origin and far corner snap, used while drawing a new panel).
+- `InputHandler` gets `snap: SnapConfig` (default on) and applies `snap_move` in `Dragging`, `snap_resize` in `Resizing` and `snap_draw` in `Drawing`, with `others` = every other panel's `rect` (minimized panels contribute their chip rect). Holding `alt` disables snapping for that event. `mouse_move(screen, mods: Modifiers, &mut Scene)` gains the `mods` parameter; the app passes `event.modifiers`.
+
+- [ ] **Step 1: Write failing tests** (`calm-core`): `snap_value_rounds_to_nearest_multiple`, `snap_value_off_is_identity`, `snap_move_snaps_origin_to_grid` (origin (13, 21) with grid 8 gives (16, 24)), `snap_move_edge_beats_grid` (moving rect's left edge at 203 with a neighbor's right edge at 200 and grid 8 gives left = 200, not 208), `snap_move_ignores_far_edges` (neighbor 50 away is ignored), `snap_resize_moves_only_dragged_edge`, `snap_draw_snaps_both_corners`, `drag_with_alt_held_does_not_snap` (through `InputHandler::mouse_move` with `mods.alt = true`), `drag_without_alt_snaps` (same path, alt false).
+- [ ] **Step 2: Run** `cargo test -p calm-core` Expected: FAIL. **Step 3: Implement.** **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Wire** the `mods` parameter in `canvas_view.rs` (one call site).
+- [ ] **Step 6: Verify** `cargo test --workspace; echo rc=$?`, `cargo run -p calm-app -- --smoke; echo rc=$?`, clippy and fmt once each. Manual: drag a terminal next to another: it snaps flush when within 8 world units; hold `alt` to place it freely.
+- [ ] **Step 7: Commit** `feat(core): snap panels to a grid and to neighbor edges while moving, resizing and drawing`
+
+---
+
 ### Task 7: Native child host (`calm-native`)
 
 **Files:**
@@ -299,6 +403,36 @@ Buttons: `Terminal`, `Browser`, one per discovered plugin (Task 11 fills the lis
 
 ---
 
+### Task 11b: Plugin SDK typings and extended `window.calm` interface (`calm-plugins`, `packages/`, plugins, docs)
+
+Added 2026-10-31 at the user's request. Runs in parallel (own files: `crates/calm-plugins`, `packages/`, `plugins/`, `templates/`, `docs/plugins.md`). The host dispatch for the new methods lands in the Task 11/12 app wiring; until then the host must reject unknown methods with a clear error, never hang a promise.
+
+**Files:**
+- Create: `packages/calm-plugin-sdk/package.json` (`name: "@calm/plugin-sdk"`, `types: "calm.d.ts"`, version from the workspace), `packages/calm-plugin-sdk/calm.d.ts`, `packages/calm-plugin-sdk/README.md`
+- Modify: `crates/calm-plugins/src/bridge.rs`, `plugins/github-prs/tsconfig.json` and `templates/plugin-tsx/tsconfig.json` (reference the SDK types via `paths` or `typeRoots`; delete the two copied `src/calm.d.ts` files), `docs/plugins.md`
+
+**Interfaces:**
+- `calm.d.ts` is the contract. `declare global { interface Window { calm: Calm } }` with:
+  - `calm.settings.get(): Promise<Record<string, unknown>>`, `calm.settings.set(value: Record<string, unknown>): Promise<void>` (per-panel settings stored in the layout).
+  - `calm.storage.get<T>(key: string): Promise<T | undefined>`, `calm.storage.set(key: string, value: unknown): Promise<void>`, `calm.storage.remove(key): Promise<void>` (plugin-scoped persistent data at `~/.config/calm/plugin-data/<plugin-id>.json`, not in layouts).
+  - `calm.panel.setTitle(title: string): Promise<void>`, `calm.panel.getBounds(): Promise<{ width: number; height: number; zoom: number }>`, `calm.panel.minimize(): Promise<void>`, `calm.panel.close(): Promise<void>` (goes through the normal close path).
+  - `calm.canvas.createPanel(spec: PanelSpec): Promise<PanelId>` where `PanelSpec = { kind: "terminal", command?: string, cwd?: string, rect?: Rect } | { kind: "browser", url: string, rect?: Rect } | { kind: "plugin", pluginId: string, settings?: Record<string, unknown>, rect?: Rect }`, `calm.canvas.focusPanel(id: PanelId): Promise<void>`, `calm.canvas.listPanels(): Promise<PanelInfo[]>` (`PanelInfo = { id, kind, title, rect, minimized }`).
+  - `calm.process.exec(command: string, args: string[], options?: { cwd?: string; timeoutMs?: number }): Promise<{ code: number; stdout: string; stderr: string }>` (trusted plugins only; documented as such).
+  - `calm.github.api(path: string): Promise<unknown>` (unchanged), `calm.openExternal(url: string): Promise<void>`, `calm.log(message: string): void`.
+  - `calm.theme.get(): Promise<{ background: string /* "#rrggbb" */ }>`.
+  - `calm.events.on(event: CalmEvent, handler): () => void` (returns an unsubscribe) with `CalmEvent` = `"focus" | "blur" | "resize" | "visibility" | "settingsChanged" | "themeChanged"` and payloads `resize: { width, height, zoom }`, `visibility: { mode: "live" | "preview" | "hidden" }`, `settingsChanged: Record<string, unknown>`, `themeChanged: { background }`.
+  - Every request has `method` strings `settings.get`, `settings.set`, `storage.get`, `storage.set`, `storage.remove`, `panel.setTitle`, `panel.getBounds`, `panel.minimize`, `panel.close`, `canvas.createPanel`, `canvas.focusPanel`, `canvas.listPanels`, `process.exec`, `github.api`, `openExternal`, `theme.get`, `log`.
+- `bridge.rs` additions: `pub const BRIDGE_METHODS: &[&str]` (the list above, single source of truth), `CALM_PRELUDE_JS` exposing every method with the same shapes plus `window.__calm.emit(event, payloadJson)` for host-to-plugin events; `BridgeEvent { event: String, payload: serde_json::Value }` with `fn to_js(&self) -> String` producing `window.__calm.emit("<event>", <json>)` with the same escaping as `BridgeResponse::to_js`; `fn is_known_method(method: &str) -> bool`; `BridgeResponse::not_implemented(id, method)` producing `Err(id, "not implemented: <method>")`.
+- Tests (`calm-plugins`): `prelude_exposes_every_bridge_method` (each `BRIDGE_METHODS` entry appears as a `method: "<name>"` literal in the prelude), `dts_declares_every_bridge_method` (reads `packages/calm-plugin-sdk/calm.d.ts` at test time via `CARGO_MANIFEST_DIR` and checks each method's last segment appears as a declared function, and that no extra `calm.<ns>.<fn>` is declared without a bridge method), `event_to_js_escapes_payload`, `unknown_method_is_not_known`.
+- Docs: `docs/plugins.md` API section rewritten from the d.ts; a "Host support" table marking which methods the host implements today (the pre-existing five) and which reject with `not implemented` until the app wiring lands.
+
+- [ ] **Step 1: Write failing tests** (`calm-plugins`). **Step 2: Run** `cargo test -p calm-plugins` Expected: FAIL. **Step 3: Implement** the d.ts, prelude, constants, event type. **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Point both TSX packages at the SDK types**, delete the copies; `cd plugins/github-prs && bun install && bun run build; echo rc=$?` and the same for the template, rc=0; also `bunx tsc --noEmit -p plugins/github-prs; echo rc=$?` rc=0 (type check the plugin against the new d.ts; add `typescript` as a dev dependency where needed).
+- [ ] **Step 6: Update `docs/plugins.md`** and the SDK README.
+- [ ] **Step 7: Commit** `feat(plugins): plugin SDK typings and extended window.calm interface`
+
+---
+
 ### Task 12: GitHub pull-request plugin and TSX template
 
 **Files:**
@@ -346,6 +480,32 @@ Buttons: `Terminal`, `Browser`, one per discovered plugin (Task 11 fills the lis
 - [ ] **Step 2: Run** the matrix on the development Mac with the display refresh rate noted: `for n in 5 10 20; do cargo run --release -p calm-app -- --bench $n; cargo run --release -p calm-app -- --bench $n --bench-idle; done; cargo run --release -p calm-app -- --bench 20 --bench-zoom 0.4` each followed by `echo rc=$?`.
 - [ ] **Step 3: Write `docs/benchmarks.md`**: hardware (`sysctl -n machdep.cpu.brand_string`, memory, macOS version, display refresh), method, budget, the JSON lines, and a plain verdict per row (met / missed). No row without a recorded run.
 - [ ] **Step 4: Commit** `perf: add benchmark mode and record 5/10/20 terminal results`
+
+---
+
+### Task 16: CI and Release workflows (GitHub Actions)
+
+Added 2026-10-31 at the user's request. Independent of the app lanes (own files), runs in its own worktree.
+
+Reality to encode, not hide: the app itself is macOS-only today (`calm-native` is AppKit/WebKit; `calm-app` depends on it), so the Arch Linux job validates and tests the portable crates (`calm-core`, `calm-plugins`) and attempts nothing it cannot build. A Linux app artifact exists only once a Linux native backend exists; the workflow is structured so that job can be flipped to a full build later.
+
+**Files:**
+- Create: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `scripts/bump-version.sh`, `scripts/bundle-macos.sh`, `scripts/Info.plist.template`, `docs/release.md`
+- Modify: `Cargo.toml` (single source of truth for the version: `[workspace.package] version = "0.1.0"`, crates switch to `version.workspace = true`)
+
+**Interfaces:**
+- `scripts/bump-version.sh <patch|minor|major>`: reads the workspace version from `Cargo.toml`, prints the new version, rewrites `[workspace.package] version`, runs `cargo update --workspace` so `Cargo.lock` follows; exits nonzero on an unknown bump word or a non-semver current version. Self-test: `scripts/bump-version.sh --self-test` runs the three bumps against a temp copy of a fixture `Cargo.toml` and asserts the results (0.1.9 patch -> 0.1.10, 0.1.9 minor -> 0.2.0, 1.2.3 major -> 2.0.0).
+- `scripts/bundle-macos.sh <version> <out-dir>`: builds `cargo build --release -p calm-app`, assembles `CALM.app/Contents/{MacOS/calm-app, Info.plist, Resources}` from the template (bundle id `pl.raqz.calm`, `CFBundleShortVersionString` = version, `LSMinimumSystemVersion` 14.0), ad-hoc signs with `codesign --force --deep --sign -`, zips to `<out-dir>/CALM-<version>-macos-arm64.zip`, prints the zip path and its `shasum -a 256`.
+- `ci.yml` on push to any branch and on pull requests: job `linux-arch` in `container: archlinux:latest` (pacman installs `rustup base-devel`, `rustup default stable`), runs `cargo fmt --all -- --check`, `cargo test -p calm-core -p calm-plugins`, `cargo clippy -p calm-core -p calm-plugins --all-targets -- -D warnings`; job `macos` on `macos-15` (arm64): installs Zig 0.16 (download the exact tarball from ziglang.org, verify the published shasum, export `ZIG`), runs `xcrun -f metal || xcodebuild -downloadComponent MetalToolchain`, `cargo build --workspace --all-targets`, `cargo test --workspace`, clippy workspace `-D warnings`, `cargo fmt --all -- --check`, then `cargo run -p calm-app -- --smoke` as a separate step with `continue-on-error: true` (headless runners may lack a window server; its result is reported, not required) and `scripts/bundle-macos.sh` producing an artifact uploaded with `actions/upload-artifact`. Cache `~/.cargo` and `target` keyed on `Cargo.lock` and the Zig version.
+- `release.yml` with `workflow_dispatch` inputs `bump: choice [patch, minor, major]` and `dry_run: boolean (default true)`: checks out `main` (fails if the ref is not `main`), runs `scripts/bump-version.sh`, commits `chore(release): v<version>` and tags `v<version>` (only when `dry_run` is false), builds the macOS bundle, runs the Linux portable-crate tests, and (when not dry run) pushes the commit and tag and creates the GitHub release with `gh release create v<version> --generate-notes` attaching the zip and its `.sha256`; in dry run it uploads the zip as a workflow artifact and prints what it would tag. Permissions: `contents: write`. Concurrency group `release`.
+- `docs/release.md`: how to run the Release action, what it changes, where artifacts land, the Linux limitation, and the macOS-runner minute cost note for a private repo.
+
+- [ ] **Step 1: Write `scripts/bump-version.sh` with `--self-test`**; run `scripts/bump-version.sh --self-test; echo rc=$?` Expected rc=0 with the three assertions printed.
+- [ ] **Step 2: Move the version to the workspace** (`version.workspace = true` in the four crates); `cargo build --workspace; echo rc=$?` rc=0.
+- [ ] **Step 3: Write `scripts/bundle-macos.sh` and the plist template**; run it locally: `scripts/bundle-macos.sh 0.1.0 /tmp/calm-bundle; echo rc=$?` rc=0, then `codesign --verify --verbose /tmp/calm-bundle/CALM.app; echo rc=$?` rc=0 and `open /tmp/calm-bundle/CALM.app` shows the window (quit it).
+- [ ] **Step 4: Write both workflows**; `actionlint .github/workflows/*.yml; echo rc=$?` rc=0.
+- [ ] **Step 5: Push the branch and watch CI**: `git push -u origin feat/cicd`, then `gh run watch` the triggered `ci` run to completion and record each job's conclusion; iterate on failures (one fix per push). Do NOT run the Release workflow and do NOT create tags or releases; the user triggers the first real release.
+- [ ] **Step 6: Write `docs/release.md`**, commit `ci: add CI and Release workflows with macOS bundle and version bump`.
 
 ---
 

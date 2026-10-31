@@ -1,0 +1,14 @@
+[package]
+name = "calm-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+calm-core = { path = "../calm-core" }
+gpui.workspace = true
+gpui_platform.workspace = true
+calm-native = { path = "../calm-native" }
+gpui-libghostty.workspace = true
+tempfile = "3"

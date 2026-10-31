@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hello World</title>
+    <style>
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font: 20px -apple-system, BlinkMacSystemFont, sans-serif;
+        color: #e8e8e8;
+        background: #1e1e1e;
+      }
+    </style>
+  </head>
+  <body>
+    <p>Hello, world</p>
+    <script>
+      // window.calm exists only inside CALM; skip the call when the file is opened in a browser.
+      if (window.calm) {
+        calm.panel.setTitle("Hello").catch(function (err) { console.error(err); });
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,47 @@
+[package]
+name = "calm-native"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+calm-core = { path = "../calm-core" }
+raw-window-handle = { workspace = true }
+block2 = { workspace = true }
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true, default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSDate",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSObject",
+    "NSRunLoop",
+    "NSString",
+    "NSURL",
+    "NSURLRequest",
+] }
+objc2-app-kit = { workspace = true, default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSGraphics",
+    "NSMenu",
+    "NSMenuItem",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSView",
+    "NSWindow",
+    "objc2-core-foundation",
+] }
+objc2-web-kit = { workspace = true, default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-app-kit",
+    "objc2-core-foundation",
+    "WKNavigation",
+    "WKScriptMessage",
+    "WKScriptMessageHandler",
+    "WKUserContentController",
+    "WKUserScript",
+    "WKWebView",
+    "WKWebViewConfiguration",
+] }
