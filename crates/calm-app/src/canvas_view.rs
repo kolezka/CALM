@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 use crate::background::{self, BackgroundRenderer, BackgroundTexture};
 use crate::browser_panel::{BrowserEvents, BrowserPanel};
 use crate::dev_menu::{self, ResetFps, ToggleFps};
+use crate::grid_paint::{self, GridFrame, GridTextures};
 use crate::plugin_host::{self, BridgeSender, PluginPanel};
 use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalPanel};
@@ -138,6 +139,7 @@ pub struct CanvasView {
     /// Created on first `cmd-,`, then hidden and shown.
     pub settings_window: Option<calm_native::SettingsWindow>,
     pub background: BackgroundRenderer,
+    pub grid: GridTextures,
     /// Native bar floating over the bottom of the canvas. Created on the first paint.
     status_bar: Option<StatusBar>,
     /// Set when the status bar could not be created, so paint stops retrying.
@@ -191,6 +193,7 @@ impl CanvasView {
             },
             settings_window: None,
             background: BackgroundRenderer::default(),
+            grid: GridTextures::default(),
             status_bar: None,
             status_bar_error: None,
         }
@@ -990,6 +993,7 @@ struct PaintSnapshot {
     settings: calm_core::settings::Settings,
     /// Rendered gradient or image, if one is ready.
     background: Option<BackgroundTexture>,
+    grid: GridFrame,
 }
 
 /// How a terminal or plugin panel's content is drawn this paint. A plugin in Preview has
@@ -1058,9 +1062,7 @@ impl PaintSnapshot {
                 background::paint_background(texture, bounds, window);
             }
             let camera = self.scene.camera;
-            if self.settings.grid.show {
-                settings_menu::paint_grid(bounds, &camera, &self.settings.grid, window);
-            }
+            grid_paint::paint_grid(&self.grid, bounds, window);
             let viewport = Rect::new(
                 origin.x,
                 origin.y,
@@ -1543,6 +1545,12 @@ impl Render for CanvasView {
         let background = self
             .background
             .texture(&self.settings.settings.background, canvas_size);
+        let grid = self.grid.prepare(
+            &self.settings.settings.grid,
+            &self.scene.camera,
+            canvas_size,
+            window,
+        );
         let entity = cx.entity().downgrade();
         let paint_entity = entity.clone();
         let mut snapshot = PaintSnapshot {
@@ -1557,6 +1565,7 @@ impl Render for CanvasView {
             input_targets: Vec::new(),
             settings: self.settings.settings.clone(),
             background,
+            grid,
         };
         // Mouse and key targets for terminals, at last frame's viewport.
         let viewport = self.viewport;

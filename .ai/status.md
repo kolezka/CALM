@@ -1,8 +1,8 @@
 # Status
 
-Last updated: 2026-10-31. `main` with PRs #1 to #7 merged: recenter, panel menu actions,
-panel chrome, bottom bar, plugin panels, browser panels and the Settings window. Facts are
-verified unless marked otherwise.
+Last updated: 2026-10-31. `main` with PRs #1 to #7, #9 and #11 merged: recenter, panel menu actions,
+panel chrome, bottom bar, plugin panels, browser panels, the Settings window, the mods
+research doc and grid styles. Facts are verified unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -106,6 +106,14 @@ verified unless marked otherwise.
 - Unverified: manual GUI pass of the window (color panel, open panel, slider feel, image
   filters on a real photo). The smoke builds the window and checks every control is
   bound, and renders a gradient background.
+- Grid styles (PR #11): lines, dots, crosses or none; mark size 1 to 4 points; major grid every N
+  cells (0 off, the default) with its own opacity. Color and opacity apply to every
+  style. Controls in the Grid section of the Settings window, live on the canvas.
+- New fields load from older version 2 files with defaults that draw the old grid; bad
+  values are explicit errors.
+- Smoke draws dots by default (`CALM_SMOKE_GRID` picks the style) and fails if a dot or
+  cross frame draws more than `mark_primitive_bound` grid primitives.
+- Unverified: manual look of dots, crosses and the major grid while zooming.
 
 ## Verified on hardware
 

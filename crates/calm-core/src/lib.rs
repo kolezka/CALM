@@ -6,6 +6,7 @@ pub mod camera;
 pub mod chrome;
 pub mod frame_stats;
 pub mod geometry;
+pub mod grid;
 pub mod interaction;
 pub mod layout;
 pub mod menu;

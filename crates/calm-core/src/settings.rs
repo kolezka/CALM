@@ -15,12 +15,14 @@ use crate::background::{
     MIN_GRADIENT_STOPS, Rgb,
 };
 use crate::geometry::Size;
+use crate::grid::GridKind;
 use crate::menu::DEFAULT_TERMINAL_SIZE;
 use crate::preview::PREVIEW_ZOOM_THRESHOLD;
 use crate::snap::{DEFAULT_SNAP_EDGE, DEFAULT_SNAP_GRID, SnapConfig};
 
 /// Version 2 replaced the background preset with solid, gradient and image backgrounds and
-/// added grid, snapping and panel options. Version 1 files are migrated on read.
+/// added grid, snapping and panel options. Version 1 files are migrated on read. Grid kind,
+/// mark size and the major grid were added later with defaults, so they need no new version.
 pub const SETTINGS_VERSION: u32 = 2;
 /// Makes temp file names unique per save call, not just per process.
 static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -28,6 +30,11 @@ static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub const MIN_GRID_SPACING_PX: f64 = 8.0;
 
 pub const GRID_SPACING_RANGE: RangeInclusive<f64> = 16.0..=256.0;
+/// Dot diameter, or cross arm thickness doubled, in screen points.
+pub const GRID_MARK_SIZE_RANGE: RangeInclusive<f64> = 1.0..=4.0;
+/// Cells between major lines or marks. 0 turns the major grid off; 1 would make every
+/// line major, so it is not allowed.
+pub const GRID_MAJOR_EVERY_MAX: u32 = 32;
 pub const SNAP_GRID_STEPS: [f64; 4] = [4.0, 8.0, 16.0, 32.0];
 pub const SNAP_EDGE_RANGE: RangeInclusive<f64> = 0.0..=32.0;
 pub const TERMINAL_WIDTH_RANGE: RangeInclusive<f64> = 240.0..=2000.0;
@@ -89,6 +96,12 @@ pub struct GridSettings {
     pub spacing: f64,
     pub color: Rgb,
     pub opacity: f64,
+    pub kind: GridKind,
+    /// Dot or cross size in screen points, the same at every zoom.
+    pub mark_size: f64,
+    /// Every this many cells a major line or mark is drawn at `major_opacity`. 0 is off.
+    pub major_every: u32,
+    pub major_opacity: f64,
 }
 
 impl Default for GridSettings {
@@ -99,15 +112,12 @@ impl Default for GridSettings {
             spacing: 64.0,
             color: Rgb(0xffffff),
             opacity: 0.12,
+            kind: GridKind::Lines,
+            mark_size: 2.0,
+            // Off, so files written before the major grid existed look the same.
+            major_every: 0,
+            major_opacity: 0.3,
         }
-    }
-}
-
-impl GridSettings {
-    /// `0xRRGGBBAA`, alpha from `opacity`, so lines blend over images and gradients too.
-    pub fn line_rgba(&self) -> u32 {
-        let alpha = (self.opacity.clamp(0.0, 1.0) * 255.0).round() as u32;
-        (self.color.0 & 0xff_ffff) << 8 | alpha
     }
 }
 
@@ -266,6 +276,15 @@ impl Settings {
         check("background.image.filters.dim", filters.dim, 0.0..=1.0)?;
         check("grid.spacing", self.grid.spacing, GRID_SPACING_RANGE)?;
         check("grid.opacity", self.grid.opacity, 0.0..=1.0)?;
+        check("grid.mark_size", self.grid.mark_size, GRID_MARK_SIZE_RANGE)?;
+        let major_every = self.grid.major_every;
+        if major_every == 1 || major_every > GRID_MAJOR_EVERY_MAX {
+            return Err(format!(
+                "\"grid.major_every\" is {major_every}, expected 0 (off) or 2 to \
+                 {GRID_MAJOR_EVERY_MAX}"
+            ));
+        }
+        check("grid.major_opacity", self.grid.major_opacity, 0.0..=1.0)?;
         if !SNAP_GRID_STEPS.contains(&self.snap.grid) {
             return Err(format!(
                 "\"snap.grid\" is {}, expected one of {SNAP_GRID_STEPS:?}",
@@ -494,6 +513,7 @@ pub fn grid_line_offsets(screen_of_world_zero: f64, step: f64, zoom: f64, extent
 mod tests {
     use super::*;
     use crate::background::{GradientKind, GradientStop, ImageFit};
+    use crate::grid::rgba_with_alpha;
 
     fn custom_settings() -> Settings {
         let mut settings = Settings::default();
@@ -508,6 +528,10 @@ mod tests {
         settings.background.image.filters.blur = 12.0;
         settings.grid.show = true;
         settings.grid.spacing = 32.0;
+        settings.grid.kind = GridKind::Crosses;
+        settings.grid.mark_size = 3.0;
+        settings.grid.major_every = 4;
+        settings.grid.major_opacity = 0.5;
         settings.snap.grid = 16.0;
         settings.panels.confirm_close = false;
         settings.panels.default_terminal_width = 800.0;
@@ -638,6 +662,31 @@ mod tests {
             ),
             ("snap step", r#"{"version": 2, "snap": {"grid": 5}}"#),
             (
+                "unknown grid kind",
+                r#"{"version": 2, "grid": {"kind": "hexagons"}}"#,
+            ),
+            ("grid kind type", r#"{"version": 2, "grid": {"kind": 1}}"#),
+            (
+                "mark size range",
+                r#"{"version": 2, "grid": {"mark_size": 9}}"#,
+            ),
+            (
+                "major every one",
+                r#"{"version": 2, "grid": {"major_every": 1}}"#,
+            ),
+            (
+                "major every range",
+                r#"{"version": 2, "grid": {"major_every": 33}}"#,
+            ),
+            (
+                "major every negative",
+                r#"{"version": 2, "grid": {"major_every": -8}}"#,
+            ),
+            (
+                "major opacity range",
+                r#"{"version": 2, "grid": {"major_opacity": -0.1}}"#,
+            ),
+            (
                 "blur range",
                 r#"{"version": 2, "background": {"image": {"filters": {"blur": -1}}}}"#,
             ),
@@ -674,6 +723,45 @@ mod tests {
             "{error:?}"
         );
         assert!(error.to_string().contains(path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn version_2_file_without_grid_styles_loads_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let fixture = include_str!("../testdata/settings_v2_before_grid_styles.json");
+        assert!(!fixture.contains("kind\": \"lines") && !fixture.contains("major"));
+        std::fs::write(&path, fixture).unwrap();
+        let settings = read_settings_from(&path).unwrap();
+        assert!(settings.grid.show);
+        assert_eq!(settings.grid.spacing, 48.0);
+        assert_eq!(settings.grid.color, Rgb(0x88ccff));
+        assert_eq!(settings.grid.opacity, 0.2);
+        // New fields take defaults that draw exactly the old grid: lines, no major grid.
+        assert_eq!(settings.grid.kind, GridKind::Lines);
+        assert_eq!(settings.grid.mark_size, 2.0);
+        assert_eq!(settings.grid.major_every, 0);
+        assert_eq!(settings.version, 2);
+
+        // Positive control: every new grid field written by hand reads back as written.
+        std::fs::write(
+            &path,
+            r#"{"version": 2, "grid": {"kind": "dots", "mark_size": 4, "major_every": 8, "major_opacity": 0.6}}"#,
+        )
+        .unwrap();
+        let grid = read_settings_from(&path).unwrap().grid;
+        assert_eq!(grid.kind, GridKind::Dots);
+        assert_eq!(grid.mark_size, 4.0);
+        assert_eq!(grid.major_every, 8);
+        assert_eq!(grid.major_opacity, 0.6);
+        for kind in ["lines", "crosses", "none"] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"version": 2, "grid": {{"kind": "{kind}"}}}}"#),
+            )
+            .unwrap();
+            assert!(read_settings_from(&path).is_ok(), "{kind}");
+        }
     }
 
     #[test]
@@ -735,13 +823,9 @@ mod tests {
                 edge_distance: 0.0
             }
         );
-        assert_eq!(GridSettings::default().line_rgba(), 0xffffff1f);
-        let grid = GridSettings {
-            color: Rgb(0x336699),
-            opacity: 1.0,
-            ..GridSettings::default()
-        };
-        assert_eq!(grid.line_rgba(), 0x336699ff);
+        let grid = GridSettings::default();
+        assert_eq!(rgba_with_alpha(grid.color.0, grid.opacity), 0xffffff1f);
+        assert_eq!(rgba_with_alpha(0x336699, 1.0), 0x336699ff);
     }
 
     #[test]
