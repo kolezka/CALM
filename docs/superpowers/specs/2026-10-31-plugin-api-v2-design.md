@@ -543,7 +543,7 @@ to a `calmPage` message handler registered only in that world; the message reach
 plugin that injected it as a `browserMessage` event. The payload is page data and is
 untrusted. The page's own world has no handler.
 
-Data stores. Today browser panels use one shared store (to verify against PR #6). Phase 12
+Data stores. Today browser panels share the default persistent store: `BrowserView::new` uses a plain `WKWebViewConfiguration::new` and never sets a data store (PR #6, `calm-native/src/browser.rs`). Phase 12
 gives each browser panel the option of its own persistent store through
 `WKWebsiteDataStore dataStoreForIdentifier:` (macOS 14+), set at creation:
 `panels.create({ kind: "browser", url, dataStore: "shared" | "panel" | "<name>" })`.
@@ -1260,7 +1260,7 @@ From the user, through the lead:
    should name the GitHub and socket tokens explicitly when the implementation lands.
 3. `terminalOutput` is a text diff at 250 ms, not a byte stream. Enough for agent boards and
    log watchers, not for a terminal recorder.
-4. Whether browser panels default to the shared data store (today's behavior, to verify on
+4. Whether browser panels default to the shared data store (today's behavior, checked on
    PR #6) or a per-panel store.
 5. `terminals.setFontSize` changes a terminal's grid. `CLAUDE.md` says only a panel resize
    changes the logical grid; that rule should read "only a panel resize or a font size
