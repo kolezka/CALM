@@ -16,3 +16,5 @@ futures = "=0.3.34"
 serde_json.workspace = true
 gpui-libghostty.workspace = true
 tempfile = "3"
+# Same version gpui-pre uses, so its `image::Frame` and ours are one type.
+image = { version = "=0.25.10", default-features = false }

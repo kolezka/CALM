@@ -1,8 +1,8 @@
 # Status
 
-Last updated: 2026-10-31. `main` with PRs #1 (recenter), #2 (panel menu actions), #3
-(panel chrome), #4 (bottom bar), #5 (plugin panels) and #6 (browser panels) merged. Facts
-are verified unless marked otherwise.
+Last updated: 2026-10-31. `main` with PRs #1 to #7 merged: recenter, panel menu actions,
+panel chrome, bottom bar, plugin panels, browser panels and the Settings window. Facts are
+verified unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -91,6 +91,21 @@ are verified unless marked otherwise.
 - Native stack: terminals, browsers and plugins share one native stack that restacks with
   the scene order (`native_panel_order`, `sync_native_order`, `native_zorder`). Smoke
   checks it with three native panels, then with five after the plugins.
+- Settings window (PR #7), a native NSWindow with sections Background, Grid, Canvas and
+  Snapping, Panels, Developer. Opened by `cmd-,`, CALM > Settings… and Settings > Open
+  Settings…, all through one global `OpenSettings` handler; a second open focuses the
+  same window. A top-level menu bar item cannot fire an action in GPUI (each top-level
+  `Menu` becomes an item with a submenu), so the Settings menu stays a menu.
+- Backgrounds: solid color, linear or radial gradient with 2 to 6 stops, image with
+  cover, contain, tile or center and blur, brightness, contrast, saturation, grayscale
+  and dim. Live on the canvas while editing.
+- New options read by the app: grid spacing, color and opacity; snapping on or off, grid
+  step and edge distance; default size of a terminal added from the context menu;
+  preview below zoom.
+- Settings file version 2 with version 1 migration and strict errors.
+- Unverified: manual GUI pass of the window (color panel, open panel, slider feel, image
+  filters on a real photo). The smoke builds the window and checks every control is
+  bound, and renders a gradient background.
 
 ## Verified on hardware
 

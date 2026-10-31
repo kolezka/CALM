@@ -41,6 +41,23 @@ one means a new entry, not an edit.
 - **Default snap grid is 8 world units, not the requested 3 pixels.** Terminal cells are
   about 8 px wide at zoom 1, so 3 is not a cell multiple. Edge snap within 8, `alt`
   disables. One constant to change if the user wants finer.
+- **Settings live in a separate native NSWindow, not a GPUI modal.** Option (a) of two:
+  a GPUI modal would have to hide every live native view while open, and GPUI has no color
+  picker, slider or file dialog. A separate AppKit window never shares a rect with Ghostty
+  or WKWebView, terminals stay live while it is open, and `NSColorWell` and `NSOpenPanel`
+  come free. The form is data (`calm_core::settings_form`), so `calm-native` stays a
+  generic renderer and the logic is unit tested. Cost: about 300 lines of objc2 with
+  manual frame layout, and the window looks like AppKit, not like the GPUI canvas.
+- **Backgrounds render once per change, off the UI thread, into a cached texture.**
+  Gradients raster at most 512 px on the long edge and the GPU scales them up; images are
+  capped at 2048 px, then blur (`fast_blur`), color filters and tile repetition run once.
+  Paint draws one image (or a few tiles of at least 256 px). The image is read from its
+  path and not copied: a moved file shows an error in Settings and the fill color.
+- **Settings version 2 migrates version 1 and fails loud.** A version 1 preset becomes
+  its exact solid color. A malformed, out of range or unknown-version file is an error
+  from `load_settings_from`, never quiet defaults; at startup the app reports it, moves
+  the file to `settings.json.invalid-<n>` so the next save cannot overwrite it, uses
+  defaults and shows a notice at the top of the Settings window.
 - **Invalid layout files fail loudly.** Malformed JSON or out-of-range values are
   `LayoutError::Malformed` with path and field; tiny rects are clamped to the minimum size.
 - **Plugin entry must be a regular file under the canonical plugin directory.** Symlinked
