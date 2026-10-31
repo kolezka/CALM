@@ -12,6 +12,7 @@ knowledge behind them. Read in this order for a cold start: `system.md`, `status
 | `conventions.md` | How work is done: worktrees, gates, tests, commits, agents, security rules | A rule is added or a ruling changes a rule |
 | `decisions.md` | Settled decisions with rationale and cost if wrong | A decision is made or reversed |
 | `status.md` | Done, pending, not wired, unverified | A task lands or a gap is found |
+| `backlog.md` | Agreed follow-ups nobody is working on yet, with blockers and origin | An item is agreed, picked up or found done |
 
 ## Other documents
 
