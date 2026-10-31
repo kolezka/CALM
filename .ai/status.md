@@ -107,6 +107,9 @@ Pull requests:
   to the WKWebView.
 - Layouts and session: layout save and load, `--layout`, session autosave and restore are
   not built. Only the core layout format exists. Plugin settings are not saved anywhere.
+  The session restore decision (restore on launch by default, Open replaces after one
+  confirmation, browser urls saved with `strip_all`, a seven item File menu) is recorded
+  in `decisions.md` and the spec; implementation (plan Tasks 2 to 12) is pending.
 - `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
