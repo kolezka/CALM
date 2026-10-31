@@ -1123,10 +1123,10 @@ impl CanvasView {
                 return;
             }
         };
-        let Some(panel) = self.scene.get_mut(id) else {
+        let Some(route) = plugin_host::route_in_scene(&mut self.scene, id, &request) else {
             return;
         };
-        let response = match plugin_host::route(panel, &request) {
+        let response = match route {
             Route::Reply(Some(response)) => response,
             Route::Reply(None) => return,
             Route::Background(call) => return self.serve_in_background(id, request.id, call, cx),
