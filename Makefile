@@ -73,11 +73,18 @@ bundle: ## Build a macOS bundle with VERSION and OUT options.
 release-upload: ## Build the macOS zip and attach it to release VERSION.
 	@if [[ "$(origin VERSION)" != "command line" && "$(origin VERSION)" != "environment" ]]; then printf 'error: pass the release version, e.g. make release-upload VERSION=0.1.1\n' >&2; exit 1; fi; scripts/release-upload.sh "$(VERSION)"
 
-plugins: ## Install and build every plugin package.
+plugins: ## Install and build every plugin package (needs bun).
+	@command -v bun >/dev/null 2>&1 || { printf 'error: bun is missing; install it from https://bun.sh, then rerun gmake plugins\n' >&2; exit 1; }
 	@for manifest in plugins/*/package.json templates/*/package.json; do \
 		[[ -f "$$manifest" ]] || continue; \
 		package_dir=$${manifest%/*}; \
+		printf 'plugins: building %s\n' "$$package_dir"; \
 		(cd "$$package_dir" && bun install && bun run build) || exit $$?; \
+		[[ -d "$$package_dir/dist" ]] || { printf 'error: %s built but has no dist/\n' "$$package_dir" >&2; exit 1; }; \
+	done
+	@for plugin in plugins/*/calm-plugin.json; do \
+		plugin_dir=$${plugin%/*}; \
+		[[ -f "$$plugin_dir/package.json" ]] || printf 'plugins: %s needs no build\n' "$$plugin_dir"; \
 	done
 
 plugins-check: ## Type-check every plugin package.

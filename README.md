@@ -110,6 +110,11 @@ install yourself, with full access, so only install plugins you have read or who
 trust. The bridge is partial today: `log`, `panel.setTitle`, `settings.get` and `settings.set`
 answer; the other methods reply `not implemented`.
 
+From a clone, `gmake plugins && cargo run -p calm-app` builds the first-party plugins and shows
+them under right-click > Add. A development build reads the repository's `plugins/` folder
+directly; installed plugins go in `~/.config/calm/plugins`. Set `CALM_NO_BUILTIN_PLUGINS=1` to
+hide the built-in ones.
+
 ```json
 {
   "id": "hello-world",

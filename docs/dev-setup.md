@@ -25,8 +25,17 @@ cargo run -p calm-app -- --smoke; echo rc=$?   # GUI gate, exits 0 when the wind
 cargo run --release -p calm-app -- --bench 20   # see docs/benchmarks.md
 ```
 
-Plugins are read from `~/.config/calm/plugins/<id>/` and from every directory in
-`CALM_PLUGIN_PATH` (colon separated). For development: `CALM_PLUGIN_PATH=./plugins`.
+Plugins are read from every directory in `CALM_PLUGIN_PATH` (colon separated), from
+`~/.config/calm/plugins/<id>/` (or `$CALM_HOME/plugins`), and, in a development build, from the
+repository's own `plugins/` folder. So the dev flow needs no setup:
+
+```sh
+gmake plugins && cargo run -p calm-app   # then right-click > Add
+```
+
+`CALM_NO_BUILTIN_PLUGINS=1` or the setting `plugins.builtin: false` turns the built-in folders
+off. Startup prints every searched folder and every plugin found to stderr. See
+[plugins.md](plugins.md#where-plugins-live).
 
 ## Tests
 
@@ -46,6 +55,6 @@ Run `gmake help` to list targets. `gmake setup-check` prints prerequisite versio
 - `gmake build`, `gmake test`, `gmake lint`, and `gmake fmt` build, test, lint, and format the Rust workspace.
 - `gmake smoke` runs the GUI smoke gate; `gmake run ARGS=--fullscreen` launches the app; `gmake bench N=20 SECONDS=30 ZOOM=1.0` runs a benchmark.
 - `gmake bundle VERSION=0.1.0 OUT=dist` builds a macOS bundle.
-- `gmake plugins` installs and builds each plugin package; `gmake plugins-check` type-checks each package.
+- `gmake plugins` installs and builds each plugin package and fails when bun is missing; `gmake plugins-check` type-checks each package.
 - `gmake ci` runs lint, tests, smoke, and plugin checks in order; `gmake graph` refreshes the repo-intel graphs.
 - `gmake clean` removes Rust and plugin build outputs.

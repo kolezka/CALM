@@ -204,3 +204,12 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
 - **Only right, bottom and corner handles.** Left and top edges would move the origin and
   touch `snap_resize`, which PR #12 rewrites. Cost: no resize from the left or top yet.
 - **No `aspectRatio`.** Snapping and two clamped axes make it more than cheap.
+
+## Built-in plugin dirs (2026-10-31)
+
+- **First-party plugins load without install.** A dev build (debug, or a binary in a cargo
+  `target` dir) searches the workspace `plugins/`; a bundle searches
+  `Contents/Resources/plugins`. Both come after the user dirs, so a user copy with the same id
+  wins and the shadowing is logged. Off with `plugins.builtin=false` or
+  `CALM_NO_BUILTIN_PLUGINS=1`. Reason: `gmake plugins && cargo run` showed no plugins. Cost:
+  the dev path is baked in at compile time, so a moved checkout needs a rebuild.

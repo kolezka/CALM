@@ -606,6 +606,42 @@ fn write_smoke_plugin(
     std::fs::write(dir.join("calm-plugin.json"), manifest)
 }
 
+/// Checks the startup scan: the workspace's first-party plugins are in the Add menu,
+/// unless built-ins were turned off.
+fn smoke_startup_plugins(view: &Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
+    let (counts, items) = cx.update(|cx| {
+        let view = view.read(cx);
+        (view.plugin_counts, view.canvas_menu())
+    });
+    let (builtin, user) = counts;
+    println!("smoke: plugins builtin={builtin} user={user}");
+    let mut ids = Vec::new();
+    let mut stack = items;
+    while let Some(item) = stack.pop() {
+        match item {
+            calm_core::menu::MenuItem::Submenu { items, .. } => stack.extend(items),
+            calm_core::menu::MenuItem::Action { id, .. } => ids.push(id),
+            _ => {}
+        }
+    }
+    let builtin_off =
+        std::env::var_os(calm_plugins::NO_BUILTIN_ENV).is_some_and(|v| !v.is_empty() && v != "0");
+    if builtin_off {
+        if builtin != 0 {
+            smoke_fail(&format!("built-ins off but {builtin} loaded"));
+        }
+        return;
+    }
+    for plugin_id in ["hello-world", "github-prs"] {
+        let menu_id = format!("{}{plugin_id}", calm_core::menu::ADD_PLUGIN_PREFIX);
+        if !ids.contains(&menu_id) {
+            smoke_fail(&format!(
+                "workspace plugin {plugin_id} not in the Add menu: {ids:?}"
+            ));
+        }
+    }
+}
+
 /// Adds a working and an unbuilt plugin panel from temp fixtures, waits for the working one
 /// to finish its bridge calls, and checks the shared native stack still follows the scene.
 async fn smoke_plugins(
@@ -613,6 +649,7 @@ async fn smoke_plugins(
     window: AnyWindowHandle,
     cx: &mut gpui::AsyncApp,
 ) {
+    smoke_startup_plugins(view, cx);
     let fixtures = match tempfile::Builder::new()
         .prefix("calm-smoke-plugins-")
         .tempdir()
@@ -967,9 +1004,10 @@ fn main() {
             ..Default::default()
         };
         let smoke = args.smoke;
+        let builtin_plugins = settings.settings.plugins.builtin;
         let opened = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| {
-                let mut view = CanvasView::new(cx);
+                let mut view = CanvasView::new(builtin_plugins, cx);
                 view.set_settings_state(settings);
                 if smoke && let Err(err) = add_smoke_panels(&mut view, window, cx) {
                     smoke_fail(&format!("terminal spawn: {err}"));
