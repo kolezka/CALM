@@ -943,8 +943,27 @@ fn window_visible(window: AnyWindowHandle, cx: &mut App) -> Option<bool> {
 
 /// A fixture plugin whose page sets the title twice; the second call runs only after the
 /// host answered the first, so the final title proves load, prelude and bridge round trip.
+/// It first probes error codes and `calm.has` through the real bridge and stores what it saw
+/// with `settings.set`, so the smoke reads it once the title says `smoke-ok`.
 const SMOKE_PLUGIN_HTML: &str = r#"<!doctype html><body>smoke<script>
-calm.panel.setTitle("smoke-1").then(function () { return calm.panel.setTitle("smoke-ok"); });
+function codeOf(promise) {
+  return promise.then(function () { return "resolved"; }, function (err) { return err && err.code; });
+}
+// The prelude has no generic call, so rename the next posted method to an unknown one.
+var realStringify = JSON.stringify;
+JSON.stringify = function (value) {
+  JSON.stringify = realStringify;
+  return realStringify.call(JSON, { id: value.id, method: "nope", params: null });
+};
+var unknown = codeOf(calm.theme.get());
+var unserved = codeOf(calm.panel.getBounds());
+Promise.all([unknown, unserved]).then(function (codes) {
+  var errors = { unknown: codes[0], unserved: codes[1],
+    has: [calm.has("panel.setTitle"), calm.has("nope")] };
+  calm.log("smoke errors " + JSON.stringify(errors));
+  return calm.settings.set({ errors: errors });
+}).then(function () { return calm.panel.setTitle("smoke-1"); })
+  .then(function () { return calm.panel.setTitle("smoke-ok"); });
 </script></body>"#;
 /// A plugin whose bundle was never built: the panel must say so.
 const SMOKE_UNBUILT_HTML: &str =
@@ -1063,13 +1082,19 @@ async fn smoke_plugins(
         cx.background_executor()
             .timer(Duration::from_millis(50))
             .await;
-        let (title, status) = cx.update(|cx| {
+        let (title, status, settings) = cx.update(|cx| {
             let view = view.read(cx);
-            let title = view.scene.get(ids[0]).map(|panel| panel.title.clone());
-            (title, view.plugin_status())
+            let panel = view.scene.get(ids[0]);
+            let title = panel.map(|panel| panel.title.clone());
+            let settings = match panel.map(|panel| &panel.kind) {
+                Some(PanelKind::Plugin { settings, .. }) => settings.clone(),
+                _ => serde_json::Value::Null,
+            };
+            (title, view.plugin_status(), settings)
         });
         if title.as_deref() == Some("smoke-ok") {
             println!("smoke: plugin loaded=true bridge=ok title=smoke-ok");
+            smoke_plugin_errors(&settings["errors"]);
             match &status[1] {
                 (_, Some(err)) if err.contains("not built") => {
                     println!("smoke: plugin unbuilt reported=true")
@@ -1112,6 +1137,19 @@ async fn smoke_plugins(
     }
     if let Err(err) = fixtures.close() {
         eprintln!("smoke: could not remove the plugin temp dir: {err}");
+    }
+}
+
+/// What the fixture page saw: the codes of an unknown and an unserved call, and `calm.has`.
+fn smoke_plugin_errors(errors: &serde_json::Value) {
+    let text = |key: &str| errors[key].as_str().unwrap_or("missing").to_string();
+    let (unknown, unserved) = (text("unknown"), text("unserved"));
+    let has = errors["has"].to_string();
+    println!("smoke: plugin errors unknown={unknown} unserved={unserved} has={has}");
+    if unknown != "unknown_method" || unserved != "not_implemented" || has != "[true,false]" {
+        smoke_fail(&format!(
+            "plugin error codes or calm.has are wrong: {errors}"
+        ));
     }
 }
 

@@ -8,8 +8,9 @@ use calm_core::scene::{Panel, PanelId, PanelKind};
 use calm_core::viewport::NativePlacement;
 use calm_native::{NativeChild, WebPanel};
 use calm_plugins::{
-    BridgeEvent, BridgeRequest, BridgeResponse, CALM_PRELUDE_JS, Discovery, InstalledPlugin,
-    discover_search, is_known_method, missing_scripts, plugin_search,
+    API_VERSION, ApiError, BridgeEvent, BridgeRequest, BridgeResponse, CALM_PRELUDE_JS, Discovery,
+    InstalledPlugin, discover_search, host_info_js, is_known_method, missing_scripts,
+    plugin_search,
 };
 use futures::channel::mpsc::UnboundedSender;
 use gpui::Window;
@@ -67,10 +68,24 @@ pub fn discover_installed(builtin: bool) -> (Discovery, Vec<String>) {
     for err in &discovery.errors {
         eprintln!("calm: plugin skipped: {err}");
     }
+    for warning in &discovery.warnings {
+        eprintln!("calm: plugin warning: {warning}");
+    }
     if discovery.plugins.is_empty() {
         eprintln!("calm: no plugins found");
     }
     (discovery, searched)
+}
+
+/// The status bar item for skipped plugins and plugins loaded with warnings, empty if none.
+/// The pill has one text color, so the warning sign marks the item.
+pub fn plugin_problems_text(errors: usize, warnings: usize) -> String {
+    match (errors, warnings) {
+        (0, 0) => String::new(),
+        (errors, 0) => format!("⚠ plugins: {errors} errors"),
+        (0, warnings) => format!("⚠ plugins: {warnings} warnings"),
+        (errors, warnings) => format!("⚠ plugins: {errors} errors, {warnings} warnings"),
+    }
 }
 
 /// Menu lists as `CanvasView` keeps them, in the shape `calm_core::menu` takes.
@@ -123,6 +138,8 @@ impl PluginPanel {
         let mut host = NativeChild::new(window).map_err(|err| err.to_string())?;
         host.set_visible(false);
         let mut web = WebPanel::new(&host).map_err(|err| err.to_string())?;
+        // Before the prelude, so `calm.has` works from the first line of the page.
+        web.add_user_script_at_document_start(&host_info_js(API_VERSION, served_methods()));
         web.add_user_script_at_document_start(CALM_PRELUDE_JS);
         web.on_message(Box::new(move |text| {
             if bridge.unbounded_send((id, text)).is_err() {
@@ -258,6 +275,22 @@ fn percent_encode(text: &str) -> String {
     out
 }
 
+/// Every method this host answers with something other than `not_implemented`, here or in
+/// `plugin_services`. Pages read it as `window.__calmHost.methods` through `calm.has`.
+pub fn served_methods() -> &'static [&'static str] {
+    &[
+        "log",
+        "panel.setTitle",
+        "settings.get",
+        "settings.set",
+        "github.api",
+        "storage.get",
+        "storage.set",
+        "storage.remove",
+        "openExternal",
+    ]
+}
+
 /// Serves one bridge call against its panel. `None` means no reply: `log` is fire and
 /// forget in the prelude. Methods the host does not serve yet reject, never hang.
 pub fn dispatch(panel: &mut Panel, request: &BridgeRequest) -> Option<BridgeResponse> {
@@ -274,11 +307,11 @@ pub fn dispatch(panel: &mut Panel, request: &BridgeRequest) -> Option<BridgeResp
                 panel.title = title.to_string();
                 BridgeResponse::Ok(id, Value::Null)
             }
-            None => BridgeResponse::Err(id, "panel.setTitle: title must be a string".into()),
+            None => BridgeResponse::Err(id, ApiError::invalid_params("title", "must be a string")),
         },
         "settings.get" => match &panel.kind {
             PanelKind::Plugin { settings, .. } => BridgeResponse::Ok(id, settings.clone()),
-            _ => BridgeResponse::Err(id, "settings.get: not a plugin panel".into()),
+            _ => BridgeResponse::Err(id, ApiError::wrong_kind(panel.id, "plugin")),
         },
         "settings.set" => match &mut panel.kind {
             PanelKind::Plugin { settings, .. } if params.is_object() => {
@@ -286,12 +319,12 @@ pub fn dispatch(panel: &mut Panel, request: &BridgeRequest) -> Option<BridgeResp
                 BridgeResponse::Ok(id, Value::Null)
             }
             PanelKind::Plugin { .. } => {
-                BridgeResponse::Err(id, "settings.set: value must be an object".into())
+                BridgeResponse::Err(id, ApiError::invalid_params("value", "must be an object"))
             }
-            _ => BridgeResponse::Err(id, "settings.set: not a plugin panel".into()),
+            _ => BridgeResponse::Err(id, ApiError::wrong_kind(panel.id, "plugin")),
         },
         method if is_known_method(method) => BridgeResponse::not_implemented(id, method),
-        method => BridgeResponse::Err(id, format!("unknown method: {method}")),
+        method => BridgeResponse::unknown_method(id, method),
     };
     Some(response)
 }
@@ -314,16 +347,16 @@ pub fn route(panel: &mut Panel, request: &BridgeRequest) -> Route {
     };
     match crate::plugin_services::parse(plugin_id, &request.method, &request.params) {
         Some(Ok(call)) => Route::Background(call),
-        Some(Err(message)) => Route::Reply(Some(BridgeResponse::Err(request.id, message))),
+        Some(Err(error)) => Route::Reply(Some(BridgeResponse::Err(request.id, error))),
         None => Route::Reply(dispatch(panel, request)),
     }
 }
 
 /// The reply for a finished background call.
-pub fn service_reply(id: u64, result: Result<Value, String>) -> BridgeResponse {
+pub fn service_reply(id: u64, result: Result<Value, ApiError>) -> BridgeResponse {
     match result {
         Ok(value) => BridgeResponse::Ok(id, value),
-        Err(message) => BridgeResponse::Err(id, message),
+        Err(error) => BridgeResponse::Err(id, error),
     }
 }
 
@@ -332,6 +365,7 @@ mod tests {
     use super::*;
     use calm_core::geometry::Rect;
     use calm_core::scene::Scene;
+    use calm_plugins::ErrorCode;
     use serde_json::json;
 
     fn plugin_panel() -> (Scene, PanelId) {
@@ -363,7 +397,13 @@ mod tests {
         assert_eq!(reply, Some(BridgeResponse::Ok(1, Value::Null)));
         assert_eq!(panel.title, "Hello");
         let bad = dispatch(panel, &call(2, "panel.setTitle", json!({ "title": 3 })));
-        assert!(matches!(bad, Some(BridgeResponse::Err(2, _))));
+        assert_eq!(
+            bad,
+            Some(BridgeResponse::Err(
+                2,
+                ApiError::invalid_params("title", "must be a string")
+            ))
+        );
         assert_eq!(panel.title, "Hello");
     }
 
@@ -381,11 +421,37 @@ mod tests {
             Some(BridgeResponse::Ok(2, value.clone()))
         );
         let rejected = dispatch(panel, &call(3, "settings.set", json!([1])));
-        assert!(matches!(rejected, Some(BridgeResponse::Err(3, _))));
+        assert_eq!(
+            rejected,
+            Some(BridgeResponse::Err(
+                3,
+                ApiError::invalid_params("value", "must be an object")
+            ))
+        );
         assert_eq!(
             dispatch(panel, &call(4, "settings.get", Value::Null)),
             Some(BridgeResponse::Ok(4, value))
         );
+    }
+
+    #[test]
+    fn settings_on_a_non_plugin_panel_is_wrong_kind() {
+        let mut scene = Scene::default();
+        let id = scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+            },
+            Rect::new(0.0, 0.0, 320.0, 200.0),
+        );
+        let panel = scene.get_mut(id).unwrap();
+        for method in ["settings.get", "settings.set"] {
+            assert_eq!(
+                dispatch(panel, &call(1, method, json!({}))),
+                Some(BridgeResponse::Err(1, ApiError::wrong_kind(id, "plugin"))),
+                "{method}"
+            );
+        }
     }
 
     #[test]
@@ -396,32 +462,53 @@ mod tests {
             dispatch(panel, &call(1, "log", json!({ "message": "hi" }))),
             None
         );
-        let served = [
-            "log",
-            "panel.setTitle",
-            "settings.get",
-            "settings.set",
-            "github.api",
-            "storage.get",
-            "storage.set",
-            "storage.remove",
-            "openExternal",
-        ];
         for (n, method) in calm_plugins::BRIDGE_METHODS.iter().enumerate() {
-            if served.contains(method) {
+            if served_methods().contains(method) {
                 continue;
             }
             let n = n as u64;
+            let reply = dispatch(panel, &call(n, method, Value::Null));
             assert_eq!(
-                dispatch(panel, &call(n, method, Value::Null)),
+                reply,
                 Some(BridgeResponse::not_implemented(n, method)),
                 "{method}"
             );
+            let Some(BridgeResponse::Err(_, error)) = reply else {
+                unreachable!()
+            };
+            assert_eq!(error.code, ErrorCode::NotImplemented, "{method}");
         }
         assert_eq!(
             dispatch(panel, &call(99, "nope", Value::Null)),
-            Some(BridgeResponse::Err(99, "unknown method: nope".into()))
+            Some(BridgeResponse::Err(
+                99,
+                ApiError::new(ErrorCode::UnknownMethod, "unknown method: nope")
+            ))
         );
+    }
+
+    // `calm.has` reads this list, so it must match what `route` really answers.
+    #[test]
+    fn served_methods_are_bridge_methods_and_are_served() {
+        let (mut scene, id) = plugin_panel();
+        let panel = scene.get_mut(id).unwrap();
+        for method in served_methods() {
+            assert!(calm_plugins::is_known_method(method), "{method}");
+        }
+        for (n, method) in calm_plugins::BRIDGE_METHODS.iter().enumerate() {
+            let n = n as u64;
+            let not_served = match route(panel, &call(n, method, Value::Null)) {
+                Route::Reply(Some(BridgeResponse::Err(_, error))) => {
+                    error.code == ErrorCode::NotImplemented
+                }
+                Route::Reply(_) | Route::Background(_) => false,
+            };
+            assert_eq!(
+                served_methods().contains(method),
+                !not_served,
+                "{method}: served_methods disagrees with route"
+            );
+        }
     }
 
     /// What the canvas does with a call, run inline: route, then the background service.
@@ -486,33 +573,45 @@ fi"#
         let (mut scene, id) = plugin_panel();
         let panel = scene.get_mut(id).unwrap();
         let request = call(6, "github.api", json!({ "path": PULLS }));
-        let message = |services: &crate::plugin_services::Services, panel: &mut Panel| match serve(
+        let error = |services: &crate::plugin_services::Services, panel: &mut Panel| match serve(
             panel, &request, services,
         ) {
-            Some(BridgeResponse::Err(6, message)) => message,
+            Some(BridgeResponse::Err(6, error)) => error,
             other => panic!("expected an error reply, got {other:?}"),
         };
 
         let mut missing = gh_services(dir.path(), "exit 0");
         missing.gh = calm_plugins::GhClient::new(dir.path().join("no-such-gh"));
-        assert!(message(&missing, panel).starts_with("gh is not installed"));
+        let not_installed = error(&missing, panel);
+        assert_eq!(not_installed.code, ErrorCode::GhNotInstalled);
+        assert!(not_installed.message.starts_with("gh is not installed"));
 
         let logged_out = gh_services(
             dir.path(),
             r#"echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4"#,
         );
-        assert!(message(&logged_out, panel).starts_with("gh is not logged in, run gh auth login"));
+        let logged_out = error(&logged_out, panel);
+        assert_eq!(logged_out.code, ErrorCode::GhNotLoggedIn);
+        assert!(
+            logged_out
+                .message
+                .starts_with("gh is not logged in, run gh auth login")
+        );
 
         let not_found = gh_services(dir.path(), r#"echo "gh: Not Found (HTTP 404)" >&2; exit 1"#);
         assert_eq!(
-            message(&not_found, panel),
-            "gh api failed: gh: Not Found (HTTP 404)"
+            error(&not_found, panel),
+            ApiError::new(
+                ErrorCode::GhFailed,
+                "gh api failed: gh: Not Found (HTTP 404)"
+            )
         );
 
         let bad_path = call(7, "github.api", json!({ "path": "--paginate" }));
         assert!(matches!(
             serve(panel, &bad_path, &not_found),
-            Some(BridgeResponse::Err(7, m)) if m.starts_with("invalid gh api path")
+            Some(BridgeResponse::Err(7, e))
+                if e.code == ErrorCode::GhInvalidPath && e.message.starts_with("invalid gh api path")
         ));
     }
 
@@ -535,9 +634,12 @@ fi"#
             &services,
         );
 
-        let Some(BridgeResponse::Err(8, message)) = &reply else {
+        let Some(BridgeResponse::Err(8, error)) = &reply else {
             panic!("expected an error reply, got {reply:?}");
         };
+        // GhClient reads "Bad credentials" as not logged in.
+        assert_eq!(error.code, ErrorCode::GhNotLoggedIn);
+        let message = &error.message;
         // Positive control: the fake printed the token, and the reply has the marker instead.
         assert!(message.contains("<redacted>"), "{message}");
         assert!(!message.contains(token));
@@ -562,6 +664,17 @@ fi"#
             Some(BridgeResponse::Ok(2, json!([1, 2])))
         );
         assert!(dir.path().join("plugin-data/hello-world.json").exists());
+    }
+
+    #[test]
+    fn plugin_problems_count_errors_and_warnings() {
+        assert_eq!(plugin_problems_text(0, 0), "");
+        assert_eq!(plugin_problems_text(2, 0), "⚠ plugins: 2 errors");
+        assert_eq!(plugin_problems_text(0, 1), "⚠ plugins: 1 warnings");
+        assert_eq!(
+            plugin_problems_text(1, 3),
+            "⚠ plugins: 1 errors, 3 warnings"
+        );
     }
 
     #[test]

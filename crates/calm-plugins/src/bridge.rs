@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::api::ApiError;
+
 /// One call from plugin JS, posted as `{ id, method, params }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BridgeRequest {
@@ -70,25 +72,42 @@ impl BridgeEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeResponse {
     Ok(u64, Value),
-    Err(u64, String),
+    Err(u64, ApiError),
 }
 
 impl BridgeResponse {
     /// The answer for a method the host does not serve yet. Rejects instead of hanging.
     pub fn not_implemented(id: u64, method: &str) -> Self {
-        BridgeResponse::Err(id, format!("not implemented: {method}"))
+        BridgeResponse::Err(id, ApiError::not_implemented(method))
     }
 
-    /// The script the host evaluates in the page to settle the call's Promise.
+    /// The answer for a method that is not in `BRIDGE_METHODS`.
+    pub fn unknown_method(id: u64, method: &str) -> Self {
+        BridgeResponse::Err(id, ApiError::unknown_method(method))
+    }
+
+    /// The script the host evaluates in the page to settle the call's Promise. A reject
+    /// carries `{ code, message }`, which the prelude turns into an `Error` with `code`.
     pub fn to_js(&self) -> String {
         let (id, ok, value) = match self {
             BridgeResponse::Ok(id, value) => (id, true, js_literal(value)),
-            BridgeResponse::Err(id, message) => {
-                (id, false, js_literal(&Value::from(message.as_str())))
-            }
+            BridgeResponse::Err(id, error) => (
+                id,
+                false,
+                js_literal(&serde_json::json!({ "code": error.code, "message": error.message })),
+            ),
         };
         format!("window.__calm.resolve({id}, {ok}, {value})")
     }
+}
+
+/// The document start script that runs before the prelude: `window.__calmHost` with the
+/// API version and the methods this host serves, so `calm.has` answers synchronously.
+pub fn host_info_js(api_version: u32, served: &[&str]) -> String {
+    let methods = js_literal(&Value::from(served.to_vec()));
+    format!(
+        "window.__calmHost = Object.freeze({{ apiVersion: {api_version}, methods: Object.freeze({methods}) }});"
+    )
 }
 
 /// Injected at document start in every plugin page. Defines `window.calm`.
@@ -140,13 +159,28 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
     return "a value that cannot be printed";
   }
 
+  // A v2 reject is { code, message }. A plain string is the v1 shape and gets host_error.
+  function toError(value) {
+    var code = "host_error";
+    var message;
+    if (value && typeof value === "object" && typeof value.code === "string") {
+      code = value.code;
+      message = typeof value.message === "string" ? value.message : value.code;
+    } else {
+      message = String(value);
+    }
+    var err = new Error(message);
+    err.code = code;
+    return err;
+  }
+
   window.__calm = Object.freeze({
     resolve: function (id, ok, value) {
       var entry = pending.get(id);
       if (!entry) return;
       pending.delete(id);
       if (ok) entry.resolve(value);
-      else entry.reject(new Error(String(value)));
+      else entry.reject(toError(value));
     },
     // Called by the host. Never throws back into it: a failing handler is logged.
     emit: function (event, payload) {
@@ -231,6 +265,11 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
       }
     }),
     openExternal: function (url) { return call({ method: "openExternal", params: { url: String(url) } }); },
+    // Synchronous: reads the list the host injected before this script ran.
+    has: function (method) {
+      var host = window.__calmHost;
+      return !!(host && host.methods && host.methods.indexOf(String(method)) >= 0);
+    },
     log: log
   });
 })();
@@ -239,6 +278,7 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::ErrorCode;
     use serde_json::json;
 
     #[test]
@@ -268,8 +308,12 @@ mod tests {
             r#"window.__calm.resolve(3, true, {"repos":["a/b"]})"#
         );
         assert_eq!(
-            BridgeResponse::Err(4, "gh is \"not\" installed".into()).to_js(),
-            r#"window.__calm.resolve(4, false, "gh is \"not\" installed")"#
+            BridgeResponse::Err(
+                4,
+                ApiError::new(ErrorCode::GhNotInstalled, "gh is \"not\" installed")
+            )
+            .to_js(),
+            r#"window.__calm.resolve(4, false, {"code":"gh_not_installed","message":"gh is \"not\" installed"})"#
         );
         // Line separators are legal in JSON strings but not in older JS string literals.
         assert_eq!(
@@ -300,7 +344,7 @@ mod tests {
     ];
 
     /// Declared in the d.ts but served by the prelude itself, not by the host.
-    const PRELUDE_ONLY: &[&str] = &["events.on"];
+    const PRELUDE_ONLY: &[&str] = &["events.on", "has"];
 
     #[test]
     fn bridge_methods_match_contract() {
@@ -611,11 +655,81 @@ console.log(JSON.stringify({ first: first, second: second, logs: logs }));"#;
     fn not_implemented_rejects_with_method_name() {
         assert_eq!(
             BridgeResponse::not_implemented(9, "storage.get"),
-            BridgeResponse::Err(9, "not implemented: storage.get".into())
+            BridgeResponse::Err(
+                9,
+                ApiError::new(ErrorCode::NotImplemented, "not implemented: storage.get")
+            )
         );
         assert_eq!(
             BridgeResponse::not_implemented(9, "storage.get").to_js(),
-            r#"window.__calm.resolve(9, false, "not implemented: storage.get")"#
+            r#"window.__calm.resolve(9, false, {"code":"not_implemented","message":"not implemented: storage.get"})"#
         );
+        assert_eq!(
+            BridgeResponse::unknown_method(10, "nope"),
+            BridgeResponse::Err(
+                10,
+                ApiError::new(ErrorCode::UnknownMethod, "unknown method: nope")
+            )
+        );
+    }
+
+    #[test]
+    fn host_info_script_escapes_and_freezes() {
+        assert_eq!(
+            host_info_js(2, &["log", "a\u{2028}b"]),
+            "window.__calmHost = Object.freeze({ apiVersion: 2, methods: Object.freeze([\"log\",\"a\\u2028b\"]) });"
+        );
+    }
+
+    // The host's real script: the v2 object shape, the v1 string shape, and calm.has.
+    #[test]
+    fn prelude_rejects_with_a_coded_error_for_both_shapes() {
+        // `has` reads `__calmHost` at call time, so setting it after the prelude is enough.
+        let mut harness = format!("{}\n", host_info_js(2, &["panel.setTitle"]));
+        harness.push_str(
+            r#"var out = {};
+function settle(name, promise) {
+  return promise.then(
+    function (v) { out[name] = { ok: v }; },
+    function (e) { out[name] = { isError: e instanceof Error, code: e.code, message: e.message }; }
+  );
+}
+var a = settle("v2", window.calm.panel.setTitle("x"));
+window.__calm.resolve(posted[posted.length - 1].id, false, { code: "not_implemented", message: "not implemented: panel.setTitle" });
+var b = settle("v1", window.calm.panel.getBounds());
+window.__calm.resolve(posted[posted.length - 1].id, false, "gh is not installed");
+var c = settle("noMessage", window.calm.theme.get());
+window.__calm.resolve(posted[posted.length - 1].id, false, { code: "busy" });
+var d = settle("ok", window.calm.settings.get());
+window.__calm.resolve(posted[posted.length - 1].id, true, { a: 1 });
+var before = posted.length;
+out.has = [window.calm.has("panel.setTitle"), window.calm.has("nope"), window.calm.has("panel.close")];
+out.hasPosted = posted.length - before;
+Promise.all([a, b, c, d]).then(function () { console.log(JSON.stringify(out)); });"#,
+        );
+        let Some(result) = run_prelude_under_bun("errors", &harness) else {
+            return;
+        };
+        assert_eq!(
+            result,
+            json!({
+                "v2": { "isError": true, "code": "not_implemented", "message": "not implemented: panel.setTitle" },
+                "v1": { "isError": true, "code": "host_error", "message": "gh is not installed" },
+                "noMessage": { "isError": true, "code": "busy", "message": "busy" },
+                "ok": { "ok": { "a": 1 } },
+                "has": [true, false, false],
+                "hasPosted": 0
+            })
+        );
+    }
+
+    #[test]
+    fn has_is_false_without_host_info() {
+        let harness =
+            r#"console.log(JSON.stringify([window.calm.has("log"), typeof window.calm.has]));"#;
+        let Some(result) = run_prelude_under_bun("has-none", harness) else {
+            return;
+        };
+        assert_eq!(result, json!([false, "function"]));
     }
 }

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
-use calm_plugins::GhClient;
+use calm_plugins::{ApiError, ErrorCode, GhClient, GhError};
 use serde_json::{Map, Value};
 
 /// Longest storage key, in bytes.
@@ -93,38 +93,44 @@ pub fn parse(
     plugin_id: Option<&str>,
     method: &str,
     params: &Value,
-) -> Option<Result<ServiceCall, String>> {
+) -> Option<Result<ServiceCall, ApiError>> {
     let call = match method {
-        "github.api" => string_param(method, params, "path").map(ServiceCall::GithubApi),
+        "github.api" => string_param(params, "path").map(ServiceCall::GithubApi),
         "storage.get" | "storage.set" | "storage.remove" => storage_call(plugin_id, method, params),
-        "openExternal" => string_param(method, params, "url")
+        "openExternal" => string_param(params, "url")
             .and_then(|url| check_url(&url).map(|()| ServiceCall::OpenExternal(url))),
         _ => return None,
     };
     Some(call)
 }
 
-fn string_param(method: &str, params: &Value, field: &str) -> Result<String, String> {
+fn string_param(params: &Value, field: &str) -> Result<String, ApiError> {
     params
         .get(field)
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| format!("{method}: {field} must be a string"))
+        .ok_or_else(|| ApiError::invalid_params(field, "must be a string"))
 }
 
 fn storage_call(
     plugin_id: Option<&str>,
     method: &str,
     params: &Value,
-) -> Result<ServiceCall, String> {
+) -> Result<ServiceCall, ApiError> {
     let plugin = plugin_id
         .filter(|id| is_file_safe(id))
-        .ok_or_else(|| format!("{method}: not a plugin panel"))?
+        .ok_or_else(|| {
+            ApiError::new(
+                ErrorCode::WrongKind,
+                format!("{method}: not a plugin panel"),
+            )
+        })?
         .to_string();
-    let key = string_param(method, params, "key")?;
+    let key = string_param(params, "key")?;
     if key.is_empty() || key.len() > STORAGE_MAX_KEY {
-        return Err(format!(
-            "{method}: key must be 1 to {STORAGE_MAX_KEY} bytes"
+        return Err(ApiError::invalid_params(
+            "key",
+            &format!("must be 1 to {STORAGE_MAX_KEY} bytes"),
         ));
     }
     Ok(match method {
@@ -146,16 +152,19 @@ fn is_file_safe(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
 }
 
-fn check_url(url: &str) -> Result<(), String> {
+fn check_url(url: &str) -> Result<(), ApiError> {
     let lower = url.to_ascii_lowercase();
     let has_host = ["http://", "https://"]
         .iter()
         .any(|scheme| lower.starts_with(scheme) && lower.len() > scheme.len());
     if !has_host || url.len() > MAX_URL || url.chars().any(|c| c.is_whitespace() || c.is_control())
     {
-        return Err(format!(
-            "openExternal: only http and https URLs open, got {:?}",
-            url.chars().take(80).collect::<String>()
+        return Err(ApiError::invalid_params(
+            "url",
+            &format!(
+                "only http and https URLs open, got {:?}",
+                url.chars().take(80).collect::<String>()
+            ),
         ));
     }
     Ok(())
@@ -163,9 +172,9 @@ fn check_url(url: &str) -> Result<(), String> {
 
 impl Services {
     /// Blocks. Call it on the background executor.
-    pub fn run(&self, call: ServiceCall) -> Result<Value, String> {
+    pub fn run(&self, call: ServiceCall) -> Result<Value, ApiError> {
         match call {
-            ServiceCall::GithubApi(path) => self.gh.api(&path).map_err(|err| err.to_string()),
+            ServiceCall::GithubApi(path) => self.gh.api(&path).map_err(|err| gh_error(&err)),
             ServiceCall::StorageGet { plugin, key } => {
                 let _guard = STORAGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
                 let data = read_data(&self.data_file(&plugin), "storage.get")?;
@@ -192,9 +201,16 @@ impl Services {
                 let status = Command::new(&self.opener)
                     .arg(&url)
                     .status()
-                    .map_err(|err| format!("openExternal: {}: {err}", self.opener.display()))?;
+                    .map_err(|err| {
+                        ApiError::host_error(format!(
+                            "openExternal: {}: {err}",
+                            self.opener.display()
+                        ))
+                    })?;
                 if !status.success() {
-                    return Err(format!("openExternal: open exited with {status}"));
+                    return Err(ApiError::host_error(format!(
+                        "openExternal: open exited with {status}"
+                    )));
                 }
                 Ok(Value::Null)
             }
@@ -206,39 +222,63 @@ impl Services {
     }
 }
 
+/// The `gh` client's failures, each with its own code. The message is the client's text,
+/// which is already redacted.
+fn gh_error(err: &GhError) -> ApiError {
+    let code = match err {
+        GhError::NotInstalled => ErrorCode::GhNotInstalled,
+        GhError::NotAuthenticated(_) => ErrorCode::GhNotLoggedIn,
+        GhError::Rejected(_) => ErrorCode::GhFailed,
+        GhError::InvalidPath(_) => ErrorCode::GhInvalidPath,
+        GhError::TimedOut(_) => ErrorCode::Timeout,
+        GhError::TooLarge(_) => ErrorCode::TooLarge,
+    };
+    ApiError::new(code, err.to_string())
+}
+
 /// A missing file is empty data. A file that does not parse is an error, never `{}`, so the
 /// next write cannot wipe it.
-fn read_data(path: &Path, method: &str) -> Result<Map<String, Value>, String> {
+fn read_data(path: &Path, method: &str) -> Result<Map<String, Value>, ApiError> {
     let text = match std::fs::read(path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
-        Err(err) => return Err(format!("{method}: {}: {err}", path.display())),
+        Err(err) => {
+            return Err(ApiError::host_error(format!(
+                "{method}: {}: {err}",
+                path.display()
+            )));
+        }
+    };
+    let corrupt = |why: String| {
+        ApiError::new(
+            ErrorCode::StorageCorrupt,
+            format!("{method}: plugin data {} {why}", path.display()),
+        )
     };
     match serde_json::from_slice(&text) {
         Ok(Value::Object(map)) => Ok(map),
-        Ok(_) => Err(format!(
-            "{method}: plugin data {} is not a JSON object",
-            path.display()
-        )),
-        Err(err) => Err(format!(
-            "{method}: plugin data {} does not parse: {err}",
-            path.display()
-        )),
+        Ok(_) => Err(corrupt("is not a JSON object".to_string())),
+        Err(err) => Err(corrupt(format!("does not parse: {err}"))),
     }
 }
 
 /// Writes a temp file next to `path`, then renames it over, so a crash never leaves half a file.
-fn write_data(path: &Path, data: &Map<String, Value>, method: &str) -> Result<(), String> {
+fn write_data(path: &Path, data: &Map<String, Value>, method: &str) -> Result<(), ApiError> {
     use std::io::Write as _;
-    let text = serde_json::to_vec(data).map_err(|err| format!("{method}: {err}"))?;
+    let text =
+        serde_json::to_vec(data).map_err(|err| ApiError::host_error(format!("{method}: {err}")))?;
     if text.len() > STORAGE_MAX_FILE {
-        return Err(format!(
-            "{method}: plugin data would be {} bytes, over the {STORAGE_MAX_FILE} byte limit",
-            text.len()
+        return Err(ApiError::new(
+            ErrorCode::TooLarge,
+            format!(
+                "{method}: plugin data would be {} bytes, over the {STORAGE_MAX_FILE} byte limit",
+                text.len()
+            ),
         ));
     }
     let dir = path.parent().unwrap_or(Path::new("."));
-    let fail = |err: std::io::Error| format!("{method}: {}: {err}", path.display());
+    let fail =
+        |err: std::io::Error| ApiError::host_error(format!("{method}: {}: {err}", path.display()));
     std::fs::create_dir_all(dir).map_err(fail)?;
     let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(fail)?;
     temp.write_all(&text).map_err(fail)?;
@@ -273,7 +313,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn storage(services: &Services, method: &str, params: Value) -> Result<Value, String> {
+    fn storage(services: &Services, method: &str, params: Value) -> Result<Value, ApiError> {
         let call = parse(Some("github-prs"), method, &params).unwrap()?;
         services.run(call)
     }
@@ -287,21 +327,57 @@ pub(crate) mod tests {
         );
         assert_eq!(
             parse(Some("p"), "github.api", &Value::Null),
-            Some(Err("github.api: path must be a string".into()))
+            Some(Err(ApiError::invalid_params("path", "must be a string")))
+        );
+        assert_eq!(
+            parse(None, "storage.get", &json!({ "key": "k" })),
+            Some(Err(ApiError::new(
+                ErrorCode::WrongKind,
+                "storage.get: not a plugin panel"
+            )))
         );
         assert!(matches!(
-            parse(None, "storage.get", &json!({ "key": "k" })),
-            Some(Err(m)) if m.contains("not a plugin panel")
-        ));
-        assert!(matches!(
             parse(Some("../x"), "storage.get", &json!({ "key": "k" })),
-            Some(Err(_))
+            Some(Err(e)) if e.code == ErrorCode::WrongKind
         ));
         let long = "k".repeat(STORAGE_MAX_KEY + 1);
         assert!(matches!(
             parse(Some("p"), "storage.set", &json!({ "key": long, "value": 1 })),
-            Some(Err(m)) if m.contains("key must be")
+            Some(Err(e)) if e.code == ErrorCode::InvalidParams && e.message.starts_with("key: must be")
         ));
+    }
+
+    #[test]
+    fn gh_errors_map_to_their_codes() {
+        let cases = [
+            (GhError::NotInstalled, ErrorCode::GhNotInstalled),
+            (
+                GhError::NotAuthenticated("x".into()),
+                ErrorCode::GhNotLoggedIn,
+            ),
+            (GhError::Rejected("x".into()), ErrorCode::GhFailed),
+            (GhError::InvalidPath("--x".into()), ErrorCode::GhInvalidPath),
+            (GhError::TimedOut(5), ErrorCode::Timeout),
+            (GhError::TooLarge(9), ErrorCode::TooLarge),
+        ];
+        for (err, code) in cases {
+            let api = gh_error(&err);
+            assert_eq!(api.code, code, "{err:?}");
+            assert_eq!(api.message, err.to_string());
+        }
+    }
+
+    #[test]
+    fn storage_file_that_is_not_an_object_is_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let services = services(dir.path());
+        fs::create_dir_all(&services.data_dir).unwrap();
+        fs::write(services.data_dir.join("github-prs.json"), "[1]").unwrap();
+        let get = storage(&services, "storage.get", json!({ "key": "a" }));
+        assert!(
+            matches!(&get, Err(e) if e.code == ErrorCode::StorageCorrupt && e.message.contains("not a JSON object")),
+            "{get:?}"
+        );
     }
 
     #[test]
@@ -360,12 +436,12 @@ pub(crate) mod tests {
         fs::write(&file, "{not json").unwrap();
         let get = storage(&services, "storage.get", json!({ "key": "a" }));
         assert!(
-            matches!(&get, Err(m) if m.contains("does not parse")),
+            matches!(&get, Err(e) if e.code == ErrorCode::StorageCorrupt && e.message.contains("does not parse")),
             "{get:?}"
         );
         let set = storage(&services, "storage.set", json!({ "key": "b", "value": 2 }));
         assert!(
-            matches!(&set, Err(m) if m.contains("does not parse")),
+            matches!(&set, Err(e) if e.code == ErrorCode::StorageCorrupt && e.message.contains("does not parse")),
             "{set:?}"
         );
         assert_eq!(fs::read_to_string(&file).unwrap(), "{not json");
@@ -382,7 +458,7 @@ pub(crate) mod tests {
             json!({ "key": "a", "value": big }),
         );
         assert!(
-            matches!(&set, Err(m) if m.contains("byte limit")),
+            matches!(&set, Err(e) if e.code == ErrorCode::TooLarge && e.message.contains("byte limit")),
             "{set:?}"
         );
         assert!(!services.data_dir.join("github-prs.json").exists());
@@ -410,7 +486,7 @@ pub(crate) mod tests {
             assert!(
                 matches!(
                     parse(Some("p"), "openExternal", &json!({ "url": url })),
-                    Some(Err(_))
+                    Some(Err(e)) if e.code == ErrorCode::InvalidParams
                 ),
                 "{url}"
             );

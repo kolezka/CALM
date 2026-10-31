@@ -37,6 +37,74 @@ export interface CalmPluginManifest {
   minSize?: Size;
   /** Largest size a resize may reach. At least `minSize`; not allowed with `resizable: false`. */
   maxSize?: Size;
+  /** Plugin API version, a positive integer. Missing means 1. Above the host's, the plugin is skipped. */
+  apiVersion?: number;
+  /** What the plugin does, shown to the user. Declarative, never checked. Unknown words warn. */
+  capabilities?: Capability[];
+  /** Backend entry run under bun, relative to the plugin folder. Parsed, not run yet. */
+  main?: string;
+  /** Needs `main`. */
+  backend?: { start?: "on-demand" | "at-launch"; restart?: "on-failure" | "never" };
+  /** Needs `main`. `bun` is a semver range such as ">=1.2". */
+  engines?: { bun?: string };
+  /** Opt-in hidden page. Parsed, not served yet. */
+  background?: boolean;
+}
+
+/** The capability words. Declarative only. */
+export type Capability =
+  | "panels.create"
+  | "panels.control"
+  | "panels.close"
+  | "camera.control"
+  | "terminal.read"
+  | "terminal.write"
+  | "terminal.control"
+  | "browser.control"
+  | "browser.script"
+  | "browser.data"
+  | "plugins.call"
+  | "settings.write"
+  | "process.exec"
+  | "github"
+  | "open.external"
+  | "layouts"
+  | "backend";
+
+/** The `code` of a rejected call. */
+export type ErrorCode =
+  | "unknown_method"
+  | "not_implemented"
+  | "invalid_params"
+  | "not_found"
+  | "wrong_kind"
+  | "not_alive"
+  | "busy"
+  | "cancelled"
+  | "unavailable"
+  | "too_large"
+  | "storage_corrupt"
+  | "gh_not_installed"
+  | "gh_not_logged_in"
+  | "gh_failed"
+  | "gh_invalid_path"
+  | "timeout"
+  | "not_allowed"
+  | "not_installed"
+  | "not_running"
+  | "method_not_found"
+  | "remote_error"
+  | "host_error";
+
+/** What every Promise from `window.calm` rejects with. A v1 host's string reject gets `host_error`. */
+export interface CalmError extends Error {
+  code: ErrorCode;
+}
+
+/** Injected by the host before the prelude. `methods` is what this host serves. */
+export interface CalmHostInfo {
+  apiVersion: number;
+  methods: string[];
 }
 
 export type PanelKind = "terminal" | "browser" | "plugin";
@@ -170,6 +238,8 @@ export interface Calm {
   theme: CalmTheme;
   events: CalmEvents;
   openExternal(url: string): Promise<void>;
+  /** Synchronous: whether this host serves `method`, such as "panel.setTitle". Served by the prelude. */
+  has(method: string): boolean;
   /**
    * Writes to CALM's stderr, tagged with the plugin. Fire and forget: the prelude posts the
    * message and keeps no pending entry, so nothing waits for a host answer.
@@ -180,5 +250,6 @@ export interface Calm {
 declare global {
   interface Window {
     calm: Calm;
+    __calmHost?: CalmHostInfo;
   }
 }

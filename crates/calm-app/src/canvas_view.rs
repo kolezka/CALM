@@ -122,6 +122,8 @@ pub struct CanvasView {
     pub plugin_counts: (usize, usize),
     /// Plugin folders skipped at startup, shown in the status bar; stderr names each one.
     pub plugin_errors: usize,
+    /// Plugins loaded with a warning (unknown capability words); stderr names each one.
+    pub plugin_warnings: usize,
     /// Live plugin pages by panel. Dropping an entry closes the page.
     plugin_panels: Vec<(PanelId, PluginPanel)>,
     bridge: BridgeSender,
@@ -208,6 +210,7 @@ impl CanvasView {
             plugin_search_dirs,
             plugin_counts,
             plugin_errors: discovery.errors.len(),
+            plugin_warnings: discovery.warnings.len(),
             plugin_panels: Vec::new(),
             bridge,
             _bridge_task: bridge_task,
@@ -1189,12 +1192,8 @@ impl CanvasView {
         } else {
             String::new()
         };
-        // The pill has one text color, so the warning sign marks the error item.
-        let plugin_errors = if self.plugin_errors > 0 {
-            format!("⚠ plugins: {} errors", self.plugin_errors)
-        } else {
-            String::new()
-        };
+        let plugin_errors =
+            plugin_host::plugin_problems_text(self.plugin_errors, self.plugin_warnings);
         let text = status_text([
             saved.as_str(),
             plugin_errors.as_str(),

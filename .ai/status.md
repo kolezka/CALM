@@ -112,6 +112,15 @@ Pull requests:
 ## In progress (not on `main`)
 
 - No PR yet: a Linux port plan.
+- `feat/api-v2-p1-errors`, plugin API v2 phase 1: `calm_plugins::api` (`API_VERSION` 2,
+  `ErrorCode`, `ApiError`, `Caller`, `Capability`). `BridgeResponse::Err` carries `ApiError`
+  and every host reject has a code; the prelude rejects with an `Error` that has `code` and
+  maps a v1 string to `host_error`. The host injects `window.__calmHost` before the prelude
+  and `calm.has` reads it (`plugin_host::served_methods`). Manifest `apiVersion` (above 2
+  skips), `capabilities` (unknown words warn, status bar counts warnings), `main` (checked on
+  disk), `backend`, `engines.bun` (syntax only) and `background` are parsed; nothing runs a
+  backend or background page yet. Smoke prints
+  `plugin errors unknown=unknown_method unserved=not_implemented has=[true,false]`.
 
 ## Not wired yet
 
@@ -120,8 +129,8 @@ Pull requests:
   `plugin_services.rs`. The other 8 of the 17 `BRIDGE_METHODS` reject with
   `not implemented: <method>`: `panel.getBounds/minimize/close`, `canvas.*`,
   `process.exec`, `theme.get`. `storage.keys` and `mailto:` for `openExternal` are not
-  served. No host events are sent other than `command`. Errors are still v1 strings; the v2
-  `{ code, message }` shape is not done.
+  served. No host events are sent other than `command`. Coded errors `{ code, message }` are
+  on `feat/api-v2-p1-errors`, not on `main` yet.
 - Clicking inside a plugin page does not focus or raise its panel; AppKit routes the click
   to the WKWebView.
 - Layouts and session: layout save and load, `--layout`, session autosave and restore are

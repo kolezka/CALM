@@ -104,6 +104,12 @@ mod tests {
                 min_size: None,
                 max_size: None,
                 menus: Vec::new(),
+                api_version: 1,
+                capabilities: Vec::new(),
+                main: None,
+                backend: Default::default(),
+                engines: Default::default(),
+                background: false,
             },
             dir: dir.path().to_path_buf(),
         };

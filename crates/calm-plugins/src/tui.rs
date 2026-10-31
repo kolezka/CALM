@@ -64,7 +64,12 @@ const FIELDS: &[&str] = &[
     "titleColor",
     "terminalColors",
     "contributes",
+    "apiVersion",
+    "capabilities",
 ];
+
+/// Web-only manifest fields, each refused on a TUI app with its own reason.
+const WEB_ONLY_FIELDS: &[&str] = &["main", "backend", "engines", "background"];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TuiRestart {
@@ -129,6 +134,9 @@ pub(crate) fn parse(object: &Map<String, Value>) -> Result<TuiManifest, String> 
     if let Some(key) = object.keys().find(|key| !FIELDS.contains(&key.as_str())) {
         return Err(match key.as_str() {
             "entry" => "a tui plugin has no entry: it runs `command`".to_string(),
+            web_only if WEB_ONLY_FIELDS.contains(&web_only) => {
+                format!("a tui plugin has no {web_only}: it runs `command`")
+            }
             planned if PLANNED_FIELDS.contains(&planned) => format!(
                 "{planned} is planned but not supported yet: CALM cannot set Ghostty fonts or \
                  padding per terminal until the libghostty shim patch lands"
