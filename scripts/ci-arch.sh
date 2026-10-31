@@ -39,7 +39,9 @@ outside() {
     docker version >/dev/null || die "cannot reach a Docker daemon from the runner"
     name="calm-ci-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${GITHUB_JOB:-arch}"
     # A cancelled or timed-out job must not leave the container running on the host.
-    trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+    # name is local, so expand it now: the trap runs after this function has returned.
+    # shellcheck disable=SC2064
+    trap "docker rm -f '$name' >/dev/null 2>&1 || true" EXIT
     # The runner reaches the host's Docker daemon, which cannot see the runner's own work
     # directory, so a bind mount would be empty. Stream the checkout in with tar instead.
     # Named volumes live on the host daemon and keep caches between runs.
