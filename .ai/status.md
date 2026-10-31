@@ -162,6 +162,21 @@ research doc and grid styles. Facts are verified unless marked otherwise.
   unsupported for `shell: true`), and the glyph icon at all zoom levels.
 - Not wired: TUI panels in saved layouts (layout save and load are not wired at all).
 
+## On `feat/plugin-menus` (PR open, not merged)
+
+- Plugin context menu items: `contributes.menus` in web and TUI manifests
+  (`calm-plugins::contributes`, strict per-field errors), the merged menu model and
+  `command` payload in `calm-core::plugin_menu`, settings `plugins.menus.hidden` and
+  `plugins.menus.submenu_above`, app glue in `calm-app/src/canvas_view/plugin_menus.rs`.
+- Web plugins get a `command` event in an open panel, or in a new one opened at the click
+  point once it loads; the prelude queues commands until a handler registers. TUI items open
+  a new panel with `run` args appended.
+- Smoke: `smoke: plugin menus items=2 invoked=ok` (canvas item opens and delivers, panel item
+  reuses the panel, `when` hides it on a terminal).
+- Unverified: a manual right click in the GUI (the NSMenu itself), long titles in the menu,
+  and the github-prs "Open repo in browser" item, which needs `openExternal` on the host.
+- Not built: runtime items (`calm.menus.register`), `shortcut`, `contributes.commands`.
+
 ## Verified on hardware
 
 macOS 27.0.1, Apple M4 Pro: smoke passes; two terminals render in zoom views at zoom 1.5;
@@ -171,7 +186,8 @@ CI run on `main` green (linux-arch success, macos skipped).
 ## Not wired yet
 
 - Plugin host, rest of the dispatcher: storage, `panel.getBounds/minimize/close`,
-  `canvas.*`, `process.exec`, `github.api`, `openExternal`, `theme.get`, and host events.
+  `canvas.*`, `process.exec`, `github.api`, `openExternal`, `theme.get`, and host events
+  other than `command`.
   Plugin panel settings are not saved anywhere yet (layouts are not wired).
 - Clicking inside a plugin page does not focus or raise its panel in the scene; AppKit
   routes the click to the WKWebView directly. Unverified how keys behave while it has focus.

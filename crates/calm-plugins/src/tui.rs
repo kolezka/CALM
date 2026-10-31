@@ -32,6 +32,7 @@ const FIELDS: &[&str] = &[
     "description",
     "restart",
     "shell",
+    "contributes",
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -66,6 +66,7 @@ Every plugin folder holds a `calm-plugin.json`:
 | `resizable`   | Optional. `false` keeps the panel at the size it was created with.       |
 | `minSize`     | Optional `{ "width", "height" }`. Smallest size a resize may reach.      |
 | `maxSize`     | Optional `{ "width", "height" }`. Largest size a resize may reach.       |
+| `contributes` | Optional. Context menu items, see Context menu contributions.            |
 
 Every panel can be resized by default, plugins included. Drag the right edge, the bottom
 edge or the corner. The handle reaches a few pixels outside the panel, so it works over a
@@ -175,6 +176,92 @@ plugin `id`, never the command, `args` or `env`.
 
 `plugins/top-example` runs macOS `top`. `templates/plugin-tui` is a starting point.
 
+## Context menu contributions
+
+A plugin can add items to CALM's right-click menus with `contributes.menus` in
+`calm-plugin.json`. Web and TUI plugins both can.
+
+```json
+"contributes": {
+  "menus": [
+    { "id": "open-repo", "title": "Open repo in browser", "location": "panel",
+      "when": { "plugin": ["github-prs"] } },
+    { "id": "new-panel", "title": "New GitHub PRs panel here", "location": "canvas",
+      "open": "new" }
+  ]
+}
+```
+
+| Field      | Meaning                                                                          |
+| ---------- | -------------------------------------------------------------------------------- |
+| `id`       | Required. `[a-z0-9-]+`, unique within the plugin. Sent back in the command.      |
+| `title`    | Required. The menu text, 1 to 80 characters.                                     |
+| `location` | Required. `"canvas"`: right click on empty canvas. `"panel"`: right click on a panel's title bar or minimized chip. |
+| `when`     | Panel items only. Which panels show the item, see below. Absent: every panel.     |
+| `group`    | Items with the same group sit together, groups are split by a separator. Default: no group, listed first. |
+| `order`    | Integer, sorts items inside a group. Default 0; ties keep manifest order.         |
+| `icon`     | 1 to 4 characters drawn before the title.                                        |
+| `open`     | Web plugins. `"reuse"` (default) sends the command to an open panel of the plugin; `"new"` always opens a new panel for it. |
+| `run`      | TUI plugins. Arguments appended to the manifest's `args` for the panel the item opens. |
+
+`when` is a small filter, not an expression language. Every key is optional and the ones
+you set must all match:
+
+- `kind`: a list of `terminal`, `browser`, `plugin`, `tui`.
+- `plugin`: a list of plugin ids. Matches plugin and TUI panels of those plugins, so
+  `["<your id>"]` limits an item to your own panels.
+- `minimized`: `true` or `false`.
+
+Validation is strict. A missing `title`, an unknown `location`, an unknown field (in an item,
+in `when` or in `contributes`), a duplicate `id`, `when` on a canvas item, `run` on a web
+plugin or more than 32 items is a manifest error that names the field, and the plugin is
+skipped like any other broken manifest.
+
+**Where items show.** Built-in items always come first and plugins cannot remove or change
+them. After them comes a separator, then each plugin's items, plugins in discovery order and
+split by separators. A plugin with more than 3 visible items in one menu gets a submenu
+named after the plugin.
+
+**What a click does.** For a web plugin CALM sends a `command` event to a panel of the
+plugin: the right-clicked panel if it is one, else the focused one, else the plugin's
+frontmost panel. If none is open, or the item says `"open": "new"`, CALM opens a new panel
+at the click point (for a panel item, to the right of the clicked panel) and delivers the
+command once the page has loaded. The prelude keeps a command until the page registers a
+`command` handler, so a handler added after an `await` still gets it. A command that cannot
+be delivered (the panel closed, or the page did not load within 30 s) is logged to stderr,
+never dropped silently.
+
+```ts
+calm.events.on("command", (command) => {
+  // { id, location: "canvas" | "panel", panel: {...} | null, world: { x, y } | null }
+  if (command.id === "open-repo") openRepos();
+});
+```
+
+`panel` describes the right-clicked panel (`id`, `kind`, `pluginId`, `title`, `rect` in world
+coordinates, `minimized`) and is null for canvas items. `world` is the right-click point for
+canvas items and null for panel items. The type is `MenuCommand` in
+`packages/calm-plugin-sdk/calm.d.ts`.
+
+For a TUI plugin an item opens a new panel of the app at the click point, with the item's
+`run` arguments appended. A TUI app has no page, so it gets no event. Duplicate on such a
+panel starts the manifest's command without the extra arguments.
+
+**User settings.** In `~/.config/calm/settings.json`:
+
+```json
+"plugins": { "menus": { "hidden": ["github-prs", "hello-world/wave"], "submenu_above": 3 } }
+```
+
+`hidden` takes a plugin id, which hides all its items, or `<plugin-id>/<item-id>` for one
+item. `submenu_above` is how many items a plugin may show before they move into a submenu,
+0 to 50; 0 puts every plugin in a submenu. Bad values are settings errors. Both are read each
+time a menu opens.
+
+Not supported yet: runtime items (`calm.menus.register`), keyboard shortcuts on items
+(`shortcut` is rejected as an unknown field) and `contributes.commands` from the Plugin API
+v2 design.
+
 ## The `window.calm` API
 
 CALM injects `window.calm` before any of your scripts run. The types live in one place,
@@ -259,6 +346,7 @@ The host sends these events:
 | `visibility`      | `{ mode: "live" \| "preview" \| "hidden" }`        |
 | `settingsChanged` | the new settings object                            |
 | `themeChanged`    | `{ background }`                                   |
+| `command`         | a chosen menu item, see Context menu contributions |
 
 An unknown event name throws a `TypeError`. A handler that throws is logged through
 `calm.log` and does not stop the other handlers.
@@ -293,8 +381,8 @@ serves the four methods marked below. Every other method rejects with
 | `theme.get`          | Rejects with `not implemented: <method>` |
 | `log`                | Served: printed to stderr, no answer       |
 
-Events have no host sender yet, so handlers registered with `calm.events.on` do not fire
-until the app wiring lands.
+Only `command` has a host sender so far. Handlers for the other events do not fire until
+their app wiring lands.
 
 ### Wire format
 
@@ -412,8 +500,13 @@ Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
 
 ## Examples
 
-- `plugins/top-example`: a TUI app running macOS `top`, sorted by CPU.
-- `plugins/hello-world`: plain HTML and JS. Shows text and sets the panel title.
+- `plugins/top-example`: a TUI app running macOS `top`, sorted by CPU. Its canvas menu
+  item "Top, refresh every 5 s" opens one with `-s 5` appended.
+- `plugins/hello-world`: plain HTML and JS. Shows text and sets the panel title. Its panel
+  menu item "Say hello" changes the title from a `command` handler.
 - `plugins/github-prs`: TSX. Lists open pull requests for the repositories saved in its
   settings (`{ "repos": ["owner/name"] }`), editable in the panel. Clicking a pull request
   opens it in the browser. Build it first with `bun install && bun run build` in its folder.
+  Menu items: "Open repo in browser" on its own panels, and "New GitHub PRs panel here" on
+  the canvas (`"open": "new"`, no code needed). Opening a URL goes through `openExternal`,
+  which the host does not serve yet, so for now the item logs the rejection.

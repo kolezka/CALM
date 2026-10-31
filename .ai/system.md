@@ -49,6 +49,8 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
 - `background`: solid, gradient and image backgrounds, gradient raster, image filters,
   fit rects.
 - `menu`: context menu model (nested Add submenu, panel actions).
+- `plugin_menu`: plugin menu items (`MenuContribution`, `MenuWhen`), the merged section after
+  the built-ins, the `command` payload and which panel a command goes to.
 - `tui`: TUI launch argv (status wrapper, login shell, POSIX quoting) and the restart
   `Supervisor` (prompt, on-exit with backoff and give-up, never).
 - `frame_stats`, `stats`: FPS and percentile helpers.
@@ -78,6 +80,7 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
   `CALM_PRELUDE_JS` injected at document start to define `window.calm`.
 - `github`: `GhClient` wrapping `gh api` on the host. Plugin JS never sees a token.
 - `tui`: `"kind": "tui"` manifests (`TuiSpec`): a terminal panel running one command.
+- `contributes`: `contributes.menus` in either manifest kind, strict per-field errors.
 
 ### calm-app
 

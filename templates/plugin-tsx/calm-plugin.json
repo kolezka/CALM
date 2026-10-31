@@ -3,5 +3,15 @@
   "name": "My Plugin",
   "version": "0.1.0",
   "entry": "index.html",
-  "defaultSize": { "width": 360, "height": 240 }
+  "defaultSize": { "width": 360, "height": 240 },
+  "contributes": {
+    "menus": [
+      {
+        "id": "say-hi",
+        "title": "Say hi",
+        "location": "panel",
+        "when": { "plugin": ["my-plugin"] }
+      }
+    ]
+  }
 }

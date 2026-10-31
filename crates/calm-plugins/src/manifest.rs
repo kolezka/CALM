@@ -8,7 +8,9 @@ use calm_core::scene::MIN_PANEL_SIZE;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+use crate::contributes;
 use crate::tui::{self, TuiSpec};
+use calm_core::plugin_menu::MenuContribution;
 
 pub const MANIFEST_FILE: &str = "calm-plugin.json";
 
@@ -45,6 +47,8 @@ pub struct PluginManifest {
     pub min_size: Option<Size>,
     /// Largest size a user resize may reach, chrome included.
     pub max_size: Option<Size>,
+    /// Context menu items from `contributes.menus`, in manifest order.
+    pub menus: Vec<MenuContribution>,
 }
 
 /// The `"kind": "web"` manifest as it was before `kind` existed.
@@ -81,7 +85,9 @@ impl PluginManifest {
             Some(serde_json::Value::String(kind)) => kind.as_str(),
             Some(other) => return Err(format!("kind must be a string, got {other}")),
         };
-        let manifest = match kind {
+        let is_tui = kind == "tui";
+        let menus = contributes::parse(value.get("contributes"), is_tui)?;
+        let mut manifest = match kind {
             "web" => {
                 let web: WebManifestJson =
                     serde_json::from_value(value).map_err(|e| e.to_string())?;
@@ -94,6 +100,7 @@ impl PluginManifest {
                     resizable: web.resizable,
                     min_size: web.min_size,
                     max_size: web.max_size,
+                    menus: Vec::new(),
                 }
             }
             "tui" => {
@@ -109,6 +116,7 @@ impl PluginManifest {
                     resizable: None,
                     min_size: None,
                     max_size: None,
+                    menus: Vec::new(),
                 }
             }
             other => {
@@ -118,6 +126,7 @@ impl PluginManifest {
             }
         };
         manifest.validate()?;
+        manifest.menus = menus;
         Ok(manifest)
     }
 
@@ -593,6 +602,7 @@ mod tests {
                     resizable: None,
                     min_size: None,
                     max_size: None,
+                    menus: Vec::new(),
                 },
                 dir,
             }]
