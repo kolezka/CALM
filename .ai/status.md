@@ -41,6 +41,17 @@ Last updated: 2026-10-31. `main` at the repo-intel config commit after the `.ai/
   filters on a real photo). The smoke builds the window and checks every control is
   bound, and renders a gradient background.
 
+## On branch `feat/grid-styles` (stacked on `feat/settings-modal`, not merged)
+
+- Grid style: lines, dots, crosses or none; mark size 1 to 4 points; major grid every N
+  cells (0 off, the default) with its own opacity. Color and opacity apply to every
+  style. Controls in the Grid section of the Settings window, live on the canvas.
+- New fields load from older version 2 files with defaults that draw the old grid; bad
+  values are explicit errors.
+- Smoke draws dots by default (`CALM_SMOKE_GRID` picks the style) and fails if a dot or
+  cross frame draws more than `mark_primitive_bound` grid primitives.
+- Unverified: manual look of dots, crosses and the major grid while zooming.
+
 ## Verified on hardware
 
 macOS 27.0.1, Apple M4 Pro: smoke passes; two terminals render in zoom views at zoom 1.5;
