@@ -44,6 +44,11 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 - Manual GUI pass: mouse selection at zoom 1.0 and 1.7, cmd-v paste, Polish letters through
   the input method, panel resize reflow, Enter to confirm close, pinch feel, `htop`.
+- Camera jumps on branch `feat/recenter` (not merged): `cmd-shift-h` centers the world
+  origin at the current zoom, `cmd-shift-0` fits all panels (32 px margin, zoom clamped,
+  empty canvas centers the origin), both in a new View menu. Math is unit tested in
+  `calm-core`; key delivery with a terminal focused, the `cmd-shift-0` match and the menu
+  shortcuts are untested in the GUI.
 - Performance with 20 terminals.
 - A real Release run on the runner (dry run not yet triggered) and the hosted macOS CI
   steps.
