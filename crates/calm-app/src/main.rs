@@ -1,3 +1,4 @@
+mod browser_panel;
 mod canvas_view;
 mod dev_menu;
 mod settings_menu;
@@ -37,8 +38,15 @@ fn parse_args() -> Args {
     args
 }
 
-/// Two live terminals at zoom 1.5. The first starts above the canvas so its chrome and
-/// content cross the toolbar edge and the native view is clipped.
+/// A page with no network use that clicks its own link as soon as it parses, so following
+/// it proves link navigation and the URL event path. Fully percent-encoded for NSURL.
+const SMOKE_BROWSER_PAGE: &str = "data:text/html,%3Ca%20id%3Dl%20href%3D%22about%3Ablank%23clicked%22%3Elink%3C%2Fa%3E%3Cscript%3Edocument.getElementById(%22l%22).click()%3C%2Fscript%3E";
+const SMOKE_BROWSER_TARGET: &str = "about:blank#clicked";
+const SMOKE_BROWSER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Two live terminals at zoom 1.5 and one browser below them. The first terminal starts
+/// above the canvas so its chrome and content cross the toolbar edge and the native view
+/// is clipped.
 fn add_smoke_panels(
     view: &mut CanvasView,
     window: &mut Window,
@@ -56,6 +64,12 @@ fn add_smoke_panels(
         let id = view.scene.add(kind, rect);
         view.spawn_terminal(id, terminal::options(None, None), window, cx)?;
     }
+    let url = SMOKE_BROWSER_PAGE.to_string();
+    let id = view.scene.add(
+        PanelKind::Browser { url: url.clone() },
+        Rect::new(20.0, 220.0, 320.0, 200.0),
+    );
+    view.spawn_browser(id, &url, window, cx)?;
     Ok(())
 }
 
@@ -248,7 +262,10 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 .iter()
                 .any(|count| *count == 0 || *count > SMOKE_MAX_SNAPSHOTS)
         {
-            smoke_fail(&format!("preview refresh outside 1..=3 snapshots: {line}"));
+            let visible = cx.update(|cx| window_visible(window, cx));
+            smoke_fail(&format!(
+                "preview refresh outside 1..=3 snapshots: {line} window_visible={visible:?}"
+            ));
         }
         // Input divs over a preview would steal its scroll and keys from the canvas.
         println!("smoke: preview_input_targets={targets}");
@@ -278,13 +295,49 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 break;
             }
             if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
-                smoke_fail(&format!("terminals not live at zoom 1.5: {previews:?}"));
+                let visible = cx.update(|cx| window_visible(window, cx));
+                smoke_fail(&format!(
+                    "terminals not live at zoom 1.5: {previews:?} window_visible={visible:?}"
+                ));
+            }
+        }
+
+        // The browser loaded its page, followed the link and reported the new URL.
+        let started = Instant::now();
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+            let status = cx.update(|cx| view.read(cx).browser_status());
+            let [(mode, loading, page, scene)] = status.as_slice() else {
+                smoke_fail(&format!("expected 1 browser, found {}", status.len()));
+            };
+            let target = Some(SMOKE_BROWSER_TARGET.to_string());
+            let done = !loading && *page == target && *scene == target;
+            if done && *mode == PanelMode::Live {
+                println!(
+                    "smoke: browser loaded=true link=followed url={SMOKE_BROWSER_TARGET} mode=live"
+                );
+                break;
+            }
+            if started.elapsed() > SMOKE_BROWSER_TIMEOUT {
+                smoke_fail(&format!(
+                    "browser: mode={mode:?} loading={loading} page={page:?} scene={scene:?}"
+                ));
             }
         }
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+/// Whether AppKit has the window on screen. GPUI stops painting an occluded window, so a
+/// failed frame check with `Some(false)` points at the desktop, not the code.
+fn window_visible(window: AnyWindowHandle, cx: &mut App) -> Option<bool> {
+    cx.update_window(window, |_, window, _| calm_native::window_visible(window))
+        .ok()
+        .flatten()
 }
 
 fn set_zoom(view: &Entity<CanvasView>, zoom: f64, cx: &mut App) {
@@ -403,8 +456,8 @@ fn main() {
                         "smoke: canvas viewport={}x{} panels={panels}",
                         rect.size.width, rect.size.height
                     );
-                    if rect.size.width <= 0.0 || rect.size.height <= 0.0 || panels != 2 {
-                        smoke_fail("canvas did not lay out with both panels");
+                    if rect.size.width <= 0.0 || rect.size.height <= 0.0 || panels != 3 {
+                        smoke_fail("canvas did not lay out with all three panels");
                     }
                     smoke_view.update(cx, |view, cx| smoke_settings(view, window, cx));
                     wait_for_terminal_frames(smoke_view, window.window_handle(), cx);

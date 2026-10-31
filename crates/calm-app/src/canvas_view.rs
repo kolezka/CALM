@@ -10,7 +10,7 @@ use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::viewport::{NativePlacement, place_native};
-use calm_native::{HostView, NativeChild, show_context_menu};
+use calm_native::{BrowserEvent, HostView, NativeChild, show_context_menu};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, BorderStyle, Bounds, ContentMask, Context, DispatchPhase, Entity, FocusHandle, Focusable,
@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::browser_panel::{BrowserEvents, BrowserPanel};
 use crate::dev_menu::{ResetFps, ToggleFps};
 use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalPanel};
@@ -89,7 +90,12 @@ pub struct CanvasView {
     focused: Option<PanelId>,
     /// Live terminals by panel. Dropping an entry ends its process.
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
-    /// Back-to-front terminal order the native views were last stacked in.
+    /// Live browser panels. Dropping an entry closes its page.
+    browsers: Vec<(PanelId, BrowserPanel)>,
+    /// Sender for page events; the receiving task starts with the first browser.
+    browser_events: Option<BrowserEvents>,
+    browser_listener: Option<Task<()>>,
+    /// Back-to-front order of native panels (terminals and browsers) as last stacked.
     native_order: Vec<PanelId>,
     focus_handle: FocusHandle,
     pub show_fps: bool,
@@ -114,6 +120,9 @@ impl CanvasView {
             saved_flash: None,
             focused: None,
             terminals: Vec::new(),
+            browsers: Vec::new(),
+            browser_events: None,
+            browser_listener: None,
             native_order: Vec::new(),
             focus_handle: cx.focus_handle(),
             show_fps: false,
@@ -157,6 +166,7 @@ impl CanvasView {
             match effect {
                 Effect::CreatePanel { kind, .. } => created = Some(kind),
                 Effect::FocusPanel(id) => {
+                    let new_browser = matches!(created, Some(PanelKind::Browser { .. }));
                     if let Some(kind) = created.take() {
                         self.panel_created(id, &kind, window, cx);
                     }
@@ -164,11 +174,21 @@ impl CanvasView {
                     if let Some(terminal) = self.terminal(id) {
                         terminal.update(cx, |terminal, cx| terminal.focus(window, cx));
                     }
+                    if let Some((_, browser)) = self.browsers.iter_mut().find(|(b, _)| *b == id) {
+                        // A new panel waits for an address; an existing one gets the keyboard.
+                        if new_browser {
+                            browser.focus_address();
+                        } else {
+                            browser.focus_page();
+                        }
+                    }
                 }
                 Effect::ClosePanelRequested(id) => {
+                    // A browser's page is state too, so it confirms like a running terminal.
                     let alive = self
                         .terminal(id)
-                        .is_some_and(|terminal| terminal.read(cx).is_alive());
+                        .is_some_and(|terminal| terminal.read(cx).is_alive())
+                        || self.browser(id).is_some();
                     let confirm = alive && self.settings.settings.confirm_close;
                     queue.push_back(self.input.request_close(id, confirm));
                 }
@@ -196,6 +216,7 @@ impl CanvasView {
                         terminal.update(cx, |terminal, _| terminal.release_preview(window));
                     }
                     self.terminals.retain(|(panel, _)| *panel != id);
+                    self.browsers.retain(|(panel, _)| *panel != id);
                     self.scene.remove(id);
                     if self.focused == Some(id) {
                         self.focused = None;
@@ -285,13 +306,112 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let PanelKind::Terminal { command, cwd } = kind {
-            let mut options = terminal::options(command.as_deref(), cwd.clone());
-            settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
-            if let Err(err) = self.spawn_terminal(id, options, window, cx) {
-                eprintln!("calm: terminal failed to start: {err}");
+        match kind {
+            PanelKind::Terminal { command, cwd } => {
+                let mut options = terminal::options(command.as_deref(), cwd.clone());
+                settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
+                if let Err(err) = self.spawn_terminal(id, options, window, cx) {
+                    eprintln!("calm: terminal failed to start: {err}");
+                }
+            }
+            PanelKind::Browser { url } => {
+                if let Err(err) = self.spawn_browser(id, url, window, cx) {
+                    eprintln!("calm: browser failed to start: {err}");
+                }
+            }
+            PanelKind::Plugin { .. } => {}
+        }
+    }
+
+    /// Adds a live browser for the scene panel `id`, loading `address`.
+    pub fn spawn_browser(
+        &mut self,
+        id: PanelId,
+        address: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let events = self.browser_events(window, cx);
+        let browser = BrowserPanel::open(id, address, events, window)?;
+        self.browsers.push((id, browser));
+        Ok(())
+    }
+
+    /// The page event sender, starting the task that applies events on first use.
+    fn browser_events(&mut self, window: &mut Window, cx: &mut Context<Self>) -> BrowserEvents {
+        if let Some(sender) = &self.browser_events {
+            return sender.clone();
+        }
+        let (sender, receiver) = async_channel::unbounded();
+        self.browser_listener = Some(cx.spawn_in(window, async move |this, cx| {
+            while let Ok((id, event)) = receiver.recv().await {
+                let applied = this.update_in(cx, |view, window, cx| {
+                    view.browser_event(id, event, window, cx)
+                });
+                if applied.is_err() {
+                    break;
+                }
+            }
+        }));
+        self.browser_events = Some(sender.clone());
+        sender
+    }
+
+    fn browser_event(
+        &mut self,
+        id: PanelId,
+        event: BrowserEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.scene.get_mut(id) else {
+            return;
+        };
+        match event {
+            BrowserEvent::TitleChanged(title) => {
+                if !title.is_empty() {
+                    panel.title = title;
+                }
+            }
+            BrowserEvent::UrlChanged(url) => {
+                panel.title = url.clone();
+                panel.kind = PanelKind::Browser { url };
+            }
+            BrowserEvent::Clicked => {
+                // The click went to the native view, so GPUI never saw it.
+                self.scene.bring_to_front(id);
+                self.focused = Some(id);
+                self.focus_handle.focus(window, cx);
             }
         }
+        window.refresh();
+        cx.notify();
+    }
+
+    fn browser(&self, id: PanelId) -> Option<&BrowserPanel> {
+        self.browsers
+            .iter()
+            .find(|(panel, _)| *panel == id)
+            .map(|(_, browser)| browser)
+    }
+
+    /// (mode, loading, page URL, scene URL) per browser, in creation order.
+    pub fn browser_status(&self) -> Vec<(PanelMode, bool, Option<String>, Option<String>)> {
+        self.browsers
+            .iter()
+            .map(|(id, browser)| {
+                let scene_url = self.scene.get(*id).and_then(|panel| match &panel.kind {
+                    PanelKind::Browser { url } => Some(url.clone()),
+                    _ => None,
+                });
+                (
+                    browser.mode(),
+                    browser.is_loading(),
+                    browser.url(),
+                    scene_url,
+                )
+            })
+            .collect()
     }
 
     pub fn spawn_terminal(
@@ -378,13 +498,24 @@ impl CanvasView {
 
     /// Native views stack in creation order, so restack them when the scene order changes.
     fn sync_native_order(&mut self, cx: &mut Context<Self>) {
-        let order = self.terminal_order();
+        let order: Vec<PanelId> = self
+            .scene
+            .panels
+            .iter()
+            .map(|panel| panel.id)
+            .filter(|id| {
+                self.terminals.iter().any(|(t, _)| t == id)
+                    || self.browsers.iter().any(|(b, _)| b == id)
+            })
+            .collect();
         if order == self.native_order {
             return;
         }
         for id in &order {
             if let Some(terminal) = self.terminal(*id) {
                 terminal.update(cx, |terminal, _| terminal.bring_to_front());
+            } else if let Some((_, browser)) = self.browsers.iter_mut().find(|(b, _)| b == id) {
+                browser.bring_to_front();
             }
         }
         self.native_order = order;
@@ -400,6 +531,33 @@ impl CanvasView {
             .collect();
         native.sort();
         (scene, native.into_iter().map(|(_, id)| id).collect())
+    }
+
+    /// Places or hides each browser for this paint, like `apply_terminal_modes`. A browser
+    /// in preview gets a flat rect with its title: there is no page snapshot yet.
+    fn apply_browser_modes(
+        &mut self,
+        viewport: Rect,
+        modal_open: bool,
+        window: &Window,
+    ) -> Vec<(PanelId, TerminalContent)> {
+        let mut contents = Vec::new();
+        for (id, browser) in &mut self.browsers {
+            let Some(panel) = self.scene.get(*id) else {
+                continue;
+            };
+            let mode = terminal_mode(panel, &self.scene, viewport, modal_open);
+            let placement = terminal_placement(panel, &self.scene, viewport);
+            browser.apply_mode(mode, placement, window);
+            match browser.mode() {
+                PanelMode::Live => contents.push((*id, TerminalContent::Live)),
+                PanelMode::Preview => {
+                    contents.push((*id, TerminalContent::Preview(PreviewImage::None)))
+                }
+                PanelMode::Hidden => {}
+            }
+        }
+        contents
     }
 
     fn confirm_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -614,7 +772,13 @@ impl PaintSnapshot {
                 f64::from(f32::from(bounds.size.width)),
                 f64::from(f32::from(bounds.size.height)),
             );
-            let (contents, changed) = self.apply_terminal_modes(viewport, window, cx);
+            let (mut contents, changed) = self.apply_terminal_modes(viewport, window, cx);
+            let modal_open = self.modal_open;
+            if let Ok(browsers) = this.update(cx, |view, _| {
+                view.apply_browser_modes(viewport, modal_open, window)
+            }) {
+                contents.extend(browsers);
+            }
             modes_changed = changed;
             preview_targets = self
                 .input_targets

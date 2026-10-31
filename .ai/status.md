@@ -24,9 +24,34 @@ macOS 27.0.1, Apple M4 Pro: smoke passes; two terminals render in zoom views at 
 z-order follows scene order; preview snapshots about one per 2 s; settings persist;
 CI run on `main` green (linux-arch success, macos skipped).
 
+## On branch `feat/browser-links` (not merged)
+
+- Browser panels are live: `calm_native::BrowserView` puts a native address bar (back,
+  forward, reload, text field) and a WKWebView in the panel's zoom view, so the bar scales
+  and clips with the page and GPUI draws nothing over it. App side in
+  `crates/calm-app/src/browser_panel.rs`. No `calm` message handler on browser pages.
+- Address input: `calm_core::browser_url::normalize_address`. Kept schemes load as typed,
+  `localhost` and IPv4 get `http://`, dotted hosts get `https://`, the rest searches
+  DuckDuckGo (`SEARCH_URL_PREFIX`).
+- Links navigate in place. `target=_blank` and `window.open` load in the same panel (UI
+  delegate returns no new web view).
+- While the page or the bar has the keyboard: cmd-[ back, cmd-] forward, cmd-r reload,
+  cmd-l address bar, plus cmd-c/x/v/a/z and cmd-shift-z (an NSEvent local monitor, since
+  GPUI takes key equivalents first and the app has no Edit menu).
+- A click on the page raises and focuses the panel. Title and URL follow the page into the
+  chrome and into `PanelKind::Browser.url`. A new panel opens `about:blank` with the
+  address bar focused. Closing a browser asks for confirmation like a running terminal.
+- Preview and modal UI hide the page and paint a flat rect with the title. No page
+  snapshot yet.
+- Smoke adds one browser that loads a `data:` page which clicks its own link, and checks
+  `smoke: browser loaded=true link=followed url=about:blank#clicked mode=live`. Frame-check
+  failures now print `window_visible=`; failures seen during this work all had the window
+  occluded (`Some(false)`), and GPUI stops painting an occluded window.
+- Not done: cmd+click on a URL in a terminal, non-web schemes (`mailto:` and the like do
+  nothing), page snapshots for previews, downloads. Manual GUI pass pending.
+
 ## Not wired yet
 
-- Browser panels in the canvas (`WebPanel` exists; Task 10 app wiring pending).
 - Plugin host in the app: 17-method dispatcher, `canvas.createPanel`, settings and
   storage, `gh` dispatch. Today no `window.calm` call resolves (Tasks 11 and 12 app parts).
 - Layout save and load in the app (`--layout`, Task 13). The core format exists.
@@ -38,6 +63,8 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 ## Unverified
 
+- Browser panels by hand: typing in the bar at zoom 0.5 and 2, link clicks, `target=_blank`,
+  the keyboard shortcuts, scroll over a page, pinch over a page.
 - Manual GUI pass: mouse selection at zoom 1.0 and 1.7, cmd-v paste, Polish letters through
   the input method, panel resize reflow, Enter to confirm close, pinch feel, `htop`.
 - Performance with 20 terminals.
