@@ -1,5 +1,6 @@
 //! The canvas: paints panels from the `calm-core` scene and feeds it input.
 
+use calm_core::camera::FIT_MARGIN;
 use calm_core::chrome::{
     CORNER_RADIUS, ChromeButton, PanelIcon, TITLE_BAR_HEIGHT, button_dot, button_strokes,
     details_visible, hover_target, icon_strokes, title_bar_layout,
@@ -40,6 +41,8 @@ actions!(
         ZoomIn,
         ZoomOut,
         ZoomReset,
+        CenterOnOrigin,
+        FitAll,
         DrawTerminal,
         DrawBrowser,
         Cancel,
@@ -57,6 +60,8 @@ const BORDER_PX: f64 = 1.0;
 /// Width of the `preview stale` label in the chrome strip, in world units.
 const STALE_LABEL_WIDTH: f64 = 96.0;
 const STALE_LABEL: &str = "preview stale";
+/// Screen pixels left around a panel after Zoom to Fit.
+const ZOOM_TO_FIT_MARGIN: f64 = 40.0;
 /// Added to the refresh timer so its repaint lands just after a snapshot is due.
 const PREVIEW_TIMER_MARGIN: Duration = Duration::from_millis(100);
 const CONFIRM_TITLE: &str = "Close? enter / esc";
@@ -68,6 +73,8 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("cmd-=", ZoomIn, ctx),
         KeyBinding::new("cmd--", ZoomOut, ctx),
         KeyBinding::new("cmd-0", ZoomReset, ctx),
+        KeyBinding::new("cmd-shift-h", CenterOnOrigin, ctx),
+        KeyBinding::new("cmd-shift-0", FitAll, ctx),
         KeyBinding::new("t", DrawTerminal, ctx),
         KeyBinding::new("b", DrawBrowser, ctx),
         KeyBinding::new("escape", Cancel, ctx),
@@ -196,9 +203,10 @@ impl CanvasView {
                     self.show_menu(items, screen, MenuTarget::Canvas { world }, window, cx);
                 }
                 Effect::ShowPanelMenu { id, screen } => {
-                    let minimized = self.scene.get(id).is_some_and(|panel| panel.minimized);
-                    let items = menu::panel_menu(minimized);
-                    self.show_menu(items, screen, MenuTarget::Panel(id), window, cx);
+                    if let Some(panel) = self.scene.get(id) {
+                        let items = menu::panel_menu(panel);
+                        self.show_menu(items, screen, MenuTarget::Panel(id), window, cx);
+                    }
                 }
                 Effect::ClosePanel(id) => {
                     if let Some(terminal) = self.terminal(id) {
@@ -279,8 +287,41 @@ impl CanvasView {
             (Some(MenuCommand::Minimize), MenuTarget::Panel(id)) => {
                 vec![Effect::ToggleMinimize(id), Effect::Redraw]
             }
-            (Some(MenuCommand::Close), MenuTarget::Panel(id)) => {
+            // Delete takes the normal close path, so a live process still asks first.
+            (Some(MenuCommand::Delete), MenuTarget::Panel(id)) => {
                 vec![Effect::ClosePanelRequested(id)]
+            }
+            (Some(MenuCommand::BringToFront), MenuTarget::Panel(id)) => {
+                self.scene.bring_to_front(id);
+                vec![Effect::Redraw]
+            }
+            (Some(MenuCommand::SendToBack), MenuTarget::Panel(id)) => {
+                self.scene.send_to_back(id);
+                vec![Effect::Redraw]
+            }
+            (Some(MenuCommand::ZoomToFit), MenuTarget::Panel(id)) => {
+                let Some(rect) = self.scene.get(id).map(|panel| panel.rect) else {
+                    return;
+                };
+                self.scene
+                    .camera
+                    .fit(Some(rect), self.viewport.size, ZOOM_TO_FIT_MARGIN);
+                vec![Effect::Redraw]
+            }
+            (Some(MenuCommand::Duplicate), MenuTarget::Panel(id)) => {
+                let Some(copy) = self.scene.duplicate(id) else {
+                    return;
+                };
+                let Some(panel) = self.scene.get(copy) else {
+                    return;
+                };
+                vec![
+                    Effect::CreatePanel {
+                        kind: panel.kind.clone(),
+                        rect: panel.rect,
+                    },
+                    Effect::FocusPanel(copy),
+                ]
             }
             _ => return,
         };
@@ -504,6 +545,19 @@ impl CanvasView {
             self.viewport.size.height / 2.0,
         );
         self.input.key_zoom(step, center, &mut self.scene);
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Jumps the camera: `CenterOnOrigin` keeps the zoom, `FitAll` frames every panel.
+    fn frame_view(&mut self, fit_all: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let viewport = self.viewport.size;
+        if fit_all {
+            let bounds = self.scene.bounds();
+            self.scene.camera.fit(bounds, viewport, FIT_MARGIN);
+        } else {
+            self.scene.camera.center_on(Point::new(0.0, 0.0), viewport);
+        }
         window.refresh();
         cx.notify();
     }
@@ -1128,6 +1182,12 @@ impl Render for CanvasView {
             .on_action(cx.listener(|view, _: &ZoomReset, window, cx| {
                 view.key_zoom(ZoomStep::Reset, window, cx)
             }))
+            .on_action(cx.listener(|view, _: &CenterOnOrigin, window, cx| {
+                view.frame_view(false, window, cx)
+            }))
+            .on_action(
+                cx.listener(|view, _: &FitAll, window, cx| view.frame_view(true, window, cx)),
+            )
             .on_action(cx.listener(|view, _: &DrawTerminal, window, cx| {
                 view.set_tool(Tool::DrawTerminal, window, cx)
             }))
