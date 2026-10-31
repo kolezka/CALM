@@ -88,7 +88,10 @@ overrides the directory. Distant panels become previews refreshed every 2 s.
 - After structural changes run `repo-intel build` and check its exit code. The graphify graph
   (graphify only, backend litellm, scope in `.graphifyignore`) answers concept and
   architecture questions; `rg` answers literal and call-site questions. See `AGENTS.md`.
-- Customization first. Every user-visible feature exposes its look and behavior as settings or manifest fields (colors, icons, titles, sizes, fonts, keys, behaviors) with sensible defaults, validated strictly. A hard-coded choice needs a reason in `.ai/decisions.md`. Security rules above still apply.
+- Customization first. Every user-visible feature exposes its look and behavior as settings
+  or manifest fields (colors, icons, titles, sizes, fonts, keys, behaviors) with sensible
+  defaults, validated strictly. A hard-coded choice needs a reason in `.ai/decisions.md`.
+  Security rules above still apply.
 
 ## Process
 
@@ -97,7 +100,10 @@ Plan execution uses superpowers subagent-driven development with Agent Teams; de
 `.superpowers/sdd/2026-10-31-calm-prototype/progress.md` (git-ignored, main checkout).
 Work state persists in Outline under the task record `calm-canvas-design`.
 
-- Shut down idle agent sessions. When a teammate or subagent has finished its task and is only idle (its result is reported and verified, or it failed), the lead sends it a shutdown request at once, or stops it, and confirms it is gone from the agent list. Do not keep finished agents around for later; a new task gets a new session.
+- Shut down idle agent sessions. When a teammate or subagent has finished its task and is
+  only idle (its result is reported and verified, or it failed), the lead sends it a
+  shutdown request at once, or stops it, and confirms it is gone from the agent list. Do not
+  keep finished agents around for later; a new task gets a new session.
 
 <!-- repo-intel:begin -->
 @AGENTS.md
