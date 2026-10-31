@@ -14,7 +14,11 @@ pub struct NativePlacement {
 }
 
 /// Returns `None` when no part of the content is inside the viewport.
-pub fn place_native(content_world: Rect, camera: &Camera, viewport: Rect) -> Option<NativePlacement> {
+pub fn place_native(
+    content_world: Rect,
+    camera: &Camera,
+    viewport: Rect,
+) -> Option<NativePlacement> {
     let screen = camera.world_rect_to_screen(content_world);
     let container = screen.intersect(&viewport)?;
     Some(NativePlacement {
@@ -46,12 +50,18 @@ mod tests {
     const VIEWPORT: Rect = Rect::new(0.0, 36.0, 1280.0, 764.0);
 
     fn first_placement() -> NativePlacement {
-        let camera = Camera { offset: Point::new(100.0, 50.0), zoom: 1.0 };
+        let camera = Camera {
+            offset: Point::new(100.0, 50.0),
+            zoom: 1.0,
+        };
         place_native(CONTENT, &camera, VIEWPORT).unwrap()
     }
 
     fn second_placement() -> NativePlacement {
-        let camera = Camera { offset: Point::new(0.0, -18.0), zoom: 2.0 };
+        let camera = Camera {
+            offset: Point::new(0.0, -18.0),
+            zoom: 2.0,
+        };
         place_native(CONTENT, &camera, VIEWPORT).unwrap()
     }
 
@@ -75,13 +85,22 @@ mod tests {
 
     #[test]
     fn place_native_fully_offscreen_is_none() {
-        let camera = Camera { offset: Point::new(5000.0, 5000.0), zoom: 1.0 };
+        let camera = Camera {
+            offset: Point::new(5000.0, 5000.0),
+            zoom: 1.0,
+        };
         assert_eq!(place_native(CONTENT, &camera, VIEWPORT), None);
     }
 
     #[test]
     fn unzoom_mouse_position_divides_by_zoom_and_adds_inner_origin() {
-        assert_eq!(unzoom_mouse_position(Point::new(50.0, 86.0), &first_placement()), Point::new(150.0, 136.0));
-        assert_eq!(unzoom_mouse_position(Point::new(200.0, 236.0), &second_placement()), Point::new(100.0, 100.0));
+        assert_eq!(
+            unzoom_mouse_position(Point::new(50.0, 86.0), &first_placement()),
+            Point::new(150.0, 136.0)
+        );
+        assert_eq!(
+            unzoom_mouse_position(Point::new(200.0, 236.0), &second_placement()),
+            Point::new(100.0, 100.0)
+        );
     }
 }

@@ -53,16 +53,29 @@ pub enum ZoomStep {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Interaction {
     Idle,
-    Drawing { start_world: Point },
-    Dragging { id: PanelId, grab_offset_world: Point },
-    Resizing { id: PanelId, edge: ResizeEdge },
-    Panning { last_screen: Point },
+    Drawing {
+        start_world: Point,
+    },
+    Dragging {
+        id: PanelId,
+        grab_offset_world: Point,
+    },
+    Resizing {
+        id: PanelId,
+        edge: ResizeEdge,
+    },
+    Panning {
+        last_screen: Point,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     /// The panel is already in the scene; the app creates its native view.
-    CreatePanel { kind: PanelKind, rect: Rect },
+    CreatePanel {
+        kind: PanelKind,
+        rect: Rect,
+    },
     FocusPanel(PanelId),
     ClosePanelRequested(PanelId),
     ToggleMinimize(PanelId),
@@ -130,7 +143,9 @@ impl InputHandler {
         }
         match chrome_hit(panel, world) {
             Some(ChromeButton::Close) => return vec![Effect::ClosePanelRequested(id)],
-            Some(ChromeButton::Minimize) => return vec![Effect::ToggleMinimize(id), Effect::Redraw],
+            Some(ChromeButton::Minimize) => {
+                return vec![Effect::ToggleMinimize(id), Effect::Redraw];
+            }
             None => {}
         }
         if let Some(edge) = resize_edge(panel, world) {
@@ -314,7 +329,10 @@ mod tests {
     use crate::scene::{PanelId, PanelKind, Scene};
 
     fn terminal() -> PanelKind {
-        PanelKind::Terminal { command: None, cwd: None }
+        PanelKind::Terminal {
+            command: None,
+            cwd: None,
+        }
     }
 
     fn no_mods() -> Modifiers {
@@ -324,9 +342,16 @@ mod tests {
     #[test]
     fn draw_tool_creates_terminal_panel_on_release() {
         let mut scene = Scene::default();
-        let mut handler = InputHandler::default();
-        handler.tool = Tool::DrawTerminal;
-        handler.mouse_down(Point::new(100.0, 100.0), Button::Left, no_mods(), &mut scene);
+        let mut handler = InputHandler {
+            tool: Tool::DrawTerminal,
+            ..InputHandler::default()
+        };
+        handler.mouse_down(
+            Point::new(100.0, 100.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
         assert!(matches!(handler.state, Interaction::Drawing { .. }));
         handler.mouse_move(Point::new(400.0, 350.0), &mut scene);
         let effects = handler.mouse_up(Point::new(400.0, 350.0), &mut scene);
@@ -334,7 +359,10 @@ mod tests {
         assert_eq!(scene.panels.len(), 1);
         let panel = &scene.panels[0];
         assert_eq!(panel.rect, Rect::new(100.0, 100.0, 300.0, 250.0));
-        assert!(effects.contains(&Effect::CreatePanel { kind: terminal(), rect: panel.rect }));
+        assert!(effects.contains(&Effect::CreatePanel {
+            kind: terminal(),
+            rect: panel.rect
+        }));
         assert!(effects.contains(&Effect::FocusPanel(panel.id)));
         assert_eq!(handler.tool, Tool::Select);
         assert_eq!(handler.state, Interaction::Idle);
@@ -347,15 +375,22 @@ mod tests {
         let front = scene.add(terminal(), Rect::new(500.0, 0.0, 400.0, 300.0));
         let mut handler = InputHandler::default();
 
-        let effects = handler.mouse_down(Point::new(100.0, 10.0), Button::Left, no_mods(), &mut scene);
+        let effects =
+            handler.mouse_down(Point::new(100.0, 10.0), Button::Left, no_mods(), &mut scene);
         assert!(effects.contains(&Effect::FocusPanel(back)));
         assert!(matches!(handler.state, Interaction::Dragging { id, .. } if id == back));
         assert_eq!(scene.panels.last().map(|panel| panel.id), Some(back));
 
         handler.mouse_move(Point::new(150.0, 60.0), &mut scene);
         handler.mouse_up(Point::new(150.0, 60.0), &mut scene);
-        assert_eq!(scene.get(back).unwrap().rect, Rect::new(50.0, 50.0, 400.0, 300.0));
-        assert_eq!(scene.get(front).unwrap().rect, Rect::new(500.0, 0.0, 400.0, 300.0));
+        assert_eq!(
+            scene.get(back).unwrap().rect,
+            Rect::new(50.0, 50.0, 400.0, 300.0)
+        );
+        assert_eq!(
+            scene.get(front).unwrap().rect,
+            Rect::new(500.0, 0.0, 400.0, 300.0)
+        );
         assert_eq!(handler.state, Interaction::Idle);
     }
 
@@ -365,22 +400,43 @@ mod tests {
         let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
         let mut handler = InputHandler::default();
 
-        handler.mouse_down(Point::new(395.0, 295.0), Button::Left, no_mods(), &mut scene);
-        assert_eq!(handler.state, Interaction::Resizing { id, edge: ResizeEdge::BottomRight });
+        handler.mouse_down(
+            Point::new(395.0, 295.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
+        assert_eq!(
+            handler.state,
+            Interaction::Resizing {
+                id,
+                edge: ResizeEdge::BottomRight
+            }
+        );
         handler.mouse_move(Point::new(495.0, 345.0), &mut scene);
         handler.mouse_up(Point::new(495.0, 345.0), &mut scene);
-        assert_eq!(scene.get(id).unwrap().rect, Rect::new(0.0, 0.0, 495.0, 345.0));
+        assert_eq!(
+            scene.get(id).unwrap().rect,
+            Rect::new(0.0, 0.0, 495.0, 345.0)
+        );
     }
 
     #[test]
     fn panning_with_space_moves_camera() {
         let mut scene = Scene::default();
         scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
-        let mut handler = InputHandler::default();
-        handler.space_held = true;
+        let mut handler = InputHandler {
+            space_held: true,
+            ..InputHandler::default()
+        };
 
         // Space+left pans even over a panel.
-        handler.mouse_down(Point::new(100.0, 100.0), Button::Left, no_mods(), &mut scene);
+        handler.mouse_down(
+            Point::new(100.0, 100.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
         assert!(matches!(handler.state, Interaction::Panning { .. }));
         handler.mouse_move(Point::new(150.0, 120.0), &mut scene);
         handler.mouse_up(Point::new(150.0, 120.0), &mut scene);
@@ -395,7 +451,10 @@ mod tests {
         let mut handler = InputHandler::default();
         let pointer = Point::new(300.0, 200.0);
         let world_before = scene.camera.screen_to_world(pointer);
-        let mods = Modifiers { platform: true, ..Modifiers::default() };
+        let mods = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
 
         handler.scroll(pointer, 0.0, -300.0, mods, &mut scene);
         assert!((scene.camera.zoom - 2.0).abs() < 1e-9);
@@ -413,12 +472,19 @@ mod tests {
         let mut scene = Scene::default();
         let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
         let panel = scene.get(id).unwrap().clone();
-        assert_eq!(chrome_hit(&panel, Point::new(386.0, 14.0)), Some(ChromeButton::Close));
-        assert_eq!(chrome_hit(&panel, Point::new(362.0, 14.0)), Some(ChromeButton::Minimize));
+        assert_eq!(
+            chrome_hit(&panel, Point::new(386.0, 14.0)),
+            Some(ChromeButton::Close)
+        );
+        assert_eq!(
+            chrome_hit(&panel, Point::new(362.0, 14.0)),
+            Some(ChromeButton::Minimize)
+        );
         assert_eq!(chrome_hit(&panel, Point::new(100.0, 14.0)), None);
 
         let mut handler = InputHandler::default();
-        let effects = handler.mouse_down(Point::new(386.0, 14.0), Button::Left, no_mods(), &mut scene);
+        let effects =
+            handler.mouse_down(Point::new(386.0, 14.0), Button::Left, no_mods(), &mut scene);
         assert!(effects.contains(&Effect::ClosePanelRequested(id)));
         assert_eq!(handler.state, Interaction::Idle);
         assert_eq!(scene.panels.len(), 1);
@@ -430,12 +496,20 @@ mod tests {
         let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
         let mut handler = InputHandler::default();
 
-        let effects = handler.mouse_down(Point::new(100.0, 150.0), Button::Left, no_mods(), &mut scene);
+        let effects = handler.mouse_down(
+            Point::new(100.0, 150.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
         assert_eq!(effects, vec![Effect::FocusPanel(id)]);
         assert_eq!(handler.state, Interaction::Idle);
         handler.mouse_move(Point::new(200.0, 250.0), &mut scene);
         handler.mouse_up(Point::new(200.0, 250.0), &mut scene);
-        assert_eq!(scene.get(id).unwrap().rect, Rect::new(0.0, 0.0, 400.0, 300.0));
+        assert_eq!(
+            scene.get(id).unwrap().rect,
+            Rect::new(0.0, 0.0, 400.0, 300.0)
+        );
     }
 
     #[test]
@@ -444,7 +518,10 @@ mod tests {
         let id = PanelId(7);
         assert_eq!(handler.request_close(id, true), Effect::ConfirmClose(id));
         assert_eq!(handler.confirming, Some(id));
-        assert_eq!(handler.confirm_key(ConfirmKey::Enter), Some(Effect::ClosePanel(id)));
+        assert_eq!(
+            handler.confirm_key(ConfirmKey::Enter),
+            Some(Effect::ClosePanel(id))
+        );
         assert_eq!(handler.confirming, None);
         assert_eq!(handler.confirm_key(ConfirmKey::Enter), None);
     }
@@ -452,7 +529,10 @@ mod tests {
     #[test]
     fn close_without_live_process_is_immediate() {
         let mut handler = InputHandler::default();
-        assert_eq!(handler.request_close(PanelId(3), false), Effect::ClosePanel(PanelId(3)));
+        assert_eq!(
+            handler.request_close(PanelId(3), false),
+            Effect::ClosePanel(PanelId(3))
+        );
         assert_eq!(handler.confirming, None);
     }
 
@@ -466,7 +546,10 @@ mod tests {
 
         // A close on another panel moves the confirmation instead of closing.
         handler.request_close(id, true);
-        assert_eq!(handler.request_close(PanelId(5), true), Effect::ConfirmClose(PanelId(5)));
+        assert_eq!(
+            handler.request_close(PanelId(5), true),
+            Effect::ConfirmClose(PanelId(5))
+        );
         assert_eq!(handler.confirming, Some(PanelId(5)));
     }
 

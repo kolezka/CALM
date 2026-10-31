@@ -65,12 +65,18 @@ mod tests {
     use crate::geometry::Point;
 
     fn assert_close(a: Point, b: Point) {
-        assert!((a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9, "{a:?} != {b:?}");
+        assert!(
+            (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9,
+            "{a:?} != {b:?}"
+        );
     }
 
     #[test]
     fn world_to_screen_roundtrip() {
-        let camera = Camera { offset: Point::new(100.0, 50.0), zoom: 2.0 };
+        let camera = Camera {
+            offset: Point::new(100.0, 50.0),
+            zoom: 2.0,
+        };
         let world = Point::new(120.0, 70.0);
         let screen = camera.world_to_screen(world);
         assert_close(screen, Point::new(40.0, 40.0));
@@ -79,7 +85,10 @@ mod tests {
 
     #[test]
     fn zoom_by_keeps_anchor_fixed() {
-        let mut camera = Camera { offset: Point::new(30.0, -20.0), zoom: 1.2 };
+        let mut camera = Camera {
+            offset: Point::new(30.0, -20.0),
+            zoom: 1.2,
+        };
         let anchor = Point::new(300.0, 200.0);
         let before = camera.screen_to_world(anchor);
         camera.zoom_by(1.5, anchor);
@@ -98,7 +107,10 @@ mod tests {
 
     #[test]
     fn pan_moves_offset_by_unzoomed_delta() {
-        let mut camera = Camera { offset: Point::new(0.0, 0.0), zoom: 2.0 };
+        let mut camera = Camera {
+            offset: Point::new(0.0, 0.0),
+            zoom: 2.0,
+        };
         camera.pan_by_screen(10.0, 0.0);
         assert_close(camera.offset, Point::new(-5.0, 0.0));
     }

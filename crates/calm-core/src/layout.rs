@@ -50,7 +50,11 @@ impl fmt::Display for LayoutError {
                 write!(f, "layout {} is malformed: {message}", path.display())
             }
             LayoutError::Io { path, source } => {
-                write!(f, "layout {} could not be accessed: {source}", path.display())
+                write!(
+                    f,
+                    "layout {} could not be accessed: {source}",
+                    path.display()
+                )
             }
         }
     }
@@ -201,17 +205,28 @@ mod tests {
 
     fn sample_scene() -> Scene {
         let mut scene = Scene::default();
-        scene.camera = Camera { offset: Point::new(-40.0, 12.5), zoom: 0.75 };
+        scene.camera = Camera {
+            offset: Point::new(-40.0, 12.5),
+            zoom: 0.75,
+        };
         scene.add(
-            PanelKind::Terminal { command: Some("htop".into()), cwd: Some(PathBuf::from("/tmp")) },
+            PanelKind::Terminal {
+                command: Some("htop".into()),
+                cwd: Some(PathBuf::from("/tmp")),
+            },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
         let browser = scene.add(
-            PanelKind::Browser { url: "https://example.com".into() },
+            PanelKind::Browser {
+                url: "https://example.com".into(),
+            },
             Rect::new(500.0, 20.0, 640.0, 480.0),
         );
         scene.add(
-            PanelKind::Plugin { plugin_id: "github-prs".into(), settings: serde_json::json!({"repos": ["a/b"]}) },
+            PanelKind::Plugin {
+                plugin_id: "github-prs".into(),
+                settings: serde_json::json!({"repos": ["a/b"]}),
+            },
             Rect::new(-300.0, 400.0, 300.0, 200.0),
         );
         if let Some(panel) = scene.get_mut(browser) {
@@ -248,7 +263,10 @@ mod tests {
     fn terminal_panel_has_no_session_state_fields() {
         let mut scene = Scene::default();
         scene.add(
-            PanelKind::Terminal { command: Some("zsh".into()), cwd: None },
+            PanelKind::Terminal {
+                command: Some("zsh".into()),
+                cwd: None,
+            },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
         let json = serde_json::to_value(scene.to_layout()).unwrap();
@@ -262,9 +280,16 @@ mod tests {
     fn load_rejects_unknown_version_with_path() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("future.json");
-        std::fs::write(&path, r#"{"version": 2, "camera": {"offset": {"x": 0, "y": 0}, "zoom": 1}, "panels": []}"#).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"version": 2, "camera": {"offset": {"x": 0, "y": 0}, "zoom": 1}, "panels": []}"#,
+        )
+        .unwrap();
         let error = load_layout_from(dir.path(), "future").unwrap_err();
-        assert!(matches!(&error, LayoutError::UnsupportedVersion { path: p, found: 2 } if *p == path), "{error:?}");
+        assert!(
+            matches!(&error, LayoutError::UnsupportedVersion { path: p, found: 2 } if *p == path),
+            "{error:?}"
+        );
         assert!(error.to_string().contains(path.to_str().unwrap()));
     }
 
@@ -274,20 +299,29 @@ mod tests {
         let path = dir.path().join("broken.json");
         std::fs::write(&path, "{not json").unwrap();
         let error = load_layout_from(dir.path(), "broken").unwrap_err();
-        assert!(matches!(&error, LayoutError::Malformed { path: p, .. } if *p == path), "{error:?}");
+        assert!(
+            matches!(&error, LayoutError::Malformed { path: p, .. } if *p == path),
+            "{error:?}"
+        );
         assert!(error.to_string().contains(path.to_str().unwrap()));
 
         // Valid JSON with the right version but the wrong shape is malformed too.
         std::fs::write(&path, r#"{"version": 1, "panels": "nope"}"#).unwrap();
         let error = load_layout_from(dir.path(), "broken").unwrap_err();
-        assert!(matches!(&error, LayoutError::Malformed { path: p, .. } if *p == path), "{error:?}");
+        assert!(
+            matches!(&error, LayoutError::Malformed { path: p, .. } if *p == path),
+            "{error:?}"
+        );
     }
 
     #[test]
     fn load_missing_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let error = load_layout_from(dir.path(), "absent").unwrap_err();
-        assert!(matches!(&error, LayoutError::NotFound(p) if *p == dir.path().join("absent.json")), "{error:?}");
+        assert!(
+            matches!(&error, LayoutError::NotFound(p) if *p == dir.path().join("absent.json")),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -301,13 +335,18 @@ mod tests {
         });
         let mut scene = Scene::default();
         scene.add(
-            PanelKind::Plugin { plugin_id: "github-prs".into(), settings: settings.clone() },
+            PanelKind::Plugin {
+                plugin_id: "github-prs".into(),
+                settings: settings.clone(),
+            },
             Rect::new(0.0, 0.0, 300.0, 200.0),
         );
         save_layout_in(dir.path(), "plugins", &scene.to_layout()).unwrap();
         let loaded = load_layout_from(dir.path(), "plugins").unwrap();
         match &loaded.panels[0].kind {
-            PanelKind::Plugin { settings: restored, .. } => assert_eq!(restored, &settings),
+            PanelKind::Plugin {
+                settings: restored, ..
+            } => assert_eq!(restored, &settings),
             other => panic!("expected plugin panel, got {other:?}"),
         }
     }
@@ -318,7 +357,10 @@ mod tests {
         let layout = Scene::default().to_layout();
         for name in ["../escape", "a/b", "", "with space", "dot.json"] {
             let error = save_layout_in(dir.path(), name, &layout).unwrap_err();
-            assert!(matches!(error, LayoutError::Malformed { .. }), "{name}: {error:?}");
+            assert!(
+                matches!(error, LayoutError::Malformed { .. }),
+                "{name}: {error:?}"
+            );
         }
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
         assert!(save_layout_in(dir.path(), "My_layout-2", &layout).is_ok());

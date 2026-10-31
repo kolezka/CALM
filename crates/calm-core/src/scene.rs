@@ -152,7 +152,10 @@ mod tests {
     use super::*;
 
     fn terminal() -> PanelKind {
-        PanelKind::Terminal { command: None, cwd: None }
+        PanelKind::Terminal {
+            command: None,
+            cwd: None,
+        }
     }
 
     #[test]
@@ -205,7 +208,12 @@ mod tests {
     fn remove_returns_panel_and_shrinks() {
         let mut scene = Scene::default();
         let first = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
-        let second = scene.add(PanelKind::Browser { url: "https://example.com".into() }, Rect::new(0.0, 0.0, 200.0, 200.0));
+        let second = scene.add(
+            PanelKind::Browser {
+                url: "https://example.com".into(),
+            },
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+        );
         let removed = scene.remove(first).unwrap();
         assert_eq!(removed.id, first);
         assert_eq!(scene.panels.len(), 1);
@@ -221,6 +229,9 @@ mod tests {
         let panel = scene.get(id).unwrap();
         assert_eq!(panel.rect, Rect::new(5.0, 6.0, 120.0, 80.0));
         assert_eq!(MIN_PANEL_SIZE, Size::new(120.0, 80.0));
-        assert_eq!(content_rect(panel), Rect::new(5.0, 6.0 + CHROME_HEIGHT, 120.0, 80.0 - CHROME_HEIGHT));
+        assert_eq!(
+            content_rect(panel),
+            Rect::new(5.0, 6.0 + CHROME_HEIGHT, 120.0, 80.0 - CHROME_HEIGHT)
+        );
     }
 }

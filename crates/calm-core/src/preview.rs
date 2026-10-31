@@ -39,30 +39,48 @@ mod tests {
 
     #[test]
     fn below_threshold_is_preview() {
-        assert_eq!(decide_mode(0.49, ON_SCREEN, VIEWPORT, false, false), PanelMode::Preview);
+        assert_eq!(
+            decide_mode(0.49, ON_SCREEN, VIEWPORT, false, false),
+            PanelMode::Preview
+        );
     }
 
     #[test]
     fn offscreen_is_hidden_even_when_live_zoom() {
         let offscreen = Rect::new(5000.0, 5000.0, 400.0, 300.0);
-        assert_eq!(decide_mode(1.0, offscreen, VIEWPORT, false, false), PanelMode::Hidden);
-        assert_eq!(decide_mode(1.0, offscreen, VIEWPORT, false, true), PanelMode::Hidden);
+        assert_eq!(
+            decide_mode(1.0, offscreen, VIEWPORT, false, false),
+            PanelMode::Hidden
+        );
+        assert_eq!(
+            decide_mode(1.0, offscreen, VIEWPORT, false, true),
+            PanelMode::Hidden
+        );
     }
 
     #[test]
     fn minimized_is_hidden() {
-        assert_eq!(decide_mode(1.0, ON_SCREEN, VIEWPORT, true, false), PanelMode::Hidden);
+        assert_eq!(
+            decide_mode(1.0, ON_SCREEN, VIEWPORT, true, false),
+            PanelMode::Hidden
+        );
     }
 
     #[test]
     fn modal_forces_preview() {
-        assert_eq!(decide_mode(1.0, ON_SCREEN, VIEWPORT, false, true), PanelMode::Preview);
+        assert_eq!(
+            decide_mode(1.0, ON_SCREEN, VIEWPORT, false, true),
+            PanelMode::Preview
+        );
     }
 
     #[test]
     fn visible_at_threshold_is_live() {
         assert_eq!(PREVIEW_ZOOM_THRESHOLD, 0.5);
         assert_eq!(PREVIEW_REFRESH_SECS, 2);
-        assert_eq!(decide_mode(PREVIEW_ZOOM_THRESHOLD, ON_SCREEN, VIEWPORT, false, false), PanelMode::Live);
+        assert_eq!(
+            decide_mode(PREVIEW_ZOOM_THRESHOLD, ON_SCREEN, VIEWPORT, false, false),
+            PanelMode::Live
+        );
     }
 }
