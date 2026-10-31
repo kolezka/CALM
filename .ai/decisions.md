@@ -1,0 +1,74 @@
+# Decisions
+
+Settled decisions with the reason and the cost if wrong. Newest at the bottom. Reversing
+one means a new entry, not an edit.
+
+## Product
+
+- **Rust + GPUI, not Swift.** The user chose it after comparing alternatives. Cost: GPUI
+  is pre-release (`gpui-pre 0.3.4`), so the entry crate and APIs can shift.
+- **No tmux integration.** A terminal panel can run tmux itself. Cost: no session survival
+  across app quit, which the user accepted.
+- **Processes need not survive app quit.** Fresh canvas after reboot, optional saved
+  layouts whose terminals start empty.
+- **Plugins are HTML/JS (TSX) and trusted.** Minimal effort, no sandbox, explicitly
+  installed. Cost: a malicious plugin has host access; mitigated by explicit install only.
+- **GitHub through `gh` on the host.** Plugin JS never sees a token. Cost: users must have
+  `gh` logged in.
+
+## Architecture
+
+- **`gpui-pre-platform` as the GPUI entry crate.** `gpui-pre 0.3.4` has no
+  `Application::new`; `gpui_platform::application()` with `font-kit` is the working entry.
+- **Metal Toolchain installed instead of the `runtime_shaders` feature.** The user chose
+  the install. Reversible via Xcode settings.
+- **Native child = clip view + unflipped zoom view.** A flipped container broke Ghostty's
+  shim y math and did not clip. The zoom view's bounds always equal the logical size, so
+  the surface never sees the camera. Supersedes the earlier flipped-container ruling.
+- **Zoom scales the view, never the grid.** `surface.set_frame` runs each placement with
+  logical size and display scale; the surface skips unchanged frames, so only a resize
+  reflows.
+- **Native z-order follows scene order.** `bring_to_front` restacks only when the order
+  changed; `set_frame` runs on every placement and the crate dedupes.
+- **Context menu is a native NSMenu.** A GPUI popover would be covered by native views.
+  "Add" creates a panel at the click point with a default size (terminal 640x400, browser
+  800x600). The toolbar shrank to a status strip.
+- **Preview cadence is one snapshot per 2 s per terminal.** Entering preview does not
+  force a snapshot; a failed refresh keeps the last image marked `preview stale`. The smoke
+  enforces 1 to 3 snapshots in its window.
+- **Grid is drawn as lines, not dots.** About 1500 dot quads stalled paint, which stopped
+  preview refresh. Cost: a different look than the brief; the user can veto.
+- **Default snap grid is 8 world units, not the requested 3 pixels.** Terminal cells are
+  about 8 px wide at zoom 1, so 3 is not a cell multiple. Edge snap within 8, `alt`
+  disables. One constant to change if the user wants finer.
+- **Invalid layout files fail loudly.** Malformed JSON or out-of-range values are
+  `LayoutError::Malformed` with path and field; tiny rects are clamped to the minimum size.
+- **Plugin entry must be a regular file under the canonical plugin directory.** Symlinked
+  entries outside the folder are refused.
+- **SDK includes `canvas.createPanel` and `process.exec`.** Plugins are trusted and the
+  user wants agents to spawn terminals. Documented as trusted-only.
+
+## Process
+
+- **Agent Teams with disjoint write scopes.** SDD forbids parallel implementers; lanes run
+  in separate worktrees per crate and are reviewed per lane.
+- **Gate before push.** A broken merge was pushed once (737b762). Merges land only after
+  workspace tests, clippy, fmt and smoke pass on the merged tree.
+- **No agent drives the GUI beyond `--smoke`.** Synthetic input landed in other windows.
+  The user owns manual GUI acceptance.
+- **GNU Make 4 required.** macOS Make 3.81 ignores `.SHELLFLAGS`, so the strict shell
+  contract was inert. The Makefile errors on old Make; use `gmake`.
+
+## CI and release
+
+- **Linux CI tests portable crates only.** `calm-native` and `calm-app` are AppKit-only.
+  No Linux app artifact is promised. The job runs in an `archlinux:latest` container on the
+  self-hosted runner with bun installed into a cached volume.
+- **Hosted macOS CI is opt-in (`CALM_MACOS_HOSTED=true`).** GitHub-hosted macOS minutes
+  failed on account billing. Cost: no automated macOS build until billing or a Mac runner.
+- **Release runs on the Linux runner.** It bumps, tags, creates the release with a source
+  tarball and checksum. `dry_run` defaults to true. The macOS zip is built locally with
+  `gmake release-upload VERSION=x.y.z`, which refuses unless HEAD is the tag and the tree is
+  clean, and only targets the release bound to `origin`.
+- **Fork pull requests never run on the self-hosted runner.** It has Docker socket access.
+  Every self-hosted job carries the same-repo guard.

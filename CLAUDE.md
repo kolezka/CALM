@@ -3,10 +3,21 @@
 Infinite pan/zoom canvas for macOS (arm64, macOS 14+) hosting live Ghostty terminals,
 WKWebView browser panels and trusted HTML/JS plugins. Rust + GPUI.
 
-- Spec: `docs/superpowers/specs/2026-10-31-calm-design.md`
-- Plan: `docs/superpowers/plans/2026-10-31-calm-prototype.md`
-- Setup and commands: `docs/dev-setup.md`. Architecture: `docs/architecture.md`.
-  Plugins: `docs/plugins.md`. CI and releases: `docs/release.md`.
+## Read first
+
+Knowledge lives in `.ai/`, indexed by `.ai/INDEX.md`. On a cold start read, in order:
+
+- `.ai/system.md`: what CALM is, crate boundaries, event and paint flow, plugin model.
+- `.ai/status.md`: what is merged, what is not wired, what is unverified.
+- `.ai/conventions.md`: how work is done here (worktrees, gates, tests, agents, security).
+- `.ai/decisions.md`: settled decisions with rationale. Check before re-opening one.
+
+Human-facing guides: `docs/dev-setup.md`, `docs/architecture.md`, `docs/plugins.md`,
+`docs/release.md`. Spec: `docs/superpowers/specs/2026-10-31-calm-design.md` (binding).
+Plan: `docs/superpowers/plans/2026-10-31-calm-prototype.md`.
+
+Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
+`decisions.md` when a decision is made or reversed.
 
 ## Workspace
 
@@ -75,6 +86,7 @@ overrides the directory. Distant panels become previews refreshed every 2 s.
 
 ## Process
 
-Plan execution uses superpowers subagent-driven development with Agent Teams. The ledger
-with rulings lives at `.superpowers/sdd/2026-10-31-calm-prototype/progress.md` (git-ignored).
+Plan execution uses superpowers subagent-driven development with Agent Teams; details in
+`.ai/conventions.md`. The ledger with rulings lives at
+`.superpowers/sdd/2026-10-31-calm-prototype/progress.md` (git-ignored, main checkout).
 Work state persists in Outline under the task record `calm-canvas-design`.
