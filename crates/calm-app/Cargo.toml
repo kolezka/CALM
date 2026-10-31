@@ -6,5 +6,6 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+calm-core = { path = "../calm-core" }
 gpui.workspace = true
 gpui_platform.workspace = true
