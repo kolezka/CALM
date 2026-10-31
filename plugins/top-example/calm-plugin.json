@@ -2,10 +2,12 @@
   "kind": "tui",
   "id": "top-example",
   "name": "Top",
+  "title": "{name}: CPU",
   "description": "macOS top, sorted by CPU. Ships with every Mac, so it always starts.",
   "command": "top",
   "args": ["-o", "cpu"],
-  "icon": "▲",
+  "icon": "icon.svg",
+  "accentColor": "#ff8a3d",
   "defaultSize": { "width": 720, "height": 420 },
   "restart": "prompt"
 }

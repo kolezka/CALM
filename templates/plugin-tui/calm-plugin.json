@@ -7,8 +7,12 @@
   "args": [],
   "cwd": "~",
   "env": {},
-  "icon": "M",
   "defaultSize": { "width": 800, "height": 500 },
   "restart": "prompt",
-  "shell": true
+  "shell": true,
+  "title": "{name}",
+  "icon": "M",
+  "accentColor": "#5b8def",
+  "titleBarColor": "#26282e",
+  "titleColor": "#e4e6eb"
 }
