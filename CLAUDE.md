@@ -97,6 +97,8 @@ Plan execution uses superpowers subagent-driven development with Agent Teams; de
 `.superpowers/sdd/2026-10-31-calm-prototype/progress.md` (git-ignored, main checkout).
 Work state persists in Outline under the task record `calm-canvas-design`.
 
+- Shut down idle agent sessions. When a teammate or subagent has finished its task and is only idle (its result is reported and verified, or it failed), the lead sends it a shutdown request at once, or stops it, and confirms it is gone from the agent list. Do not keep finished agents around for later; a new task gets a new session.
+
 <!-- repo-intel:begin -->
 @AGENTS.md
 <!-- repo-intel:end -->

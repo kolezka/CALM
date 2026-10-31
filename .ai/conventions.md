@@ -54,6 +54,7 @@ How work on CALM is done. `CLAUDE.md` repeats the ones that are easiest to break
   from a different family than the one that wrote the code.
 - Briefs carry exact files, commands, the test budget (one run per suite per phase) and
   what is out of scope.
+- Shut down idle agents: once a teammate or subagent is done (result reported and verified, or failed), the lead sends a shutdown request or stops it, confirms it left the agent list, and starts a new session for the next task.
 
 ## Security rules
 
