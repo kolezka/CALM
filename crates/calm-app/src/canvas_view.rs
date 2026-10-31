@@ -166,6 +166,8 @@ pub struct CanvasView {
     pub frame_stats: FrameStats,
     /// Latest CPU and memory reading, from `stats_timer`.
     pub process_stats: Option<ProcessSample>,
+    /// Successful samples since the timer last started. The smoke waits on it.
+    pub process_samples: u64,
     /// Samples CPU and memory off the main thread while the readout needs them.
     stats_timer: Option<Task<()>>,
     /// (interval ms, include children) the running timer was started with.
@@ -241,6 +243,7 @@ impl CanvasView {
             show_stats: false,
             frame_stats: FrameStats::default(),
             process_stats: None,
+            process_samples: 0,
             stats_timer: None,
             stats_timer_config: None,
             menu_open: false,
@@ -1163,6 +1166,7 @@ impl CanvasView {
             self.stats_timer = None;
             self.stats_timer_config = None;
             self.process_stats = None;
+            self.process_samples = 0;
             return;
         }
         let config = (clamp_interval_ms(stats.interval_ms), stats.include_children);
@@ -1172,6 +1176,7 @@ impl CanvasView {
         let (interval_ms, include_children) = config;
         self.stats_timer_config = Some(config);
         self.process_stats = None;
+        self.process_samples = 0;
         self.stats_timer = Some(cx.spawn(async move |this, cx| {
             let mut sampler = ProcessSampler::new();
             let mut reported = false;
@@ -1195,6 +1200,9 @@ impl CanvasView {
                     }
                 };
                 let updated = this.update(cx, |view, cx| {
+                    if sample.is_some() {
+                        view.process_samples += 1;
+                    }
                     view.process_stats = sample;
                     cx.notify();
                 });
