@@ -1,0 +1,7 @@
+{
+  "id": "my-plugin",
+  "name": "My Plugin",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "defaultSize": { "width": 360, "height": 240 }
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>GitHub PRs</title>
+    <style>
+      html, body { margin: 0; }
+      body {
+        font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
+        color: #e8e8e8;
+        background: #1e1e1e;
+      }
+      #app { padding: 12px; }
+      form { display: flex; gap: 6px; margin-bottom: 12px; }
+      input { flex: 1; padding: 4px 6px; background: #2a2a2a; color: inherit; border: 1px solid #444; border-radius: 4px; }
+      button { padding: 4px 8px; background: #333; color: inherit; border: 1px solid #555; border-radius: 4px; cursor: pointer; }
+      section { margin-bottom: 16px; }
+      h2 { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin: 0 0 6px; }
+      ul { list-style: none; margin: 0; padding: 0; }
+      li { padding: 6px; border-radius: 4px; cursor: pointer; }
+      li:hover { background: #2c2c2c; }
+      .meta { color: #999; font-size: 12px; }
+      .draft { margin-left: 6px; padding: 0 4px; border: 1px solid #777; border-radius: 3px; font-size: 11px; color: #bbb; }
+      .muted { color: #999; }
+      .error { color: #ff7b72; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <!-- Built by `bun run build`. -->
+    <script src="dist/index.js"></script>
+  </body>
+</html>
