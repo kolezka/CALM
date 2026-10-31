@@ -1,7 +1,8 @@
+import type { Calm } from "@calm/plugin-sdk";
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 
-function Hello({ calm }: { calm: CalmApi }) {
+function Hello({ calm }: { calm: Calm }) {
   const [clicks, setClicks] = useState(0);
 
   useEffect(() => {

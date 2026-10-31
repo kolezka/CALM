@@ -1,0 +1,8 @@
+{
+  "name": "@calm/plugin-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript types for the window.calm API in CALM plugins",
+  "types": "calm.d.ts",
+  "files": ["calm.d.ts"]
+}

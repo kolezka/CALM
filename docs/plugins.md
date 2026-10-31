@@ -51,22 +51,127 @@ Every plugin folder holds a `calm-plugin.json`:
 
 ## The `window.calm` API
 
-CALM injects `window.calm` before any of your scripts run. Every call returns a Promise. A
-failed call rejects with an `Error` whose message comes from the host.
+CALM injects `window.calm` before any of your scripts run. The types live in one place,
+`packages/calm-plugin-sdk/calm.d.ts` (package `@calm/plugin-sdk`), and this section follows
+it. Every call except `calm.log` and `calm.events.on` returns a Promise. A failed call rejects
+with an `Error` whose message comes from the host.
 
-| Call                         | Result                                                         |
-| ---------------------------- | -------------------------------------------------------------- |
-| `calm.settings.get()`        | This panel's saved settings object, or `null` if none yet.     |
-| `calm.settings.set(obj)`     | Saves `obj` as this panel's settings. Saved with the layout.   |
-| `calm.panel.setTitle(title)` | Sets the panel title.                                          |
-| `calm.log(message)`          | Writes `message` to CALM's stderr, tagged with the plugin.     |
-| `calm.github.api(path)`      | Runs `gh api <path>` on the host, resolves with parsed JSON.   |
-| `calm.openExternal(url)`     | Opens `url` in the system browser.                             |
+No host request is served by the app yet. Check [Host support](#host-support) before you rely on one.
+
+### Settings
+
+| Call                       | Result                                                        |
+| -------------------------- | ------------------------------------------------------------- |
+| `calm.settings.get()`      | This panel's settings object.                                 |
+| `calm.settings.set(value)` | Saves `value` as this panel's settings. Saved with the layout. |
 
 Settings are stored in the layout file, so never put a token or password in them.
 
+### Storage
+
+Plugin data that is not tied to one panel. Stored in
+`~/.config/calm/plugin-data/<plugin-id>.json`, not in layouts.
+
+| Call                           | Result                                            |
+| ------------------------------ | ------------------------------------------------- |
+| `calm.storage.get<T>(key)`     | The stored value, or `undefined` if there is none. |
+| `calm.storage.set(key, value)` | Stores a JSON value under `key`.                  |
+| `calm.storage.remove(key)`     | Deletes `key`.                                    |
+
+### Panel
+
+| Call                         | Result                                                         |
+| ---------------------------- | -------------------------------------------------------------- |
+| `calm.panel.setTitle(title)` | Sets the panel title.                                          |
+| `calm.panel.getBounds()`     | `{ width, height, zoom }`: size in canvas points, camera zoom. |
+| `calm.panel.minimize()`      | Minimizes the panel. The page keeps running.                   |
+| `calm.panel.close()`         | Asks to close the panel through the normal, confirmed path.    |
+
+### Canvas
+
+| Call                          | Result                                                  |
+| ----------------------------- | ------------------------------------------------------- |
+| `calm.canvas.createPanel(spec)` | Opens a new panel, resolves with its `PanelId`.       |
+| `calm.canvas.focusPanel(id)`  | Focuses a panel.                                        |
+| `calm.canvas.listPanels()`    | `PanelInfo[]`: `{ id, kind, title, rect, minimized }`.  |
+
+`spec` is one of:
+
+```ts
+{ kind: "terminal", command?: string, cwd?: string, rect?: Rect }
+{ kind: "browser", url: string, rect?: Rect }
+{ kind: "plugin", pluginId: string, settings?: Record<string, unknown>, rect?: Rect }
+```
+
+`Rect` is `{ x, y, width, height }` in canvas points. `PanelId` is a number.
+
+### Process
+
+`calm.process.exec(command, args, options?)` runs a program on the host and resolves with
+`{ code, stdout, stderr }`. `options` takes `cwd` and `timeoutMs`. It runs with your user's
+rights. This is why plugins must be trusted code (see [Trust](#trust)).
+
+### Other calls
+
+| Call                     | Result                                                       |
+| ------------------------ | ------------------------------------------------------------ |
+| `calm.github.api(path)`  | Runs `gh api <path>` on the host, resolves with parsed JSON. |
+| `calm.openExternal(url)` | Opens `url` in the system browser.                           |
+| `calm.theme.get()`       | `{ background }`, a `"#rrggbb"` string.                      |
+| `calm.log(message)`      | Writes `message` to CALM's stderr, tagged with the plugin. Fire and forget: returns nothing, never waits for the host. |
+
+### Events
+
+`calm.events.on(event, handler)` registers a handler and returns a function that removes it.
+The host sends these events:
+
+| Event             | Payload                                            |
+| ----------------- | -------------------------------------------------- |
+| `focus`           | none                                               |
+| `blur`            | none                                               |
+| `resize`          | `{ width, height, zoom }`                          |
+| `visibility`      | `{ mode: "live" \| "preview" \| "hidden" }`        |
+| `settingsChanged` | the new settings object                            |
+| `themeChanged`    | `{ background }`                                   |
+
+An unknown event name throws a `TypeError`. A handler that throws is logged through
+`calm.log` and does not stop the other handlers.
+
 `window.calm` only exists inside CALM. Guard calls with `if (window.calm)` if you also open the
 page in a normal browser while developing.
+
+### Host support
+
+The prelude exposes every call above, but the app does not serve any host requests yet: it has
+no plugin host and no dispatcher. Until the host is wired, no host request resolves; a request
+whose `postMessage` throws rejects immediately. `events.on` is synchronous, and `calm.log` goes
+nowhere. Do not build on a call before the plugin host task lands.
+
+When the host lands, it is planned to answer methods it does not serve with
+`not implemented: <method>`, so they reject instead of hanging.
+
+| `method`             | Host support                              |
+| -------------------- | ----------------------------------------- |
+| `settings.get`       | Planned, wired in the plugin host task    |
+| `settings.set`       | Planned, wired in the plugin host task    |
+| `storage.get`        | Planned, wired in the plugin host task    |
+| `storage.set`        | Planned, wired in the plugin host task    |
+| `storage.remove`     | Planned, wired in the plugin host task    |
+| `panel.setTitle`     | Planned, wired in the plugin host task    |
+| `panel.getBounds`    | Planned, wired in the plugin host task    |
+| `panel.minimize`     | Planned, wired in the plugin host task    |
+| `panel.close`        | Planned, wired in the plugin host task    |
+| `canvas.createPanel` | Planned, wired in the plugin host task    |
+| `canvas.focusPanel`  | Planned, wired in the plugin host task    |
+| `canvas.listPanels`  | Planned, wired in the plugin host task    |
+| `process.exec`       | Planned, wired in the plugin host task    |
+| `github.api`         | Planned, wired in the plugin host task    |
+| `openExternal`       | Planned, wired in the plugin host task    |
+| `theme.get`          | Planned, wired in the plugin host task    |
+| `log`                | Planned, wired in the plugin host task    |
+
+Events have no host sender yet, so handlers registered with `calm.events.on` do not fire
+until the app wiring lands.
 
 ### Wire format
 
@@ -76,17 +181,39 @@ For host and tooling authors. Each call posts one message to the `calm` WebKit m
 { "id": 7, "method": "panel.setTitle", "params": { "title": "Hello" } }
 ```
 
-| `method`         | `params`                       |
-| ---------------- | ------------------------------ |
-| `settings.get`   | `null`                         |
-| `settings.set`   | the settings object            |
-| `panel.setTitle` | `{ "title": string }`          |
-| `log`            | `{ "message": string }`        |
-| `github.api`     | `{ "path": string }`           |
-| `openExternal`   | `{ "url": string }`            |
+`BRIDGE_METHODS` in `crates/calm-plugins/src/bridge.rs` lists every `method`. Tests keep it,
+the prelude and `calm.d.ts` in sync.
+
+| `method`             | `params`                                                             |
+| -------------------- | -------------------------------------------------------------------- |
+| `settings.get`       | `null`                                                               |
+| `settings.set`       | the settings object                                                  |
+| `storage.get`        | `{ "key": string }`                                                  |
+| `storage.set`        | `{ "key": string, "value": any }`                                    |
+| `storage.remove`     | `{ "key": string }`                                                  |
+| `panel.setTitle`     | `{ "title": string }`                                                |
+| `panel.getBounds`    | `null`                                                               |
+| `panel.minimize`     | `null`                                                               |
+| `panel.close`        | `null`                                                               |
+| `canvas.createPanel` | `{ "spec": PanelSpec }`                                              |
+| `canvas.focusPanel`  | `{ "id": number }`                                                   |
+| `canvas.listPanels`  | `null`                                                               |
+| `process.exec`       | `{ "command": string, "args": string[], "cwd": string \| null, "timeoutMs": number \| null }` |
+| `github.api`         | `{ "path": string }`                                                 |
+| `openExternal`       | `{ "url": string }`                                                  |
+| `theme.get`          | `null`                                                               |
+| `log`                | `{ "message": string }`                                              |
 
 The host answers by evaluating `window.__calm.resolve(id, ok, value)` in the page. With `ok`
-true, `value` is the result. With `ok` false, `value` is an error message string.
+true, `value` is the result. With `ok` false, `value` is an error message string. The planned
+host answers a method it does not serve with `ok` false and `not implemented: <method>`
+(`BridgeResponse::not_implemented`).
+
+`log` is fire and forget. The prelude posts it with an `id` but keeps no pending entry, so the
+host does not need to answer it, and an answer is ignored.
+
+The host sends an event by evaluating `window.__calm.emit("<event>", <payload json>)`
+(`BridgeEvent::to_js`). Both scripts JSON encode their values and escape U+2028 and U+2029.
 
 ## GitHub access
 
@@ -128,7 +255,10 @@ bun run build    # writes dist/index.js, which index.html loads
 
 Change `id` and `name` in `calm-plugin.json` before installing it. `dist/` is a build output
 and is not committed, so build after every clone and after every source change.
-`src/calm.d.ts` holds the types for `window.calm`.
+The types come from `packages/calm-plugin-sdk/calm.d.ts` through the `@calm/plugin-sdk` entry
+in `tsconfig.json` `paths`. That path is relative to this repository, so after copying the
+template elsewhere point it at `calm.d.ts` in your CALM checkout, or copy the file next to your
+sources. Type check with `bunx tsc --noEmit -p .`.
 
 ## Development loop
 
@@ -141,6 +271,8 @@ CALM_PLUGIN_PATH=./plugins cargo run -p calm-app
 No rebuild of CALM is needed. HTML and JS changes show up in a newly opened panel. Manifest
 changes need a CALM restart, because discovery runs at startup.
 Broken manifests are printed to stderr with their path and counted in the toolbar.
+
+Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
 
 ## Examples
 
