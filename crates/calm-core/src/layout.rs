@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -262,10 +262,7 @@ fn write_durable_with(
     bytes: &[u8],
     rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    let dir = match path.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir,
-        _ => Path::new("."),
-    };
+    let dir = parent_dir(path);
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?
@@ -296,12 +293,43 @@ fn write_durable_with(
     sync_dir(dir)
 }
 
-/// `fs::create_dir_all` with mode 0700 for every directory it creates.
+/// The directory holding `path`, `.` for a bare file name.
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    }
+}
+
+/// Creates `dir` and its missing ancestors with mode 0700, top down. After each one the
+/// parent is fsynced, so the new entry survives a power loss.
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+    create_private_dir_with(dir, sync_dir)
+}
+
+/// `create_private_dir` with the parent fsync injectable, so tests can record it.
+fn create_private_dir_with(
+    dir: &Path,
+    mut sync_parent: impl FnMut(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut missing = Vec::new();
+    let mut current = dir;
+    while !current.exists() {
+        missing.push(current);
+        match current.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => current = parent,
+            _ => break,
+        }
+    }
+    for new_dir in missing.into_iter().rev() {
+        match fs::DirBuilder::new().mode(0o700).create(new_dir) {
+            Ok(()) => sync_parent(parent_dir(new_dir))?,
+            // Another save created it first; that save syncs the parent.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && new_dir.is_dir() => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
 }
 
 fn sync_dir(dir: &Path) -> io::Result<()> {
@@ -350,9 +378,10 @@ pub fn backup_path(path: &Path, n: u32) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// Shifts `.1..` up by one, dropping the oldest past `count`, and renames `path` to `.1`.
-/// Does nothing when `path` is missing, so a file already moved aside never enters the
-/// backups, or when `count` is 0, so the next write simply replaces `path`.
+/// Shifts `.1..` up by one, dropping the oldest past `count`, and copies `path` to `.1`.
+/// `path` stays in place, so a write that fails after rotation still leaves the session
+/// to restore. Every backup ends up 0600. Does nothing when `path` is missing, so a file
+/// already moved aside never enters the backups, or when `count` is 0.
 pub fn rotate_backups(path: &Path, count: u32) -> io::Result<()> {
     if count == 0 || path.symlink_metadata().is_err() {
         return Ok(());
@@ -360,11 +389,13 @@ pub fn rotate_backups(path: &Path, count: u32) -> io::Result<()> {
     for n in (1..count).rev() {
         let from = backup_path(path, n);
         if from.symlink_metadata().is_ok() {
-            fs::rename(&from, backup_path(path, n + 1))?;
+            let to = backup_path(path, n + 1);
+            fs::rename(&from, &to)?;
+            fs::set_permissions(&to, fs::Permissions::from_mode(0o600))?;
         }
     }
-    fs::rename(path, backup_path(path, 1))?;
-    sync_dir(path.parent().unwrap_or(Path::new(".")))
+    // A durable write creates the copy 0600 and fsyncs the directory.
+    write_durable(&backup_path(path, 1), &fs::read(path)?)
 }
 
 /// Writes the session file for one launch. Backups rotate once, before the first save,
@@ -394,6 +425,15 @@ impl SessionWriter {
 
     /// Rotates on the first call of this writer, then writes `layout`.
     pub fn save(&mut self, layout: &LayoutFile) -> Result<(), LayoutError> {
+        self.save_with(layout, write_layout_file)
+    }
+
+    /// `save` with the write step injectable, so tests can fail it after rotation.
+    fn save_with(
+        &mut self,
+        layout: &LayoutFile,
+        write: impl FnOnce(&Path, &LayoutFile, BrowserQueryMode) -> Result<(), LayoutError>,
+    ) -> Result<(), LayoutError> {
         if !self.rotated {
             rotate_backups(&self.path, self.backup_count).map_err(|source| LayoutError::Io {
                 path: self.path.clone(),
@@ -401,7 +441,7 @@ impl SessionWriter {
             })?;
             self.rotated = true;
         }
-        write_layout_file(&self.path, layout, self.browser_query)
+        write(&self.path, layout, self.browser_query)
     }
 }
 
@@ -1120,7 +1160,94 @@ mod tests {
         assert_eq!(layout, browser_layout(url));
     }
 
-    // Review fixes: browser titles and url size.
+    // Review fixes on the session write path.
+
+    #[test]
+    fn rotation_never_leaves_the_primary_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SESSION_FILE_NAME);
+        launch(&path, 3, 1);
+        let before = std::fs::read(&path).unwrap();
+        // A crash or failed write right after rotation must still find the session.
+        rotate_backups(&path, 3).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(load_layout_from(dir.path(), "session").is_ok());
+        assert_eq!(std::fs::read(backup_path(&path, 1)).unwrap(), before);
+    }
+
+    #[test]
+    fn a_write_failing_after_rotation_keeps_the_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SESSION_FILE_NAME);
+        launch(&path, 3, 1);
+        let before = std::fs::read(&path).unwrap();
+
+        let mut writer = SessionWriter::new(path.clone(), 3, BrowserQueryMode::Keep);
+        let error = writer
+            .save_with(&browser_layout("https://example.com/new"), |path, _, _| {
+                Err(LayoutError::Io {
+                    path: path.to_path_buf(),
+                    source: io::Error::from_raw_os_error(24), // EMFILE
+                })
+            })
+            .unwrap_err();
+        assert!(matches!(error, LayoutError::Io { .. }), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(saved_url(&path), "https://example.com/launch-1-c");
+        assert_eq!(std::fs::read(backup_path(&path, 1)).unwrap(), before);
+    }
+
+    #[test]
+    fn missing_dirs_are_created_top_down_and_their_parents_synced() {
+        let root = tempfile::tempdir().unwrap();
+        let leaf = root.path().join("a/b/c");
+        let mut synced = Vec::new();
+        create_private_dir_with(&leaf, |dir| {
+            synced.push(dir.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        let a = root.path().join("a");
+        let b = a.join("b");
+        assert_eq!(synced, [root.path().to_path_buf(), a.clone(), b.clone()]);
+        for dir in [&a, &b, &leaf] {
+            assert_eq!(mode_of(dir), 0o700, "{}", dir.display());
+        }
+
+        // Only the missing part of a path is created and synced.
+        synced.clear();
+        create_private_dir_with(&b.join("x/y"), |dir| {
+            synced.push(dir.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(synced, [b.clone(), b.join("x")]);
+        synced.clear();
+        create_private_dir_with(&leaf, |dir| {
+            synced.push(dir.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert!(synced.is_empty(), "{synced:?}");
+    }
+
+    #[test]
+    fn rotated_backups_end_up_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let wide = || std::fs::Permissions::from_mode(0o644);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SESSION_FILE_NAME);
+        std::fs::write(&path, b"primary").unwrap();
+        std::fs::set_permissions(&path, wide()).unwrap();
+        std::fs::write(backup_path(&path, 1), b"older").unwrap();
+        std::fs::set_permissions(backup_path(&path, 1), wide()).unwrap();
+
+        rotate_backups(&path, 3).unwrap();
+        assert_eq!(std::fs::read(backup_path(&path, 1)).unwrap(), b"primary");
+        assert_eq!(std::fs::read(backup_path(&path, 2)).unwrap(), b"older");
+        assert_eq!(mode_of(&backup_path(&path, 1)), 0o600);
+        assert_eq!(mode_of(&backup_path(&path, 2)), 0o600);
+    }
 
     fn saved_browser(path: &Path) -> (String, String) {
         let text = std::fs::read_to_string(path).unwrap();
