@@ -72,3 +72,33 @@ one means a new entry, not an edit.
   clean, and only targets the release bound to `origin`.
 - **Fork pull requests never run on the self-hosted runner.** It has Docker socket access.
   Every self-hosted job carries the same-repo guard.
+
+## Plugin API v2 (2026-10-31)
+
+Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not implemented yet.
+
+- **Plugin panels are free-form HTML/TSX surfaces with native browser, terminal and
+  plugin-to-plugin APIs.** The user asked for full customization. Cost: plugins get much
+  more reach, all of it behind declared capabilities.
+- **Reversed: script injection into browser panels is now allowed** for plugins with
+  `browser.script`, and cookies and site data for `browser.data`. It replaces the draft
+  line "no script injection into browser panels". Browser panels still never get the
+  `calm` bridge; plugin scripts run in a separate content world. Cost: such a plugin can
+  act as the user on every site open in a browser panel. That fits trusted plugins and is
+  documented next to the capability.
+- **Capabilities are enforced: undeclared calls are rejected** with `capability_missing`.
+  The manifest list is only useful if it is true. It is a declaration, not a sandbox.
+  Manifests without `apiVersion` get the implicit v1 set. Cost: author friction.
+- **External control socket approved, with PR #9's allowlist.** Default is read-only plus
+  `panel.setStatus` and `events.*`. Spawning with a command, `terminals.write` and
+  `process.exec` are one unit, refused by default and enabled only together, because
+  refusing one while allowing another is no limit. `github.api` stays plugin-only. Build
+  after PRs #5 and #6 merge. Cost: any process running as the user that can read the
+  token file can drive CALM.
+- **Background pages are opt-in hidden pages** (`"background": true`), one WKWebView each.
+  They serve commands, events and RPC with no panel open. Cost: one web content process
+  per plugin that opts in.
+- **Ghostty shim patch is a planned phase.** gpui-libghostty 0.3.1 drops `SET_TITLE`,
+  `PWD` and other actions and does not expose `read_text`, `size`, `foreground_pid` or
+  `binding_action`. A CALM-owned fork through `[patch.crates-io]` adds them. Cost: upkeep
+  on every upstream bump.

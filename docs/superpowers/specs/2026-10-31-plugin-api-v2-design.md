@@ -1,6 +1,7 @@
 # CALM plugin API v2 design
 
-Status: draft for review. Nothing here is implemented. Extends the plugin section of
+Status: design for review, with the user's decisions of 2026-10-31 folded in. Nothing
+here is implemented. Extends the plugin section of
 `2026-10-31-calm-design.md`, which stays binding where the two disagree.
 
 ## Context
@@ -69,7 +70,11 @@ has a host sender yet.
 
 ## Goals
 
+- Plugin panels are free-form UI surfaces: any HTML, CSS, JS or TSX the author wants.
 - Plugins create and control every panel kind: terminals, browsers, other plugin panels.
+- Plugins get a native browser API (full control of CALM browser panels), a native
+  terminal API (input, keys, screen and scrollback text, output, process, title, cwd,
+  scrolling, selection, font size) and the API of other plugins (RPC).
 - Plugins read a full picture of the canvas: panels, focus, camera, app settings, version,
   browser url and title, terminal metadata when Ghostty exposes it.
 - Plugins influence the app: move the camera, navigate browsers, type into terminals,
@@ -83,9 +88,13 @@ has a host sender yet.
 
 - A sandbox or a permission system that protects the user from a plugin. Plugins are
   trusted, explicitly installed code. Capabilities are a declaration, not a wall.
-- Giving browser panels the bridge. Remote pages stay without host access.
-- Exposing any credential to plugin JS. GitHub stays behind `gh api` on the host.
-- Reading terminal screen contents or scrollback. Not in libghostty's surface API here.
+- Giving browser panels the bridge. Remote pages stay without host access. A plugin with
+  `browser.script` reaches into a page; the page never reaches the host.
+- Exposing CALM's own secrets to plugin JS. The GitHub token stays behind `gh api` on the
+  host, and the control socket token never reaches JS. Site sessions in browser panels and
+  text printed in terminals are a different matter, see the threat model.
+- A raw byte stream of terminal output. libghostty's embedding API has no output callback
+  (see the terminal table); output events are text diffs.
 - Closing a live terminal without the user's confirmation.
 - Remote or marketplace install, plugin updates, hot reload of manifests.
 - Layout save and load (Task 13). The API leaves room for it but does not depend on it.
@@ -107,6 +116,22 @@ has a host sender yet.
 5. **Additive versioning.** New methods and events only. A v1 method keeps its name and
    shape forever; v2 adds new names next to it.
 
+## Plugin panels are free-form UI surfaces
+
+*[lead's reading, confirm in review]*
+
+A plugin panel is a full WKWebView with the normal web platform: DOM, CSS, `fetch`,
+canvas 2D, WebGL, Web Workers, `localStorage` and IndexedDB, media, and anything else
+WebKit on macOS 14 gives a page loaded from a local file. CALM imposes no layout, no
+widget set and no styling. The panel chrome strip (title, status, buttons) is the only CALM
+UI on a plugin panel; everything inside the content rect is the plugin's. Authors use plain
+HTML and JS, or TSX compiled to JS (Preact in the template, any framework works).
+
+Two limits come from the platform, not from CALM: the page loads from `file://` with read
+access to its own plugin folder only, and web storage lives in the plugin web views' data
+store, not in `calm.storage`. A plugin that wants data kept with CALM and visible to its
+background page uses `calm.storage`.
+
 ## Manifest additions
 
 ```json
@@ -118,7 +143,11 @@ has a host sender yet.
   "defaultSize": { "width": 420, "height": 300 },
   "apiVersion": 2,
   "capabilities": ["panels.create", "panels.control", "terminal.write", "camera.control"],
-  "background": false,
+  "background": true,
+  "exports": [
+    { "name": "spawnAgents", "description": "Open n agent terminals", "uses": ["panels.create"] }
+  ],
+  "requires": { "github-prs": "^0.1.0" },
   "contributes": {
     "commands": [{ "id": "spawn-agents", "title": "Spawn agent terminals" }],
     "menus": {
@@ -134,8 +163,17 @@ has a host sender yet.
 | -------------- | ----------------------------------------------------------------------------- |
 | `apiVersion`   | Integer. Missing means 1. The host refuses a manifest above its own version.  |
 | `capabilities` | Strings from the capability table. Unknown strings fail the manifest.         |
-| `background`   | Opt-in hidden page started at launch (see open question 2). Default false.    |
+| `background`   | Opt-in hidden page started at launch. Default false. See below.               |
+| `exports`      | Methods other plugins may call through `calm.plugins.call`. See plugin RPC.   |
+| `requires`     | Plugin ids with a semver range of their `version`. See plugin RPC.            |
 | `contributes`  | Commands, menu entries and key bindings. Requires `apiVersion` 2.             |
+
+**Background pages (decided: opt-in).** A plugin with `"background": true` gets one hidden
+WKWebView, started at launch, never placed on the canvas, with the same prelude and bridge
+as its panels. It serves contributed commands, events, bus messages and RPC calls when no
+panel of the plugin is open. Its `Caller` is `Panel` with a reserved per-plugin id that is
+never in the scene, so `panel.*` self methods reject with `wrong_kind`. Cost: one web
+content process per such plugin, so it stays opt-in.
 
 Validation stays in `PluginManifest::validate` and reports the path and field, like every
 other manifest error. A broken `contributes` block skips the plugin, it does not half load.
@@ -157,14 +195,18 @@ breaks. Methods with no capability are always allowed.
 
 | Capability        | Methods                                                                     |
 | ----------------- | --------------------------------------------------------------------------- |
-| (none)            | `log`, `app.info`, `panel.*` on the plugin's own panel, `settings.*` (own panel), `storage.*`, `panels.list`, `panels.get`, `camera.get`, `app.getSettings`, `theme.get`, `bus.*`, `events.*`, `ui.notify` |
+| (none)            | `log`, `app.info`, `plugins.list`, `plugins.serve`, `panel.*` on the plugin's own panel, `settings.*` (own panel), `storage.*`, `panels.list`, `panels.get`, `camera.get`, `app.getSettings`, `theme.get`, `bus.*`, `events.*`, `ui.notify` |
 | `panels.create`   | `panels.create`, `canvas.createPanel`                                       |
 | `panels.control`  | `panels.focus`, `move`, `resize`, `setRect`, `setTitle`, `minimize`, `restore`, `bringToFront`, `sendToBack` on other panels; `canvas.focusPanel` |
 | `panels.close`    | `panels.close` on other panels                                              |
 | `camera.control`  | `camera.set`, `camera.centerOn`, `camera.fit`                               |
-| `terminal.read`   | `terminals.info`                                                            |
-| `terminal.write`  | `terminals.write`                                                           |
-| `browser.control` | `browsers.navigate`, `browsers.reload`, `browsers.info`                     |
+| `terminal.read`   | `terminals.info`, `readScreen`, `readScrollback`, `readSelection`, `terminalOutput` and other terminal content events |
+| `terminal.write`  | `terminals.write`, `terminals.sendKeys`                                     |
+| `terminal.control`| `terminals.clear`, `scroll`, `selectAll`, `copy`, `setFontSize`, `jumpToPrompt` |
+| `browser.control` | `browsers.info`, `navigate`, `reload`, `back`, `forward`, `history`, `setUserAgent`, `setZoom`, `stop` |
+| `browser.script`  | `browsers.eval`, `addUserScript`, `addUserStyle`, `removeUserScript`, `readText`, `readHtml`, `snapshot`, `setNavigationRules`, `onNavigate` hook, page-to-plugin messages |
+| `browser.data`    | `browsers.cookies.*`, `browsers.clearData`                                  |
+| `plugins.call`    | `plugins.call`                                                              |
 | `settings.write`  | `app.setSettings`                                                           |
 | `process.exec`    | `process.exec`                                                              |
 | `github`          | `github.api`                                                                |
@@ -379,27 +421,175 @@ plugin panels close at once. A plugin can never pass a "force" flag.
 No animation in v2. Plugins that want one call `set` from `requestAnimationFrame`; the
 coalescing below keeps that from flooding events.
 
-### `calm.terminals`
+### `calm.terminals` (native terminal API)
 
-| Method               | Wire               | Result                                                          |
-| -------------------- | ------------------ | --------------------------------------------------------------- |
-| `info(id)`           | `terminals.info`   | `TerminalInfo`. `wrong_kind` for a non-terminal.                |
-| `write(id, text)`    | `terminals.write`  | Sends `text` as typed input through `NativeSurface::text`. Max 64 KiB per call. `not_alive` if the process exited. |
+*[lead's reading, confirm in review]*
 
-`write` is input, not paste: Ghostty sees it as typed text, so `"ls\r"` runs `ls`. NUL is
-rejected (`CString`). It works on any terminal, not only ones the plugin created, because a
-plugin with `process.exec` already has that power. The capability makes it visible.
+Every method takes a terminal `PanelId` and rejects `wrong_kind` for another kind and
+`not_alive` once the process has exited (except `info`, `readScreen`, `readScrollback`).
 
-### `calm.browsers`
+**Evidence.** CALM drives Ghostty through gpui-libghostty 0.3.1. Its Rust surface
+(`src/native.rs`) and ObjC shim (`shim/ghostty_surface.m`) expose only: new, free, tick,
+is_alive, frame_count, update_theme, snapshot, set_frame, set_visible,
+set_hidden_rendering, set_focus, key, text, mouse_position, mouse_button, mouse_scroll.
+The shim's `runtime_action` handles only `GHOSTTY_ACTION_RENDER` and drops every other
+action. The vendored libghostty C API (`vendor/ghostty/include/ghostty.h`) offers more:
+`ghostty_surface_read_text` with a `ghostty_selection_s` over `GHOSTTY_POINT_VIEWPORT`,
+`_SCREEN` or `_ACTIVE`, `ghostty_surface_has_selection` and `_read_selection`,
+`ghostty_surface_size` (columns, rows, cell size), `ghostty_surface_foreground_pid`,
+`ghostty_surface_tty_name`, `ghostty_surface_process_exited`,
+`ghostty_surface_binding_action(name)`, and the actions `SET_TITLE`, `PWD`,
+`SHOW_CHILD_EXITED`, `COMMAND_FINISHED` (exit code and duration), `RING_BELL`,
+`DESKTOP_NOTIFICATION`, `PROGRESS_REPORT`. The binding action names used below exist in
+`vendor/ghostty/src/input/Binding.zig` (checked: `clear_screen`, `scroll_page_up`,
+`scroll_to_top`, `scroll_to_bottom`, `scroll_page_lines`, `increase_font_size`,
+`decrease_font_size`, `reset_font_size`, `set_font_size`, `select_all`,
+`copy_to_clipboard`, `write_screen_file`, `jump_to_prompt`). There is no output callback
+and no function to set a selection range or the terminal's own title.
 
-| Method                | Wire                  | Result                                     |
-| --------------------- | --------------------- | ------------------------------------------ |
-| `info(id)`            | `browsers.info`       | `BrowserInfo`                              |
-| `navigate(id, url)`   | `browsers.navigate`   | `BrowserView::open` with the same address normalization as the address bar. |
-| `reload(id)`          | `browsers.reload`     | Reload.                                    |
+"Shim patch" means phase 10: a CALM-owned fork of gpui-libghostty through
+`[patch.crates-io]` that adds shim functions forwarding those C calls and queues the
+dropped actions for CALM to drain on its tick (no callback into GPUI).
 
-No script injection into browser panels and no reading page content. That would hand
-remote pages a path to the host through the plugin.
+| Method                                   | Wire                        | Availability | How |
+| ---------------------------------------- | --------------------------- | ------------ | --- |
+| `info(id)`                               | `terminals.info`            | now, partial | spawn command and cwd, `alive` from `is_alive`; title, live cwd, pid, grid need the patch |
+| `write(id, text)`                        | `terminals.write`           | now          | `NativeSurface::text`, typed input, max 64 KiB, NUL rejected |
+| `sendKeys(id, keys)`                     | `terminals.sendKeys`        | now          | `NativeSurface::send_key` with press and release; `keys` like `["ctrl-c", "enter", "up"]` in GPUI keystroke syntax |
+| `resize(id, size)` / `{ columns, rows }` | `panels.resize`             | now / patch  | world size through `set_frame` now; columns and rows need `ghostty_surface_size` for the cell size |
+| `exited` state, `terminalExited` event   | `terminals.info`, event     | now          | `is_alive` polled on tick |
+| exit code                                | `terminalExited.code`       | patch        | `SHOW_CHILD_EXITED` action; `null` until then |
+| `readScreen(id)`                         | `terminals.readScreen`      | patch        | `read_text` over `GHOSTTY_POINT_VIEWPORT` |
+| `readScrollback(id, { maxLines })`     | `terminals.readScrollback`  | patch        | `read_text` over `GHOSTTY_POINT_SCREEN`, capped at 4 MiB |
+| `terminalOutput` event                   | event                       | patch, approximated | no output callback in libghostty; CALM diffs `read_text` of the active area at most every 250 ms while subscribed and sends appended or changed lines |
+| raw output byte stream                   | none                        | not possible | Ghostty owns the PTY; no API delivers its bytes |
+| title get, `terminalTitleChanged`        | `terminals.info`, event     | patch        | `SET_TITLE` action |
+| title set (chrome)                       | `panels.setTitle`           | now          | CALM chrome title, overrides the Ghostty title in the strip |
+| title set (inside Ghostty)               | none                        | not possible | no setter in the surface API; titles come from the program's output |
+| cwd get, `terminalCwdChanged`            | `terminals.info`, event     | patch        | `PWD` action; needs shell integration (OSC 7) in the shell |
+| cwd set                                  | none                        | not possible | process state; a plugin types `cd` through `write` |
+| running process                          | `terminals.info.process`    | patch        | `ghostty_surface_foreground_pid` and `_tty_name`; name and path from the pid through `proc_pidpath` in calm-native |
+| command finished                         | `terminalCommandFinished`   | patch        | `COMMAND_FINISHED` action, exit code and duration; needs shell integration |
+| `clear(id)`                              | `terminals.clear`           | patch        | `binding_action("clear_screen")` |
+| `scroll(id, to)`                         | `terminals.scroll`          | now, approximate / patch | `mouse_scroll` now; exact `top`, `bottom`, `{ pages }`, `{ lines }` through `scroll_to_top`, `scroll_to_bottom`, `scroll_page_up`, `scroll_page_lines` |
+| `selectAll(id)`                          | `terminals.selectAll`       | patch        | `binding_action("select_all")` |
+| select a range                           | none                        | not possible | no set-selection function; `read_text` of a range gives the text instead |
+| `readSelection(id)`                      | `terminals.readSelection`   | patch        | `has_selection` and `read_selection` |
+| `copy(id)`                               | `terminals.copy`            | patch        | `binding_action("copy_to_clipboard")`, through CALM's clipboard service |
+| `setFontSize(id, points \| "+1" \| "-1" \| "reset")` | `terminals.setFontSize` | patch | `set_font_size`, `increase_font_size`, `decrease_font_size`, `reset_font_size` |
+| `jumpToPrompt(id, delta)`                | `terminals.jumpToPrompt`    | patch        | `jump_to_prompt`; needs shell integration |
+| bell, notification, progress             | events                      | patch        | `RING_BELL`, `DESKTOP_NOTIFICATION`, `PROGRESS_REPORT` actions |
+
+A method that needs the patch rejects with `unavailable` until phase 10 lands, so plugins
+can feature detect with `calm.has` or by the code.
+
+Font size changes the terminal's grid (more or fewer columns in the same panel), like a
+panel resize. It never changes camera zoom, and camera zoom never changes it.
+
+`write` and `sendKeys` are input, not paste: `"ls\r"` runs `ls`. They work on any terminal,
+not only ones the plugin created, because a plugin with `process.exec` already has that
+power. The capability makes it visible.
+
+### `calm.browsers` (native browser API)
+
+*[lead's reading, confirm in review]*
+
+**Decision reversed.** The earlier draft said "no script injection into browser panels and
+no reading page content". The user asked for the native browser API, so a plugin with
+`browser.script` may evaluate JS in a page, inject scripts and styles and read the page. The
+reason for the old line stands as a rule that still holds: the page never gets the `calm`
+bridge, so remote content cannot reach the host. Only the plugin reaches into the page.
+
+Every method takes a browser `PanelId`. The calls map onto WKWebView API available on
+macOS 14 (the app's floor). The objc2 bindings for each are to verify in phase 12.
+
+| Method                                   | Wire                         | Capability       | WebKit                                   |
+| ---------------------------------------- | ---------------------------- | ---------------- | ---------------------------------------- |
+| `info(id)`                               | `browsers.info`              | `browser.control`| `URL`, `title`, `isLoading`, `estimatedProgress`, `canGoBack`, `canGoForward` |
+| `navigate(id, url)`                      | `browsers.navigate`          | `browser.control`| `BrowserView::open`, address bar normalization |
+| `reload(id)`, `stop(id)`                 | `browsers.reload`, `.stop`   | `browser.control`| `reload`, `stopLoading`                  |
+| `back(id)`, `forward(id)`                | `browsers.back`, `.forward`  | `browser.control`| `goBack`, `goForward`                    |
+| `history(id)`                            | `browsers.history`           | `browser.control`| `backForwardList`: back and forward items with url and title |
+| `setUserAgent(id, ua \| null)`          | `browsers.setUserAgent`      | `browser.control`| `customUserAgent`                        |
+| `setZoom(id, factor)`                    | `browsers.setZoom`           | `browser.control`| `pageZoom`, 0.25 to 5. Page zoom, not camera zoom |
+| `eval(id, source, { world?, args? })`  | `browsers.eval`              | `browser.script` | `callAsyncJavaScript:arguments:inFrame:inContentWorld:`; result must be JSON, max 4 MiB, default timeout 10 s |
+| `addUserScript(id, source, { at, allFrames, world? })` | `browsers.addUserScript` | `browser.script` | `WKUserScript`, document start or end; returns a handle |
+| `addUserStyle(id, css)`                  | `browsers.addUserStyle`      | `browser.script` | a document start user script that adds a `<style>`; returns a handle |
+| `removeUserScript(id, handle)`           | `browsers.removeUserScript`  | `browser.script` | `removeAllUserScripts`, then re-add the rest |
+| `readText(id)`, `readHtml(id)`           | `browsers.readText`, `.readHtml` | `browser.script` | `eval` of `document.body.innerText` or `documentElement.outerHTML` in the isolated world, max 4 MiB |
+| `snapshot(id, { rect? })`              | `browsers.snapshot`          | `browser.script` | `takeSnapshotWithConfiguration:`, PNG as a data URL, max 8 MiB |
+| `setNavigationRules(id, rules)`          | `browsers.setNavigationRules`| `browser.script` | `decidePolicyForNavigationAction:` evaluated in Rust: `{ match, action: "allow" \| "deny" \| "external" }` |
+| `onNavigate` hook                        | `browsers.setNavigationHook` | `browser.script` | the decision handler is held and the plugin answers through `browsers.decide`; no answer within 500 ms means allow |
+| `cookies.get(id, { url? })`, `cookies.set`, `cookies.delete` | `browsers.cookies.*` | `browser.data` | `WKHTTPCookieStore` of the panel's data store |
+| `clearData(id, types)`                   | `browsers.clearData`         | `browser.data`   | `WKWebsiteDataStore removeDataOfTypes:` (cookies, local storage, IndexedDB, cache) |
+
+Content worlds. Plugin scripts run in a CALM content world (`WKContentWorld worldWithName:`)
+by default, so page scripts cannot see or tamper with them. `world: "page"` runs in the
+page's own world, for plugins that need page globals. A script in the CALM world can post
+to a `calmPage` message handler registered only in that world; the message reaches the
+plugin that injected it as a `browserMessage` event. The payload is page data and is
+untrusted. The page's own world has no handler.
+
+Data stores. Today browser panels use one shared store (to verify against PR #6). Phase 12
+gives each browser panel the option of its own persistent store through
+`WKWebsiteDataStore dataStoreForIdentifier:` (macOS 14+), set at creation:
+`panels.create({ kind: "browser", url, dataStore: "shared" | "panel" | "<name>" })`.
+`browser.data` acts on the panel's store; with the shared store it touches every panel that
+shares it, and the docs say so.
+
+Events: `browserNavigation { id, phase: "started" | "committed" | "finished" | "failed",
+url, error? }` and `browserMessage { id, data }`; url and title changes also arrive as
+`panelChanged` with `url` or `title`. These come from the `BrowserEvent` channel PR #6
+already has, extended.
+
+### `calm.plugins` (plugin to plugin RPC)
+
+*[lead's reading, confirm in review]*
+
+The bus is fan-out with no answer. Plugin RPC is a call with a result.
+
+| Method                                     | Wire              | Result                                              |
+| ------------------------------------------ | ----------------- | --------------------------------------------------- |
+| `list()`                                   | `plugins.list`    | `PluginEntry[]`                                     |
+| `call(pluginId, method, params?, { timeoutMs? })` | `plugins.call` | Promise of the callee's result               |
+| `serve(method, handler)`                   | `plugins.serve`   | Sync. Registers a handler in this page for an exported method; returns an unregister function |
+
+```ts
+export interface PluginEntry {
+  id: string; name: string; version: string; apiVersion: number;
+  exports: { name: string; description?: string; uses: string[] }[];
+  running: { background: boolean; panels: PanelId[] };
+  requires: Record<string, string>;
+}
+```
+
+Manifest `exports` lists the methods others may call: `name` matches
+`[a-zA-Z][a-zA-Z0-9_.]*`, `uses` lists the capabilities the method uses on the callee's
+side. `requires` maps plugin ids to semver ranges of their `version`. A plugin whose
+`requires` is not met (missing plugin, version outside the range, non-semver version) is
+skipped at discovery with an error naming the dependency, like any broken manifest. Optional
+dependencies are not declared; the plugin checks `plugins.list()` instead.
+
+Call flow:
+
+1. The caller needs `plugins.call`. It also needs every capability in the export's `uses`,
+   so a plugin cannot borrow a capability it did not declare by calling a plugin that has
+   it. This is how "capability checks apply to the caller" is enforced. The callee's own
+   host calls are still checked against the callee's manifest.
+2. The host picks the serving page: the callee's background page if it has registered
+   `method`, otherwise the callee's most recently focused panel that has, otherwise none.
+   The host never opens a panel to serve a call.
+3. The host sends the call to that page as an internal event; the prelude runs the handler
+   and answers with an internal `plugins.reply`. The caller's Promise settles with the
+   result, or with the callee's error.
+4. Params and results are JSON, at most 1 MiB each. Default timeout 10 s, max 60 s.
+5. If the serving page closes mid-call, the call rejects with `not_running`.
+
+Errors: `not_installed` (no such plugin), `not_running` (exported, but no running page has
+registered it), `method_not_found` (not in the callee's `exports`), `timeout`,
+`remote_error` (the handler threw; `cause` carries its code and message),
+`capability_missing` (the caller lacks `plugins.call` or a `uses` entry). External callers
+(phase 11) cannot call plugins.
 
 ### `calm.storage` (v1, now served)
 
@@ -452,7 +642,14 @@ page the events it subscribed to, so an idle plugin costs nothing.
 | `panelFocused`        | `{ id: PanelId \| null }`                                | per frame, latest wins          |
 | `cameraChanged`       | `CameraInfo`                                             | latest wins, 100 ms, trailing edge always sent |
 | `appSettingsChanged`  | `AppSettings`, full v2 object                            | latest wins, 100 ms             |
-| `terminalExited`      | `{ id }`                                                 | none                            |
+| `terminalExited`      | `{ id, code: number \| null }`                          | none                            |
+| `terminalOutput`      | `{ id, lines: string[], replaced: boolean }` (patch)     | per terminal, 250 ms            |
+| `terminalTitleChanged`, `terminalCwdChanged` | `{ id, title }`, `{ id, cwd }` (patch) | per terminal, latest wins, 100 ms |
+| `terminalCommandFinished` | `{ id, code, durationMs }` (patch)                   | none                            |
+| `terminalBell`        | `{ id }` (patch)                                         | per terminal, 1 s               |
+| `browserNavigation`   | `{ id, phase, url, error? }`                             | none                            |
+| `browserMessage`      | `{ id, data }`, from the plugin's own injected scripts   | none                            |
+| `pluginsChanged`      | `PluginEntry[]` when a background page or panel starts or stops serving | latest wins, 100 ms |
 | `command`             | `{ command, panelId?, world? }` (from `contributes`)     | none                            |
 | `bus`                 | used by `calm.bus.subscribe`, not public                 | none                            |
 
@@ -484,6 +681,8 @@ Targets to verify in `docs/benchmarks.md`, not measured claims:
 - Host work for bridge dispatch plus event flush under 1 ms per frame at the 20 terminal,
   5 plugin workload.
 - Zero `eval_js` calls for a page with no subscriptions.
+- `terminalOutput`: one `read_text` of the active area per subscribed terminal per 250 ms
+  at most, and none for terminals nobody subscribed to.
 
 The smoke records the count of event batches sent in its window, so a regression that
 floods shows up as a number.
@@ -498,9 +697,9 @@ browser has keyboard focus, so a plugin cannot steal keys from a shell. A bindin
 collides with a built-in or with an earlier plugin is skipped and reported on stderr and in
 the toolbar error count.
 
-Choosing an item sends a `command` event to the plugin. Where it goes depends on open
-question 2: to the plugin's background page, or to its most recently focused panel, opening
-a new panel if none is open.
+Choosing an item sends a `command` event to the plugin's background page if it has one,
+otherwise to its most recently focused panel, otherwise CALM opens a new panel of the
+plugin and delivers it there once the page has loaded.
 
 The NSMenu callback returns the chosen id to the GPUI side like today; only the GPUI task
 emits the event.
@@ -521,12 +720,16 @@ works and gets `code: "host_error"`.
 | `wrong_kind`         | Terminal method on a browser, and so on                           |
 | `not_alive`          | Terminal process exited                                           |
 | `busy`               | Another close confirmation is pending                             |
-| `unavailable`        | Data the host cannot read yet (Ghostty title before the shim change) |
+| `unavailable`        | Needs the Ghostty shim patch (phase 10) or a later phase          |
 | `too_large`          | Payload, storage or output over its limit                         |
 | `storage_corrupt`    | Plugin data file does not parse                                   |
 | `gh_not_installed`, `gh_not_logged_in`, `gh_failed`, `gh_invalid_path` | Existing `gh` messages, now with codes |
-| `timeout`            | `process.exec` ran past `timeoutMs`                               |
+| `timeout`            | `process.exec`, `plugins.call` or `browsers.eval` ran past its limit |
 | `not_allowed`        | External caller, method not in the external allowlist (phase 11)  |
+| `not_installed`      | `plugins.call` to a plugin that is not installed                  |
+| `not_running`        | `plugins.call` to an export no running page serves                |
+| `method_not_found`   | `plugins.call` to a method not in the callee's `exports`          |
+| `remote_error`       | The callee's handler threw; `cause` has its code and message      |
 | `host_error`         | Anything else; message says what                                  |
 
 ## Rust types
@@ -546,8 +749,10 @@ pub enum ApiRequest {
     PanelsOp(PanelId, PanelOp),              // focus, move, resize, setRect, setTitle, ...
     PanelsClose(PanelId),
     CameraGet, CameraSet(CameraPatch), CameraCenterOn(Point), CameraFit(Option<Vec<PanelId>>, f64),
-    TerminalInfo(PanelId), TerminalWrite(PanelId, String),
-    BrowserInfo(PanelId), BrowserNavigate(PanelId, String), BrowserReload(PanelId),
+    Terminal(PanelId, TerminalOp),           // info, write, sendKeys, read*, clear, scroll, ...
+    Browser(PanelId, BrowserOp),             // info, navigate, eval, scripts, cookies, ...
+    PluginsList, PluginsCall { plugin: String, method: String, params: Value, timeout_ms: u32 },
+    PluginsServe(String), PluginsReply { call: u64, result: Result<Value, ApiError> },
     StorageGet(String), StorageSet(String, Value), StorageRemove(String), StorageKeys,
     BusPublish(String, Value), BusSubscribe(String), BusUnsubscribe(String),
     EventsSubscribe(String), EventsUnsubscribe(String),
@@ -568,7 +773,8 @@ pub enum Caller {
 }
 
 pub enum Capability { PanelsCreate, PanelsControl, PanelsClose, CameraControl,
-    TerminalRead, TerminalWrite, BrowserControl, SettingsWrite, ProcessExec, Github, OpenExternal }
+    TerminalRead, TerminalWrite, TerminalControl, BrowserControl, BrowserScript, BrowserData,
+    PluginsCall, SettingsWrite, ProcessExec, Github, OpenExternal }
 
 pub struct ApiError { pub code: ErrorCode, pub message: String }
 
@@ -626,12 +832,35 @@ closes drops its pending replies; nothing is evaluated in a dead web view.
 
 ## Security rules that still hold
 
-- No credential reaches plugin JS. `gh` keeps the token, `github.api` returns JSON only.
-  `app.getSettings` has no secret fields. `terminals.info` does not include `env`.
-  `process.exec` output is whatever the program prints, which is the user's trusted plugin
-  asking the user's machine.
-- Browser panels never get the `calm` message handler or the prelude. `browsers.navigate`
-  loads a URL; nothing a plugin does injects script into a browser panel.
+- CALM's own secrets never reach plugin JS. `gh` keeps the GitHub token, `github.api`
+  returns JSON only. The control socket token is never in an API result. `app.getSettings`
+  has no secret fields. `terminals.info` does not include `env`.
+- Browser panels never get the `calm` message handler or the prelude. Plugin scripts run in
+  a CALM content world the page cannot see. The `calmPage` handler exists only in that
+  world.
+
+### Threat model for plugin capabilities
+
+*[lead's reading, confirm in review]*
+
+Plugins are trusted code. Capabilities make reach visible; they do not contain it. Plainly:
+
+- `browser.script` and `browser.data` expose the user's logged-in sessions on every site
+  open in a browser panel to that plugin: it can read pages, act as the user on them, and
+  read and set cookies, including session cookies. This is consistent with plugins being
+  trusted, and it is a change from "no credentials reach plugin JS", which now means CALM's
+  own secrets. The docs must say this next to the capability.
+- `terminal.read` gives the plugin everything printed in any terminal, including secrets a
+  program prints (tokens from CLI tools, `env` output, pasted keys). The host never logs
+  read results.
+- `terminal.write` and `process.exec` run commands as the user. `terminal.control` changes
+  what the user sees but runs nothing.
+- `plugins.call` cannot be used to borrow capabilities: the caller must hold every
+  capability in the export's `uses`. A callee that lies in `uses` is a trusted plugin lying,
+  which no check prevents; the declared list makes it reviewable.
+- The host never logs params or results for `terminals.write`, `sendKeys`, `read*`,
+  `browsers.eval`, `readText`, `readHtml`, `cookies.*`, `storage.set`, `bus.publish` or
+  `plugins.call`.
 - Plugins are trusted. Docs say capabilities are a declaration for clarity, not a sandbox.
 - A plugin cannot end a live terminal process without the user's confirmation, unless the
   user has turned `confirm_close` off, and it cannot turn that setting off.
@@ -652,8 +881,12 @@ closes drops its pending replies; nothing is evaluated in a dead web view.
 
 ## External control channel (phase 11)
 
-**Status: needs user approval before build.** This section is a design only. Nothing in
-phases 1 to 10 depends on it, apart from the `Caller` type, which v2 has from phase 1.
+**Status: approved by the user on 2026-10-31. Build after PRs #5 and #6 merge.** Nothing
+in phases 1 to 10 depends on it, apart from the `Caller` type, which v2 has from phase 1.
+The allowlist follows PR #9 (`docs/superpowers/specs/2026-10-31-claude-code-mods-integration.md`
+on `docs/mods-integration`). The first integration is agent status on terminal panels. The
+`calm-bridge` Claude Code mod lives in this repo with a `marketplace.json`, so its version
+moves with CALM.
 
 ### Why
 
@@ -667,9 +900,9 @@ listen. So CALM is the server.
 
 Stated plainly: **any process running as the user that can read the token file can drive
 CALM.** With the defaults below that means reading the canvas, moving panels and the
-camera, and setting panel status. If the user turns on `terminals.drive`, it also means
-spawning terminals with any command and env, and **typing into any terminal**, which is
-running arbitrary commands in the user's shells. The channel adds no power a process
+camera, and setting panel status. If the user turns on `run`, it also means spawning
+terminals with any command and env, **typing into any terminal** and `process.exec`, which
+is running arbitrary commands as the user. The channel adds no power a process
 running as the user does not already have (it can run commands itself), but it reaches
 into running shells, which is exactly what the user sees and trusts. It is not a defense
 against malware already running as the user, and docs must not suggest it is.
@@ -692,10 +925,11 @@ env.
 
 ### Transport and token lifecycle
 
-- Socket path: `$TMPDIR/calm/ctl.sock` (per-user on macOS). If that exceeds the 104 byte
-  `sun_path` limit, fall back to `/tmp/calm-<uid>/ctl.sock`. The directory is created 0700.
-  If it exists, CALM checks that the owner is the current uid and the mode is 0700, and
-  refuses to start the channel otherwise (logged, shown in the toolbar error count).
+- Socket path (per PR #9): `$CALM_HOME/run/ctl.sock`, default `~/.config/calm/run`. The
+  directory is created 0700 under `umask 0177`. If it exists, CALM checks that it is not a
+  symlink, that the owner is the current uid and the mode is 0700, and refuses to start the
+  channel otherwise (logged, shown in the toolbar error count). A path over the 104 byte
+  `sun_path` limit is refused with a message naming the limit and the path.
 - At launch: remove a stale socket and token in that directory, generate 32 random bytes
   from the OS RNG, write them hex encoded to `<dir>/token` with `create_new` and mode 0600,
   then bind the socket and chmod it 0600. At quit: remove both. A crash leaves them; the
@@ -729,19 +963,21 @@ External requests run as `Caller::External { client }`. They are checked against
 | `status` (default)| `panel.setStatus`                                                          |
 | `events` (default)| `events.poll`, `events.publish`                                            |
 | `layout`          | `panels.create` **without** `command`, `args` or `env`; `panels.focus`, `move`, `resize`, `setRect`, `setTitle`, `minimize`, `restore`, z-order; `camera.set`, `centerOn`, `fit` |
-| `terminals.drive` | `panels.create` **with** `command`, `args` or `env`, **and** `terminals.write` |
+| `run`             | `panels.create` **with** `command`, `args` or `env`, **and** `terminals.write`, `terminals.sendKeys`, **and** `process.exec` |
 | `browser`         | `browsers.navigate`, `browsers.reload`                                     |
 | `close`           | `panels.close`, through the same user confirmation as plugins              |
 
-**Spawning with a command and `terminals.write` are one group.** They are refused together
-by default, or allowed together and documented together. They never get split: refusing
+**Running something is one group (`run`).** Spawning with a command, typing into a
+terminal and `process.exec` are refused together by default, or allowed together through
+one Settings switch and documented together. They never get split: refusing
 `command` while allowing `terminals.write` is not a limit, because a client can open a
 plain shell and type the command into it. `env` is in the same group because variables
 like `PROMPT_COMMAND` run code. `cwd` stays in `layout`; the docs note that shell hooks such
 as direnv can run code on entering a directory.
 
-Never offered externally: `process.exec`, `github.api`, `openExternal`, `app.setSettings`,
-`storage.*`, `bus.subscribe`, and the `panel.*` "self" methods (an external caller has no
+Never offered externally: `github.api` (plugin-only per PR #9), `openExternal`,
+`app.setSettings`, `storage.*`, `bus.subscribe`, `plugins.*`, `browser.script`,
+`browser.data`, `terminal.read` content methods, and the `panel.*` "self" methods (an external caller has no
 panel; it names `panelId`). A method outside `allow` rejects with `not_allowed`.
 
 ### Panel status
@@ -784,9 +1020,9 @@ fills after each coalescer flush. The HTTP parser is a small pinned dependency
 ### Tests
 
 Pure parts in calm-plugins with unit tests: allowlist check including the
-`terminals.drive` bundle (a `command` spec and `terminals.write` both rejected by the
-default, both accepted when the group is on), queue sequence and gap reporting, poll limits,
-token file mode and `create_new`, path length fallback. An integration test binds a socket
+`run` bundle (a `command` spec, `terminals.write` and `process.exec` all rejected by the
+default, all accepted when the group is on), queue sequence and gap reporting, poll limits,
+token file mode and `create_new`, symlink and owner refusal, path length refusal. An integration test binds a socket
 in a temp dir and checks 401 with no or wrong token, 200 with the right one, and 413.
 
 ## Phased implementation
@@ -815,40 +1051,67 @@ Each phase ends with `cargo test` for the touched crates and lands as its own co
    discrete ordering.
 7. **Storage, bus, process, github, openExternal.** Atomic storage file with limits and
    corrupt-file error. Bus fan out. Background executor for exec and gh.
-8. **Contributions.** Commands, menu items, key bindings, `command` event routing per open
-   question 2.
+8. **Contributions and background pages.** Commands, menu items, key bindings, `command`
+   event routing, opt-in background pages.
 9. **SDK, docs, examples, smoke.** `calm.d.ts`, `docs/plugins.md`, `templates/plugin-tsx`,
    an example plugin that spawns a terminal and a browser, lists panels and reacts to
    `panelAdded`. Smoke fixture plugin: create a terminal through the bridge, list panels and
    assert the new id with kind `terminal`, receive `panelAdded` for it, report each through
    `log` lines the smoke parses, exit nonzero on any miss.
 
-Optional phase 10, only if the user approves open question 1: CALM-owned patch of the
-gpui-libghostty shim for `SET_TITLE` and `PWD`, `terminals.info` title and live cwd,
-`panelChanged` with `title` for terminals.
+10. **Ghostty shim patch (planned, user decision).** CALM-owned fork of gpui-libghostty
+    0.3.1 through `[patch.crates-io]`: shim functions for `read_text`, `has_selection`,
+    `read_selection`, `size`, `foreground_pid`, `tty_name`, `binding_action`, and a queue
+    for `SET_TITLE`, `PWD`, `SHOW_CHILD_EXITED`, `COMMAND_FINISHED`, `RING_BELL`,
+    `DESKTOP_NOTIFICATION`, `PROGRESS_REPORT`, drained on tick. Then every "patch" row of
+    the terminal table, and `terminalOutput` by diffing. New unsafe code carries SAFETY
+    comments; `proc_pidpath` goes in calm-native.
+11. **External control channel (approved).** The section above, after #5 and #6 merge:
+    socket and token lifecycle, terminal env, allowlist with the `run` bundle,
+    `panel.setStatus` and status in chrome, per-client queue with long polling,
+    `events.publish`, and the `calm-bridge` mod with `marketplace.json` for agent status.
+12. **Native browser API.** Content world, `eval`, user scripts and styles, read text and
+    HTML, snapshot, navigation rules and hook, history, user agent, page zoom, per-panel
+    data stores, cookies and clear data, `browserNavigation` and `browserMessage`.
+13. **Plugin RPC.** `exports`, `requires` with semver ranges at discovery, `plugins.list`,
+    `call`, `serve`, the `uses` check, serving page choice, timeouts, `pluginsChanged`.
 
-Phase 11, **needs user approval before build**: the external control channel in its own
-section above (socket and token lifecycle, terminal env, allowlist with the
-`terminals.drive` bundle, `panel.setStatus` and status in chrome, per-client event queue
-with long polling, `events.publish`).
+Order: 1 to 9, then 13 and 12, then 10 and 11 as the merged PRs allow. 10 can start any
+time because it only touches the fork.
 
 Phase 1 also lands the `Caller` type and phase 4 the `near`/`side` placement, so phase 11
 adds a transport, not a new dispatcher.
 
-## Open questions for the user
+## Decisions of 2026-10-31
 
-1. **Terminal title and live cwd need a patched Ghostty shim.** gpui-libghostty 0.3.1 drops
-   `SET_TITLE` and `PWD` in `runtime_action`. Options: a CALM-owned fork of the crate
-   through `[patch.crates-io]` that forwards them through a channel (more upkeep on every
-   upstream bump), or ship v2 with spawn values only and `title: null`. Recommendation: ship
-   without, add the patch as phase 10 if the user wants it.
-2. **Background pages.** Contributed menu items, key bindings, events and bus messages need
-   a running page. Options: (a) an opt-in hidden page per plugin (`"background": true`)
-   started at launch, one WKWebView each; (b) no background pages, commands go to the
-   plugin's last focused panel and open one if none exists. Recommendation: (a) opt-in,
-   because "react to events" and "influence the app" mostly mean a plugin with no visible
-   panel.
+From the user, through the lead:
 
-Resolved: custom background colors. PR #7 (`feat/settings-modal`) replaces the preset enum
-with settings schema v2 (solid, linear and radial gradients, images with filters), so
-`app.setSettings` targets that schema and needs no format change of its own.
+1. Plugin panels are free-form HTML/TSX surfaces, and plugins get the native browser API,
+   the native terminal API and the API of other plugins. The concrete shape of each is the
+   lead's reading, marked *[lead's reading, confirm in review]* in its section.
+2. The Claude Code mods integration is accepted as in PR #9: the external socket channel
+   (phase 11) is approved to build after #5 and #6 merge, with PR #9's allowlist (read-only
+   plus `panel.setStatus` and `events.*` by default; `command`, `terminals.write` and
+   `process.exec` as one unit, refused by default). First integration: agent status on
+   terminal panels. The `calm-bridge` mod lives in this repo with a `marketplace.json`.
+3. Terminal title and cwd ship later through the Ghostty shim patch, now a planned phase
+   (10) because the user wants the full native terminal API.
+4. Background pages are opt-in hidden pages.
+5. Custom backgrounds: settings schema v2 from PR #7, no plugin-specific format.
+6. Undeclared capability calls are rejected (design decision, not reversed).
+
+## Open points for review
+
+1. The four *[lead's reading, confirm in review]* sections: free-form panels, native browser API, native terminal API,
+   plugin RPC.
+2. "No credentials reach plugin JS" narrows to CALM's own secrets, because `browser.script`,
+   `browser.data` and `terminal.read` expose site sessions and printed secrets to the
+   plugins that declare them. `CLAUDE.md` says "Plugin JS never sees a token"; that line
+   should name the GitHub and socket tokens explicitly when the implementation lands.
+3. `terminalOutput` is a text diff at 250 ms, not a byte stream. Enough for agent boards and
+   log watchers, not for a terminal recorder.
+4. Whether browser panels default to the shared data store (today's behavior, to verify on
+   PR #6) or a per-panel store.
+5. `terminals.setFontSize` changes a terminal's grid. `CLAUDE.md` says only a panel resize
+   changes the logical grid; that rule should read "only a panel resize or a font size
+   change, never camera zoom" once phase 10 lands.
