@@ -403,6 +403,36 @@ Added 2026-10-31 at the user's request: snapping while moving, resizing and draw
 
 ---
 
+### Task 11b: Plugin SDK typings and extended `window.calm` interface (`calm-plugins`, `packages/`, plugins, docs)
+
+Added 2026-10-31 at the user's request. Runs in parallel (own files: `crates/calm-plugins`, `packages/`, `plugins/`, `templates/`, `docs/plugins.md`). The host dispatch for the new methods lands in the Task 11/12 app wiring; until then the host must reject unknown methods with a clear error, never hang a promise.
+
+**Files:**
+- Create: `packages/calm-plugin-sdk/package.json` (`name: "@calm/plugin-sdk"`, `types: "calm.d.ts"`, version from the workspace), `packages/calm-plugin-sdk/calm.d.ts`, `packages/calm-plugin-sdk/README.md`
+- Modify: `crates/calm-plugins/src/bridge.rs`, `plugins/github-prs/tsconfig.json` and `templates/plugin-tsx/tsconfig.json` (reference the SDK types via `paths` or `typeRoots`; delete the two copied `src/calm.d.ts` files), `docs/plugins.md`
+
+**Interfaces:**
+- `calm.d.ts` is the contract. `declare global { interface Window { calm: Calm } }` with:
+  - `calm.settings.get(): Promise<Record<string, unknown>>`, `calm.settings.set(value: Record<string, unknown>): Promise<void>` (per-panel settings stored in the layout).
+  - `calm.storage.get<T>(key: string): Promise<T | undefined>`, `calm.storage.set(key: string, value: unknown): Promise<void>`, `calm.storage.remove(key): Promise<void>` (plugin-scoped persistent data at `~/.config/calm/plugin-data/<plugin-id>.json`, not in layouts).
+  - `calm.panel.setTitle(title: string): Promise<void>`, `calm.panel.getBounds(): Promise<{ width: number; height: number; zoom: number }>`, `calm.panel.minimize(): Promise<void>`, `calm.panel.close(): Promise<void>` (goes through the normal close path).
+  - `calm.canvas.createPanel(spec: PanelSpec): Promise<PanelId>` where `PanelSpec = { kind: "terminal", command?: string, cwd?: string, rect?: Rect } | { kind: "browser", url: string, rect?: Rect } | { kind: "plugin", pluginId: string, settings?: Record<string, unknown>, rect?: Rect }`, `calm.canvas.focusPanel(id: PanelId): Promise<void>`, `calm.canvas.listPanels(): Promise<PanelInfo[]>` (`PanelInfo = { id, kind, title, rect, minimized }`).
+  - `calm.process.exec(command: string, args: string[], options?: { cwd?: string; timeoutMs?: number }): Promise<{ code: number; stdout: string; stderr: string }>` (trusted plugins only; documented as such).
+  - `calm.github.api(path: string): Promise<unknown>` (unchanged), `calm.openExternal(url: string): Promise<void>`, `calm.log(message: string): void`.
+  - `calm.theme.get(): Promise<{ background: string /* "#rrggbb" */ }>`.
+  - `calm.events.on(event: CalmEvent, handler): () => void` (returns an unsubscribe) with `CalmEvent` = `"focus" | "blur" | "resize" | "visibility" | "settingsChanged" | "themeChanged"` and payloads `resize: { width, height, zoom }`, `visibility: { mode: "live" | "preview" | "hidden" }`, `settingsChanged: Record<string, unknown>`, `themeChanged: { background }`.
+  - Every request has `method` strings `settings.get`, `settings.set`, `storage.get`, `storage.set`, `storage.remove`, `panel.setTitle`, `panel.getBounds`, `panel.minimize`, `panel.close`, `canvas.createPanel`, `canvas.focusPanel`, `canvas.listPanels`, `process.exec`, `github.api`, `openExternal`, `theme.get`, `log`.
+- `bridge.rs` additions: `pub const BRIDGE_METHODS: &[&str]` (the list above, single source of truth), `CALM_PRELUDE_JS` exposing every method with the same shapes plus `window.__calm.emit(event, payloadJson)` for host-to-plugin events; `BridgeEvent { event: String, payload: serde_json::Value }` with `fn to_js(&self) -> String` producing `window.__calm.emit("<event>", <json>)` with the same escaping as `BridgeResponse::to_js`; `fn is_known_method(method: &str) -> bool`; `BridgeResponse::not_implemented(id, method)` producing `Err(id, "not implemented: <method>")`.
+- Tests (`calm-plugins`): `prelude_exposes_every_bridge_method` (each `BRIDGE_METHODS` entry appears as a `method: "<name>"` literal in the prelude), `dts_declares_every_bridge_method` (reads `packages/calm-plugin-sdk/calm.d.ts` at test time via `CARGO_MANIFEST_DIR` and checks each method's last segment appears as a declared function, and that no extra `calm.<ns>.<fn>` is declared without a bridge method), `event_to_js_escapes_payload`, `unknown_method_is_not_known`.
+- Docs: `docs/plugins.md` API section rewritten from the d.ts; a "Host support" table marking which methods the host implements today (the pre-existing five) and which reject with `not implemented` until the app wiring lands.
+
+- [ ] **Step 1: Write failing tests** (`calm-plugins`). **Step 2: Run** `cargo test -p calm-plugins` Expected: FAIL. **Step 3: Implement** the d.ts, prelude, constants, event type. **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Point both TSX packages at the SDK types**, delete the copies; `cd plugins/github-prs && bun install && bun run build; echo rc=$?` and the same for the template, rc=0; also `bunx tsc --noEmit -p plugins/github-prs; echo rc=$?` rc=0 (type check the plugin against the new d.ts; add `typescript` as a dev dependency where needed).
+- [ ] **Step 6: Update `docs/plugins.md`** and the SDK README.
+- [ ] **Step 7: Commit** `feat(plugins): plugin SDK typings and extended window.calm interface`
+
+---
+
 ### Task 12: GitHub pull-request plugin and TSX template
 
 **Files:**
