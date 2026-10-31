@@ -82,8 +82,9 @@ overrides the directory. Distant panels become previews refreshed every 2 s.
   the same-repo guard so fork pull requests never run there. Hosted macOS CI is opt-in
   (`CALM_MACOS_HOSTED`). The macOS zip is built locally with `gmake release-upload`.
 - Code changes go through a git worktree under `.worktrees/`, never the main checkout.
-- After structural changes run `repo-intel build` and check its exit code. The graphs are not
-  built yet; `docs/architecture.md` is the current substitute.
+- After structural changes run `repo-intel build` and check its exit code. The graphify graph
+  (graphify only, backend litellm, scope in `.graphifyignore`) answers concept and
+  architecture questions; `rg` answers literal and call-site questions. See `AGENTS.md`.
 
 ## Process
 
@@ -91,3 +92,7 @@ Plan execution uses superpowers subagent-driven development with Agent Teams; de
 `.ai/conventions.md`. The ledger with rulings lives at
 `.superpowers/sdd/2026-10-31-calm-prototype/progress.md` (git-ignored, main checkout).
 Work state persists in Outline under the task record `calm-canvas-design`.
+
+<!-- repo-intel:begin -->
+@AGENTS.md
+<!-- repo-intel:end -->

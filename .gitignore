@@ -10,3 +10,4 @@ bench-results/
 .DS_Store
 *.log
 dist/
+graphify-out/cache/
