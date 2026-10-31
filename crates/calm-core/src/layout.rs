@@ -423,6 +423,13 @@ impl SessionWriter {
         &self.path
     }
 
+    /// New settings: the backup count applies at the next rotation (the first write of a
+    /// launch), the browser query mode to the next write.
+    pub fn set_options(&mut self, backup_count: u32, browser_query: BrowserQueryMode) {
+        self.backup_count = backup_count;
+        self.browser_query = browser_query;
+    }
+
     /// Rotates on the first call of this writer, then writes `layout`.
     pub fn save(&mut self, layout: &LayoutFile) -> Result<(), LayoutError> {
         self.save_with(layout, write_layout_file)
@@ -1158,6 +1165,27 @@ mod tests {
         assert!(kept.contains(&format!("\"{url}\"")));
         // The caller's layout is not scrubbed in memory.
         assert_eq!(layout, browser_layout(url));
+    }
+
+    #[test]
+    fn writer_options_apply_to_the_next_rotation_and_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SESSION_FILE_NAME);
+        let url = "https://example.com/a?code=fixture-code";
+        launch(&path, 0, 1);
+        let mut writer = SessionWriter::new(path.clone(), 0, BrowserQueryMode::StripAll);
+        writer.set_options(1, BrowserQueryMode::Keep);
+        writer.save(&browser_layout(url)).unwrap();
+        assert!(
+            backup_path(&path, 1).exists(),
+            "backup count was not applied"
+        );
+        let kept = std::fs::read_to_string(&path).unwrap();
+        assert!(kept.contains("fixture-code"), "query mode was not applied");
+        writer.set_options(1, BrowserQueryMode::StripAll);
+        writer.save(&browser_layout(url)).unwrap();
+        let stripped = std::fs::read_to_string(&path).unwrap();
+        assert!(!stripped.contains("fixture-code"));
     }
 
     // Review fixes on the session write path.

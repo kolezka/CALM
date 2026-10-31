@@ -1,8 +1,8 @@
 //! The canvas: paints panels from the `calm-core` scene and feeds it input.
 
 use calm_core::autosave::{
-    APP_AUTOSAVE_ACTIVE, AutosaveClock, OrderedWriter, SaveQueue, WriteOutcome, autosave_active,
-    autosave_allowed_after_read, save_error_text,
+    APP_AUTOSAVE_ACTIVE, AutosaveChange, AutosaveClock, OrderedWriter, SaveQueue, WriteOutcome,
+    autosave_active, autosave_allowed_after_read, autosave_change, save_error_text,
 };
 use calm_core::camera::FIT_MARGIN;
 use calm_core::chrome::{
@@ -215,6 +215,11 @@ pub struct CanvasView {
     autosave_notice: Option<String>,
     /// Session files written this launch.
     pub autosave_writes: u64,
+    /// The build gate for starting autosave from settings. `APP_AUTOSAVE_ACTIVE`, except
+    /// while the smoke drives the live toggle in its own dir.
+    pub autosave_gate: bool,
+    /// Where the last autosave wrote, so turning it back on resumes the same file.
+    autosave_path: Option<PathBuf>,
 }
 
 impl CanvasView {
@@ -289,13 +294,15 @@ impl CanvasView {
             autosave: None,
             autosave_notice: None,
             autosave_writes: 0,
+            autosave_gate: APP_AUTOSAVE_ACTIVE,
+            autosave_path: None,
         }
     }
 
     /// Starts autosave at launch when the build gate and `session.autosave` allow it.
     /// The gate stays off until restore at launch exists.
     pub fn start_autosave_at_launch(&mut self, cx: &mut Context<Self>) {
-        if !autosave_active(APP_AUTOSAVE_ACTIVE, self.settings.settings.session.autosave) {
+        if !autosave_active(self.autosave_gate, self.settings.settings.session.autosave) {
             return;
         }
         if let Err(err) = self.start_autosave(calm_core::layout::session_path(), cx) {
@@ -319,7 +326,7 @@ impl CanvasView {
             return Err(err);
         }
         let session = &self.settings.settings.session;
-        let writer = SessionWriter::new(path, session.backup_count, session.browser_query);
+        let writer = SessionWriter::new(path.clone(), session.backup_count, session.browser_query);
         let debounce = Duration::from_millis(session.debounce_ms);
         self.autosave = Some(Autosave {
             started: Instant::now(),
@@ -333,12 +340,51 @@ impl CanvasView {
             }),
         });
         self.autosave_notice = None;
+        self.autosave_path = Some(path);
         Ok(())
     }
 
     /// Ends autosave without a last write. The smoke uses it before removing its dir.
     pub fn stop_autosave(&mut self) {
         self.autosave = None;
+    }
+
+    /// Applies a change to the session settings: off stops the timer and the quit write, on
+    /// starts through the build gate, and a running save takes the new debounce on its next
+    /// tick, the browser query mode on its next write and the backup count at rotation.
+    pub fn reconcile_autosave(
+        &mut self,
+        old: &calm_core::settings::SessionSettings,
+        cx: &mut Context<Self>,
+    ) {
+        let new = &self.settings.settings.session;
+        match autosave_change(self.autosave_gate, self.autosave.is_some(), old, new) {
+            AutosaveChange::Keep => {}
+            AutosaveChange::Stop => self.stop_autosave(),
+            AutosaveChange::Start => {
+                let path = self
+                    .autosave_path
+                    .clone()
+                    .unwrap_or_else(calm_core::layout::session_path);
+                if let Err(err) = self.start_autosave(path, cx) {
+                    eprintln!("calm: {err}");
+                }
+            }
+            AutosaveChange::Update => {
+                let debounce = Duration::from_millis(new.debounce_ms);
+                let (backup_count, browser_query) = (new.backup_count, new.browser_query);
+                if let Some(autosave) = self.autosave.as_mut() {
+                    autosave.clock.set_debounce(debounce);
+                    autosave
+                        .writer
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .inner_mut()
+                        .set_options(backup_count, browser_query);
+                }
+                self.autosave_tick(cx);
+            }
+        }
     }
 
     /// Checks the scene revision, starts a save when one is due and sets the timer for the

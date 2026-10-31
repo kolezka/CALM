@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use crate::layout::{LayoutError, LayoutFile};
+use crate::settings::SessionSettings;
 
 /// A scene that keeps changing (a long pan) still saves this often.
 pub const MAX_DIRTY_AGE: Duration = Duration::from_secs(10);
@@ -16,6 +17,43 @@ pub const APP_AUTOSAVE_ACTIVE: bool = false;
 /// Autosave runs only when the build gate and the `session.autosave` setting both allow it.
 pub fn autosave_active(gate: bool, setting: bool) -> bool {
     gate && setting
+}
+
+/// What a change to the session settings does to autosave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutosaveChange {
+    Keep,
+    /// Turned on while stopped and the gate allows it.
+    Start,
+    /// Turned off while running: no timer write and no quit write.
+    Stop,
+    /// Still running: the new debounce, backup count and browser query mode apply.
+    Update,
+}
+
+/// Reconciles a settings change from `old` to `new` with an autosave that is `running`.
+/// Start needs the setting to flip on, so a launch that could not start (a bad session
+/// file) is not retried on every unrelated settings change.
+pub fn autosave_change(
+    gate: bool,
+    running: bool,
+    old: &SessionSettings,
+    new: &SessionSettings,
+) -> AutosaveChange {
+    if running {
+        if !new.autosave {
+            return AutosaveChange::Stop;
+        }
+        let tunables = |s: &SessionSettings| (s.debounce_ms, s.backup_count, s.browser_query);
+        if tunables(old) != tunables(new) {
+            return AutosaveChange::Update;
+        }
+        return AutosaveChange::Keep;
+    }
+    if !old.autosave && autosave_active(gate, new.autosave) {
+        return AutosaveChange::Start;
+    }
+    AutosaveChange::Keep
 }
 
 /// Decides from the launch read of the session file whether autosave may write it.
@@ -101,6 +139,11 @@ impl AutosaveClock {
         Some(quiet.min(oldest))
     }
 
+    /// A new quiet period, used from the next deadline on.
+    pub fn set_debounce(&mut self, debounce: Duration) {
+        self.debounce = debounce;
+    }
+
     /// The caller handed `revision` to a writer.
     pub fn submitted(&mut self, revision: u64) {
         self.submitted = revision;
@@ -148,6 +191,10 @@ impl<W> OrderedWriter<W> {
 
     pub fn inner(&self) -> &W {
         &self.writer
+    }
+
+    pub fn inner_mut(&mut self) -> &mut W {
+        &mut self.writer
     }
 
     /// Runs `write` unless `generation` is not newer than what is on disk.
@@ -273,6 +320,86 @@ mod tests {
     use crate::geometry::Rect;
     use crate::layout::{SessionWriter, load_layout_from};
     use crate::scene::{PanelKind, Scene};
+
+    fn session(autosave: bool) -> SessionSettings {
+        SessionSettings {
+            autosave,
+            ..SessionSettings::default()
+        }
+    }
+
+    #[test]
+    fn autosave_change_stops_when_turned_off() {
+        let change = autosave_change(true, true, &session(true), &session(false));
+        assert_eq!(change, AutosaveChange::Stop);
+        // A run the smoke started with the gate closed still stops.
+        let change = autosave_change(false, true, &session(true), &session(false));
+        assert_eq!(change, AutosaveChange::Stop);
+        assert_eq!(
+            autosave_change(true, false, &session(true), &session(false)),
+            AutosaveChange::Keep
+        );
+    }
+
+    #[test]
+    fn autosave_change_starts_only_through_the_gate_on_a_flip() {
+        assert_eq!(
+            autosave_change(true, false, &session(false), &session(true)),
+            AutosaveChange::Start
+        );
+        assert_eq!(
+            autosave_change(false, false, &session(false), &session(true)),
+            AutosaveChange::Keep
+        );
+        // Already on but not running (the launch start failed): an unrelated change waits.
+        let mut new = session(true);
+        new.debounce_ms += 500;
+        assert_eq!(
+            autosave_change(true, false, &session(true), &new),
+            AutosaveChange::Keep
+        );
+        assert_eq!(
+            autosave_change(true, true, &session(false), &session(true)),
+            AutosaveChange::Keep
+        );
+    }
+
+    #[test]
+    fn autosave_change_updates_a_running_save_for_each_tunable() {
+        let old = session(true);
+        let tweaks: [fn(&mut SessionSettings); 3] = [
+            |s| s.debounce_ms += 500,
+            |s| s.backup_count += 1,
+            |s| s.browser_query = BrowserQueryMode::Keep,
+        ];
+        for tweak in tweaks {
+            let mut new = old.clone();
+            tweak(&mut new);
+            assert_eq!(
+                autosave_change(true, true, &old, &new),
+                AutosaveChange::Update
+            );
+            assert_eq!(
+                autosave_change(true, false, &old, &new),
+                AutosaveChange::Keep
+            );
+        }
+        let mut restore_only = old.clone();
+        restore_only.restore_on_launch = crate::settings::RestoreOnLaunch::Ask;
+        assert_eq!(
+            autosave_change(true, true, &old, &restore_only),
+            AutosaveChange::Keep
+        );
+    }
+
+    #[test]
+    fn a_new_debounce_moves_the_next_deadline() {
+        let mut clock = AutosaveClock::new(Duration::from_millis(1000), 0);
+        clock.observe(1, Duration::from_millis(100));
+        assert_eq!(clock.next_deadline(), Some(Duration::from_millis(1100)));
+        clock.set_debounce(Duration::from_millis(200));
+        assert_eq!(clock.next_deadline(), Some(Duration::from_millis(300)));
+    }
 
     const SECOND: Duration = Duration::from_secs(1);
 

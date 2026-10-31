@@ -509,7 +509,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_github_api(&view, window, cx).await;
         smoke_plugin_menus(&view, window, cx).await;
         // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
-        smoke_autosave(&view, cx).await;
+        smoke_autosave(&view, window, cx).await;
 
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
@@ -1871,10 +1871,31 @@ fn layout_order(
         .collect()
 }
 
+/// Sets `session.autosave` through the same path the Settings window uses.
+fn smoke_set_autosave(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    on: bool,
+    cx: &mut gpui::AsyncApp,
+) {
+    let set = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.update_settings(|s| s.session.autosave = on, window, cx);
+        });
+    });
+    if let Err(err) = set {
+        smoke_fail(&format!("autosave: settings update: {err}"));
+    }
+}
+
 /// Drives autosave in the smoke's own temp dir (never the user's session): an untouched
 /// scene writes nothing, a change is written after the debounce, and the quit hook writes
 /// a newer order at once. Each file is decoded and compared with the scene.
-async fn smoke_autosave(view: &Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
+async fn smoke_autosave(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
     let dir = SMOKE_DIR
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -1965,6 +1986,56 @@ async fn smoke_autosave(view: &Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
     if settled != Some(layout_order(&after_quit)) {
         smoke_fail(&format!("autosave: file changed after quit: {settled:?}"));
     }
+    // The settings path applies `session.autosave` live: off stops the timer and the quit
+    // write, on starts again. The gate opens only for this step.
+    view.update(cx, |view, _| view.autosave_gate = true);
+    smoke_set_autosave(view, window, false, cx);
+    let writes_before = view.read_with(cx, |view, _| view.autosave_writes);
+    view.update(cx, |view, cx| {
+        if let Some(id) = first
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.y += 16.0;
+        }
+        view.autosave_tick(cx);
+        cx.notify();
+    });
+    cx.background_executor().timer(debounce * 2).await;
+    view.update(cx, |view, _| view.save_on_quit());
+    let off_disk = read().ok().map(|layout| layout_order(&layout));
+    let writes_off = view.read_with(cx, |view, _| view.autosave_writes);
+    if off_disk != Some(layout_order(&after_quit)) || writes_off != writes_before {
+        smoke_fail(&format!(
+            "autosave: wrote while session.autosave was off: writes {writes_before}->{writes_off}"
+        ));
+    }
+    smoke_set_autosave(view, window, true, cx);
+    view.update(cx, |view, cx| {
+        if let Some(id) = first
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.y += 16.0;
+        }
+        view.autosave_tick(cx);
+        cx.notify();
+    });
+    let started = Instant::now();
+    loop {
+        let expected = view.read_with(cx, |view, _| layout_order(&view.scene.to_layout()));
+        if read().ok().map(|layout| layout_order(&layout)) == Some(expected) {
+            break;
+        }
+        if started.elapsed() > debounce + SMOKE_AUTOSAVE_TIMEOUT {
+            smoke_fail("autosave: no write after turning session.autosave back on");
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    view.update(cx, |view, _| {
+        view.autosave_gate = calm_core::autosave::APP_AUTOSAVE_ACTIVE;
+    });
+    println!("smoke: autosave live_toggle off=no_write on=write");
     // Undo the move and the reorder, so later steps see the scene they expect.
     let written = view.update(cx, |view, cx| {
         view.stop_autosave();
@@ -1977,6 +2048,7 @@ async fn smoke_autosave(view: &Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
             && let Some(panel) = view.scene.get_mut(id)
         {
             panel.rect.origin.x -= 16.0;
+            panel.rect.origin.y -= 32.0;
         }
         cx.notify();
         view.autosave_writes

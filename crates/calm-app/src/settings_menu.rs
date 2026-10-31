@@ -119,11 +119,13 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let old_session = self.settings.settings.session.clone();
         change(&mut self.settings.settings);
         if let Err(err) = save_settings_to(&self.settings.path, &self.settings.settings) {
             eprintln!("calm: {err}");
         }
         self.apply_settings_to_input();
+        self.reconcile_autosave(&old_session, cx);
         self.terminal_settings_changed(cx);
         self.sync_stats_timer(cx);
         let show_stats = self.show_stats;
