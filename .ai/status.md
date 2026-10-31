@@ -67,9 +67,14 @@ research doc and grid styles. Facts are verified unless marked otherwise.
   in a `NativeChild`, prelude injected at document start, entry loaded with `load_file`.
   Placed like terminals: Live sets the frame each paint, Preview and Hidden hide the view
   and draw the flat title rect.
-- Bridge: `log`, `panel.setTitle`, `settings.get`, `settings.set` are served. The other 13
-  methods reject with `not implemented: <method>`. `github-prs` renders but its list shows
-  that error until `github.api` is dispatched.
+- Bridge: `log`, `panel.setTitle`, `settings.get`, `settings.set` are served on the UI
+  thread. `github.api`, `storage.get/set/remove` and `openExternal` (http and https only)
+  are served by `plugin_services` on the background executor and answered from a fresh
+  GPUI task. `GhClient` kills `gh` after 30 s and refuses output over 8 MiB. The other 8
+  methods reject with `not implemented: <method>`. Errors are still v1 strings; the v2
+  `{ code, message }` shape is not done.
+- Smoke `github.api ok` runs a fixture page against a fake `gh` script (never the network)
+  and checks the PR list, a logged-out error and a storage round trip.
 - Fixed: the prelude posted plain objects, which WebKit delivers as an NSDictionary whose
   description is not JSON. It now posts `JSON.stringify(...)`; the bun test fake rejects
   non-string bodies.
@@ -170,8 +175,9 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 ## Not wired yet
 
-- Plugin host, rest of the dispatcher: storage, `panel.getBounds/minimize/close`,
-  `canvas.*`, `process.exec`, `github.api`, `openExternal`, `theme.get`, and host events.
+- Plugin host, rest of the dispatcher: `panel.getBounds/minimize/close`, `canvas.*`,
+  `process.exec`, `theme.get`, and host events. `storage.keys` and `mailto:` for
+  `openExternal` (both in the v2 spec) are not served.
   Plugin panel settings are not saved anywhere yet (layouts are not wired).
 - Clicking inside a plugin page does not focus or raise its panel in the scene; AppKit
   routes the click to the WKWebView directly. Unverified how keys behave while it has focus.

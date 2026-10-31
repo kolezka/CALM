@@ -196,7 +196,10 @@ Settings are stored in the layout file, so never put a token or password in them
 ### Storage
 
 Plugin data that is not tied to one panel. Stored in
-`~/.config/calm/plugin-data/<plugin-id>.json`, not in layouts.
+`~/.config/calm/plugin-data/<plugin-id>.json` (`$CALM_HOME/plugin-data` when `CALM_HOME` is
+set), not in layouts. Keys are 1 to 256 bytes. A write that would make the file larger than
+5 MiB is refused. Writes go to a temp file that is renamed over the old one. A file that
+does not parse makes every call reject and is left as it is, never replaced by `{}`.
 
 | Call                           | Result                                            |
 | ------------------------------ | ------------------------------------------------- |
@@ -242,7 +245,7 @@ rights. This is why plugins must be trusted code (see [Trust](#trust)).
 | Call                     | Result                                                       |
 | ------------------------ | ------------------------------------------------------------ |
 | `calm.github.api(path)`  | Runs `gh api <path>` on the host, resolves with parsed JSON. |
-| `calm.openExternal(url)` | Opens `url` in the system browser.                           |
+| `calm.openExternal(url)` | Opens an `http` or `https` URL in the default browser (`open`). Other schemes reject. |
 | `calm.theme.get()`       | `{ background }`, a `"#rrggbb"` string.                      |
 | `calm.log(message)`      | Writes `message` to CALM's stderr, tagged with the plugin. Fire and forget: returns nothing, never waits for the host. |
 
@@ -269,7 +272,8 @@ page in a normal browser while developing.
 ### Host support
 
 The prelude exposes every call above. The app's plugin host (`crates/calm-app/src/plugin_host.rs`)
-serves the four methods marked below. Every other method rejects with
+serves the methods marked below. `github.api`, `storage.*` and `openExternal` run on a
+background thread, so a slow `gh` never stalls the canvas. Every other method rejects with
 `not implemented: <method>`, so no call hangs. An unknown method rejects with
 `unknown method: <method>`.
 
@@ -277,9 +281,9 @@ serves the four methods marked below. Every other method rejects with
 | -------------------- | ----------------------------------------- |
 | `settings.get`       | Served: the panel's settings object       |
 | `settings.set`       | Served: replaces it, objects only         |
-| `storage.get`        | Rejects with `not implemented: <method>` |
-| `storage.set`        | Rejects with `not implemented: <method>` |
-| `storage.remove`     | Rejects with `not implemented: <method>` |
+| `storage.get`        | Served: the value, `undefined` if unset   |
+| `storage.set`        | Served: atomic write of the plugin file   |
+| `storage.remove`     | Served                                    |
 | `panel.setTitle`     | Served: sets the chrome title             |
 | `panel.getBounds`    | Rejects with `not implemented: <method>` |
 | `panel.minimize`     | Rejects with `not implemented: <method>` |
@@ -288,8 +292,8 @@ serves the four methods marked below. Every other method rejects with
 | `canvas.focusPanel`  | Rejects with `not implemented: <method>` |
 | `canvas.listPanels`  | Rejects with `not implemented: <method>` |
 | `process.exec`       | Rejects with `not implemented: <method>` |
-| `github.api`         | Rejects with `not implemented: <method>` |
-| `openExternal`       | Rejects with `not implemented: <method>` |
+| `github.api`         | Served: `gh api <path>` on the host       |
+| `openExternal`       | Served: `http` and `https` only           |
 | `theme.get`          | Rejects with `not implemented: <method>` |
 | `log`                | Served: printed to stderr, no answer       |
 
@@ -355,7 +359,7 @@ gh auth login
 `path` is the part after `https://api.github.com/`, for example
 `repos/OWNER/NAME/pulls?state=open&per_page=30`. It may only contain letters, digits and
 `_ . / ? = & % -`, and may not start with `-`. Only GET requests are possible, and results are
-not paginated.
+not paginated. `gh` is killed after 30 s, and a response over 8 MiB is refused.
 
 A failed call rejects with one of these messages:
 
@@ -365,6 +369,11 @@ A failed call rejects with one of these messages:
 | `gh is not logged in, run gh auth login` | `gh` has no credentials. Run `gh auth login`.                |
 | `gh api failed:`                         | GitHub or `gh` refused the call, e.g. 404 or no access.      |
 | `invalid gh api path`                    | `path` broke the rules above. `gh` was not run.              |
+| `gh api timed out`                       | `gh` ran longer than 30 s and was stopped.                   |
+| `gh api response is over`                | The response was larger than 8 MiB.                          |
+
+An HTTP 401 from GitHub also counts as not logged in. A rate limit shows as
+`gh api failed: ... API rate limit exceeded ...`.
 
 ## TypeScript and TSX
 
