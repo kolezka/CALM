@@ -3,14 +3,18 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-use crate::camera::Camera;
+use crate::camera::{Camera, MAX_ZOOM, MIN_ZOOM};
 use crate::geometry::Rect;
 use crate::scene::{PanelKind, Scene};
 
 pub const LAYOUT_VERSION: u32 = 1;
+
+/// Makes temp file names unique per save call, not just per process.
+static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LayoutFile {
@@ -87,15 +91,14 @@ impl Scene {
         }
     }
 
-    /// Panels get fresh ids and keep their order.
+    /// Panels get fresh ids and keep their order. Rects below `MIN_PANEL_SIZE`
+    /// are enlarged, the same rule `Scene::add` applies.
     pub fn from_layout(layout: LayoutFile) -> Scene {
         let mut scene = Scene::default();
         scene.camera = layout.camera;
         for layout_panel in layout.panels {
             let id = scene.add(layout_panel.kind, layout_panel.rect);
             if let Some(panel) = scene.get_mut(id) {
-                // Restore the saved rect verbatim, in case it predates a larger minimum size.
-                panel.rect = layout_panel.rect;
                 panel.title = layout_panel.title;
                 panel.minimized = layout_panel.minimized;
             }
@@ -143,7 +146,11 @@ pub fn save_layout_in(dir: &Path, name: &str, layout: &LayoutFile) -> Result<Pat
         message: error.to_string(),
     })?;
     fs::create_dir_all(dir).map_err(io_error)?;
-    let temp_path = dir.join(format!(".{name}.json.tmp-{}", std::process::id()));
+    let temp_path = dir.join(format!(
+        ".{name}.json.tmp-{}-{}",
+        std::process::id(),
+        SAVE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
     if let Err(source) = fs::write(&temp_path, json).and_then(|()| fs::rename(&temp_path, &path)) {
         // Best effort cleanup; the write or rename error is the one worth reporting.
         let _ = fs::remove_file(&temp_path);
@@ -176,7 +183,44 @@ pub fn load_layout_from(dir: &Path, name: &str) -> Result<LayoutFile, LayoutErro
     if found != u64::from(LAYOUT_VERSION) {
         return Err(LayoutError::UnsupportedVersion { path, found });
     }
-    serde_json::from_value(value).map_err(|error| malformed(error.to_string()))
+    let layout: LayoutFile =
+        serde_json::from_value(value).map_err(|error| malformed(error.to_string()))?;
+    validate_layout(&layout).map_err(malformed)?;
+    Ok(layout)
+}
+
+/// Rejects numbers that would break camera or hit-test math. JSON cannot carry
+/// NaN or infinity (serde_json refuses them), so the non-finite checks guard
+/// in-memory values; the zoom range check is what file input actually hits.
+fn validate_layout(layout: &LayoutFile) -> Result<(), String> {
+    let zoom = layout.camera.zoom;
+    if !zoom.is_finite() || !(MIN_ZOOM..=MAX_ZOOM).contains(&zoom) {
+        return Err(format!(
+            "camera.zoom is {zoom}, expected a value in [{MIN_ZOOM}, {MAX_ZOOM}]"
+        ));
+    }
+    let offset = layout.camera.offset;
+    if !offset.x.is_finite() || !offset.y.is_finite() {
+        return Err(format!(
+            "camera.offset is ({}, {}), expected finite numbers",
+            offset.x, offset.y
+        ));
+    }
+    for (index, panel) in layout.panels.iter().enumerate() {
+        let rect = panel.rect;
+        let numbers = [
+            rect.origin.x,
+            rect.origin.y,
+            rect.size.width,
+            rect.size.height,
+        ];
+        if !numbers.iter().all(|number| number.is_finite()) {
+            return Err(format!(
+                "panels[{index}].rect is {rect:?}, expected finite numbers"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn layout_path(dir: &Path, name: &str) -> Result<PathBuf, LayoutError> {
@@ -379,6 +423,184 @@ mod tests {
         assert_eq!(
             layouts_dir_from(Some("".into()), Some("/Users/me".into())),
             PathBuf::from("/Users/me/.config/calm/layouts")
+        );
+    }
+
+    fn layout_json(zoom: &str, offset_x: &str, rect_width: &str) -> String {
+        format!(
+            r#"{{"version": 1,
+                "camera": {{"offset": {{"x": {offset_x}, "y": 0}}, "zoom": {zoom}}},
+                "panels": [{{"kind": {{"type": "browser", "url": "https://example.com"}},
+                             "rect": {{"origin": {{"x": 0, "y": 0}}, "size": {{"width": {rect_width}, "height": 300}}}},
+                             "title": "Docs", "minimized": false}}]}}"#
+        )
+    }
+
+    fn assert_malformed_naming(dir: &Path, name: &str, field: &str) {
+        let path = dir.join(format!("{name}.json"));
+        let error = load_layout_from(dir, name).unwrap_err();
+        match &error {
+            LayoutError::Malformed { path: p, message } => {
+                assert_eq!(*p, path);
+                assert!(
+                    message.contains(field),
+                    "message {message:?} must name {field}"
+                );
+            }
+            other => panic!("expected Malformed naming {field}, got {other:?}"),
+        }
+        assert!(error.to_string().contains(path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn load_rejects_zero_zoom_with_path() {
+        let dir = tempfile::tempdir().unwrap();
+        // Positive control: the same file with a valid zoom loads.
+        std::fs::write(dir.path().join("ok.json"), layout_json("1.0", "0", "400")).unwrap();
+        assert!(load_layout_from(dir.path(), "ok").is_ok());
+
+        for (name, zoom) in [
+            ("zero", "0"),
+            ("negative", "-1"),
+            ("tiny", "0.01"),
+            ("huge", "40"),
+        ] {
+            std::fs::write(
+                dir.path().join(format!("{name}.json")),
+                layout_json(zoom, "0", "400"),
+            )
+            .unwrap();
+            assert_malformed_naming(dir.path(), name, "camera.zoom");
+        }
+    }
+
+    #[test]
+    fn load_rejects_non_finite_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        // 1e999 overflows f64. serde_json refuses it, so it never becomes an offset.
+        std::fs::write(
+            dir.path().join("inf.json"),
+            layout_json("1.0", "1e999", "400"),
+        )
+        .unwrap();
+        assert_malformed_naming(dir.path(), "inf", "number out of range");
+
+        // In-memory values can still be non-finite; the validator names the field.
+        let mut layout = Scene::default().to_layout();
+        assert_eq!(validate_layout(&layout), Ok(()));
+        for offset in [Point::new(f64::INFINITY, 0.0), Point::new(0.0, f64::NAN)] {
+            layout.camera.offset = offset;
+            let message = validate_layout(&layout).unwrap_err();
+            assert!(message.contains("camera.offset"), "{message}");
+        }
+        layout.camera = Camera {
+            offset: Point::new(0.0, 0.0),
+            zoom: f64::NAN,
+        };
+        assert!(
+            validate_layout(&layout)
+                .unwrap_err()
+                .contains("camera.zoom")
+        );
+    }
+
+    #[test]
+    fn load_rejects_non_finite_rect() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("inf.json"),
+            layout_json("1.0", "0", "1e999"),
+        )
+        .unwrap();
+        assert_malformed_naming(dir.path(), "inf", "number out of range");
+
+        let mut scene = Scene::default();
+        scene.add(
+            PanelKind::Browser {
+                url: "https://example.com".into(),
+            },
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        let mut layout = scene.to_layout();
+        assert_eq!(validate_layout(&layout), Ok(()));
+        layout.panels[0].rect.size.width = f64::INFINITY;
+        let message = validate_layout(&layout).unwrap_err();
+        assert!(message.contains("panels[0].rect"), "{message}");
+    }
+
+    #[test]
+    fn from_layout_clamps_subminimum_rects() {
+        let layout = LayoutFile {
+            version: LAYOUT_VERSION,
+            camera: Camera::default(),
+            panels: vec![
+                LayoutPanel {
+                    kind: PanelKind::Browser {
+                        url: "https://example.com".into(),
+                    },
+                    rect: Rect::new(5.0, 6.0, 10.0, 10.0),
+                    title: "Tiny".into(),
+                    minimized: false,
+                },
+                LayoutPanel {
+                    kind: PanelKind::Browser {
+                        url: "https://example.com".into(),
+                    },
+                    rect: Rect::new(0.0, 0.0, 640.0, 40.0),
+                    title: "Short".into(),
+                    minimized: true,
+                },
+            ],
+        };
+        let scene = Scene::from_layout(layout);
+        assert_eq!(scene.panels[0].rect, Rect::new(5.0, 6.0, 120.0, 80.0));
+        assert_eq!(scene.panels[1].rect, Rect::new(0.0, 0.0, 640.0, 80.0));
+        assert_eq!(scene.panels[0].title, "Tiny");
+        assert!(scene.panels[1].minimized);
+    }
+
+    #[test]
+    fn concurrent_saves_do_not_share_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = {
+            let mut scene = Scene::default();
+            for index in 0..200 {
+                scene.add(
+                    PanelKind::Browser {
+                        url: format!("https://example.com/{index}"),
+                    },
+                    Rect::new(index as f64, 0.0, 400.0, 300.0),
+                );
+            }
+            scene.to_layout()
+        };
+        let small = Scene::default().to_layout();
+        let barrier = std::sync::Barrier::new(2);
+
+        std::thread::scope(|scope| {
+            for layout in [&big, &small] {
+                let barrier = &barrier;
+                let dir = dir.path();
+                scope.spawn(move || {
+                    barrier.wait();
+                    for _ in 0..200 {
+                        let saved = save_layout_in(dir, "shared", layout);
+                        assert!(saved.is_ok(), "save failed: {saved:?}");
+                    }
+                });
+            }
+        });
+
+        let loaded = load_layout_from(dir.path(), "shared").unwrap();
+        assert!(loaded == big || loaded == small, "final file mixes writers");
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![std::ffi::OsString::from("shared.json")],
+            "temp files left behind"
         );
     }
 }

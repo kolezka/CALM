@@ -63,6 +63,8 @@ pub enum Interaction {
     Resizing {
         id: PanelId,
         edge: ResizeEdge,
+        /// Distance from the pointer to the right and bottom edges at press time.
+        grab_offset_world: Point,
     },
     Panning {
         last_screen: Point,
@@ -149,7 +151,14 @@ impl InputHandler {
             None => {}
         }
         if let Some(edge) = resize_edge(panel, world) {
-            self.state = Interaction::Resizing { id, edge };
+            self.state = Interaction::Resizing {
+                id,
+                edge,
+                grab_offset_world: Point::new(
+                    panel.rect.right() - world.x,
+                    panel.rect.bottom() - world.y,
+                ),
+            };
             scene.bring_to_front(id);
             return vec![Effect::FocusPanel(id), Effect::Redraw];
         }
@@ -184,9 +193,15 @@ impl InputHandler {
                 }
                 vec![Effect::Redraw]
             }
-            Interaction::Resizing { id, edge } => {
+            Interaction::Resizing {
+                id,
+                edge,
+                grab_offset_world,
+            } => {
                 if let Some(panel) = scene.get_mut(id) {
-                    resize_panel(panel, edge, world);
+                    let edge_world =
+                        Point::new(world.x + grab_offset_world.x, world.y + grab_offset_world.y);
+                    resize_panel(panel, edge, edge_world);
                 }
                 vec![Effect::Redraw]
             }
@@ -202,8 +217,13 @@ impl InputHandler {
         }
     }
 
+    /// Ends the current interaction. Drag and resize geometry comes only from
+    /// `mouse_move`, so a press and release without movement changes nothing.
     pub fn mouse_up(&mut self, screen: Point, scene: &mut Scene) -> Vec<Effect> {
-        let mut effects = self.mouse_move(screen, scene);
+        let mut effects = Vec::new();
+        if self.state != Interaction::Idle {
+            effects.push(Effect::Redraw);
+        }
         if let Interaction::Drawing { start_world } = self.state {
             let end_world = scene.camera.screen_to_world(screen);
             let draft = Rect::new(
@@ -312,13 +332,14 @@ fn resize_edge(panel: &Panel, world: Point) -> Option<ResizeEdge> {
     }
 }
 
-fn resize_panel(panel: &mut Panel, edge: ResizeEdge, world: Point) {
+/// Moves the grabbed edge to `edge_world`, keeping the origin fixed.
+fn resize_panel(panel: &mut Panel, edge: ResizeEdge, edge_world: Point) {
     use crate::scene::MIN_PANEL_SIZE;
     if matches!(edge, ResizeEdge::Right | ResizeEdge::BottomRight) {
-        panel.rect.size.width = (world.x - panel.rect.origin.x).max(MIN_PANEL_SIZE.width);
+        panel.rect.size.width = (edge_world.x - panel.rect.origin.x).max(MIN_PANEL_SIZE.width);
     }
     if matches!(edge, ResizeEdge::Bottom | ResizeEdge::BottomRight) {
-        panel.rect.size.height = (world.y - panel.rect.origin.y).max(MIN_PANEL_SIZE.height);
+        panel.rect.size.height = (edge_world.y - panel.rect.origin.y).max(MIN_PANEL_SIZE.height);
     }
 }
 
@@ -406,19 +427,58 @@ mod tests {
             no_mods(),
             &mut scene,
         );
-        assert_eq!(
+        assert!(matches!(
             handler.state,
-            Interaction::Resizing {
-                id,
-                edge: ResizeEdge::BottomRight
-            }
-        );
+            Interaction::Resizing { id: resizing, edge: ResizeEdge::BottomRight, .. } if resizing == id
+        ));
+        // Size follows the pointer delta (+100, +50), not the absolute pointer position.
         handler.mouse_move(Point::new(495.0, 345.0), &mut scene);
         handler.mouse_up(Point::new(495.0, 345.0), &mut scene);
         assert_eq!(
             scene.get(id).unwrap().rect,
-            Rect::new(0.0, 0.0, 495.0, 345.0)
+            Rect::new(0.0, 0.0, 500.0, 350.0)
         );
+    }
+
+    #[test]
+    fn resize_click_without_drag_keeps_size() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mut handler = InputHandler::default();
+
+        for (x, y) in [(395.0, 295.0), (395.0, 150.0), (200.0, 295.0)] {
+            handler.mouse_down(Point::new(x, y), Button::Left, no_mods(), &mut scene);
+            assert!(matches!(handler.state, Interaction::Resizing { .. }));
+            handler.mouse_up(Point::new(x, y), &mut scene);
+            assert_eq!(
+                scene.get(id).unwrap().rect,
+                Rect::new(0.0, 0.0, 400.0, 300.0),
+                "press and release at ({x}, {y}) must not resize"
+            );
+            assert_eq!(handler.state, Interaction::Idle);
+        }
+    }
+
+    #[test]
+    fn drag_from_chrome_keeps_grab_offset() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mut handler = InputHandler::default();
+
+        handler.mouse_down(Point::new(100.0, 10.0), Button::Left, no_mods(), &mut scene);
+        // A one-unit move shifts the panel by one unit: no jump to the pointer.
+        handler.mouse_move(Point::new(101.0, 10.0), &mut scene);
+        assert_eq!(
+            scene.get(id).unwrap().rect,
+            Rect::new(1.0, 0.0, 400.0, 300.0)
+        );
+        // Release only ends the drag; geometry comes from moves alone.
+        handler.mouse_up(Point::new(300.0, 300.0), &mut scene);
+        assert_eq!(
+            scene.get(id).unwrap().rect,
+            Rect::new(1.0, 0.0, 400.0, 300.0)
+        );
+        assert_eq!(handler.state, Interaction::Idle);
     }
 
     #[test]
