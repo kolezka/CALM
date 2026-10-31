@@ -1,0 +1,101 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  # The app is macOS only (calm-native is AppKit/WebKit and calm-app depends on it).
+  # This job covers the portable crates. Switch it to the full workspace once a
+  # Linux native backend exists.
+  # Runs on the self-hosted OVH runner (labels self-hosted, linux, calm). The Arch steps run
+  # through scripts/ci-arch.sh, not `container:`, because the runner's work directory is not
+  # visible to the host Docker daemon. See docs/release.md.
+  linux-arch:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, calm]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fmt, test and clippy portable crates in Arch
+        run: scripts/ci-arch.sh ci
+
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/macos-toolchain
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('Cargo.lock') }}-zig-${{ env.ZIG_VERSION }}
+          restore-keys: macos-cargo-
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Hosted runners may have no usable window server. The result is reported, not required.
+      - name: Smoke (informational)
+        id: smoke
+        continue-on-error: true
+        timeout-minutes: 5
+        run: cargo run -p calm-app -- --smoke
+
+      # A continued step reports conclusion success, so read its outcome to surface a failure.
+      - name: Smoke result
+        if: ${{ !cancelled() && steps.smoke.outcome != 'skipped' }}
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$SMOKE_OUTCOME" = "success" ]; then
+            echo "Smoke passed."
+            echo "Smoke: passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Smoke ${SMOKE_OUTCOME}::cargo run -p calm-app -- --smoke did not pass (outcome: ${SMOKE_OUTCOME}). Read the Smoke step log."
+            echo "Smoke: **${SMOKE_OUTCOME}**, informational only. Read the Smoke step log." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "calm-app") | .version')"
+          scripts/bundle-macos.sh "$version" dist
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CALM-${{ steps.bundle.outputs.version }}-macos-arm64
+          path: |
+            dist/CALM-*-macos-arm64.zip
+            dist/CALM-*-macos-arm64.zip.sha256
+          if-no-files-found: error

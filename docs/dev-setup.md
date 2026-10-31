@@ -35,3 +35,5 @@ cargo test --workspace           # before a PR
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
+
+CI, the release workflow and the macOS bundle script are described in `docs/release.md`.
