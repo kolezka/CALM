@@ -11,6 +11,7 @@ use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_m
 use calm_core::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{HostView, NativeChild, show_context_menu};
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, BorderStyle, Bounds, ContentMask, Context, DispatchPhase, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
@@ -23,7 +24,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::dev_menu::{self, ResetFps, ToggleFps};
+use crate::dev_menu::{ResetFps, ToggleFps};
+use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalPanel};
 use crate::theme;
 use crate::toolbar::{TOOLBAR_HEIGHT, toolbar};
@@ -98,6 +100,7 @@ pub struct CanvasView {
     preview_timer: Option<Task<()>>,
     /// Terminal input divs that a paint found over a `Preview` panel. Smoke expects 0.
     pub preview_input_targets: usize,
+    pub settings: SettingsState,
 }
 
 impl CanvasView {
@@ -118,6 +121,10 @@ impl CanvasView {
             menu_open: false,
             preview_timer: None,
             preview_input_targets: 0,
+            settings: SettingsState {
+                settings: Default::default(),
+                path: calm_core::settings::settings_path(),
+            },
         }
     }
 
@@ -125,7 +132,8 @@ impl CanvasView {
         self.show_fps = show;
         self.frame_stats.reset();
         // Rebuild the menu bar so the Show FPS check mark follows the state.
-        cx.defer(move |cx| cx.set_menus(dev_menu::menus(show)));
+        let settings = self.settings.settings;
+        cx.defer(move |cx| cx.set_menus(settings_menu::menus(show, &settings)));
         window.refresh();
         cx.notify();
     }
@@ -161,7 +169,8 @@ impl CanvasView {
                     let alive = self
                         .terminal(id)
                         .is_some_and(|terminal| terminal.read(cx).is_alive());
-                    queue.push_back(self.input.request_close(id, alive));
+                    let confirm = alive && self.settings.settings.confirm_close;
+                    queue.push_back(self.input.request_close(id, confirm));
                 }
                 Effect::ConfirmClose(_) => {
                     // Enter and Escape must reach the canvas, not the terminal.
@@ -277,7 +286,8 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) {
         if let PanelKind::Terminal { command, cwd } = kind {
-            let options = terminal::options(command.as_deref(), cwd.clone());
+            let mut options = terminal::options(command.as_deref(), cwd.clone());
+            settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
             if let Err(err) = self.spawn_terminal(id, options, window, cx) {
                 eprintln!("calm: terminal failed to start: {err}");
             }
@@ -538,6 +548,7 @@ struct PaintSnapshot {
     modal_open: bool,
     /// Terminals that got an input div in this render.
     input_targets: Vec<PanelId>,
+    settings: calm_core::settings::Settings,
 }
 
 /// How a terminal panel's content is drawn this paint.
@@ -591,8 +602,12 @@ impl PaintSnapshot {
         let mut modes_changed = false;
         let mut preview_targets = 0;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            window.paint_quad(fill(bounds, rgb(theme::BACKGROUND)));
+            let background = self.settings.background.rgb();
+            window.paint_quad(fill(bounds, rgb(background)));
             let camera = self.scene.camera;
+            if self.settings.show_grid {
+                settings_menu::paint_grid(bounds, &camera, background, window);
+            }
             let viewport = Rect::new(
                 origin.x,
                 origin.y,
@@ -887,6 +902,7 @@ impl Render for CanvasView {
             terminals: self.terminals.clone(),
             modal_open: self.input.confirming.is_some() || self.menu_open,
             input_targets: Vec::new(),
+            settings: self.settings.settings,
         };
         // Mouse and key targets for terminals, at last frame's viewport.
         let viewport = self.viewport;
@@ -931,7 +947,7 @@ impl Render for CanvasView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(theme::BACKGROUND))
+            .bg(rgb(self.settings.settings.background.rgb()))
             .key_context(KEY_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::key_down))
@@ -963,6 +979,7 @@ impl Render for CanvasView {
                 view.set_show_fps(!view.show_fps, window, cx)
             }))
             .on_action(cx.listener(|view, _: &ResetFps, window, cx| view.reset_fps(window, cx)))
+            .map(|root| settings_menu::bind(root, cx))
             .child(toolbar(self))
             .child(
                 div()
