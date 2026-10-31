@@ -170,8 +170,9 @@ per-panel storage, it adds a `storage_key` field to the plugin kind in a v3.
   `fsync` the file, rename over the target, `fsync` the directory. The existing
   `save_layout_in` gains the `fsync` steps and the mode, so named layouts get them too.
 - **Backups.** Rotation happens once per launch, at the first save, not on every autosave:
-  `session.json` becomes `.1`, `.1` becomes `.2`, up to the backup count, then the new file
-  is written. Rotating on every autosave would wipe all backups within seconds of a bad
+  `.1` becomes `.2` and so on up to the backup count, `session.json` is copied to `.1`, then
+  the new file replaces `session.json` atomically. `session.json` is never moved, so a failed
+  write still leaves it to restore. Rotating on every autosave would wipe all backups within seconds of a bad
   session. A launch whose restore failed never rotates the moved-aside file into the backups.
 - **Empty start guard.** With restore off, `--no-restore` or a failed restore, the old
   `session.json` is not overwritten until the scene has its first change, and that first save
@@ -231,9 +232,12 @@ keep loading and no settings version bump is needed. `Settings::validate` checks
 | --- | --- | --- |
 | `session.restore_on_launch` | `on`, `off`, `ask` | `on` |
 | `session.autosave` | bool | `true` |
-| `session.autosave_debounce_ms` | 250 to 10000 | 1000 |
+| `session.debounce_ms` | 250 to 10000 | 1000 |
 | `session.backup_count` | 0 to 20 | 3 |
 | `session.browser_query` | `strip_all`, `keep` | `strip_all` |
+
+The debounce key is `debounce_ms`, not `autosave_debounce_ms`: it already sits in the
+`session` section, and validation rejects unknown keys.
 
 The Settings window gets a Session section with these controls (data in `settings_form`).
 
@@ -323,8 +327,9 @@ closing a live terminal. Events: `layoutSaved`, `layoutOpened`.
 - Terminal `command` is saved because the user or a plugin chose it at spawn. The docs warn
   not to pass secrets in a spawn command; they would be in the file.
 - Files are created 0600 and the directory 0700 if CALM creates it. A file found with wider
-  permissions is read anyway and tightened on the next save, with a stderr line. Backups and
-  `.invalid-*` files keep 0600 because they are renamed, not copied.
+  permissions is read anyway and tightened on the next save, with a stderr line. Rotated backups
+  are set to 0600 and `.1` is written 0600; `.invalid-*` files keep their mode because they
+  are renamed.
 - No session contents in logs. Errors name the path and the field, never values.
 
 ## Testing strategy

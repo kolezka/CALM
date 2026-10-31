@@ -151,8 +151,10 @@ Pull requests:
   yet): `layout::write_durable` (exclusive 0600 temp, fsync, rename, directory fsync, temp
   removed on failure, created dirs 0700), used by layouts and `settings.json`;
   `write_layout_file`, the one layout write path, stamps `saved_at_unix` and applies
-  `browser_url::scrub_for_save` (also to a browser title equal to its url);
-  `session_path`, `rotate_backups`, `SessionWriter` (rotates once per writer, no-op when
+  `browser_url::scrub_for_save` (urls over 8 KiB save as `about:blank` in both modes) and
+  `scrub_text_for_save` (every url inside a browser title);
+  `session_path`, `rotate_backups` (copies `session.json` to `.1`, never moves it; backups
+  0600), `SessionWriter` (rotates once per writer, no-op when
   `session.json` is missing, so a moved-aside failed restore never enters the backups);
   `move_aside`, shared with the settings quarantine. Settings section `session`
   (`restore_on_launch`, `autosave`, `debounce_ms` 250 to 10000, `backup_count` 0 to 20,
