@@ -204,6 +204,26 @@ Buttons: `Terminal`, `Browser`, one per discovered plugin (Task 11 fills the lis
 
 ---
 
+### Task 6b: Developer menu with an FPS overlay (`calm-app`)
+
+Added 2026-10-31 at the user's request. Runs after Task 8 merges, because it touches the same app files.
+
+**Files:**
+- Create: `crates/calm-core/src/frame_stats.rs`, `crates/calm-app/src/dev_menu.rs`
+- Modify: `crates/calm-app/src/main.rs`, `crates/calm-app/src/canvas_view.rs`, `crates/calm-app/src/toolbar.rs`
+
+**Interfaces:**
+- Produces (`calm-core/frame_stats.rs`, pure, tested): `FrameStats::new(window: Duration)` (default window 1 s), `fn record(&mut self, now: Instant)`, `fn fps(&self) -> Option<f64>` (frames in the trailing window divided by the window span, `None` until two frames), `fn p95_ms(&self) -> Option<f64>`, `fn reset(&mut self)`. Task 14 reuses it for the benchmark.
+- Produces (`calm-app`): a macOS menu bar menu `Developer` (via `cx.set_menus`) with the items `Show FPS` (checkbox state, `cmd-shift-f`), `Reset FPS Stats`; a `ToggleFps` / `ResetFps` GPUI action pair; `CanvasView.show_fps: bool` and `frame_stats: FrameStats`. When `show_fps` is on, the canvas requests a frame every tick (`window.request_animation_frame()` in the `on_next_frame` loop) and draws `FPS 60.0  p95 16.7ms` at the right end of the toolbar strip in `theme` text color; when off, no extra frames are requested and nothing is drawn. The overlay lives in the toolbar strip only, never over the canvas viewport (native views cover it).
+
+- [ ] **Step 1: Write failing tests** (`calm-core`): `fps_is_none_before_two_frames`, `fps_counts_frames_in_trailing_window` (61 frames 16 ms apart over 0.96 s gives fps within 0.5 of 62.5), `old_frames_fall_out_of_window`, `p95_of_mixed_intervals`, `reset_clears`.
+- [ ] **Step 2: Run** `cargo test -p calm-core` Expected: FAIL. **Step 3: Implement.** **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Implement the menu and overlay** in `calm-app`. Extend `--smoke`: after the two panels render, toggle `show_fps` on programmatically, wait for 10 more frames, print `smoke: fps=<value>` (value > 0) and keep exit 0 only if the value is present.
+- [ ] **Step 6: Verify** `cargo run -p calm-app -- --smoke; echo rc=$?` rc=0 with the fps line; `cargo clippy --workspace --all-targets -- -D warnings; echo rc=$?`; `cargo fmt --all -- --check; echo rc=$?`. Manual: open the app, pick Developer > Show FPS, confirm the readout appears in the toolbar and updates while panning; pick it again to hide it.
+- [ ] **Step 7: Commit** `feat(app): add Developer menu with FPS overlay`
+
+---
+
 ### Task 7: Native child host (`calm-native`)
 
 **Files:**
