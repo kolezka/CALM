@@ -77,7 +77,10 @@ fn add_smoke_panels(
     }
     let url = SMOKE_BROWSER_PAGE.to_string();
     let id = view.scene.add(
-        PanelKind::Browser { url: url.clone() },
+        PanelKind::Browser {
+            url: url.clone(),
+            page_zoom: None,
+        },
         Rect::new(20.0, 220.0, 320.0, 200.0),
     );
     view.spawn_browser(id, &url, window, cx)?;
@@ -480,6 +483,7 @@ fn smoke_tui_chrome(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut
             view.install_plugins(vec![top]);
             let kind = PanelKind::Tui {
                 plugin_id: "top-example".to_string(),
+                plugin_version: None,
             };
             let id = view.scene.add(kind, Rect::new(720.0, 460.0, 300.0, 160.0));
             view.open_tui_panel(id, "top-example", window, cx)?;
@@ -653,6 +657,7 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
             ] {
                 let kind = PanelKind::Tui {
                     plugin_id: plugin_id.to_string(),
+                    plugin_version: None,
                 };
                 let id = view.scene.add(kind, rect);
                 view.open_tui_panel(id, plugin_id, window, cx)?;
@@ -834,6 +839,7 @@ async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &m
             view.install_plugins(discovery.plugins);
             let kind = PanelKind::Plugin {
                 plugin_id: "smoke-locked".to_string(),
+                plugin_version: None,
                 settings: serde_json::json!({}),
             };
             let locked = view.scene.add(kind, Rect::new(20.0, 460.0, 300.0, 120.0));
@@ -1042,6 +1048,7 @@ async fn smoke_plugins(
             ] {
                 let kind = PanelKind::Plugin {
                     plugin_id: plugin_id.to_string(),
+                    plugin_version: None,
                     settings: serde_json::json!({}),
                 };
                 let id = view.scene.add(kind, rect);
@@ -1426,6 +1433,7 @@ async fn smoke_github_api(
             view.install_plugins(discovery.plugins);
             let kind = PanelKind::Plugin {
                 plugin_id: "smoke-gh".to_string(),
+                plugin_version: None,
                 settings: serde_json::json!({}),
             };
             let id = view.scene.add(kind, Rect::new(20.0, 420.0, 300.0, 160.0));

@@ -511,7 +511,7 @@ impl CanvasView {
                     eprintln!("calm: terminal failed to start: {err}");
                 }
             }
-            PanelKind::Browser { url } => {
+            PanelKind::Browser { url, .. } => {
                 if let Err(err) = self.spawn_browser(id, url, window, cx) {
                     eprintln!("calm: browser failed to start: {err}");
                 }
@@ -524,7 +524,7 @@ impl CanvasView {
                     }
                 }
             }
-            PanelKind::Tui { plugin_id } => {
+            PanelKind::Tui { plugin_id, .. } => {
                 if let Err(err) = self.open_tui_panel(id, plugin_id, window, cx) {
                     eprintln!("calm: tui panel failed to open: {err}");
                     if let Some(panel) = self.scene.get_mut(id) {
@@ -532,6 +532,8 @@ impl CanvasView {
                     }
                 }
             }
+            // No native view: the panel draws as chrome only until a placeholder exists.
+            PanelKind::Unsupported { .. } => {}
         }
     }
 
@@ -1022,7 +1024,12 @@ impl CanvasView {
             }
             BrowserEvent::UrlChanged(url) => {
                 panel.title = url.clone();
-                panel.kind = PanelKind::Browser { url };
+                // Navigation keeps the saved page zoom.
+                let page_zoom = match &panel.kind {
+                    PanelKind::Browser { page_zoom, .. } => *page_zoom,
+                    _ => None,
+                };
+                panel.kind = PanelKind::Browser { url, page_zoom };
             }
             BrowserEvent::Clicked => {
                 // The click went to the native view, so GPUI never saw it.
@@ -1048,7 +1055,7 @@ impl CanvasView {
             .iter()
             .map(|(id, browser)| {
                 let scene_url = self.scene.get(*id).and_then(|panel| match &panel.kind {
-                    PanelKind::Browser { url } => Some(url.clone()),
+                    PanelKind::Browser { url, .. } => Some(url.clone()),
                     _ => None,
                 });
                 (

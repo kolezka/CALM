@@ -44,12 +44,14 @@ impl KindName {
         ("tui", KindName::Tui),
     ];
 
-    pub fn of(kind: &PanelKind) -> KindName {
+    /// `None` for an unsupported kind, which no `when.kind` filter can name.
+    pub fn of(kind: &PanelKind) -> Option<KindName> {
         match kind {
-            PanelKind::Terminal { .. } => KindName::Terminal,
-            PanelKind::Browser { .. } => KindName::Browser,
-            PanelKind::Plugin { .. } => KindName::Plugin,
-            PanelKind::Tui { .. } => KindName::Tui,
+            PanelKind::Terminal { .. } => Some(KindName::Terminal),
+            PanelKind::Browser { .. } => Some(KindName::Browser),
+            PanelKind::Plugin { .. } => Some(KindName::Plugin),
+            PanelKind::Tui { .. } => Some(KindName::Tui),
+            PanelKind::Unsupported { .. } => None,
         }
     }
 
@@ -73,7 +75,8 @@ pub struct MenuWhen {
 
 impl MenuWhen {
     pub fn matches(&self, panel: &Panel) -> bool {
-        let kind_ok = self.kinds.is_empty() || self.kinds.contains(&KindName::of(&panel.kind));
+        let kind_ok = self.kinds.is_empty()
+            || KindName::of(&panel.kind).is_some_and(|kind| self.kinds.contains(&kind));
         let plugin_ok = self.plugins.is_empty()
             || plugin_of(&panel.kind).is_some_and(|id| self.plugins.iter().any(|p| p == id));
         let minimized_ok = self.minimized.is_none_or(|m| m == panel.minimized);
@@ -125,7 +128,7 @@ pub struct PluginMenus {
 
 pub fn plugin_of(kind: &PanelKind) -> Option<&str> {
     match kind {
-        PanelKind::Plugin { plugin_id, .. } | PanelKind::Tui { plugin_id } => Some(plugin_id),
+        PanelKind::Plugin { plugin_id, .. } | PanelKind::Tui { plugin_id, .. } => Some(plugin_id),
         _ => None,
     }
 }
@@ -231,7 +234,7 @@ pub fn command_payload(
 pub fn panel_info(panel: &Panel) -> Value {
     json!({
         "id": panel.id.0,
-        "kind": KindName::of(&panel.kind).as_str(),
+        "kind": KindName::of(&panel.kind).map_or("unsupported", KindName::as_str),
         "pluginId": plugin_of(&panel.kind),
         "title": panel.title,
         "rect": {
@@ -317,12 +320,14 @@ mod tests {
             title: "T".to_string(),
             minimized,
             resize: crate::resize::ResizePolicy::FREE,
+            overrides: crate::scene::PanelOverrides::default(),
         }
     }
 
     fn plugin_kind(id: &str) -> PanelKind {
         PanelKind::Plugin {
             plugin_id: id.to_string(),
+            plugin_version: None,
             settings: json!({}),
         }
     }
@@ -417,6 +422,7 @@ mod tests {
         assert_eq!(ids(&panel(plugin_kind("b"), false)), [action("a", "open")]);
         let tui = PanelKind::Tui {
             plugin_id: "a".to_string(),
+            plugin_version: None,
         };
         assert_eq!(
             ids(&panel(tui, true)),
@@ -424,6 +430,7 @@ mod tests {
         );
         let browser = PanelKind::Browser {
             url: "about:blank".to_string(),
+            page_zoom: None,
         };
         assert_eq!(ids(&panel(browser, true)), Vec::<MenuItem>::new());
     }
