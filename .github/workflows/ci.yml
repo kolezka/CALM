@@ -33,7 +33,11 @@ jobs:
       - name: Fmt, test and clippy portable crates in Arch
         run: scripts/ci-arch.sh ci
 
+  # Opt-in: hosted macOS minutes are blocked by account billing, so this job is skipped until
+  # the repository variable CALM_MACOS_HOSTED is set to true (Settings, Secrets and variables,
+  # Actions, Variables, or `gh variable set CALM_MACOS_HOSTED --body true`).
   macos:
+    if: vars.CALM_MACOS_HOSTED == 'true'
     runs-on: macos-15
     timeout-minutes: 60
     steps:

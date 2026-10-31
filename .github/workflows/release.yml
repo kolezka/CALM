@@ -10,7 +10,7 @@ on:
         default: patch
         required: true
       dry_run:
-        description: Build and upload the zip as a workflow artifact, but do not commit, tag or release
+        description: Build the source tarball as a workflow artifact, but do not commit, tag or release
         type: boolean
         default: true
 
@@ -23,7 +23,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  ZIG_VERSION: 0.16.0
 
 jobs:
   guard:
@@ -56,10 +55,14 @@ jobs:
       - name: Test portable crates in Arch
         run: scripts/ci-arch.sh test
 
+  # Runs on the Linux runner because hosted macOS minutes are unavailable. The app does not
+  # build on Linux, so the release carries a source tarball. The macOS zip is built on a Mac
+  # and attached with scripts/release-upload.sh. See docs/release.md.
   release:
     needs: [guard, linux-arch]
-    runs-on: macos-15
-    timeout-minutes: 90
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, calm]
+    timeout-minutes: 30
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
@@ -68,16 +71,36 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - uses: ./.github/actions/macos-toolchain
+      - name: Check runner tools
+        run: |
+          set -euo pipefail
+          missing=0
+          for tool in git gh tar gzip sha256sum curl; do
+            if ! command -v "$tool" >/dev/null; then
+              echo "::error::$tool is not installed on the runner"
+              missing=1
+            fi
+          done
+          exit "$missing"
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: macos-cargo-${{ hashFiles('Cargo.lock') }}-zig-${{ env.ZIG_VERSION }}
-          restore-keys: macos-cargo-
+      # scripts/bump-version.sh runs cargo update to refresh Cargo.lock. The runner image has
+      # no Rust, so install a minimal toolchain into this job's temp directory when needed.
+      - name: Install Rust if missing
+        run: |
+          set -euo pipefail
+          if command -v cargo >/dev/null; then
+            cargo --version
+            exit 0
+          fi
+          export RUSTUP_HOME="$RUNNER_TEMP/rustup" CARGO_HOME="$RUNNER_TEMP/cargo"
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+          {
+            echo "RUSTUP_HOME=$RUSTUP_HOME"
+            echo "CARGO_HOME=$CARGO_HOME"
+          } >>"$GITHUB_ENV"
+          echo "$CARGO_HOME/bin" >>"$GITHUB_PATH"
+          "$CARGO_HOME/bin/cargo" --version
 
       # Decides between a new release and resuming one whose tag was pushed but whose
       # release was never created. See docs/release.md, "Recovering a failed release".
@@ -163,13 +186,6 @@ jobs:
               ;;
           esac
 
-      # Pushes made with GITHUB_TOKEN do not trigger ci.yml, so the full checks run here.
-      - name: Test
-        run: cargo test --workspace
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
       - name: Commit and tag
         if: ${{ !inputs.dry_run && steps.plan.outputs.mode == 'new' }}
         env:
@@ -182,19 +198,32 @@ jobs:
           git commit -m "chore(release): v$VERSION"
           git tag -a "v$VERSION" -m "CALM v$VERSION"
 
-      - name: Build bundle
+      # A real release archives the tag. A dry run has no tag yet, so it archives the
+      # dispatched commit under the same name.
+      - name: Source tarball
         env:
           VERSION: ${{ steps.plan.outputs.version }}
-        run: scripts/bundle-macos.sh "$VERSION" dist
+          DRY_RUN: ${{ inputs.dry_run }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then ref="$SHA"; else ref="v$VERSION"; fi
+          name="CALM-$VERSION-source.tar.gz"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="CALM-$VERSION/" -o "dist/$name" "$ref"
+          (cd dist && sha256sum "$name" >"$name.sha256")
+          echo "Archived $ref:"
+          ls -l "dist/$name" "dist/$name.sha256"
+          cat "dist/$name.sha256"
 
       - name: Upload dry-run artifact
         if: ${{ inputs.dry_run }}
         uses: actions/upload-artifact@v4
         with:
-          name: CALM-${{ steps.plan.outputs.version }}-macos-arm64
+          name: CALM-${{ steps.plan.outputs.version }}-source
           path: |
-            dist/CALM-*-macos-arm64.zip
-            dist/CALM-*-macos-arm64.zip.sha256
+            dist/CALM-*-source.tar.gz
+            dist/CALM-*-source.tar.gz.sha256
           if-no-files-found: error
 
       - name: Dry-run summary
@@ -209,11 +238,10 @@ jobs:
           else
             what="commit 'chore(release): v$VERSION' on main, tag v$VERSION and create release v$VERSION"
           fi
-          echo "Dry run: would $what with:"
-          ls -l dist/CALM-"$VERSION"-macos-arm64.zip dist/CALM-"$VERSION"-macos-arm64.zip.sha256
+          echo "Dry run: would $what with CALM-$VERSION-source.tar.gz and its .sha256."
           {
             echo "### Dry run ($MODE)"
-            echo "Would $what. Zip uploaded as a workflow artifact."
+            echo "Would $what. Source tarball uploaded as a workflow artifact."
           } >>"$GITHUB_STEP_SUMMARY"
 
       # No force: if main moved since the dispatch, the push is rejected and nothing is tagged.
@@ -234,6 +262,7 @@ jobs:
           gh release create "v$VERSION" \
             --verify-tag \
             --title "CALM v$VERSION" \
+            --notes "macOS bundle: built and uploaded locally with \`scripts/release-upload.sh $VERSION\`" \
             --generate-notes \
-            "dist/CALM-$VERSION-macos-arm64.zip" \
-            "dist/CALM-$VERSION-macos-arm64.zip.sha256"
+            "dist/CALM-$VERSION-source.tar.gz" \
+            "dist/CALM-$VERSION-source.tar.gz.sha256"
