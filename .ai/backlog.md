@@ -73,6 +73,9 @@ Seen several times on 2026-10-31:
 - "terminals not live at zoom 1.5".
 - Twice, native z-order not matching the scene: `zorder=[1, 2] scene=[2, 1]` and
   `zorder=[1,2,3] scene=[2,3,1]`.
+- Stats step: "stats: sampler has CPU but the status bar does not show it" (pill stuck at
+  `--% CPU` while the sampler has a reading), and "only 1 frames with show_stats on". Both
+  look like paint stalling after the stats toggle, likely the same occlusion cause.
 
 - State: cause unconfirmed. Load was suspected. Occlusion is likely for the first two. The
   z-order one may be a real ordering bug.

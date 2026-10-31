@@ -115,14 +115,37 @@ fn remove_smoke_dir() {
 }
 
 const SMOKE_FPS_FRAMES: usize = 10;
-/// CPU needs two samples one interval (default 1 s) apart, plus a paint to show them.
+/// CPU needs two samples one interval (default 1 s) apart. Bounds the sampler wait.
 const SMOKE_STATS_TIMEOUT: Duration = Duration::from_secs(5);
+/// A paint after the sampler has CPU puts it in the pill. Bounds that wait.
+const SMOKE_STATS_PAINT_TIMEOUT: Duration = Duration::from_secs(2);
 /// CALM with GPUI, Metal and two terminals is far above this; less means a bad reading.
 const SMOKE_STATS_MIN_MB: f64 = 10.0;
 
-/// Waits for the status pill to show CPU and memory, then parses them back out of its
-/// text, so the line checks what the user sees, not only the sampler.
+/// Waits until the sampler reports two samples and a CPU reading, then for the status
+/// pill to show CPU and memory, and parses them back out of its text, so the line checks
+/// what the user sees, not only the sampler.
 async fn smoke_process_stats(view: &gpui::Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
+    let started = Instant::now();
+    loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let (samples, cpu) = cx.update(|cx| {
+            let view = view.read(cx);
+            let cpu = view.process_stats.and_then(|sample| sample.cpu_percent);
+            (view.process_samples, cpu)
+        });
+        if samples >= 2 && cpu.is_some() {
+            break;
+        }
+        if started.elapsed() > SMOKE_STATS_TIMEOUT {
+            smoke_fail(&format!(
+                "stats: sampler has {samples} samples and cpu={cpu:?} after {:.1}s, CPU needs two",
+                started.elapsed().as_secs_f64()
+            ));
+        }
+    }
     let started = Instant::now();
     loop {
         cx.background_executor()
@@ -147,9 +170,9 @@ async fn smoke_process_stats(view: &gpui::Entity<CanvasView>, cx: &mut gpui::Asy
             println!("smoke: stats fps={fps:.1} cpu={cpu:.1}% mem={mem:.0}MB");
             return;
         }
-        if started.elapsed() > SMOKE_STATS_TIMEOUT {
+        if started.elapsed() > SMOKE_STATS_PAINT_TIMEOUT {
             smoke_fail(&format!(
-                "stats: no cpu and memory in the status bar: {text:?}"
+                "stats: sampler has CPU but the status bar does not show it: {text:?}"
             ));
         }
     }
