@@ -24,6 +24,13 @@ macOS 27.0.1, Apple M4 Pro: smoke passes; two terminals render in zoom views at 
 z-order follows scene order; preview snapshots about one per 2 s; settings persist;
 CI run on `main` green (linux-arch success, macos skipped).
 
+## On branches, not merged
+
+- `feat/bottom-bar`: the top status strip is removed; the title bar is transparent with a
+  hidden title; zoom, FPS and the save flash show in a native translucent pill at the
+  bottom center (`calm_native::StatusBar`, rect from `calm_core::status_bar`). Smoke
+  checks the bar is visible and above both terminals after a restack.
+
 ## Not wired yet
 
 - Browser panels in the canvas (`WebPanel` exists; Task 10 app wiring pending).
@@ -40,6 +47,8 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 - Manual GUI pass: mouse selection at zoom 1.0 and 1.7, cmd-v paste, Polish letters through
   the input method, panel resize reflow, Enter to confirm close, pinch feel, `htop`.
+- Bottom status bar look: blur over terminals, rounded corners, light and dark mode,
+  traffic lights over the canvas, window drag from the top strip.
 - Performance with 20 terminals.
 - A real Release run on the runner (dry run not yet triggered) and the hosted macOS CI
   steps.

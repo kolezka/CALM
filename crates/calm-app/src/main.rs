@@ -3,7 +3,6 @@ mod dev_menu;
 mod settings_menu;
 mod terminal;
 mod theme;
-mod toolbar;
 
 use calm_core::geometry::Rect;
 use calm_core::preview::PanelMode;
@@ -12,8 +11,8 @@ use std::sync::{Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyWindowHandle, App, AppContext, Bounds, Context, Entity, Focusable, Window, WindowBounds,
-    WindowOptions, px, size,
+    AnyWindowHandle, App, AppContext, Bounds, Context, Entity, Focusable, TitlebarOptions, Window,
+    WindowBounds, WindowOptions, px, size,
 };
 
 use crate::canvas_view::CanvasView;
@@ -38,7 +37,7 @@ fn parse_args() -> Args {
 }
 
 /// Two live terminals at zoom 1.5. The first starts above the canvas so its chrome and
-/// content cross the toolbar edge and the native view is clipped.
+/// content cross the window's top edge and the native view is clipped.
 fn add_smoke_panels(
     view: &mut CanvasView,
     window: &mut Window,
@@ -102,6 +101,19 @@ const SMOKE_ZORDER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Polls until both terminals have drawn a frame, raises the first one in the scene and
 /// checks that the native views restack to match. Prints the result and quits.
+/// The native status bar exists, is shown and sits above every panel view.
+fn smoke_status_bar(state: Result<(bool, bool, String), String>) {
+    match state {
+        Ok((visible, front, text)) => {
+            println!("smoke: status_bar visible={visible} front={front} text={text:?}");
+            if !visible || !front {
+                smoke_fail("status bar is hidden or below a panel");
+            }
+        }
+        Err(err) => smoke_fail(&format!("status bar missing: {err}")),
+    }
+}
+
 fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, cx: &mut App) {
     let started = Instant::now();
     cx.spawn(async move |cx| {
@@ -154,6 +166,8 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             let line = format!("zorder={native:?} scene={scene:?}");
             if scene == native && scene.len() == 2 {
                 println!("smoke: {line}");
+                // Restacking the panels must not bury the status bar.
+                smoke_status_bar(cx.update(|cx| view.read(cx).status_bar_state()));
                 break;
             }
             if raised.elapsed() > SMOKE_ZORDER_TIMEOUT {
@@ -372,6 +386,12 @@ fn main() {
         };
         let options = WindowOptions {
             window_bounds: Some(window_bounds),
+            // The canvas runs under a transparent title bar; the traffic lights stay native.
+            titlebar: Some(TitlebarOptions {
+                title: Some("CALM".into()),
+                appears_transparent: true,
+                traffic_light_position: None,
+            }),
             ..Default::default()
         };
         let smoke = args.smoke;
