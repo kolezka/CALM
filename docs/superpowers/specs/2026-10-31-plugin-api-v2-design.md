@@ -50,8 +50,14 @@ has a host sender yet.
 - `calm_core::interaction`: close goes through `InputHandler::request_close(id, alive)`,
   which sets `confirming` and returns `ConfirmClose`; Enter or a second request closes,
   Escape cancels. One panel can be confirming at a time.
-- `calm_core::settings::Settings`: `background` (a `BackgroundPreset`), `show_grid`,
-  `confirm_close`, `terminal_user_config`.
+- `calm_core::settings::Settings`, schema version 2 from PR #7 (`feat/settings-modal`,
+  not merged yet): `background` (`calm_core::background::BackgroundSettings`: `kind` solid,
+  gradient or image; `solid` color; `gradient` linear or radial with 2 to 6 stops and an
+  angle; `image` with path, fit and filters), `grid`, `snap`, `panels` (`confirm_close`,
+  `terminal_user_config`, default terminal size, `preview_below_zoom`). `Settings::validate`
+  checks every range and names the field. Version 1 files migrate on read.
+  `feat/grid-styles` adds grid kinds on top. The API targets this schema, not the v1
+  preset enum, which survives only for migration.
 - `calm_core::menu`: Add submenu, panel actions (PR #2 adds zoom to fit, bring to front,
   send to back, duplicate, delete).
 - Browser panels (PR #6, `calm-native/src/browser.rs`): `BrowserView::open`, `url()`,
@@ -86,8 +92,12 @@ has a host sender yet.
 
 ## Principles
 
-1. **Calls are attributed.** The channel tags each message with the calling `PanelId`. The
-   host resolves it to the plugin id through the scene. No method takes a "caller" param.
+1. **Calls are attributed.** Every request carries a `Caller`, set by the transport, never
+   by a param. `Caller::Panel` is a plugin page: the WebKit channel tags each message with
+   the calling `PanelId`, and the host resolves the plugin id through the scene.
+   `Caller::External` is a client of the control socket (phase 11). Capability checks,
+   "self" methods and event delivery all take the `Caller`, so one dispatcher serves both
+   transports and allows methods per origin.
 2. **One dispatcher, pure core.** Parsing, capability checks, snapshots and coalescing are
    pure Rust with unit tests. `plugin_host.rs` only applies effects to GPUI state.
 3. **Never re-enter GPUI from an AppKit callback.** WebKit and NSMenu callbacks only push
@@ -124,7 +134,7 @@ has a host sender yet.
 | -------------- | ----------------------------------------------------------------------------- |
 | `apiVersion`   | Integer. Missing means 1. The host refuses a manifest above its own version.  |
 | `capabilities` | Strings from the capability table. Unknown strings fail the manifest.         |
-| `background`   | Opt-in hidden page started at launch (see open question 3). Default false.    |
+| `background`   | Opt-in hidden page started at launch (see open question 2). Default false.    |
 | `contributes`  | Commands, menu entries and key bindings. Requires `apiVersion` 2.             |
 
 Validation stays in `PluginManifest::validate` and reports the path and field, like every
@@ -192,12 +202,23 @@ export interface PanelInfo {            // v1 fields first, unchanged
   createdBy?: string;                   // plugin id, when a plugin created it
 }
 
+export type Side = "right" | "below" | "left" | "above";
+
+/** Where a new panel goes. Give `rect`, or `near` (optionally with `side` and `size`), or
+ *  neither. Both `rect` and `near` is `invalid_params`. */
+export interface Placement {
+  rect?: Rect;
+  near?: PanelId;
+  side?: Side;                          // default "right"
+  size?: Size;                          // default: the kind's default size
+}
+
 export type PanelSpec =
-  | { kind: "terminal"; command?: string; args?: string[]; cwd?: string;
-      env?: Record<string, string>; title?: string; rect?: Rect; focus?: boolean }
-  | { kind: "browser"; url: string; title?: string; rect?: Rect; focus?: boolean }
-  | { kind: "plugin"; pluginId: string; settings?: Record<string, unknown>;
-      title?: string; rect?: Rect; focus?: boolean };
+  | ({ kind: "terminal"; command?: string; args?: string[]; cwd?: string;
+       env?: Record<string, string>; title?: string; focus?: boolean } & Placement)
+  | ({ kind: "browser"; url: string; title?: string; focus?: boolean } & Placement)
+  | ({ kind: "plugin"; pluginId: string; settings?: Record<string, unknown>;
+       title?: string; focus?: boolean } & Placement);
 
 export interface CameraInfo {
   x: number; y: number;                 // world point at the viewport origin
@@ -216,13 +237,31 @@ export interface AppInfo {
   methods: string[];                    // methods this host serves
 }
 
-export interface AppSettings {
-  background: string;                   // "#rrggbb"
-  backgroundPreset: string | null;
-  showGrid: boolean;
-  confirmClose: boolean;
-  terminalUserConfig: boolean;
+// The settings.json v2 shape, exactly as serde writes it (snake_case keys). The SDK
+// mirrors calm_core::settings::Settings; grid fields follow whatever feat/grid-styles lands.
+export type Rgb = string;               // "#rrggbb"
+export interface GradientStop { color: Rgb; position: number }   // position 0..1
+export interface BackgroundSettings {
+  kind: "solid" | "gradient" | "image";
+  solid: Rgb;
+  gradient: { kind: "linear" | "radial"; angle_deg: number; stops: GradientStop[] };
+  image: {
+    path: string | null;
+    fit: "cover" | "contain" | "tile" | "center";
+    filters: { blur: number; brightness: number; contrast: number; saturation: number;
+               grayscale: boolean; dim: number };
+  };
 }
+export interface AppSettings {
+  version: number;                      // 2
+  background: BackgroundSettings;
+  grid: Record<string, unknown> & { show: boolean };
+  snap: { enabled: boolean; grid: number; edge_distance: number };
+  panels: { confirm_close: boolean; terminal_user_config: boolean;
+            default_terminal_width: number; default_terminal_height: number;
+            preview_below_zoom: number };
+}
+export type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
 
 export interface TerminalInfo {
   id: PanelId;
@@ -243,14 +282,39 @@ export interface CalmError extends Error { code: ErrorCode }
 | Method                   | Wire              | Result                                                         |
 | ------------------------ | ----------------- | -------------------------------------------------------------- |
 | `info()`                 | `app.info`        | `AppInfo`                                                      |
-| `getSettings()`          | `app.getSettings` | `AppSettings`                                                  |
-| `setSettings(patch)`     | `app.setSettings` | Merged `AppSettings`. Writes `settings.json`. See below.       |
+| `getSettings()`          | `app.getSettings` | `AppSettings`, the full v2 settings object                     |
+| `setSettings(patch)`     | `app.setSettings` | `DeepPartial<AppSettings>`. Resolves with the merged result. Writes `settings.json`. See below. |
 | `calm.has(method)`       | none              | Sync. True if `method` is in the served list. Feature detection. |
 
-`setSettings` takes a partial `AppSettings`. `background` accepts a preset name or, if the
-user approves open question 2, any `#rrggbb`. `confirmClose` is **not** writable by
-plugins: a plugin that turns off confirmation would defeat the close rule. It rejects with
-`invalid_params`.
+`setSettings` applies the patch to the current settings as a JSON merge patch (RFC 7386):
+objects merge key by key, arrays such as `background.gradient.stops` are replaced whole,
+`null` resets a field to its default. The host then deserializes the result into
+`calm_core::settings::Settings` and runs `Settings::validate`. Any failure rejects with
+`invalid_params` and the field name from `validate`, and nothing is written or applied. On
+success the host saves through the same atomic save path the Settings window uses, applies
+the result live and emits `appSettingsChanged` to every subscribed page. This covers solid
+colors, linear and radial gradients and image backgrounds with filters, with no extra
+plugin-only background format.
+
+Rules on top of `validate`:
+
+- `panels.confirm_close` is **not** writable by plugins: a plugin that turns off
+  confirmation would defeat the close rule. A patch that touches it rejects with
+  `invalid_params`, even when the value is unchanged. `version` is not writable either,
+  nor is the `external` block of phase 11, which only the Settings window changes.
+- `background.image.path` must be an absolute path to an existing regular file that the
+  host can decode as an image. CALM reads it in place and does not copy it, as the Settings
+  window does. A bad path rejects before anything is saved.
+- Unknown keys reject, so a typo does not silently do nothing. When `feat/grid-styles`
+  lands, its grid fields become writable because they are part of `Settings`, with no API
+  change.
+- Writes are coalesced: a plugin animating the background may call `setSettings` often,
+  but the file is saved at most once per second, with a trailing save. Live apply is not
+  delayed.
+
+`theme.get` (v1) keeps its shape and returns `{ background: base_color }`, where
+`base_color` is `BackgroundSettings::base_color()`, the flat color that stands for a
+gradient or image background.
 
 ### `calm.panel` (the calling panel, v1, now served)
 
@@ -262,7 +326,7 @@ confirmation: a plugin page has no process the user can lose.
 
 | Method                    | Wire                  | Result and rules                                                    |
 | ------------------------- | --------------------- | ------------------------------------------------------------------- |
-| `create(spec)`            | `panels.create`       | `PanelId`. No `rect`: placed at the viewport center at default size, snapped. Rect is clamped to `MIN_PANEL_SIZE`. |
+| `create(spec)`            | `panels.create`       | `PanelId`. Placement rules below. Rect is clamped to `MIN_PANEL_SIZE`. |
 | `list(filter?)`           | `panels.list`         | `PanelInfo[]` back to front. `filter`: `{ kind?, pluginId? }`.      |
 | `get(id)`                 | `panels.get`          | `PanelInfo`, or `not_found`.                                        |
 | `focus(id)`               | `panels.focus`        | Focuses and brings to front. Restores a minimized panel first.      |
@@ -276,6 +340,19 @@ confirmation: a plugin page has no process the user can lose.
 
 v1 `canvas.createPanel`, `canvas.focusPanel`, `canvas.listPanels` stay as aliases of
 `panels.create`, `panels.focus`, `panels.list`. The v1 `PanelSpec` is a subset of v2.
+
+**Placement.** `rect` places the panel exactly. `near: id` places it beside panel `id`:
+`right` puts it at the target's right edge plus a 16 world unit gap, top edges aligned;
+`below` at the bottom edge plus the gap, left edges aligned; `left` and `above` mirror
+those. The size is `size`, or the kind's default (terminal default from
+`panels.default_terminal_width/height` in settings, browser 800x600, plugin from its
+manifest). The result is snapped to the snap grid when snapping is on. A minimized target
+counts with its full rect. There is no collision avoidance in v2: the result is predictable
+from the inputs, and a caller that wants a free spot reads `panels.list` first. A missing
+target is `not_found`. With neither `rect` nor `near`, the panel goes to the viewport
+center at its default size. The math is a pure function in calm-core,
+`placement::place_near(target: Rect, side, size, gap) -> Rect`, with a test per side.
+`near` works without `command`, so a caller can place a plain shell next to a panel.
 
 Terminal `env`: keys must match `[A-Z_][A-Z0-9_]*`, values have no NUL. The host merges them
 over its own environment. Docs tell authors not to pass tokens through `env`; the host never
@@ -358,7 +435,7 @@ the cheap toast. No modal UI from plugins in v2.
 `process.exec` runs on GPUI's background executor, with `timeoutMs` default 30 s and
 stdout and stderr capped at 4 MiB each (`too_large` beyond). `github.api` runs `GhClient`
 on the background executor. `openExternal` allows `http`, `https` and `mailto` only.
-`theme.get` returns `{ background }` from app settings.
+`theme.get` returns `{ background }`, the `#rrggbb` of `BackgroundSettings::base_color()`.
 
 ## Events
 
@@ -374,13 +451,14 @@ page the events it subscribed to, so an idle plugin costs nothing.
 | `panelChanged`        | `PanelInfo` plus `changes: ("rect"\|"title"\|"minimized"\|"z"\|"mode"\|"url")[]` | per panel, latest wins, 100 ms |
 | `panelFocused`        | `{ id: PanelId \| null }`                                | per frame, latest wins          |
 | `cameraChanged`       | `CameraInfo`                                             | latest wins, 100 ms, trailing edge always sent |
-| `appSettingsChanged`  | `AppSettings`                                            | none                            |
+| `appSettingsChanged`  | `AppSettings`, full v2 object                            | latest wins, 100 ms             |
 | `terminalExited`      | `{ id }`                                                 | none                            |
 | `command`             | `{ command, panelId?, world? }` (from `contributes`)     | none                            |
 | `bus`                 | used by `calm.bus.subscribe`, not public                 | none                            |
 
 v1 events `focus`, `blur`, `resize`, `visibility`, `settingsChanged`, `themeChanged` get
-their senders in the same phase. `resize` and `visibility` use the same coalescing as
+their senders in the same phase. `themeChanged` fires when `base_color()` changes, so a v1
+plugin still learns about background changes made through the v2 settings. `resize` and `visibility` use the same coalescing as
 `panelChanged`.
 
 ### Coalescing model
@@ -421,7 +499,7 @@ collides with a built-in or with an earlier plugin is skipped and reported on st
 the toolbar error count.
 
 Choosing an item sends a `command` event to the plugin. Where it goes depends on open
-question 3: to the plugin's background page, or to its most recently focused panel, opening
+question 2: to the plugin's background page, or to its most recently focused panel, opening
 a new panel if none is open.
 
 The NSMenu callback returns the chosen id to the GPUI side like today; only the GPUI task
@@ -448,6 +526,7 @@ works and gets `code: "host_error"`.
 | `storage_corrupt`    | Plugin data file does not parse                                   |
 | `gh_not_installed`, `gh_not_logged_in`, `gh_failed`, `gh_invalid_path` | Existing `gh` messages, now with codes |
 | `timeout`            | `process.exec` ran past `timeoutMs`                               |
+| `not_allowed`        | External caller, method not in the external allowlist (phase 11)  |
 | `host_error`         | Anything else; message says what                                  |
 
 ## Rust types
@@ -479,7 +558,13 @@ pub enum ApiRequest {
 impl ApiRequest {
     /// v1 aliases map here too. Errors carry `ErrorCode::InvalidParams` and the field.
     pub fn parse(method: &str, params: &Value) -> Result<ApiRequest, ApiError>;
-    pub fn capability(&self, caller: PanelId) -> Option<Capability>;
+    pub fn capability(&self, caller: &Caller) -> Option<Capability>;
+}
+
+/// Set by the transport, never parsed from params.
+pub enum Caller {
+    Panel { panel: PanelId, plugin_id: String },
+    External { client: ClientId },            // phase 11
 }
 
 pub enum Capability { PanelsCreate, PanelsControl, PanelsClose, CameraControl,
@@ -487,7 +572,9 @@ pub enum Capability { PanelsCreate, PanelsControl, PanelsClose, CameraControl,
 
 pub struct ApiError { pub code: ErrorCode, pub message: String }
 
-pub fn check(granted: &CapabilitySet, request: &ApiRequest, caller: PanelId) -> Result<(), ApiError>;
+/// `Caller::Panel` checks the manifest's capabilities. `Caller::External` checks the
+/// external allowlist from settings (phase 11) and rejects with `not_allowed`.
+pub fn check(policy: &Policy, request: &ApiRequest, caller: &Caller) -> Result<(), ApiError>;
 
 /// Pure snapshot from the scene plus the host's per-panel extras (mode, focus, url).
 pub fn panel_info(scene: &Scene, id: PanelId, extras: &PanelExtras) -> Option<PanelInfo>;
@@ -506,11 +593,13 @@ pub enum HostOutcome {
     Pending(PendingReply),        // close confirmation, process.exec, github.api
     NoReply,                      // log
 }
-fn dispatch(view: &mut CanvasView, caller: PanelId, request: ApiRequest,
+fn dispatch(view: &mut CanvasView, caller: &Caller, request: ApiRequest,
             window: &mut Window, cx: &mut Context<CanvasView>) -> Result<HostOutcome, ApiError>;
 ```
 
-`PendingReply` is a `(PanelId, request id)` held by the view. Close confirmations settle it
+`PendingReply` is the caller plus the request id, held by the view. For a panel it settles
+through `eval_js`; for an external client (phase 11) through a oneshot sender back to the
+socket thread. Close confirmations settle it
 from the Enter or Escape handler. Background work settles it from a GPUI task. A page that
 closes drops its pending replies; nothing is evaluated in a dead web view.
 
@@ -561,6 +650,145 @@ closes drops its pending replies; nothing is evaluated in a dead web view.
 - The SDK `calm.d.ts` gets `apiVersion` in a header comment, and the conformance test reads
   it.
 
+## External control channel (phase 11)
+
+**Status: needs user approval before build.** This section is a design only. Nothing in
+phases 1 to 10 depends on it, apart from the `Caller` type, which v2 has from phase 1.
+
+### Why
+
+Claude Code mods (in-process JS plugins of Claude Code) and scripts in a CALM terminal
+want to drive CALM: report subagent status on a panel, place a new terminal next to the
+current one, push lifecycle events to a board plugin. A mod can only call out
+(`$.http.fetch` with `socketPath`, a 30 s limit per fetch) or spawn a helper. It cannot
+listen. So CALM is the server.
+
+### Threat model
+
+Stated plainly: **any process running as the user that can read the token file can drive
+CALM.** With the defaults below that means reading the canvas, moving panels and the
+camera, and setting panel status. If the user turns on `terminals.drive`, it also means
+spawning terminals with any command and env, and **typing into any terminal**, which is
+running arbitrary commands in the user's shells. The channel adds no power a process
+running as the user does not already have (it can run commands itself), but it reaches
+into running shells, which is exactly what the user sees and trusts. It is not a defense
+against malware already running as the user, and docs must not suggest it is.
+
+What it does defend against: other users on the machine (directory 0700, socket and token
+0600, peer uid check), stale tokens (rotated every launch), accidental exposure (off by
+default, never on a TCP port, never in env, never in logs).
+
+### Enabling
+
+Settings gain an `external` block, edited in the Settings window. Plugins cannot write it:
+`app.setSettings` rejects any patch that touches `external`, like `panels.confirm_close`.
+
+```json
+"external": { "enabled": false, "allow": ["read", "status", "events"] }
+```
+
+When `enabled` is false, no socket and no token file exist, and terminals get no `CALM_*`
+env.
+
+### Transport and token lifecycle
+
+- Socket path: `$TMPDIR/calm/ctl.sock` (per-user on macOS). If that exceeds the 104 byte
+  `sun_path` limit, fall back to `/tmp/calm-<uid>/ctl.sock`. The directory is created 0700.
+  If it exists, CALM checks that the owner is the current uid and the mode is 0700, and
+  refuses to start the channel otherwise (logged, shown in the toolbar error count).
+- At launch: remove a stale socket and token in that directory, generate 32 random bytes
+  from the OS RNG, write them hex encoded to `<dir>/token` with `create_new` and mode 0600,
+  then bind the socket and chmod it 0600. At quit: remove both. A crash leaves them; the
+  next launch replaces them, so an old token never works against a new CALM.
+- HTTP/1.1 over the Unix socket, one request per connection, `Content-Length` required,
+  body at most 1 MiB (413 beyond). `Authorization: Bearer <token>` is checked in constant
+  time before the body is parsed: missing or wrong is 401 with no dispatch. On accept the
+  server also checks the peer uid with `getpeereid` and drops a mismatch.
+- `POST /v1/call` takes a `BridgeRequest` and answers 200 with `{ id, ok: true, value }` or
+  `{ id, ok: false, error: { code, message } }`, the same shapes plugin pages get. An
+  unknown method keeps the message `not implemented: <method>` with code
+  `not_implemented`.
+- `X-Calm-Client: <label>` names the client for logs and for `from` in events. It is a
+  label, not authentication. Missing means `anonymous`.
+- The token never reaches plugin JS, layouts, logs or any API result.
+
+### Terminal env
+
+With the channel enabled, every terminal CALM spawns gets `CALM_SOCKET` (socket path),
+`CALM_TOKEN_FILE` (token path, never the token) and `CALM_PANEL_ID`. A Claude Code session
+in that terminal reads the token file and knows which panel it is.
+
+### Caller and allowlist
+
+External requests run as `Caller::External { client }`. They are checked against
+`external.allow`, not against any manifest. Groups:
+
+| Group             | Methods                                                                    |
+| ----------------- | -------------------------------------------------------------------------- |
+| `read` (default)  | `app.info`, `panels.list`, `panels.get`, `camera.get`, `terminals.info`, `browsers.info` |
+| `status` (default)| `panel.setStatus`                                                          |
+| `events` (default)| `events.poll`, `events.publish`                                            |
+| `layout`          | `panels.create` **without** `command`, `args` or `env`; `panels.focus`, `move`, `resize`, `setRect`, `setTitle`, `minimize`, `restore`, z-order; `camera.set`, `centerOn`, `fit` |
+| `terminals.drive` | `panels.create` **with** `command`, `args` or `env`, **and** `terminals.write` |
+| `browser`         | `browsers.navigate`, `browsers.reload`                                     |
+| `close`           | `panels.close`, through the same user confirmation as plugins              |
+
+**Spawning with a command and `terminals.write` are one group.** They are refused together
+by default, or allowed together and documented together. They never get split: refusing
+`command` while allowing `terminals.write` is not a limit, because a client can open a
+plain shell and type the command into it. `env` is in the same group because variables
+like `PROMPT_COMMAND` run code. `cwd` stays in `layout`; the docs note that shell hooks such
+as direnv can run code on entering a directory.
+
+Never offered externally: `process.exec`, `github.api`, `openExternal`, `app.setSettings`,
+`storage.*`, `bus.subscribe`, and the `panel.*` "self" methods (an external caller has no
+panel; it names `panelId`). A method outside `allow` rejects with `not_allowed`.
+
+### Panel status
+
+`panel.setStatus({ panelId?, state, text?, detail? })`, available to both origins. A plugin
+page sets its own panel, and `panelId` naming another panel needs `panels.control`. An
+external caller must name `panelId`. `state` is `"idle" | "running" | "waiting" | "error" |
+"done"`, `text` at most 80 characters, `detail` at most 1 KiB, `null` clears. The status is
+drawn in the panel's chrome strip as a colored dot and the text. The strip is GPUI paint
+outside the native content rect, so it never overlaps a live native view. `detail` is API
+only, not drawn. `PanelInfo` gains `status`. The event `panelStatusChanged { panelId,
+status }` goes to pages and external queues. Status is not saved in layouts.
+
+### Event queue and long polling
+
+- Per client label, a ring buffer of 1024 events with a sequence number that rises for the
+  whole launch. Events pass through the same `Coalescer` as page events before they enter
+  the queue, so a pan does not fill it.
+- `events.poll({ since, timeoutMs, events? })`: returns at once if events after `since`
+  exist, else holds the request up to `timeoutMs` (at most 25000, below the 30 s mod
+  fetch limit). The result is `{ events: [{ seq, event, payload }], next, gap }`. `gap` is
+  true when events between `since` and the oldest kept one were dropped. `events` filters
+  by name.
+- Limits: 8 held polls per client and 32 in total, beyond that `busy`. A client queue with
+  no poll for 60 s is dropped.
+- `events.publish({ topic, payload })`: payload at most 64 KiB. It is delivered to plugin
+  pages as the `external` event `{ topic, payload, from: { client } }` and to other
+  external clients' queues. CALM does not model Claude Code; topics are free strings.
+
+### Threading
+
+The socket server runs on its own thread with blocking std `UnixListener` I/O. It parses
+HTTP and checks the token and peer uid there, then sends `(Caller::External, BridgeRequest,
+oneshot reply)` into the same channel the WebKit handler uses, and waits on the oneshot. It
+never touches GPUI state. The GPUI task dispatches and answers through the oneshot. Long
+polls wait on the client queue, an `Arc<Mutex<..>>` with a `Condvar` that the GPUI task
+fills after each coalescer flush. The HTTP parser is a small pinned dependency
+(`httparse`), not a framework.
+
+### Tests
+
+Pure parts in calm-plugins with unit tests: allowlist check including the
+`terminals.drive` bundle (a `command` spec and `terminals.write` both rejected by the
+default, both accepted when the group is on), queue sequence and gap reporting, poll limits,
+token file mode and `create_new`, path length fallback. An integration test binds a socket
+in a temp dir and checks 401 with no or wrong token, 200 with the right one, and 413.
+
 ## Phased implementation
 
 Each phase ends with `cargo test` for the touched crates and lands as its own commit.
@@ -577,6 +805,8 @@ Each phase ends with `cargo test` for the touched crates and lands as its own co
 4. **Control.** `panels.create` (all kinds), focus, move, resize, setRect, setTitle,
    minimize, restore, z-order, `panel.*` on self, `camera.set`, `centerOn`, `fit`,
    `browsers.navigate`, `reload`, `terminals.write`, `app.setSettings`, `ui.notify`.
+   `app.setSettings` needs PR #7 merged: merge patch, `Settings::validate`, the
+   `confirm_close` and `version` refusal, the image path check, and a test per rule.
 5. **Close.** `panels.close` and `panel.close` through `request_close`, `PendingReply`
    settled from Enter and Escape, `busy`. Regression test: a plugin close of a live terminal
    with `confirm_close` on does not remove the panel until Enter.
@@ -586,7 +816,7 @@ Each phase ends with `cargo test` for the touched crates and lands as its own co
 7. **Storage, bus, process, github, openExternal.** Atomic storage file with limits and
    corrupt-file error. Bus fan out. Background executor for exec and gh.
 8. **Contributions.** Commands, menu items, key bindings, `command` event routing per open
-   question 3.
+   question 2.
 9. **SDK, docs, examples, smoke.** `calm.d.ts`, `docs/plugins.md`, `templates/plugin-tsx`,
    an example plugin that spawns a terminal and a browser, lists panels and reacts to
    `panelAdded`. Smoke fixture plugin: create a terminal through the bridge, list panels and
@@ -597,6 +827,14 @@ Optional phase 10, only if the user approves open question 1: CALM-owned patch o
 gpui-libghostty shim for `SET_TITLE` and `PWD`, `terminals.info` title and live cwd,
 `panelChanged` with `title` for terminals.
 
+Phase 11, **needs user approval before build**: the external control channel in its own
+section above (socket and token lifecycle, terminal env, allowlist with the
+`terminals.drive` bundle, `panel.setStatus` and status in chrome, per-client event queue
+with long polling, `events.publish`).
+
+Phase 1 also lands the `Caller` type and phase 4 the `near`/`side` placement, so phase 11
+adds a transport, not a new dispatcher.
+
 ## Open questions for the user
 
 1. **Terminal title and live cwd need a patched Ghostty shim.** gpui-libghostty 0.3.1 drops
@@ -604,12 +842,13 @@ gpui-libghostty shim for `SET_TITLE` and `PWD`, `terminals.info` title and live 
    through `[patch.crates-io]` that forwards them through a channel (more upkeep on every
    upstream bump), or ship v2 with spawn values only and `title: null`. Recommendation: ship
    without, add the patch as phase 10 if the user wants it.
-2. **Custom background colors.** `Settings.background` is a preset enum. Allowing any
-   `#rrggbb` from plugins (and the Settings menu) needs a settings format change to version
-   2 with a migration. Recommendation: allow it, presets stay as named shortcuts.
-3. **Background pages.** Contributed menu items, key bindings, events and bus messages need
+2. **Background pages.** Contributed menu items, key bindings, events and bus messages need
    a running page. Options: (a) an opt-in hidden page per plugin (`"background": true`)
    started at launch, one WKWebView each; (b) no background pages, commands go to the
    plugin's last focused panel and open one if none exists. Recommendation: (a) opt-in,
    because "react to events" and "influence the app" mostly mean a plugin with no visible
    panel.
+
+Resolved: custom background colors. PR #7 (`feat/settings-modal`) replaces the preset enum
+with settings schema v2 (solid, linear and radial gradients, images with filters), so
+`app.setSettings` targets that schema and needs no format change of its own.
