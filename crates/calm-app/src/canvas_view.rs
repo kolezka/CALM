@@ -70,6 +70,8 @@ pub struct CanvasView {
     focused: Option<PanelId>,
     /// Live terminals by panel. Dropping an entry ends its process.
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
+    /// Back-to-front terminal order the native views were last stacked in.
+    native_order: Vec<PanelId>,
     /// Last pointer position relative to the viewport, for the draft rect.
     pointer: Point,
     focus_handle: FocusHandle,
@@ -84,6 +86,7 @@ impl CanvasView {
             plugins: Vec::new(),
             focused: None,
             terminals: Vec::new(),
+            native_order: Vec::new(),
             pointer: Point::new(0.0, 0.0),
             focus_handle: cx.focus_handle(),
         }
@@ -184,6 +187,42 @@ impl CanvasView {
                 })
             })
             .collect()
+    }
+
+    /// Terminal ids in scene order, back to front.
+    fn terminal_order(&self) -> Vec<PanelId> {
+        self.scene
+            .panels
+            .iter()
+            .map(|panel| panel.id)
+            .filter(|id| self.terminals.iter().any(|(t, _)| t == id))
+            .collect()
+    }
+
+    /// Native views stack in creation order, so restack them when the scene order changes.
+    fn sync_native_order(&mut self, cx: &mut Context<Self>) {
+        let order = self.terminal_order();
+        if order == self.native_order {
+            return;
+        }
+        for id in &order {
+            if let Some(terminal) = self.terminal(*id) {
+                terminal.update(cx, |terminal, _| terminal.bring_to_front());
+            }
+        }
+        self.native_order = order;
+    }
+
+    /// (scene order, native stacking order) of terminal ids, both back to front.
+    pub fn terminal_zorder(&self, cx: &App) -> (Vec<u64>, Vec<u64>) {
+        let scene = self.terminal_order().iter().map(|id| id.0).collect();
+        let mut native: Vec<(Option<usize>, u64)> = self
+            .terminals
+            .iter()
+            .map(|(id, terminal)| (terminal.read(cx).stack_index(), id.0))
+            .collect();
+        native.sort();
+        (scene, native.into_iter().map(|(_, id)| id).collect())
     }
 
     fn confirm_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -366,6 +405,8 @@ impl PaintSnapshot {
                 ));
             }
         });
+
+        this.update(cx, |view, cx| view.sync_native_order(cx)).ok();
 
         // Moves and releases are tracked window-wide so a drag keeps going past the canvas edge.
         let weak = this.clone();

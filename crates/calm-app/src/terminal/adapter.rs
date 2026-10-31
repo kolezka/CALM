@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use calm_core::geometry::{Point, Size};
+use calm_core::geometry::Point;
 use calm_core::viewport::{NativePlacement, unzoom_mouse_position};
 use calm_native::NativeChild;
 use gpui::{
@@ -27,7 +27,6 @@ pub struct TerminalPanel {
     _theme: TerminalThemeState,
     focus: FocusHandle,
     placement: Option<NativePlacement>,
-    logical_size: Option<Size>,
     tick_task: Option<Task<()>>,
     visible: bool,
     window_focused: bool,
@@ -74,7 +73,6 @@ impl TerminalPanel {
                 _theme: theme,
                 focus,
                 placement: None,
-                logical_size: None,
                 tick_task: None,
                 visible: true,
                 window_focused: false,
@@ -124,14 +122,20 @@ impl TerminalPanel {
         let scale = f64::from(window.scale_factor());
         let viewport_height = f64::from(f32::from(window.viewport_size().height));
         self.host.apply(&placement, viewport_height, scale);
-        // Only a panel resize changes the grid; zoom only rescales the host.
+        // Zoom never reaches here as a size change, so the grid only reflows on resize.
+        // The surface dedupes unchanged frames and picks up display scale changes.
         let size = placement.logical_size;
-        if self.logical_size != Some(size) {
-            self.logical_size = Some(size);
-            self.surface
-                .set_frame(0.0, 0.0, size.width, size.height, scale);
-        }
+        self.surface
+            .set_frame(0.0, 0.0, size.width, size.height, scale);
         self.set_visible(true);
+    }
+
+    pub fn bring_to_front(&mut self) {
+        self.host.bring_to_front();
+    }
+
+    pub fn stack_index(&self) -> Option<usize> {
+        self.host.stack_index()
     }
 
     fn set_visible(&mut self, visible: bool) {

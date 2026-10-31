@@ -9,8 +9,11 @@ Ghostty surface parented to the zoom view at `(0, 0, logical size)`. The adapter
 - Every canvas paint computes `place_native(content_rect, camera, canvas)` per terminal,
   shifts it into window points and calls `TerminalPanel::set_placement`. `None` (minimized
   or off screen) hides the host. The process keeps running.
-- Zoom only changes the host's frames. `surface.set_frame` runs only when the logical size
-  changes, so only a panel resize reflows the grid.
+- Zoom only changes the host's frames. `surface.set_frame(0, 0, logical size, scale)` runs
+  on every placement; the surface skips unchanged frames, so only a panel resize reflows the
+  grid and a display scale change still reaches Ghostty.
+- Native views stack in creation order. When the scene's back-to-front order of terminals
+  changes, the canvas calls `NativeChild::bring_to_front` for each one, back to front.
 - An invisible GPUI div at the terminal's clipped screen rect holds focus and receives mouse
   and key events. Mouse positions go through `unzoom_mouse_position` before Ghostty sees them.
 - Keys typed in a terminal stop propagating, and `t`, `b`, `escape`, `enter` are bound to

@@ -61,10 +61,15 @@ fn smoke_fail(reason: &str) -> ! {
     std::process::exit(1);
 }
 
-/// Polls until both terminals have drawn a frame, then prints the result and quits.
+/// How long the native restack may take to show after the scene order changes.
+const SMOKE_ZORDER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Polls until both terminals have drawn a frame, raises the first one in the scene and
+/// checks that the native views restack to match. Prints the result and quits.
 fn wait_for_terminal_frames(view: Entity<CanvasView>, cx: &mut App) {
     let started = Instant::now();
     cx.spawn(async move |cx| {
+        let status_line;
         loop {
             cx.background_executor()
                 .timer(Duration::from_millis(100))
@@ -74,25 +79,52 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, cx: &mut App) {
                 smoke_fail(&format!("expected 2 terminals, found {}", status.len()));
             }
             let drawn = status.iter().all(|(frames, _)| *frames > 0);
-            if drawn || started.elapsed() > SMOKE_FRAME_TIMEOUT {
-                let frames: Vec<String> = status.iter().map(|(f, _)| f.to_string()).collect();
-                let alive: Vec<String> = status.iter().map(|(_, a)| a.to_string()).collect();
-                let line = format!(
-                    "smoke: terminals=2 frames=[{}] alive=[{}]",
-                    frames.join(","),
-                    alive.join(",")
-                );
-                if !drawn {
-                    smoke_fail(&format!("no frame within 10 s: {line}"));
+            if !drawn && started.elapsed() <= SMOKE_FRAME_TIMEOUT {
+                continue;
+            }
+            let frames: Vec<String> = status.iter().map(|(f, _)| f.to_string()).collect();
+            let alive: Vec<String> = status.iter().map(|(_, a)| a.to_string()).collect();
+            let line = format!(
+                "smoke: terminals=2 frames=[{}] alive=[{}]",
+                frames.join(","),
+                alive.join(",")
+            );
+            if !drawn {
+                smoke_fail(&format!("no frame within 10 s: {line}"));
+            }
+            if !status.iter().all(|(_, alive)| *alive) {
+                smoke_fail(&format!("a terminal exited: {line}"));
+            }
+            status_line = line;
+            break;
+        }
+        println!("{status_line}");
+
+        // The first terminal was created first, so it starts at the back.
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                if let Some(first) = view.scene.panels.first().map(|panel| panel.id) {
+                    view.scene.bring_to_front(first);
                 }
-                if !status.iter().all(|(_, alive)| *alive) {
-                    smoke_fail(&format!("a terminal exited: {line}"));
-                }
-                println!("{line}");
-                cx.update(|cx| cx.quit());
+                cx.notify();
+            })
+        });
+        let raised = Instant::now();
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let (scene, native) = cx.update(|cx| view.read(cx).terminal_zorder(cx));
+            let line = format!("zorder={native:?} scene={scene:?}");
+            if scene == native && scene.len() == 2 {
+                println!("smoke: {line}");
                 break;
             }
+            if raised.elapsed() > SMOKE_ZORDER_TIMEOUT {
+                smoke_fail(&format!("native order does not match the scene: {line}"));
+            }
         }
+        cx.update(|cx| cx.quit());
     })
     .detach();
 }
