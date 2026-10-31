@@ -359,6 +359,8 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             }
         }
 
+        smoke_settings_dispatch(&view, window, cx).await;
+
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
     })
@@ -569,6 +571,66 @@ fn load_startup_settings(path: std::path::PathBuf) -> SettingsState {
         path,
         notice: Some(notice),
     }
+}
+
+/// Opens Settings the way a menu click or `cmd-,` does: `OpenSettings` dispatched on the
+/// canvas window, so handlers run while GPUI holds that window. Calling `open_settings`
+/// directly skips that path, which is how a dead menu item once passed the smoke.
+async fn smoke_settings_dispatch(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use gpui::Action as _;
+    let (available, bindings) = cx.update(|cx| {
+        let available = cx.is_action_available(&settings_menu::OpenSettings);
+        let bindings = window
+            .update(cx, |_, window, _| {
+                window
+                    .bindings_for_action(&settings_menu::OpenSettings)
+                    .len()
+            })
+            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+        if let Some(settings_window) = &view.read(cx).settings_window {
+            settings_window.hide();
+        }
+        window
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(settings_menu::OpenSettings.boxed_clone(), cx)
+            })
+            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+        (available, bindings)
+    });
+    let started = Instant::now();
+    let (visible, on_screen) = loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let state = cx.update(|cx| {
+            view.read(cx)
+                .settings_window
+                .as_ref()
+                .map(|w| (w.is_visible(), w.is_on_screen()))
+                .unwrap_or((false, false))
+        });
+        if state.0 || started.elapsed() > Duration::from_secs(2) {
+            break state;
+        }
+    };
+    println!(
+        "smoke: settings_dispatch available={available} bindings={bindings} visible={visible} on_screen={on_screen}"
+    );
+    if !(available && bindings > 0 && visible && on_screen) {
+        smoke_fail("OpenSettings dispatched on the canvas window did not show Settings");
+    }
+    cx.update(|cx| {
+        if let Some(settings_window) = &view.read(cx).settings_window {
+            settings_window.hide();
+        }
+        window
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+    });
 }
 
 /// Sets a gradient background and the grid through the settings path, reads the file back,

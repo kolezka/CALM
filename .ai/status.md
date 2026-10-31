@@ -96,6 +96,10 @@ verified unless marked otherwise.
   Settings…, all through one global `OpenSettings` handler; a second open focuses the
   same window. A top-level menu bar item cannot fire an action in GPUI (each top-level
   `Menu` becomes an item with a submenu), so the Settings menu stays a menu.
+  The handler defers the open: GPUI runs it while it holds the canvas window, so a
+  direct `canvas.update` failed and all three entry points did nothing until this fix.
+  Smoke line `settings_dispatch` dispatches the action on the canvas window to cover it.
+  Manual pass with a terminal and a browser focused is pending.
 - Backgrounds: solid color, linear or radial gradient with 2 to 6 stops, image with
   cover, contain, tile or center and blur, brightness, contrast, saturation, grayscale
   and dim. Live on the canvas while editing.
