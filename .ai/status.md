@@ -112,6 +112,10 @@ Pull requests:
 ## In progress (not on `main`)
 
 - No PR yet: a Linux port plan.
+- `feat/api-v2-p6-coalescer`: plugin API v2 phase 6 core. `calm_plugins::events` has a pure
+  `Coalescer` (injected `Instant`, per `(event, panel)` latest wins, trailing send, discrete
+  events in order, `panelRemoved` drops a pending `panelChanged`, windows clamped 16 to
+  5000 ms) and `emit_batch_js`. Not wired: the host sends no events through it yet.
 
 ## Not wired yet
 
