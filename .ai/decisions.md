@@ -168,6 +168,8 @@ one means a new entry, not an edit.
 ## Plugin API v2 (2026-10-31)
 
 Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not implemented yet.
+(Since then phase 1 and the phase 6 core have landed, see "Plugin API v2 phase 1" and
+"Event coalescer" below.)
 
 - **Plugin panels are free-form HTML/TSX surfaces with native browser, terminal and
   plugin-to-plugin APIs.** The user asked for full customization. Cost: plugins get much
@@ -382,7 +384,8 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
 - **No runtime `calm.menus.register` yet.** It needs a per-plugin registry the bridge
   dispatcher can reach, which is being changed in parallel for `github.api`.
 - **`apiVersion` is not required for `contributes`.** The host does not read `apiVersion`
-  yet.
+  yet. (Second sentence superseded by #35: the host now reads `apiVersion`. `contributes`
+  still does not need it.)
 
 ## Plugin API v2 refresh (2026-10-31)
 
@@ -432,3 +435,89 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   forced while `show_fps` is on, so CPU-only mode does not measure its own 60 fps repaint.
   Sampling runs on the background executor on a timer, never in paint, and stops when
   CPU and memory are both hidden or the readout is off.
+
+## Plugin services (2026-10-31, PR #23)
+
+- **`github.api`, `storage.*` and `openExternal` run on the background executor.** They are
+  parsed on the UI thread and answered from a fresh GPUI task, never from inside the WebKit
+  message callback. Reason: a slow `gh` must not stall the canvas. Cost: two dispatch paths
+  (`plugin_services` and `dispatch`) that `served_methods` must keep in step; a test checks it.
+- **Storage is one JSON file per plugin** in `$CALM_HOME/plugin-data`, written to a temp
+  file and renamed. Keys up to 256 bytes, file up to 5 MiB. A corrupt file rejects every
+  call and is left alone, never replaced by `{}`. Cost: a corrupt file blocks that plugin's
+  storage until the user fixes or removes it.
+- **`openExternal` takes `http` and `https` only,** through `/usr/bin/open`. Cost: no
+  `mailto:` yet.
+- **`gh` may get a token from `.env`.** Order: `GH_TOKEN` or `GITHUB_TOKEN` in CALM's
+  environment, `$CALM_HOME/.env`, the checkout's `.env` in dev builds, else `gh`'s own
+  login. Only those two keys are read. The token reaches `gh` as `GH_TOKEN` in its child
+  environment, never in argv, and is replaced with `<redacted>` in output, errors and
+  Debug. A world-readable file warns. Reason: users without `gh auth login` could not use
+  the GitHub plugin. Cost: a token sits in a plain file the user must keep private.
+
+## Layout v2 (2026-10-31, PR #31)
+
+- **Unknown panel kinds keep their exact JSON bytes** (`PanelKind::Unsupported` with a
+  `RawValue`, never reserialized through `Value`) and save back unchanged. A known type with
+  a bad shape stays `Malformed`. Reason: a layout from a newer CALM or a missing plugin must
+  survive a load and save. Cost: such a panel shows chrome only.
+- **v1 files migrate on read and are never rewritten;** versions 0 and 3 and up fail with
+  `UnsupportedVersion`. Cost: an old file stays v1 on disk until something saves it.
+- **The resize policy is not saved;** it is derived from the kind on load, and ids are fresh
+  on every load. Reason: one source of truth in `calm-core::resize`. Cost: none known.
+- **Overrides are `title`, `icon`, `accent_color`,** field set agreed with the plugin API v2
+  owner. An empty `overrides` writes no key, and unknown override keys still load.
+
+## Plugin API v2 phase 1 (2026-10-31, PR #35)
+
+- **Every host reject carries a code.** `BridgeResponse::Err` holds an `ApiError`, so the
+  compiler rejects a bare string. The prelude maps a v1 string reject to `host_error`.
+  Cost: none known; plugins that matched on message text still get the same text.
+- **`settings.*` and `storage.*` on a non-plugin panel reject with `wrong_kind`,** not
+  `host_error`, as the spec table's closest code. Differs from the brief.
+- **`calm.has` is synchronous and reads `window.__calmHost`,** injected before the prelude
+  from `served_methods`. Reason: feature detection before any call. Cost: the list must
+  match what the host serves; a test checks every method against `route`.
+- **TUI manifests keep `contributes`** (follows #28) and refuse `main`, `backend`, `engines`
+  and `background`, each with its own error.
+- **`engines.bun` is syntax checked with a hand-written npm range grammar,** full
+  prerelease and build included. The `semver` crate was rejected: its `VersionReq` is Cargo
+  syntax, without `||`, hyphen ranges or space-separated comparators. Cost: a parser to
+  maintain.
+- **`storage.set` without `value` rejects with `invalid_params`; explicit `null` is
+  stored.** Reason: `calm.storage.set('k', undefined)` arrived as `{"key":"k"}` and
+  overwrote `k` with null. Cost: none known.
+- **A `main` that points at a missing file skips the plugin,** like `entry`. Cost: a plugin
+  whose backend is not built does not load.
+- **Not decided (open question 3):** `backend.restart` says `on-failure` and `never`, TUI
+  `restart` says `prompt`, `on-exit` and `never`.
+
+## Event coalescer (2026-10-31, PR #34)
+
+- **`bus` events are discrete,** never merged. The spec table lists no coalescing for them,
+  and merging would lose messages. Differs from the brief.
+- **Per-event default windows are left to the host** through `set_window`. Cost: the host
+  wiring must set `terminalOutput` 250 ms, `terminalBell` 1 s and `panelFocused` per frame.
+- **`emit_batch_js` has its own copy of the JS escaper.** Phase 2 unifies it with
+  `bridge.rs::js_literal`. Cost: two copies until then.
+
+## Session storage (2026-10-31, PR #36)
+
+- **One durable write path.** `write_durable`: exclusive 0600 temp in the same directory,
+  fsync, rename, directory fsync, temp removed on failure, new dirs 0700. Layouts and
+  `settings.json` use it, so `settings.json` is now 0600 too. Cost: a few fsyncs per save.
+- **Backups rotate once per writer, by copy.** `session.json` is copied to `.1`, never
+  moved, so the live file stays in place through rotation. Nothing rotates when
+  `session.json` is missing, so a failed restore that was moved aside never enters the
+  backups. Cost: lowering `backup_count` leaves older backups in place.
+- **The write path scrubs urls inside browser titles too.** A new browser panel is titled
+  with its url, so the query leaked through `title`. Urls over 8 KiB save as `about:blank`
+  in both modes.
+- **The setting is `session.debounce_ms`,** as the task brief asked; the plan table follows.
+
+## Smoke diagnostics (2026-10-31, PR #37)
+
+- **Diagnose before fixing the stats flake.** The stats step now separates "sampler has no
+  CPU reading" from "pill does not show it", without weakening the check. Reason: the old
+  step already polled for 5 s, so it was not an early read. Cost: the flake remains until
+  the paint stall is understood.

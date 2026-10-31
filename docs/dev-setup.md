@@ -23,9 +23,16 @@ cargo run -p calm-app -- --fullscreen
 cargo run -p calm-app -- --smoke; echo rc=$?   # GUI gate, exits 0 when the window and terminals work
 ```
 
-`--layout` and `--bench` are not built yet. Settings live in `~/.config/calm/settings.json`
-(`$CALM_HOME/settings.json` when `CALM_HOME` is set) and are edited in the Settings window
-(`cmd-,`).
+`--layout` and `--bench` are not built yet, and the canvas is not saved or restored between
+launches. Settings live in `~/.config/calm/settings.json` (`$CALM_HOME/settings.json` when
+`CALM_HOME` is set) and are edited in the Settings window (`cmd-,`). See
+[configuration.md](configuration.md). Smoke runs should use a throwaway home, for example
+`CALM_HOME=$(mktemp -d) cargo run -p calm-app -- --smoke`, so they never touch your real
+settings.
+
+For the GitHub PRs plugin, `gh auth login` is enough. Or put `GITHUB_TOKEN=<your token>` in
+`~/.config/calm/.env` (`chmod 600`); a dev build also reads `.env` at the checkout root,
+which `.gitignore` covers. See [plugins.md](plugins.md#github-access).
 
 Plugins are read from every directory in `CALM_PLUGIN_PATH` (colon separated), from
 `~/.config/calm/plugins/<id>/` (or `$CALM_HOME/plugins`), and, in a development build, from the
@@ -50,6 +57,9 @@ cargo test --workspace           # before a PR
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
+
+Some `calm-plugins` tests run JavaScript through bun and fail without it.
+`CALM_SKIP_BUN_TESTS=1` skips them.
 
 CI, the release workflow and the macOS bundle script are described in `docs/release.md`.
 
