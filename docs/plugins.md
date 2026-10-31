@@ -451,7 +451,7 @@ does not parse makes every call reject and is left as it is, never replaced by `
 | Call                           | Result                                            |
 | ------------------------------ | ------------------------------------------------- |
 | `calm.storage.get<T>(key)`     | The stored value, or `undefined` if there is none. |
-| `calm.storage.set(key, value)` | Stores a JSON value under `key`.                  |
+| `calm.storage.set(key, value)` | Stores a JSON value under `key`. `undefined` rejects with `invalid_params`; `null` is stored. |
 | `calm.storage.remove(key)`     | Deletes `key`.                                    |
 
 ### Panel

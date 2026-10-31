@@ -136,7 +136,11 @@ fn storage_call(
     Ok(match method {
         "storage.get" => ServiceCall::StorageGet { plugin, key },
         "storage.set" => {
-            let value = params.get("value").cloned().unwrap_or(Value::Null);
+            // A missing value is `set(k, undefined)` after JSON; storing null would erase `k`.
+            let value = params
+                .get("value")
+                .cloned()
+                .ok_or_else(|| ApiError::invalid_params("value", "is required"))?;
             ServiceCall::StorageSet { plugin, key, value }
         }
         _ => ServiceCall::StorageRemove { plugin, key },
@@ -365,6 +369,29 @@ pub(crate) mod tests {
             assert_eq!(api.code, code, "{err:?}");
             assert_eq!(api.message, err.to_string());
         }
+    }
+
+    #[test]
+    fn storage_set_needs_an_explicit_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let services = services(dir.path());
+        let set = |params| storage(&services, "storage.set", params);
+        assert_eq!(set(json!({ "key": "a", "value": 1 })), Ok(Value::Null));
+        // `calm.storage.set('a', undefined)` arrives without `value`; it must not erase `a`.
+        let missing = set(json!({ "key": "a" }));
+        assert_eq!(
+            missing,
+            Err(ApiError::invalid_params("value", "is required"))
+        );
+        assert_eq!(
+            storage(&services, "storage.get", json!({ "key": "a" })),
+            Ok(json!(1))
+        );
+        // An explicit null is a real value and is stored.
+        assert_eq!(set(json!({ "key": "a", "value": null })), Ok(Value::Null));
+        let file = dir.path().join("plugin-data/github-prs.json");
+        let on_disk: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(on_disk, json!({ "a": null }));
     }
 
     #[test]

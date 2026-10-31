@@ -285,8 +285,17 @@ fn parse_engines(value: &serde_json::Value) -> Result<Engines, String> {
 /// Syntax only, npm style: `||` alternatives of comparators (`>=1.2 <2`, `^1.2.3`, `~1`,
 /// `1.x`, `*`) or a hyphen range (`1.2 - 1.4`).
 fn is_semver_range(range: &str) -> bool {
+    // Dot-separated identifiers of `[0-9A-Za-z-]`, as in semver prerelease and build parts.
+    fn identifiers(text: &str) -> bool {
+        text.split('.')
+            .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    }
     fn version(text: &str) -> bool {
         let text = text.strip_prefix('v').unwrap_or(text);
+        let (text, build) = match text.split_once('+') {
+            Some((text, build)) => (text, Some(build)),
+            None => (text, None),
+        };
         let (core, pre) = match text.split_once('-') {
             Some((core, pre)) => (core, Some(pre)),
             None => (text, None),
@@ -297,13 +306,9 @@ fn is_semver_range(range: &str) -> bool {
                 (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
                     || matches!(*part, "x" | "X" | "*")
             });
-        let pre_ok = pre.is_none_or(|pre| {
-            parts.len() == 3
-                && pre
-                    .split('.')
-                    .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric()))
-        });
-        parts_ok && pre_ok
+        // Prerelease and build only follow a full `major.minor.patch`.
+        let suffix_ok = (pre.is_none() && build.is_none()) || parts.len() == 3;
+        parts_ok && suffix_ok && pre.is_none_or(identifiers) && build.is_none_or(identifiers)
     }
     fn comparator(text: &str) -> bool {
         let rest = [">=", "<=", ">", "<", "=", "^", "~"]
@@ -1080,6 +1085,35 @@ mod tests {
                 Err(expected.to_string()),
                 "{extra}"
             );
+        }
+    }
+
+    #[test]
+    fn semver_range_accepts_full_prerelease_and_build_grammar() {
+        for good in [
+            "^1.2.3-rc-1",
+            "^1.2.3+build.4",
+            "1.2.3-alpha.1+exp.sha.5114f85",
+            "=1.0.0-x-y-z.--",
+            "1.2.3-rc.1 - 1.4.0+b",
+            ">=1.1 <2",
+            "1.x",
+            "~1.2",
+        ] {
+            assert!(is_semver_range(good), "{good}");
+        }
+        for bad in [
+            "abc",
+            "^",
+            "1..2",
+            "1.2.3-",
+            "1.2.3+",
+            "1.2.3-rc..1",
+            "1.2.3+b..4",
+            "1.2.3-r_c",
+            "1.2+b",
+        ] {
+            assert!(!is_semver_range(bad), "{bad:?}");
         }
     }
 
