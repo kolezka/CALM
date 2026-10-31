@@ -1,7 +1,10 @@
-//! Menu bar: the app menu with Quit and the Developer menu with the FPS readout toggle.
+//! Menu bar: the app menu with Quit, the View menu with camera jumps and the Developer menu
+//! with the FPS readout toggle.
 
 use calm_core::frame_stats::FrameStats;
 use gpui::{App, KeyBinding, Menu, MenuItem, actions};
+
+use crate::canvas_view::{CenterOnOrigin, FitAll};
 
 actions!(calm, [ToggleFps, ResetFps, Quit]);
 
@@ -13,10 +16,14 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     ]
 }
 
-/// The first menu becomes the app menu on macOS, so Developer has to come second.
+/// The first menu becomes the app menu on macOS, so View and Developer come after it.
 pub fn menus(show_fps: bool) -> Vec<Menu> {
     vec![
         Menu::new("CALM").items([MenuItem::action("Quit CALM", Quit)]),
+        Menu::new("View").items([
+            MenuItem::action("Center on Origin", CenterOnOrigin),
+            MenuItem::action("Fit All Panels", FitAll),
+        ]),
         Menu::new("Developer").items([
             MenuItem::action("Show FPS", ToggleFps).checked(show_fps),
             MenuItem::action("Reset FPS Stats", ResetFps),

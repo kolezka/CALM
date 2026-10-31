@@ -104,11 +104,13 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
       var id = nextId++;
       pending.set(id, { resolve: resolve, reject: reject });
       try {
-        window.webkit.messageHandlers.calm.postMessage({
+        // A string arrives in the host as NSString; an object would arrive as an
+        // NSDictionary whose description is not JSON.
+        window.webkit.messageHandlers.calm.postMessage(JSON.stringify({
           id: id,
           method: request.method,
           params: request.params === undefined ? null : request.params
-        });
+        }));
       } catch (err) {
         pending.delete(id);
         reject(err);
@@ -120,11 +122,11 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
   // A failed log has nowhere better to go, so its error is dropped.
   function log(message) {
     try {
-      window.webkit.messageHandlers.calm.postMessage({
+      window.webkit.messageHandlers.calm.postMessage(JSON.stringify({
         id: nextId++,
         method: "log",
         params: { message: String(message) }
-      });
+      }));
     } catch (err) {}
   }
 
@@ -348,7 +350,9 @@ console.log(JSON.stringify(sent));"#,
 var failPosts = false;
 globalThis.window = { webkit: { messageHandlers: { calm: { postMessage: function (message) {
   if (failPosts) throw new Error("post failed");
-  posted.push(message);
+  // The host parses the body as JSON text, so anything but a string is a bug.
+  if (typeof message !== "string") throw new Error("postMessage body is not a JSON string");
+  posted.push(JSON.parse(message));
 } } } } };
 "#;
 
