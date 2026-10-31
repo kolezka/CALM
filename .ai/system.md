@@ -101,7 +101,8 @@ the GUI.
 
 Plugins are directories with `calm-plugin.json` and an HTML entry. The entry loads in a
 `WebPanel` with `CALM_PRELUDE_JS` defining `window.calm` (settings, storage, panel, canvas,
-process, github, openExternal, log, theme, events). Calls post JSON to the `calm` message
-handler; the host answers with `eval_js`. The host-side dispatcher is not wired in the app
-yet, so today no `window.calm` call resolves. First-party plugins are Preact TSX built with
+process, github, openExternal, log, theme, events). Calls post to the `calm` message
+handler as JSON strings; the host answers with `eval_js`. On `feat/menu-plugins` the app
+serves `log`, `panel.setTitle` and `settings.get/set`; the rest reject with
+`not implemented: <method>`. First-party plugins are Preact TSX built with
 bun. See `docs/plugins.md` and `packages/calm-plugin-sdk/calm.d.ts`.

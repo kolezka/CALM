@@ -1,5 +1,6 @@
 mod canvas_view;
 mod dev_menu;
+mod plugin_host;
 mod settings_menu;
 mod terminal;
 mod theme;
@@ -162,7 +163,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             cx.background_executor()
                 .timer(Duration::from_millis(50))
                 .await;
-            let (scene, native) = cx.update(|cx| view.read(cx).terminal_zorder(cx));
+            let (scene, native) = cx.update(|cx| view.read(cx).native_zorder(cx));
             let line = format!("zorder={native:?} scene={scene:?}");
             if scene == native && scene.len() == 2 {
                 println!("smoke: {line}");
@@ -174,6 +175,8 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 smoke_fail(&format!("native order does not match the scene: {line}"));
             }
         }
+
+        smoke_plugins(&view, window, cx).await;
 
         let toggled = cx.update_window(window, |_, window, cx| {
             view.update(cx, |view, cx| view.set_show_fps(true, window, cx))
@@ -295,10 +298,141 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 smoke_fail(&format!("terminals not live at zoom 1.5: {previews:?}"));
             }
         }
+
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+/// A fixture plugin whose page sets the title twice; the second call runs only after the
+/// host answered the first, so the final title proves load, prelude and bridge round trip.
+const SMOKE_PLUGIN_HTML: &str = r#"<!doctype html><body>smoke<script>
+calm.panel.setTitle("smoke-1").then(function () { return calm.panel.setTitle("smoke-ok"); });
+</script></body>"#;
+/// A plugin whose bundle was never built: the panel must say so.
+const SMOKE_UNBUILT_HTML: &str =
+    r#"<!doctype html><body><script src="dist/index.js"></script></body>"#;
+
+fn write_smoke_plugin(root: &std::path::Path, id: &str, html: &str) -> std::io::Result<()> {
+    let dir = root.join(id);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("index.html"), html)?;
+    let manifest = format!(
+        r#"{{"id":"{id}","name":"{id}","version":"0.1.0","entry":"index.html","defaultSize":{{"width":300,"height":160}}}}"#
+    );
+    std::fs::write(dir.join("calm-plugin.json"), manifest)
+}
+
+/// Adds a working and an unbuilt plugin panel from temp fixtures, waits for the working one
+/// to finish its bridge calls, and checks the shared native stack still follows the scene.
+async fn smoke_plugins(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let fixtures = match tempfile::Builder::new()
+        .prefix("calm-smoke-plugins-")
+        .tempdir()
+    {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("plugin temp dir: {err}")),
+    };
+    for (id, html) in [
+        ("smoke-plugin", SMOKE_PLUGIN_HTML),
+        ("smoke-unbuilt", SMOKE_UNBUILT_HTML),
+    ] {
+        if let Err(err) = write_smoke_plugin(fixtures.path(), id, html) {
+            smoke_fail(&format!("plugin fixture {id}: {err}"));
+        }
+    }
+    let discovery = calm_plugins::discover(&[fixtures.path().to_path_buf()]);
+    if discovery.plugins.len() != 2 || !discovery.errors.is_empty() {
+        smoke_fail(&format!(
+            "plugin fixtures not discovered: {:?}",
+            discovery.errors
+        ));
+    }
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.install_plugins(discovery.plugins);
+            let mut ids = Vec::new();
+            for (plugin_id, rect) in [
+                ("smoke-plugin", Rect::new(20.0, 240.0, 300.0, 160.0)),
+                ("smoke-unbuilt", Rect::new(380.0, 320.0, 300.0, 120.0)),
+            ] {
+                let kind = PanelKind::Plugin {
+                    plugin_id: plugin_id.to_string(),
+                    settings: serde_json::json!({}),
+                };
+                let id = view.scene.add(kind, rect);
+                view.open_plugin_panel(id, plugin_id, window)?;
+                ids.push(id);
+            }
+            cx.notify();
+            Ok::<_, String>(ids)
+        })
+    });
+    let ids = match opened {
+        Ok(Ok(ids)) => ids,
+        Ok(Err(err)) => smoke_fail(&format!("plugin panel: {err}")),
+        Err(err) => smoke_fail(&format!("plugin panel: {err:#}")),
+    };
+
+    let started = Instant::now();
+    loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let (title, status) = cx.update(|cx| {
+            let view = view.read(cx);
+            let title = view.scene.get(ids[0]).map(|panel| panel.title.clone());
+            (title, view.plugin_status())
+        });
+        if title.as_deref() == Some("smoke-ok") {
+            println!("smoke: plugin loaded=true bridge=ok title=smoke-ok");
+            match &status[1] {
+                (_, Some(err)) if err.contains("not built") => {
+                    println!("smoke: plugin unbuilt reported=true")
+                }
+                other => smoke_fail(&format!("unbuilt plugin not reported: {other:?}")),
+            }
+            break;
+        }
+        if started.elapsed() > SMOKE_FRAME_TIMEOUT {
+            smoke_fail(&format!(
+                "plugin bridge did not answer within 10 s: title={title:?} status={status:?}"
+            ));
+        }
+    }
+
+    // Raise the backmost terminal over the plugins: all native views must restack.
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            if let Some(first) = view.scene.panels.first().map(|panel| panel.id) {
+                view.scene.bring_to_front(first);
+            }
+            cx.notify();
+        })
+    });
+    let raised = Instant::now();
+    loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let (scene, native) = cx.update(|cx| view.read(cx).native_zorder(cx));
+        let line = format!("zorder={native:?} scene={scene:?}");
+        if scene == native && scene.len() == 4 {
+            println!("smoke: plugins {line}");
+            break;
+        }
+        if raised.elapsed() > SMOKE_ZORDER_TIMEOUT {
+            smoke_fail(&format!("native order with plugins does not match: {line}"));
+        }
+    }
+    if let Err(err) = fixtures.close() {
+        eprintln!("smoke: could not remove the plugin temp dir: {err}");
+    }
 }
 
 fn set_zoom(view: &Entity<CanvasView>, zoom: f64, cx: &mut App) {

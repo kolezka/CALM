@@ -1,7 +1,8 @@
 # Status
 
 Last updated: 2026-10-31. `main` with PRs #1 (recenter), #2 (panel menu actions), #3
-(panel chrome) and #4 (bottom bar) merged. Facts are verified unless marked otherwise.
+(panel chrome), #4 (bottom bar) and #5 (plugin panels) merged. Facts are verified unless
+marked otherwise.
 
 ## Done and merged to `main`
 
@@ -48,6 +49,23 @@ Last updated: 2026-10-31. `main` with PRs #1 (recenter), #2 (panel menu actions)
   hidden title; zoom, FPS and the save flash show in a native translucent pill at the
   bottom center (`calm_native::StatusBar`, rect from `calm_core::status_bar`). Smoke
   checks the bar is visible and above both terminals after a restack.
+- Plugin panels (PR #5): discovery at startup fills the right-click Add menu. Skipped
+  plugin folders print to stderr and show as `⚠ plugins: N errors` in the status bar pill.
+- Adding a plugin opens a Plugin panel (`crates/calm-app/src/plugin_host.rs`): a `WebPanel`
+  in a `NativeChild`, prelude injected at document start, entry loaded with `load_file`.
+  Placed like terminals: Live sets the frame each paint, Preview and Hidden hide the view
+  and draw the flat title rect. Terminals and plugins share one native stack that restacks
+  with the scene order.
+- Bridge: `log`, `panel.setTitle`, `settings.get`, `settings.set` are served. The other 13
+  methods reject with `not implemented: <method>`. `github-prs` renders but its list shows
+  that error until `github.api` is dispatched.
+- Fixed: the prelude posted plain objects, which WebKit delivers as an NSDictionary whose
+  description is not JSON. It now posts `JSON.stringify(...)`; the bun test fake rejects
+  non-string bodies.
+- An entry page whose local `<script src>` is missing (an unbuilt `dist/`) gets an error
+  page naming the file and the bun command, a `(not built)` title, and a stderr line.
+- Smoke adds two fixture plugins and prints `plugin loaded=true bridge=ok title=smoke-ok`,
+  `plugin unbuilt reported=true` and a four-panel `plugins zorder` line.
 
 ## Verified on hardware
 
@@ -58,8 +76,11 @@ CI run on `main` green (linux-arch success, macos skipped).
 ## Not wired yet
 
 - Browser panels in the canvas (`WebPanel` exists; Task 10 app wiring pending).
-- Plugin host in the app: 17-method dispatcher, `canvas.createPanel`, settings and
-  storage, `gh` dispatch. Today no `window.calm` call resolves (Tasks 11 and 12 app parts).
+- Plugin host, rest of the dispatcher: storage, `panel.getBounds/minimize/close`,
+  `canvas.*`, `process.exec`, `github.api`, `openExternal`, `theme.get`, and host events.
+  Plugin panel settings are not saved anywhere yet (layouts are not wired).
+- Clicking inside a plugin page does not focus or raise its panel in the scene; AppKit
+  routes the click to the WKWebView directly. Unverified how keys behave while it has focus.
 - Layout save and load in the app (`--layout`, Task 13). The core format exists.
 - Benchmark mode (`--bench`, Task 14) and `docs/benchmarks.md`.
 - `docs/architecture.md` refresh for the whole system (Task 15; the graph part is done).
@@ -82,8 +103,9 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 - `docs/dev-setup.md` lists `--layout work` and `--bench 20` as run commands; neither flag
   exists yet.
-- Smoke fails on `main` (7d53cbb and later) under heavy load (load average 17 to 40) with
-  only `preview_snapshots_in_3s=[0,0]`; every other smoke line passes. Cause unconfirmed.
+- The smoke's preview refresh step is intermittent: only `preview_snapshots_in_3s=[0,0]`
+  fails, on `main` and on branches alike, more often under heavy load (load average 17 to
+  40); every other smoke line passes. Cause unconfirmed.
 - Escape on the close confirmation does not trigger a redraw until the next event.
 - Panel bottom corners are square because the native view is square. Rounding them needs a
   corner radius on the clip view layer in `calm-native`.
