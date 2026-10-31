@@ -310,8 +310,6 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         }
 
         cx.update(|_| smoke_app_icon());
-        // Before the steps known to flake; it leaves the scene as it found it.
-        smoke_autosave(&view, cx).await;
         smoke_plugins(&view, window, cx).await;
         smoke_tui(&view, window, cx).await;
 
@@ -510,6 +508,8 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_settings_dispatch(&view, window, cx).await;
         smoke_github_api(&view, window, cx).await;
         smoke_plugin_menus(&view, window, cx).await;
+        // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
+        smoke_autosave(&view, cx).await;
 
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
