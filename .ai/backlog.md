@@ -1,8 +1,8 @@
 # Backlog
 
-Agreed follow-ups that nobody is working on yet. Checked against `origin/main` at
-`7de2c55` (PRs #1 to #37 merged) on 2026-10-31. When an item gets an owner or a branch,
-move it to `status.md` under "In progress" and delete it here.
+Agreed follow-ups with remaining unassigned work. Checked against `origin/main` at
+`7de2c55` (PRs #1 to #37 merged) on 2026-10-31. Move an item to `status.md` under
+"In progress" once all of its remaining work has an owner or branch.
 
 ## Open items
 
@@ -70,17 +70,19 @@ Seen several times on 2026-10-31:
 - `preview_snapshots_in_3s=[0,0]`, often with `window_visible=Some(false)`. The window is
   occluded or not key, and GPUI stops painting it.
 - "terminals not live at zoom 1.5".
-- Twice, native z-order not matching the scene: `zorder=[1, 2] scene=[2, 1]` and
-  `zorder=[1,2,3] scene=[2,3,1]`.
+- Native z-order mismatch: `zorder=[1, 2] scene=[2, 1]` and
+  `zorder=[1,2,3] scene=[2,3,1]`. Traced to restacking only during paint: an occluded
+  window can stop painting while scene changes and new native panels arrive. The
+  `fix/native-zorder-desync` branch restacks on scene changes and native creation; pending
+  merge. Its smoke checks both reorder directions immediately, without waiting for paint.
 - Stats step: "stats: sampler has CPU but the status bar does not show it" (pill stuck at
   `--% CPU` while the sampler has a reading), and "only 1 frames with show_stats on". Both
   look like paint stalling after the stats toggle, likely the same occlusion cause.
 
-- State: cause unconfirmed. Load was suspected. Occlusion is likely for the first two. The
-  z-order one may be a real ordering bug.
-- Fix direction: make smoke independent of window visibility, or bring the window to the
-  front before the checks. Add a deterministic z-order check that reorders panels and
-  compares native order with scene order right after placement.
+- State: native z-order root cause verified and fix pending merge. The preview, terminal
+  mode and stats failures remain open; their causes have not been isolated.
+- Fix direction for remaining failures: make their checks independent of window visibility
+  or bring the window to the front before checking paint-dependent state.
 - Origin: smoke runs during the prototype merges (`status.md`, "Known small issues").
 
 ### 7. Example plugins that use the SDK widely
