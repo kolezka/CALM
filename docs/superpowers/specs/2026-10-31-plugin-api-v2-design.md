@@ -615,10 +615,11 @@ persistence, no replay: a page that subscribes later misses earlier messages.
 
 | Method                  | Wire         | Result                                                         |
 | ----------------------- | ------------ | -------------------------------------------------------------- |
-| `notify(text, opts?)`   | `ui.notify`  | Shows `text` in the status strip for `opts.seconds` (default 4, max 15), prefixed with the plugin name. |
+| `notify(text, opts?)`   | `ui.notify`  | Shows `text` in the floating status bar for `opts.seconds` (default 4, max 15), prefixed with the plugin name. |
 
-The status strip sits above the canvas viewport, so no native view covers it. That makes it
-the cheap toast. No modal UI from plugins in v2.
+The status bar (PR #4, `calm_core::status_bar`, drawn by `calm-native/src/status_bar.rs`)
+is a native view that draws above terminals, so nothing covers it. That makes it the cheap
+toast. No modal UI from plugins in v2.
 
 ### Other v1 calls, now served
 
@@ -695,7 +696,7 @@ menu; `when` takes `kind == terminal|browser|plugin` only, nothing richer in v2.
 `keybindings` binds a key in the `Canvas` key context only, never while a terminal or
 browser has keyboard focus, so a plugin cannot steal keys from a shell. A binding that
 collides with a built-in or with an earlier plugin is skipped and reported on stderr and in
-the toolbar error count.
+the status bar error count.
 
 Choosing an item sends a `command` event to the plugin's background page if it has one,
 otherwise to its most recently focused panel, otherwise CALM opens a new panel of the
@@ -928,7 +929,7 @@ env.
 - Socket path (per PR #9): `$CALM_HOME/run/ctl.sock`, default `~/.config/calm/run`. The
   directory is created 0700 under `umask 0177`. If it exists, CALM checks that it is not a
   symlink, that the owner is the current uid and the mode is 0700, and refuses to start the
-  channel otherwise (logged, shown in the toolbar error count). A path over the 104 byte
+  channel otherwise (logged, shown in the status bar error count). A path over the 104 byte
   `sun_path` limit is refused with a message naming the limit and the path.
 - At launch: remove a stale socket and token in that directory, generate 32 random bytes
   from the OS RNG, write them hex encoded to `<dir>/token` with `create_new` and mode 0600,
