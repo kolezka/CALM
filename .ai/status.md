@@ -142,6 +142,15 @@ research doc and grid styles. Facts are verified unless marked otherwise.
 - The 16 px mark reads as a C without a prompt; the 32 px mark shows panel tiles and `>_`.
   Visual judgment of the logo and icon by the user is pending.
 
+## On `feat/app-icon-runtime` (PR open, not merged)
+
+- `calm_native::app_icon` sets the embedded 512 px brand PNG as the application icon at
+  startup when no bundle icon is present, and opens the standard About panel from a new
+  "About CALM" app menu item (icon, Cargo version, credits line).
+- Smoke prints `app_icon set=... size=WxH` and fails unless the brand image is set. Unit
+  tests decode the embedded PNG and reject garbage, empty, truncated and corrupted bytes.
+- Unverified: the Dock, cmd-tab and About panel by eye (agents do not drive the GUI).
+
 ## On `fix/panel-resize` (PR open, not merged)
 
 - Fixed: browser panels could not be resized. The 12 unit grab band sat inside the

@@ -242,6 +242,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             }
         }
 
+        cx.update(|_| smoke_app_icon());
         smoke_plugins(&view, window, cx).await;
         smoke_tui(&view, window, cx).await;
 
@@ -1169,6 +1170,28 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
     window.activate_window();
 }
 
+/// Brand icon for the Dock, cmd-tab, About and alerts when running without a bundle.
+/// A failure keeps the default icon and is logged, never fatal.
+fn install_app_icon() {
+    match calm_native::app_icon::install_app_icon() {
+        Ok(_) => {}
+        Err(err) => eprintln!("calm: app icon not set, using the default: {err}"),
+    }
+}
+
+/// The application icon must be the embedded brand image when running unbundled.
+fn smoke_app_icon() {
+    match calm_native::app_icon::app_icon_state() {
+        Ok((set, w, h)) => {
+            println!("smoke: app_icon set={set} size={w}x{h}");
+            if !set || w <= 0.0 || h <= 0.0 {
+                smoke_fail("app icon is not the brand image");
+            }
+        }
+        Err(err) => smoke_fail(&format!("app icon state: {err}")),
+    }
+}
+
 fn main() {
     let args = parse_args();
     gpui_platform::application().run(move |cx: &mut App| {
@@ -1176,6 +1199,7 @@ fn main() {
         cx.bind_keys(dev_menu::key_bindings());
         cx.bind_keys(settings_menu::key_bindings());
         dev_menu::install(cx);
+        install_app_icon();
         if args.smoke {
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {

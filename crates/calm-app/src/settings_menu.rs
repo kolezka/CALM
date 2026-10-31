@@ -35,12 +35,14 @@ pub fn key_bindings() -> Vec<KeyBinding> {
 }
 
 /// Every menu bar menu, so the Developer and Settings menus are always set together.
-/// The app menu gets the standard "Settings…" item first, as macOS apps have it.
+/// The app menu gets the standard "Settings…" item after About, as macOS apps have it.
 pub fn menus(show_fps: bool, settings: &Settings) -> Vec<Menu> {
     let mut menus = dev_menu::menus(show_fps);
     if let Some(app_menu) = menus.first_mut() {
+        // After "About CALM" and its separator.
+        let at = app_menu.items.len().min(2);
         app_menu.items.splice(
-            0..0,
+            at..at,
             [
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::separator(),
@@ -325,8 +327,12 @@ mod tests {
                 ("Settings".to_string(), "Open Settings…".to_string()),
             ]
         );
-        // The app menu item comes first, as on every macOS app.
-        assert!(matches!(&menus[0].items[0], MenuItem::Action { name, .. } if name == "Settings…"));
+        // About first, then Settings, as on every macOS app.
+        assert!(
+            matches!(&menus[0].items[0], MenuItem::Action { name, .. } if name == "About CALM")
+        );
+        assert!(matches!(&menus[0].items[1], MenuItem::Separator));
+        assert!(matches!(&menus[0].items[2], MenuItem::Action { name, .. } if name == "Settings…"));
         assert!(
             matches!(&menus.last().unwrap().items[0], MenuItem::Action { name, .. } if name == "Open Settings…")
         );

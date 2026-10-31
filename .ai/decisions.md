@@ -253,3 +253,24 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   wins and the shadowing is logged. Off with `plugins.builtin=false` or
   `CALM_NO_BUILTIN_PLUGINS=1`. Reason: `gmake plugins && cargo run` showed no plugins. Cost:
   the dev path is baked in at compile time, so a moved checkout needs a rebuild.
+
+## Runtime app icon and About panel (2026-10-31)
+
+- **An unbundled run sets the brand icon at runtime.** `calm_native::app_icon` embeds
+  `CALM.iconset/icon_512x512.png` and calls `setApplicationIconImage` at startup, so
+  `cargo run` shows it in the Dock, cmd-tab, About and any NSAlert. When the main bundle
+  names `CFBundleIconFile` it does nothing: the bundle's `CALM.icns` has the hand-tuned 16
+  and 32 px sizes, and one 512 px image would replace them. gpui-pre 0.3.4 has no app icon
+  API, so this is raw AppKit. Cost: the binary carries a 3 KB PNG.
+- **A broken icon logs and keeps the default.** Bytes are fully decoded with the `image`
+  crate first, because NSImage reads only the header and would accept corrupt pixel data.
+  Never a panic, never silent. AppKit stores a re-rendered copy with no name and other
+  bytes, so the install reads the icon back and errors if it still equals the default; the
+  smoke fails unless that readback passed.
+- **"About CALM" is the first app menu item** and opens the standard About panel with the
+  brand icon, the Cargo version and one fixed credits line. No settings: it is app identity,
+  like the brand palette above. "Settings…" now comes after About.
+- **Alerts inherit the icon.** gpui-pre's `prompt` builds `NSAlert::new` without an icon, and
+  NSAlert then shows the application icon. CALM itself shows no NSAlert today (close
+  confirmation is drawn in GPUI), so no `alert.icon` is set. macOS windows have no per-window
+  icon, so the Settings window and status bar get nothing.
