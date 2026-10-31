@@ -7,6 +7,7 @@ Target machine: an arm64 Mac on macOS 14 or newer. Other platforms are not suppo
 - Rust 1.95 or newer: `rustup update stable`
 - Zig 0.16 (the Ghostty build needs exactly this series): `brew install zig@0.16`
 - Xcode command line tools (`xcode-select --install`)
+- Xcode Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain` (needed by the GPUI build)
 - `gh` logged in (`gh auth login`) for the GitHub pull-request plugin
 - `bun` for building TSX plugins (`curl -fsSL https://bun.sh/install | bash`)
 
