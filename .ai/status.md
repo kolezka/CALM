@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-31, against `origin/main` at `a17fac3` (PRs #1 to #21, #23 to #28 merged). This
+Last updated: 2026-10-31, against `origin/main` at `47c517c` plus #22 (PRs #1 to #28 merged). This
 file describes `main`, not branches. Facts are verified against the code unless marked
 otherwise.
 
@@ -102,10 +102,11 @@ Pull requests:
   `GH_TOKEN`/`GITHUB_TOKEN` from CALM's env, then `$CALM_HOME/.env`, then (dev builds) the
   workspace `.env`, else `gh`'s own login; passed as child env `GH_TOKEN`, never argv, and
   redacted in output and Debug. Smoke `github.api ok` runs against a fake `gh` script.
+- #22 Plugin API v2 design refresh: layouts (`layouts.*`, `session.saveNow`) added as phase
+  16. Design only.
 
 ## In progress (not on `main`)
 
-- #22 (open): refresh of the plugin API v2 design, including layouts as a v2 phase.
 - No PR yet: a Linux port plan.
 
 ## Not wired yet

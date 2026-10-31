@@ -280,9 +280,6 @@ Plan in `docs/superpowers/plans/2026-10-31-canvas-persistence.md`, approved by t
   `strip_all`; `keep` is opt-in. Reason: the "no credentials in layouts" rule, and tokens
   often ride in query strings. A name list (`strip_sensitive`) was rejected as best effort.
   Cost: pages that need their query reopen without it.
-- **Layouts move into plugin API v2 as a phase.** The v2 design had layouts as a non-goal;
-  the persistence plan needs `layouts.*` and `session.saveNow`. The design text is in PR #22
-  (open). Cost: a larger v2 surface.
 
 ## Platform (2026-10-31)
 
@@ -352,3 +349,12 @@ Plan in `docs/superpowers/plans/2026-10-31-canvas-persistence.md`, approved by t
   dispatcher can reach, which is being changed in parallel for `github.api`.
 - **`apiVersion` is not required for `contributes`.** The host does not read `apiVersion`
   yet.
+
+## Plugin API v2 refresh (2026-10-31)
+
+- **Layouts move into plugin API v2 as phase 16.** The v2 design listed layout save and
+  load as a non-goal; the canvas persistence plan needs `layouts.list`, `save`, `open`,
+  `delete` and `session.saveNow`, so the design now has them. `layouts.open` closes live
+  terminals only through the user's confirmation, and the write methods sit in the
+  external socket's `layout` group. The plan's File menu and restore on launch are
+  decided. Cost: phase 16 waits on the plan's PRs 1 to 7.
