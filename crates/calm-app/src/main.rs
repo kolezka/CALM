@@ -26,7 +26,8 @@ fn parse_args() -> Args {
     args
 }
 
-/// Two placeholders at zoom 1.5, so the smoke frame paints real panels.
+/// Two placeholders at zoom 1.5, so the smoke frame paints real panels. The first
+/// starts above the canvas so its chrome and title cross the toolbar edge.
 fn add_smoke_panels(view: &mut CanvasView) {
     view.scene.camera.zoom = 1.5;
     view.scene.add(
@@ -34,7 +35,7 @@ fn add_smoke_panels(view: &mut CanvasView) {
             command: None,
             cwd: None,
         },
-        Rect::new(20.0, 20.0, 320.0, 200.0),
+        Rect::new(20.0, -20.0, 320.0, 200.0),
     );
     view.scene.add(
         PanelKind::Browser {
@@ -104,9 +105,12 @@ fn main() {
             view
         });
         if let Err(err) = opened {
-            eprintln!("calm: failed to open window: {err:#}");
-            cx.quit();
-            return;
+            if smoke {
+                eprintln!("smoke: FAILED open_window: {err:#}");
+            } else {
+                eprintln!("calm: failed to open window: {err:#}");
+            }
+            std::process::exit(1);
         }
         cx.activate(true);
     });

@@ -244,6 +244,8 @@ impl PaintSnapshot {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             window.paint_quad(fill(bounds, rgb(theme::BACKGROUND)));
             let camera = self.scene.camera;
+            // Panels paint inside this mask; nested masks intersect with it, so nothing
+            // a panel draws can reach the toolbar.
             for panel in &self.scene.panels {
                 self.paint_panel(panel, origin, window, cx);
             }
