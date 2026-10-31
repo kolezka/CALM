@@ -1,5 +1,6 @@
 //! GPUI-free model for CALM: geometry, camera, scene, interaction and layouts.
 
+pub mod autosave;
 pub mod background;
 pub mod browser_url;
 pub mod camera;

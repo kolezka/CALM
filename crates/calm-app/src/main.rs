@@ -508,6 +508,8 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_settings_dispatch(&view, window, cx).await;
         smoke_github_api(&view, window, cx).await;
         smoke_plugin_menus(&view, window, cx).await;
+        // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
+        smoke_autosave(&view, window, cx).await;
 
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
@@ -1335,7 +1337,14 @@ async fn smoke_plugin_menus(
                 .collect();
             match opened[..] {
                 [(panel, origin)] if view.scene.panels.len() == before + 1 => {
-                    Ok((panel, origin, world))
+                    // The menu path stamps the installed manifest version on the kind.
+                    match view.scene.get(panel).map(|panel| &panel.kind) {
+                        Some(PanelKind::Plugin {
+                            plugin_version: Some(version),
+                            ..
+                        }) if version == "0.1.0" => Ok((panel, origin, world)),
+                        other => Err(format!("plugin_version not from the manifest: {other:?}")),
+                    }
                 }
                 _ => Err(format!("canvas item opened {opened:?}")),
             }
@@ -1786,6 +1795,9 @@ fn main() {
             let view = cx.new(|cx| {
                 let mut view = CanvasView::new(builtin_plugins, cx);
                 view.set_settings_state(settings);
+                if !smoke {
+                    view.start_autosave_at_launch(cx);
+                }
                 if smoke && let Err(err) = add_smoke_panels(&mut view, window, cx) {
                     smoke_fail(&format!("terminal spawn: {err}"));
                 }
@@ -1832,4 +1844,241 @@ fn main() {
         }
         cx.activate(true);
     });
+}
+
+/// How long the smoke waits for a debounced save to reach the disk.
+const SMOKE_AUTOSAVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The `type` of each saved panel kind, back to front.
+fn layout_kinds(layout: &calm_core::layout::LayoutFile) -> Vec<String> {
+    layout
+        .panels
+        .iter()
+        .map(|panel| match serde_json::to_value(&panel.kind) {
+            Ok(value) => value["type"].as_str().unwrap_or("?").to_string(),
+            Err(_) => "?".to_string(),
+        })
+        .collect()
+}
+
+/// Kind and rect of each panel, back to front: what must survive a save in order.
+fn layout_order(
+    layout: &calm_core::layout::LayoutFile,
+) -> Vec<(String, calm_core::geometry::Rect)> {
+    layout_kinds(layout)
+        .into_iter()
+        .zip(layout.panels.iter().map(|panel| panel.rect))
+        .collect()
+}
+
+/// Sets `session.autosave` through the same path the Settings window uses.
+fn smoke_set_autosave(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    on: bool,
+    cx: &mut gpui::AsyncApp,
+) {
+    let set = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.update_settings(|s| s.session.autosave = on, window, cx);
+        });
+    });
+    if let Err(err) = set {
+        smoke_fail(&format!("autosave: settings update: {err}"));
+    }
+}
+
+/// Drives autosave in the smoke's own temp dir (never the user's session): an untouched
+/// scene writes nothing, a change is written after the debounce, and the quit hook writes
+/// a newer order at once. Each file is decoded and compared with the scene.
+async fn smoke_autosave(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let dir = SMOKE_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|dir| dir.path().to_path_buf());
+    let Some(dir) = dir else {
+        smoke_fail("autosave: no smoke dir");
+    };
+    let path = dir.join("session.json");
+    let read = || calm_core::layout::load_layout_from(&dir, "session");
+    let started = view.update(cx, |view, cx| view.start_autosave(path.clone(), cx));
+    if let Err(err) = started {
+        smoke_fail(&format!("autosave start: {err}"));
+    }
+    let debounce = view.read_with(cx, |view, _| view.settings.settings.session.debounce_ms);
+    let debounce = Duration::from_millis(debounce);
+
+    // No change: nothing may be written, even after the quiet period.
+    view.update(cx, |_, cx| cx.notify());
+    cx.background_executor().timer(debounce * 2).await;
+    if path.exists() {
+        smoke_fail("autosave: wrote an unchanged scene");
+    }
+
+    // A move, then wait for the debounced write.
+    let original = view.read_with(cx, |view, _| view.scene.to_layout());
+    let first = view.read_with(cx, |view, _| {
+        view.scene.panels.first().map(|panel| panel.id)
+    });
+    view.update(cx, |view, cx| {
+        if let Some(id) = first
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.x += 16.0;
+        }
+        // An explicit tick: a window that is not painting would never run the render hook.
+        // The debounce timer it sets still does the write.
+        view.autosave_tick(cx);
+        cx.notify();
+    });
+    let started = Instant::now();
+    let saved = loop {
+        if let Ok(layout) = read() {
+            break layout;
+        }
+        if started.elapsed() > debounce + SMOKE_AUTOSAVE_TIMEOUT {
+            smoke_fail(&format!("autosave: no session file: {:?}", read().err()));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    };
+    let expected = view.read_with(cx, |view, _| view.scene.to_layout());
+    if layout_order(&saved) != layout_order(&expected) {
+        smoke_fail(&format!(
+            "autosave: saved {:?}, scene {:?}",
+            layout_order(&saved),
+            layout_order(&expected)
+        ));
+    }
+
+    // The quit hook writes a newer change at once, before any debounce. A move, not a
+    // reorder: a reorder and back leaves the native stack out of order (backlog item 6).
+    let last = view.read_with(cx, |view, _| view.scene.panels.last().map(|panel| panel.id));
+    let after_quit = view.update(cx, |view, _| {
+        if let Some(id) = last
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.y += 16.0;
+        }
+        view.save_on_quit();
+        view.scene.to_layout()
+    });
+    let on_disk = match read() {
+        Ok(layout) => layout,
+        Err(err) => smoke_fail(&format!("autosave: quit write unreadable: {err}")),
+    };
+    if layout_order(&on_disk) != layout_order(&after_quit) {
+        smoke_fail(&format!(
+            "autosave: quit wrote {:?}, scene {:?}",
+            layout_order(&on_disk),
+            layout_order(&after_quit)
+        ));
+    }
+    // Let any timer left from the move fire; an older write must not replace the quit file.
+    cx.background_executor().timer(debounce * 2).await;
+    let settled = read().ok().map(|layout| layout_order(&layout));
+    if settled != Some(layout_order(&after_quit)) {
+        smoke_fail(&format!("autosave: file changed after quit: {settled:?}"));
+    }
+    // The settings path applies `session.autosave` live: off stops the timer and the quit
+    // write, on starts again. The gate opens only for this step.
+    view.update(cx, |view, _| view.autosave_gate = true);
+    smoke_set_autosave(view, window, false, cx);
+    let writes_before = view.read_with(cx, |view, _| view.autosave_writes);
+    view.update(cx, |view, cx| {
+        if let Some(id) = first
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.y += 16.0;
+        }
+        view.autosave_tick(cx);
+        cx.notify();
+    });
+    cx.background_executor().timer(debounce * 2).await;
+    view.update(cx, |view, _| view.save_on_quit());
+    let off_disk = read().ok().map(|layout| layout_order(&layout));
+    let writes_off = view.read_with(cx, |view, _| view.autosave_writes);
+    if off_disk != Some(layout_order(&after_quit)) || writes_off != writes_before {
+        smoke_fail(&format!(
+            "autosave: wrote while session.autosave was off: writes {writes_before}->{writes_off}"
+        ));
+    }
+    smoke_set_autosave(view, window, true, cx);
+    view.update(cx, |view, cx| {
+        if let Some(id) = first
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.y += 16.0;
+        }
+        view.autosave_tick(cx);
+        cx.notify();
+    });
+    let started = Instant::now();
+    loop {
+        let expected = view.read_with(cx, |view, _| layout_order(&view.scene.to_layout()));
+        if read().ok().map(|layout| layout_order(&layout)) == Some(expected) {
+            break;
+        }
+        if started.elapsed() > debounce + SMOKE_AUTOSAVE_TIMEOUT {
+            smoke_fail("autosave: no write after turning session.autosave back on");
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    view.update(cx, |view, _| {
+        view.autosave_gate = calm_core::autosave::APP_AUTOSAVE_ACTIVE;
+    });
+    println!("smoke: autosave live_toggle off=no_write on=write");
+    // Undo the move and the reorder, so later steps see the scene they expect.
+    let written = view.update(cx, |view, cx| {
+        view.stop_autosave();
+        if let Some(id) = last
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.y -= 16.0;
+        }
+        if let Some(id) = first
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.x -= 16.0;
+            panel.rect.origin.y -= 32.0;
+        }
+        cx.notify();
+        view.autosave_writes
+    });
+    let restored = view.read_with(cx, |view, _| view.scene.to_layout());
+    if layout_order(&restored) != layout_order(&original) {
+        smoke_fail("autosave: could not put the scene back");
+    }
+    // The reorder restacked the native views; wait for a paint to restack them back.
+    let started = Instant::now();
+    loop {
+        let (scene, native) = cx.update(|cx| view.read(cx).native_zorder(cx));
+        if scene == native {
+            break;
+        }
+        if started.elapsed() > SMOKE_AUTOSAVE_TIMEOUT {
+            smoke_fail(&format!(
+                "autosave: native order {native:?}, scene {scene:?}"
+            ));
+        }
+        view.update(cx, |_, cx| cx.notify());
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    if written < 2 {
+        smoke_fail(&format!("autosave: written={written}, expected at least 2"));
+    }
+    println!(
+        "smoke: autosave written={written} kinds={} order=match",
+        layout_kinds(&on_disk).join(",")
+    );
 }

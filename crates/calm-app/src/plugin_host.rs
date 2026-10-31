@@ -4,7 +4,7 @@
 use crate::plugin_services::ServiceCall;
 use calm_core::geometry::Size;
 use calm_core::preview::PanelMode;
-use calm_core::scene::{Panel, PanelId, PanelKind};
+use calm_core::scene::{Panel, PanelId, PanelKind, Scene};
 use calm_core::viewport::NativePlacement;
 use calm_native::{NativeChild, WebPanel};
 use calm_plugins::{
@@ -352,6 +352,22 @@ pub fn route(panel: &mut Panel, request: &BridgeRequest) -> Route {
     }
 }
 
+/// Bridge methods that change their panel. Only these take mutable access to the scene,
+/// so read-only calls never count as a change for autosave.
+pub fn mutates_panel(method: &str) -> bool {
+    matches!(method, "panel.setTitle" | "settings.set")
+}
+
+/// Routes one call for panel `id` in `scene`. `None` when the panel is gone. Read-only
+/// methods run on a copy, so they leave the scene revision alone.
+pub fn route_in_scene(scene: &mut Scene, id: PanelId, request: &BridgeRequest) -> Option<Route> {
+    if mutates_panel(&request.method) {
+        return Some(route(scene.get_mut(id)?, request));
+    }
+    let mut panel = scene.get(id)?.clone();
+    Some(route(&mut panel, request))
+}
+
 /// The reply for a finished background call.
 pub fn service_reply(id: u64, result: Result<Value, ApiError>) -> BridgeResponse {
     match result {
@@ -384,6 +400,46 @@ mod tests {
             id,
             method: method.to_string(),
             params,
+        }
+    }
+
+    #[test]
+    fn read_only_bridge_calls_leave_the_scene_revision_alone() {
+        let (mut scene, id) = plugin_panel();
+        let before = scene.sync_revision();
+        let reads = [
+            call(1, "log", json!({ "message": "hi" })),
+            call(2, "settings.get", Value::Null),
+            call(3, "storage.get", json!({ "key": "k" })),
+            call(4, "github.api", json!({ "path": "/user" })),
+            call(5, "panel.getBounds", Value::Null),
+            call(6, "nope", Value::Null),
+        ];
+        for request in &reads {
+            assert!(route_in_scene(&mut scene, id, request).is_some());
+        }
+        assert_eq!(scene.sync_revision(), before, "a read bumped the revision");
+        let rename = call(7, "panel.setTitle", json!({ "title": "New" }));
+        route_in_scene(&mut scene, id, &rename);
+        assert_ne!(
+            scene.sync_revision(),
+            before,
+            "setTitle must bump the revision"
+        );
+        assert_eq!(scene.get(id).unwrap().title, "New");
+        assert_eq!(route_in_scene(&mut scene, PanelId(99), &rename), None);
+    }
+
+    #[test]
+    fn only_the_listed_methods_change_the_panel() {
+        let (scene, id) = plugin_panel();
+        for (n, method) in calm_plugins::BRIDGE_METHODS.iter().enumerate() {
+            if mutates_panel(method) {
+                continue;
+            }
+            let mut panel = scene.get(id).unwrap().clone();
+            let _ = route(&mut panel, &call(n as u64, method, json!({ "title": "x" })));
+            assert_eq!(&panel, scene.get(id).unwrap(), "{method} changed the panel");
         }
     }
 

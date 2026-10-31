@@ -152,7 +152,7 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PanelId {
-        let id = self.scene.add(kind.clone(), rect);
+        let (id, kind) = self.add_new_panel(kind, rect);
         let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
         self.apply_effects(
             vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)],

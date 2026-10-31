@@ -72,6 +72,11 @@ Seen several times on 2026-10-31:
 - "terminals not live at zoom 1.5".
 - Twice, native z-order not matching the scene: `zorder=[1, 2] scene=[2, 1]` and
   `zorder=[1,2,3] scene=[2,3,1]`.
+- On `feat/session-autosave`, with the autosave smoke step run right after the app icon
+  check, the plugins step failed 6 of 6 runs with `zorder=[2, 3, 1, 4, 5]
+  scene=[3, 1, 4, 5, 2]`, both when the step reordered panels and put them back and when
+  it only moved one. Native order matched the scene when the step ended. With the step at
+  the end of the smoke, the plugins step passed 2 of 2. Cause unknown; not fixed.
 - Stats step: "stats: sampler has CPU but the status bar does not show it" (pill stuck at
   `--% CPU` while the sampler has a reading), and "only 1 frames with show_stats on". Both
   look like paint stalling after the stats toggle, likely the same occlusion cause.
