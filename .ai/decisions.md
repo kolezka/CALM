@@ -74,6 +74,18 @@ one means a new entry, not an edit.
   entries outside the folder are refused.
 - **SDK includes `canvas.createPanel` and `process.exec`.** Plugins are trusted and the
   user wants agents to spawn terminals. Documented as trusted-only.
+- **Status bar is a native translucent pill at the bottom; no top strip.** The GPUI
+  status strip on top is gone. Zoom, FPS and the save flash live in a centered,
+  rounded `NSVisualEffectView` (`calm_native::StatusBar`, material Popover, blending
+  WithinWindow) floating 14 pt above the canvas bottom. It is native because terminals
+  draw above GPUI, so a GPUI bar would be hidden by any panel passing under it. It stays
+  the topmost sibling: `ensure_front` runs after every native restack, and the smoke
+  fails if a panel ends up above it. Rect math is `calm_core::status_bar`. The window
+  title bar is transparent with a hidden title (`TitlebarOptions::appears_transparent`),
+  so the canvas fills the window and the traffic lights float over it. Rejected: a GPUI
+  bar with native views clipped above it, which keeps a hard edge where terminals end.
+  Cost if wrong: canvas clicks in the top 28 pt strip drag the window instead (native
+  title bar drag), and clicks on the bar fall through to the canvas.
 
 ## Process
 

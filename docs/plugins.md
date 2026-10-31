@@ -44,7 +44,7 @@ Every plugin folder holds a `calm-plugin.json`:
 | Field         | Meaning                                                                  |
 | ------------- | ------------------------------------------------------------------------ |
 | `id`          | Unique id, lowercase letters, digits and `-` only.                       |
-| `name`        | Name shown in the toolbar.                                               |
+| `name`        | Name shown in the Add menu.                                              |
 | `version`     | Plugin version, free form.                                               |
 | `entry`       | HTML file to load, relative to the plugin folder. No `..`, no `/` start. |
 | `defaultSize` | Size of a new panel in canvas points.                                    |
@@ -56,7 +56,7 @@ CALM injects `window.calm` before any of your scripts run. The types live in one
 it. Every call except `calm.log` and `calm.events.on` returns a Promise. A failed call rejects
 with an `Error` whose message comes from the host.
 
-No host request is served by the app yet. Check [Host support](#host-support) before you rely on one.
+The app serves four requests so far. Check [Host support](#host-support) before you rely on one.
 
 ### Settings
 
@@ -142,40 +142,39 @@ page in a normal browser while developing.
 
 ### Host support
 
-The prelude exposes every call above, but the app does not serve any host requests yet: it has
-no plugin host and no dispatcher. Until the host is wired, no host request resolves; a request
-whose `postMessage` throws rejects immediately. `events.on` is synchronous, and `calm.log` goes
-nowhere. Do not build on a call before the plugin host task lands.
-
-When the host lands, it is planned to answer methods it does not serve with
-`not implemented: <method>`, so they reject instead of hanging.
+The prelude exposes every call above. The app's plugin host (`crates/calm-app/src/plugin_host.rs`)
+serves the four methods marked below. Every other method rejects with
+`not implemented: <method>`, so no call hangs. An unknown method rejects with
+`unknown method: <method>`.
 
 | `method`             | Host support                              |
 | -------------------- | ----------------------------------------- |
-| `settings.get`       | Planned, wired in the plugin host task    |
-| `settings.set`       | Planned, wired in the plugin host task    |
-| `storage.get`        | Planned, wired in the plugin host task    |
-| `storage.set`        | Planned, wired in the plugin host task    |
-| `storage.remove`     | Planned, wired in the plugin host task    |
-| `panel.setTitle`     | Planned, wired in the plugin host task    |
-| `panel.getBounds`    | Planned, wired in the plugin host task    |
-| `panel.minimize`     | Planned, wired in the plugin host task    |
-| `panel.close`        | Planned, wired in the plugin host task    |
-| `canvas.createPanel` | Planned, wired in the plugin host task    |
-| `canvas.focusPanel`  | Planned, wired in the plugin host task    |
-| `canvas.listPanels`  | Planned, wired in the plugin host task    |
-| `process.exec`       | Planned, wired in the plugin host task    |
-| `github.api`         | Planned, wired in the plugin host task    |
-| `openExternal`       | Planned, wired in the plugin host task    |
-| `theme.get`          | Planned, wired in the plugin host task    |
-| `log`                | Planned, wired in the plugin host task    |
+| `settings.get`       | Served: the panel's settings object       |
+| `settings.set`       | Served: replaces it, objects only         |
+| `storage.get`        | Rejects with `not implemented: <method>` |
+| `storage.set`        | Rejects with `not implemented: <method>` |
+| `storage.remove`     | Rejects with `not implemented: <method>` |
+| `panel.setTitle`     | Served: sets the chrome title             |
+| `panel.getBounds`    | Rejects with `not implemented: <method>` |
+| `panel.minimize`     | Rejects with `not implemented: <method>` |
+| `panel.close`        | Rejects with `not implemented: <method>` |
+| `canvas.createPanel` | Rejects with `not implemented: <method>` |
+| `canvas.focusPanel`  | Rejects with `not implemented: <method>` |
+| `canvas.listPanels`  | Rejects with `not implemented: <method>` |
+| `process.exec`       | Rejects with `not implemented: <method>` |
+| `github.api`         | Rejects with `not implemented: <method>` |
+| `openExternal`       | Rejects with `not implemented: <method>` |
+| `theme.get`          | Rejects with `not implemented: <method>` |
+| `log`                | Served: printed to stderr, no answer       |
 
 Events have no host sender yet, so handlers registered with `calm.events.on` do not fire
 until the app wiring lands.
 
 ### Wire format
 
-For host and tooling authors. Each call posts one message to the `calm` WebKit message handler:
+For host and tooling authors. Each call posts one message to the `calm` WebKit message handler,
+as a JSON string (`JSON.stringify` of the object below). A string reaches the host as text; a
+plain object would arrive as an NSDictionary, whose description is not JSON:
 
 ```json
 { "id": 7, "method": "panel.setTitle", "params": { "title": "Hello" } }
@@ -205,8 +204,8 @@ the prelude and `calm.d.ts` in sync.
 | `log`                | `{ "message": string }`                                              |
 
 The host answers by evaluating `window.__calm.resolve(id, ok, value)` in the page. With `ok`
-true, `value` is the result. With `ok` false, `value` is an error message string. The planned
-host answers a method it does not serve with `ok` false and `not implemented: <method>`
+true, `value` is the result. With `ok` false, `value` is an error message string. The host
+answers a method it does not serve with `ok` false and `not implemented: <method>`
 (`BridgeResponse::not_implemented`).
 
 `log` is fire and forget. The prelude posts it with an `id` but keeps no pending entry, so the
@@ -269,8 +268,14 @@ CALM_PLUGIN_PATH=./plugins cargo run -p calm-app
 ```
 
 No rebuild of CALM is needed. HTML and JS changes show up in a newly opened panel. Manifest
-changes need a CALM restart, because discovery runs at startup.
-Broken manifests are printed to stderr with their path and counted in the toolbar.
+changes need a CALM restart, because discovery runs at startup. Installed plugins appear in
+the right-click Add menu; choosing one opens a panel at the click point with the manifest's
+default size.
+
+If the entry page loads a local script that does not exist, for example `dist/index.js` of a
+TSX plugin that was never built, the panel shows an error page naming the missing file and
+the build command, its title ends in `(not built)`, and stderr prints the same message.
+Broken manifests are printed to stderr with their path and counted in the status bar.
 
 Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
 

@@ -4,14 +4,18 @@
 
 #![cfg(target_os = "macos")]
 
+pub mod browser;
 pub mod child;
 pub mod menu;
 pub mod settings_window;
+pub mod status_bar;
 pub mod webview;
 
-pub use child::{NativeChild, clip_frame, zoom_bounds, zoom_frame};
+pub use browser::{BROWSER_BAR_HEIGHT, BrowserEvent, BrowserView};
+pub use child::{NativeChild, clip_frame, window_visible, zoom_bounds, zoom_frame};
 pub use menu::{ContextMenu, HostView, show_context_menu};
 pub use settings_window::{SettingsWindow, choose_image_file, settings_window_count};
+pub use status_bar::StatusBar;
 pub use webview::{DEFAULT_BROWSER_URL, WebPanel};
 
 use std::fmt;
