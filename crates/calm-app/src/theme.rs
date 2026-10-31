@@ -1,10 +1,9 @@
-//! Colors shared by the canvas and the toolbar.
+//! Colors shared by the canvas and the panel chrome.
 //! The canvas background is a setting: `Settings::background` in calm-core.
 //! Values ending in an alpha byte are for `rgba`, the rest for `rgb`.
 
 pub const TEXT: u32 = 0xe6e6e6;
 pub const DRAFT_OUTLINE: u32 = 0x6fa8dc;
-pub const TOOLBAR: u32 = 0x202020;
 
 /// Accent for focus. Also the focused panel's border.
 pub const ACCENT: u32 = 0x5b8def;

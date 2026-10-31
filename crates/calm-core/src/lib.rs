@@ -12,4 +12,5 @@ pub mod scene;
 pub mod settings;
 pub mod snap;
 pub mod stats;
+pub mod status_bar;
 pub mod viewport;

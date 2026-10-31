@@ -13,8 +13,9 @@ use calm_core::interaction::{
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::scene::{Panel, PanelId, PanelKind, Scene, content_rect};
+use calm_core::status_bar::{status_bar_rect, status_text};
 use calm_core::viewport::{NativePlacement, place_native};
-use calm_native::{HostView, NativeChild, show_context_menu};
+use calm_native::{HostView, NativeChild, StatusBar, show_context_menu};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, BorderStyle, Bounds, BoxShadow, ContentMask, Context, Corners, DispatchPhase, Edges,
@@ -29,11 +30,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::dev_menu::{ResetFps, ToggleFps};
+use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalPanel};
 use crate::theme;
-use crate::toolbar::{TOOLBAR_HEIGHT, toolbar};
 
 actions!(
     calm,
@@ -91,13 +91,13 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
 pub struct CanvasView {
     pub scene: Scene,
     pub input: InputHandler,
-    /// Window pixels of the canvas area below the toolbar. Set during prepaint.
+    /// Window points of the canvas area, the whole window. Set during prepaint.
     pub viewport: Rect,
     /// (id, name) per discovered plugin. Task 11 fills it.
     pub plugins: Vec<(String, String)>,
     /// (id, default panel size) per discovered plugin. Task 11 fills it.
     pub plugin_sizes: Vec<(String, Size)>,
-    /// Path of the last saved layout, shown in the status strip. Task 13 sets it.
+    /// Path of the last saved layout, shown in the status bar. Task 13 sets it.
     pub saved_flash: Option<String>,
     focused: Option<PanelId>,
     /// Panel under the pointer and the chrome button under it. Shows the buttons.
@@ -116,6 +116,10 @@ pub struct CanvasView {
     /// Terminal input divs that a paint found over a `Preview` panel. Smoke expects 0.
     pub preview_input_targets: usize,
     pub settings: SettingsState,
+    /// Native bar floating over the bottom of the canvas. Created on the first paint.
+    status_bar: Option<StatusBar>,
+    /// Set when the status bar could not be created, so paint stops retrying.
+    status_bar_error: Option<String>,
 }
 
 impl CanvasView {
@@ -123,7 +127,7 @@ impl CanvasView {
         Self {
             scene: Scene::default(),
             input: InputHandler::default(),
-            viewport: Rect::new(0.0, f64::from(TOOLBAR_HEIGHT), 0.0, 0.0),
+            viewport: Rect::new(0.0, 0.0, 0.0, 0.0),
             plugins: Vec::new(),
             plugin_sizes: Vec::new(),
             saved_flash: None,
@@ -141,6 +145,8 @@ impl CanvasView {
                 settings: Default::default(),
                 path: calm_core::settings::settings_path(),
             },
+            status_bar: None,
+            status_bar_error: None,
         }
     }
 
@@ -440,6 +446,49 @@ impl CanvasView {
         self.native_order = order;
     }
 
+    /// Updates the native status bar's text and frame and keeps it above every panel.
+    /// Runs after `sync_native_order`, which can restack panels over it.
+    fn sync_status_bar(&mut self, window: &Window) {
+        if self.status_bar.is_none() && self.status_bar_error.is_none() {
+            match StatusBar::new(window) {
+                Ok(bar) => self.status_bar = Some(bar),
+                Err(err) => {
+                    eprintln!("calm: status bar failed to start: {err}");
+                    self.status_bar_error = Some(err.to_string());
+                }
+            }
+        }
+        let saved = self
+            .saved_flash
+            .as_ref()
+            .map(|path| format!("Saved {path}"))
+            .unwrap_or_default();
+        let zoom = format!("{:.0}%", self.scene.camera.zoom * 100.0);
+        let fps = if self.show_fps {
+            dev_menu::fps_text(&self.frame_stats)
+        } else {
+            String::new()
+        };
+        let text = status_text([saved.as_str(), zoom.as_str(), fps.as_str()]);
+        let viewport = self.viewport;
+        let Some(bar) = self.status_bar.as_mut() else {
+            return;
+        };
+        let text_width = bar.set_text(&text);
+        let window_height = f64::from(f32::from(window.viewport_size().height));
+        bar.apply(status_bar_rect(viewport, text_width), window_height);
+        bar.ensure_front();
+    }
+
+    /// (visible, topmost, text) of the status bar, or the reason it is missing.
+    pub fn status_bar_state(&self) -> Result<(bool, bool, String), String> {
+        match (&self.status_bar, &self.status_bar_error) {
+            (Some(bar), _) => Ok((bar.is_visible(), bar.is_front(), bar.text().to_string())),
+            (None, Some(err)) => Err(err.clone()),
+            (None, None) => Err("not created yet".to_string()),
+        }
+    }
+
     /// (scene order, native stacking order) of terminal ids, both back to front.
     pub fn terminal_zorder(&self, cx: &App) -> (Vec<u64>, Vec<u64>) {
         let scene = self.terminal_order().iter().map(|id| id.0).collect();
@@ -694,7 +743,7 @@ impl PaintSnapshot {
                 .values()
                 .any(|content| matches!(content, TerminalContent::Preview(_)));
             // Panels paint inside this mask; nested masks intersect with it, so nothing
-            // a panel draws can reach the toolbar.
+            // a panel draws can leave the canvas.
             for panel in &self.scene.panels {
                 self.paint_panel(panel, contents.get(&panel.id), origin, window, cx);
             }
@@ -719,6 +768,7 @@ impl PaintSnapshot {
 
         this.update(cx, |view, cx| {
             view.sync_native_order(cx);
+            view.sync_status_bar(window);
             view.sync_preview_timer(previewing, cx);
             view.preview_input_targets += preview_targets;
             // Render picks input targets from the mode; rebuild them if paint disagreed.
@@ -1204,7 +1254,6 @@ impl Render for CanvasView {
             }))
             .on_action(cx.listener(|view, _: &ResetFps, window, cx| view.reset_fps(window, cx)))
             .map(|root| settings_menu::bind(root, cx))
-            .child(toolbar(self))
             .child(
                 div()
                     .flex_1()

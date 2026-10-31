@@ -1,7 +1,7 @@
 # Status
 
-Last updated: 2026-10-31. `main` with PRs #1 (recenter), #2 (panel menu actions) and #3
-(panel chrome) merged. Facts are verified unless marked otherwise.
+Last updated: 2026-10-31. `main` with PRs #1 (recenter), #2 (panel menu actions), #3
+(panel chrome) and #4 (bottom bar) merged. Facts are verified unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -44,6 +44,10 @@ Last updated: 2026-10-31. `main` with PRs #1 (recenter), #2 (panel menu actions)
   red tinted bar during "Close? enter / esc". Icon, title and buttons hide below 12 px of
   bar height on screen. Colors in `calm-app/src/theme.rs`.
 - Unverified: the look itself. Only smoke ran; a manual GUI pass is the user's.
+- Bottom bar (PR #4): the top status strip is removed; the title bar is transparent with a
+  hidden title; zoom, FPS and the save flash show in a native translucent pill at the
+  bottom center (`calm_native::StatusBar`, rect from `calm_core::status_bar`). Smoke
+  checks the bar is visible and above both terminals after a restack.
 
 ## Verified on hardware
 
@@ -68,6 +72,8 @@ CI run on `main` green (linux-arch success, macos skipped).
   the input method, panel resize reflow, Enter to confirm close, pinch feel, `htop`.
 - Camera jumps: math is unit tested in `calm-core`; key delivery with a terminal focused,
   the `cmd-shift-0` match and the View menu shortcuts are untested in the GUI.
+- Bottom status bar look: blur over terminals, rounded corners, light and dark mode,
+  traffic lights over the canvas, window drag from the top strip.
 - Performance with 20 terminals.
 - A real Release run on the runner (dry run not yet triggered) and the hosted macOS CI
   steps.
