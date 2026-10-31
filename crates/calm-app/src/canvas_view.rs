@@ -361,7 +361,9 @@ impl CanvasView {
     fn mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         let screen = self.to_canvas(event.position);
         self.pointer = screen;
-        let effects = self.input.mouse_move(screen, &mut self.scene);
+        let effects = self
+            .input
+            .mouse_move(screen, to_mods(&event.modifiers), &mut self.scene);
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
         }
