@@ -19,7 +19,12 @@ check_mode() {
 
 inside() {
     local mode="$1"
-    pacman -Syu --noconfirm --needed rustup base-devel git
+    pacman -Syu --noconfirm --needed rustup base-devel git curl unzip
+    if [[ ! -x /root/.bun/bin/bun ]]; then
+        curl -fsSL https://bun.sh/install | BUN_INSTALL=/root/.bun bash
+    fi
+    export PATH="/root/.bun/bin:$PATH"
+    bun --version
     rustup default stable
     rustc --version
     cd /w
@@ -50,6 +55,7 @@ outside() {
             -v calm-arch-pacman:/var/cache/pacman/pkg \
             -v calm-arch-rustup:/root/.rustup \
             -v calm-arch-cargo:/root/.cargo \
+            -v calm-arch-bun:/root/.bun \
             -v calm-arch-target:/w/target \
             -e CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-auto}" \
             archlinux:latest \
