@@ -90,3 +90,7 @@ Plan execution uses superpowers subagent-driven development with Agent Teams; de
 `.ai/conventions.md`. The ledger with rulings lives at
 `.superpowers/sdd/2026-10-31-calm-prototype/progress.md` (git-ignored, main checkout).
 Work state persists in Outline under the task record `calm-canvas-design`.
+
+<!-- repo-intel:begin -->
+@AGENTS.md
+<!-- repo-intel:end -->
