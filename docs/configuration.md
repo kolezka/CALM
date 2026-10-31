@@ -10,8 +10,85 @@ while CALM is closed. Missing fields take their default, so a file may hold only
 change. A wrong value is an error that names the field. CALM then moves the file aside to
 `settings.json.invalid-<n>` and starts with the defaults, so nothing you wrote is lost.
 
-This page covers the `terminal` section. The other sections (`background`, `grid`, `snap`,
-`panels`, `plugins`) are all editable in the Settings window.
+This page covers the `terminal`, `canvas`, `developer` and `session` sections. The other
+sections (`background`, `grid`, `snap`, `panels`, `plugins`) are editable in the Settings
+window, except `plugins.builtin` and `plugins.menus`, which are file only. Plugin menu
+settings are described in [plugins.md](plugins.md#context-menu-contributions).
+
+The file is written privately (mode 0600) through a temp file, fsync and rename, so a crash
+mid-save leaves the old file whole.
+
+## Canvas
+
+```json
+{ "canvas": { "click_empty_clears_focus": true } }
+```
+
+- `click_empty_clears_focus` (default `true`): a left or right click on empty canvas drops
+  panel focus, and the keyboard goes back to the canvas. Escape does the same when no
+  terminal, page or address field holds the keyboard. Pans and zooms never drop focus.
+  In the Settings window under Canvas and Snapping.
+
+## Developer stats
+
+`cmd-shift-f` (Developer > Show Stats) shows a readout in the status pill, for example
+`FPS 60.0  p95 16.7ms  ·  4.2% CPU  ·  312 MB`. The toggle itself is per launch and starts
+off. `developer.stats` picks what it shows:
+
+```json
+{
+  "developer": {
+    "stats": {
+      "show_fps": true,
+      "show_cpu": true,
+      "show_memory": true,
+      "include_children": false,
+      "interval_ms": 1000,
+      "memory_unit": "auto"
+    }
+  }
+}
+```
+
+- `show_fps`, `show_cpu`, `show_memory` (all default `true`): the three items.
+- `include_children` (default `false`): also count every process below CALM (shells, TUI
+  apps), up to 512.
+- `interval_ms` (default 1000, 250 to 10000): how often CPU and memory are sampled. CPU is
+  the average over this interval.
+- `memory_unit`: `auto` (default, MB below 1 GB, then GB), `mb` or `gb`.
+
+CPU is a percent of one core, like Activity Monitor, so it can pass 100%. Memory is the
+physical footprint Activity Monitor shows, in binary units. All of it is in Settings >
+Developer. Unknown keys in `developer.stats` are errors.
+
+## Session
+
+The `session` section is read and validated, and has a Session section in the Settings
+window, but **it has no effect yet**: CALM does not autosave or restore the canvas today.
+A launch always starts with an empty canvas. The fields are there for the coming restore
+work:
+
+```json
+{
+  "session": {
+    "restore_on_launch": "on",
+    "autosave": true,
+    "debounce_ms": 1000,
+    "backup_count": 3,
+    "browser_query": "strip_all"
+  }
+}
+```
+
+- `restore_on_launch`: `on` (default), `off` or `ask`.
+- `autosave` (default `true`).
+- `debounce_ms` (default 1000, 250 to 10000): quiet time after the last change before a save.
+- `backup_count` (default 3, 0 to 20): how many `session.json.<n>` backups to keep.
+- `browser_query`: `strip_all` (default) drops the query, the fragment and any
+  `user:password@` from browser urls when a layout is saved; `keep` saves them as they are,
+  so a token in a url can land in the file.
+
+Unknown keys and out-of-range values in `session` are errors.
 
 ## Terminals
 

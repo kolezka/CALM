@@ -25,16 +25,22 @@ pan, zoom or minimize it. Only an explicit, confirmed close ends it.
 - Center on the world origin (`cmd-shift-h`) or fit every panel on screen (`cmd-shift-0`),
   both also in the View menu.
 - Distant panels turn into still previews that refresh every 2 seconds.
-- A translucent status pill at the bottom shows zoom, FPS and plugin errors.
+- A translucent status pill at the bottom shows zoom, plugin errors and warnings, and on
+  `cmd-shift-f` FPS, CPU and memory.
 - TUI apps: a plugin folder with one manifest turns a terminal program into an Add menu entry,
   for example "Slack" running `slk`. It runs through your login shell, shows when it exited and
   can restart.
-- Fullscreen mode and an FPS counter.
+- Grid styles: lines, dots, crosses or none, with an optional major grid.
+- Fullscreen mode.
 
 ### Panels
 
 - Live Ghostty terminals, optionally using your own Ghostty config.
-- Move and resize with snapping to an 8 unit grid and to nearby panel edges.
+- Terminal defaults and named profiles: title, icon, chrome colors, Ghostty colors, command,
+  arguments, start folder and environment. Color changes recolor running terminals in place.
+  Profiles show under Add > Terminal Profiles.
+- Move and resize with snapping to an 8 unit grid and to nearby panel edges. Browser and
+  plugin panels resize from just outside their right and bottom edges.
 - Panels placed edge to edge join into one block with a single divider.
 - Title bars with a kind icon, focus ring and hover buttons for minimize and close.
 - Right-click a title bar for Minimize or Restore, Zoom to Fit, Bring to Front, Send to Back,
@@ -56,12 +62,16 @@ pan, zoom or minimize it. Only an explicit, confirmed close ends it.
 - Installed plugins appear in the right-click Add menu and open as canvas panels.
 - Plugins are HTML and JavaScript, or TSX built with bun, talking to CALM through
   `window.calm`.
+- First-party plugins (Hello World, GitHub PRs, a `top` TUI example) load without install.
+- Plugins can add items to the right-click menus.
+- `calm.github.api` runs `gh api` on the host; plugin code never sees a token.
+- Rejected calls carry a `code`, and `calm.has(method)` says what this CALM serves.
 - Broken plugin folders are skipped and reported in the status pill.
 
 ### Customization
 
-- A native Settings window (`cmd-,`) with Background, Grid, Canvas and Snapping, Panels and
-  Developer sections.
+- A native Settings window (`cmd-,`) with Background, Grid, Canvas and Snapping, Panels,
+  Terminal, Session and Developer sections. The Session settings have no effect yet.
 - Backgrounds: solid color, linear or radial gradients with 2 to 6 stops, or an image with
   cover, contain, tile or center.
 - Image filters: blur, brightness, contrast, saturation, grayscale and dim.
@@ -115,8 +125,9 @@ Scrolling over empty canvas pans it. Scrolling over a terminal scrolls the termi
 A plugin is a folder with a `calm-plugin.json` manifest and an HTML entry page. CALM finds it
 at startup, lists it in the Add menu and runs it in a panel. Plugins are trusted code that you
 install yourself, with full access, so only install plugins you have read or whose author you
-trust. The bridge is partial today: `log`, `panel.setTitle`, `settings.get` and `settings.set`
-answer; the other methods reply `not implemented`.
+trust. The bridge is partial today: `log`, `panel.setTitle`, `settings.get`, `settings.set`,
+`storage.get`, `storage.set`, `storage.remove`, `github.api` and `openExternal` answer; the
+other methods reject with code `not_implemented`.
 
 From a clone, `gmake plugins && cargo run -p calm-app` builds the first-party plugins and shows
 them under right-click > Add. A development build reads the repository's `plugins/` folder
@@ -142,9 +153,10 @@ from the TSX template in [templates/plugin-tsx](templates/plugin-tsx/README.md).
 
 ## Configuration
 
-- Settings live in `~/.config/calm/settings.json`. Terminal defaults and profiles are
-  described in [docs/configuration.md](docs/configuration.md).
-- `CALM_HOME` replaces `~/.config/calm` for settings and plugins.
+- Settings live in `~/.config/calm/settings.json`. Terminal defaults and profiles, the
+  stats readout, focus on click and the session fields are described in
+  [docs/configuration.md](docs/configuration.md).
+- `CALM_HOME` replaces `~/.config/calm` for settings, plugins, plugin data and `.env`.
 - `CALM_PLUGIN_PATH` adds plugin folders, `:` separated like `PATH`. For development:
   `CALM_PLUGIN_PATH=./plugins cargo run -p calm-app`.
 - Without it, plugins load from `$CALM_HOME/plugins` or `~/.config/calm/plugins`.
@@ -159,15 +171,9 @@ from the TSX template in [templates/plugin-tsx](templates/plugin-tsx/README.md).
 CALM is an early prototype. Nothing has been released and the GUI has had limited manual
 testing.
 
-In progress, not on `main` yet:
-
-- Grid styles: dots, crosses and a major grid.
-- Resizing browser and plugin panels from outside the web view.
-- Loading first-party plugins without `CALM_PLUGIN_PATH`.
-- TUI apps as plugins that run a command in a terminal panel, and their customization.
-
-Not built yet: saving and restoring layouts or sessions (a plan exists), a benchmark mode,
-and most of the plugin bridge.
+Not built yet: saving and restoring layouts or sessions (the file format and safe write
+code exist, nothing uses them yet, so every launch starts empty), a benchmark mode, and
+about half of the plugin bridge.
 
 ## Documentation
 
@@ -179,9 +185,9 @@ and most of the plugin bridge.
 - [Design spec](docs/superpowers/specs/2026-10-31-calm-design.md) and
   [prototype plan](docs/superpowers/plans/2026-10-31-calm-prototype.md).
 - [Plugin API v2 design](docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md)
-  (design only, not implemented).
+  (phase 1 built, the rest is design).
 - [Canvas persistence plan](docs/superpowers/plans/2026-10-31-canvas-persistence.md)
-  (plan only, not implemented).
+  (Tasks 1 to 3 merged, autosave and restore not built).
 - [Claude Code mods integration](docs/superpowers/specs/2026-10-31-claude-code-mods-integration.md)
   (research).
 

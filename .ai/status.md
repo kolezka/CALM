@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-31, against `origin/main` at `c327cb1` plus #29 (PRs #1 to #29 merged). This
+Last updated: 2026-10-31, against `origin/main` at `7de2c55` (PRs #1 to #37 merged). This
 file describes `main`, not branches. Facts are verified against the code unless marked
 otherwise.
 
@@ -108,68 +108,81 @@ Pull requests:
   application icon at startup when no bundle icon is present. A new "About CALM" item, first
   in the app menu, opens the standard About panel (icon, Cargo version, credits line). Smoke
   prints `app_icon set=... size=WxH` and fails unless the brand image is set.
-
-## In progress (not on `main`)
-
-- `feat/cpu-ram-stats`: CPU and memory next to FPS in the status pill
+- #30 Session restore decision: restore on launch by default, Open replaces after one
+  confirmation, browser urls saved with `strip_all`, a seven item File menu. Recorded in
+  `decisions.md` and the spec. Decision only.
+- #32 `.ai/backlog.md`.
+- #31 Layout v2 (persistence plan Task 2): `saved_at_unix`, per-panel `overrides`
+  (`title`, `icon`, `accent_color`), `plugin_version` on plugin and TUI kinds, browser
+  `page_zoom`, and `PanelKind::Unsupported`, which keeps an unknown kind's exact JSON bytes.
+  v1 files load as v2 and are never rewritten; version 0 and 3 and up fail. Format only,
+  see "Not wired yet".
+- #33 CPU and memory next to FPS in the status pill
   (`FPS 60.0  p95 16.7ms  ·  4.2% CPU  ·  312 MB`). cmd-shift-f (Developer > Show Stats)
   shows the readout; `developer.stats.*` picks the items, the interval (250 to 10000 ms,
   default 1000), child processes and the memory unit, also in the Settings window.
-  `calm_native::process_stats` reads `proc_pid_rusage` (V2) on the background executor:
-  about 1.2 us per sample for CALM alone, about 19 us with the child walk (unit test on
-  the dev machine). Smoke prints `stats fps=... cpu=...% mem=...MB` parsed from the pill.
-  Manual GUI pass owed.
-
-- No PR yet: a Linux port plan.
-- `feat/api-v2-p1-errors`, plugin API v2 phase 1: `calm_plugins::api` (`API_VERSION` 2,
-  `ErrorCode`, `ApiError`, `Caller`, `Capability`). `BridgeResponse::Err` carries `ApiError`
+  `calm_native::process_stats` reads `proc_pid_rusage` (V2) on the background executor;
+  the math is in `calm_core::process_stats`. About 1.2 us per sample for CALM alone, about
+  19 us with the child walk (unit test on the dev machine). Smoke prints
+  `stats fps=... cpu=...% mem=...MB` parsed from the pill.
+- #34 Plugin API v2 phase 6 core: `calm_plugins::events` has a pure `Coalescer` (injected
+  `Instant`, per `(event, panel)` latest wins, trailing send, discrete events in order,
+  `panelRemoved` drops a pending `panelChanged`, windows clamped 16 to 5000 ms) and
+  `emit_batch_js`. Not wired: the host sends no events through it.
+- #35 Plugin API v2 phase 1: `calm_plugins::api` (`API_VERSION` 2, `ErrorCode` with all 22
+  spec codes, `ApiError`, `Caller`, `Capability`). `BridgeResponse::Err` carries `ApiError`
   and every host reject has a code; the prelude rejects with an `Error` that has `code` and
   maps a v1 string to `host_error`. The host injects `window.__calmHost` before the prelude
   and `calm.has` reads it (`plugin_host::served_methods`). Manifest `apiVersion` (above 2
-  skips), `capabilities` (unknown words warn, status bar counts warnings), `main` (checked on
-  disk), `backend`, `engines.bun` (npm range syntax only, prerelease and build included) and `background` are parsed; nothing runs a
-  backend or background page yet. `storage.set` without `value` rejects `invalid_params`. Smoke prints
+  skips), `capabilities` (unknown words warn, the status pill counts warnings), `main`
+  (checked on disk), `backend`, `engines.bun` (npm range syntax, full prerelease and build
+  grammar) and `background` are parsed; nothing runs a backend or background page.
+  `storage.set` without `value` rejects `invalid_params`; `null` is stored. Smoke prints
   `plugin errors unknown=unknown_method unserved=not_implemented has=[true,false]`.
-- `feat/api-v2-p6-coalescer`: plugin API v2 phase 6 core. `calm_plugins::events` has a pure
-  `Coalescer` (injected `Instant`, per `(event, panel)` latest wins, trailing send, discrete
-  events in order, `panelRemoved` drops a pending `panelChanged`, windows clamped 16 to
-  5000 ms) and `emit_batch_js`. Not wired: the host sends no events through it yet.
+- #36 Session storage primitives (persistence plan Task 3), see "Not wired yet" for what
+  is not active: `layout::write_durable` (exclusive 0600 temp, fsync, rename, directory
+  fsync, temp removed on failure, created dirs 0700), used by layouts and `settings.json`;
+  `write_layout_file`, the one layout write path, stamps `saved_at_unix` and applies
+  `browser_url::scrub_for_save` (urls over 8 KiB save as `about:blank` in both modes) and
+  `scrub_text_for_save` (every url inside a browser title); `session_path`,
+  `rotate_backups` (copies `session.json` to `.1`, never moves it; backups 0600),
+  `SessionWriter` (rotates once per writer, no-op when `session.json` is missing, so a
+  moved-aside failed restore never enters the backups); `move_aside`, shared with the
+  settings quarantine. Settings section `session` (`restore_on_launch`, `autosave`,
+  `debounce_ms` 250 to 10000, `backup_count` 0 to 20, `browser_query`) with a Session
+  section in the Settings window.
+- #37 Smoke diagnostics: `CanvasView::process_samples` counts sampler readings; the stats
+  step waits up to 5 s for two samples and a CPU reading, then up to 2 s for the pill. It
+  does not fix the flake; it says which side failed (see "Known small issues").
+
+## In progress (not on `main`)
+
+- No PR yet: a Linux port plan.
 
 ## Not wired yet
 
-- Plugin bridge: `log`, `panel.setTitle`, `settings.get` and `settings.set` are served in
-  `plugin_host.rs`; `github.api`, `storage.get/set/remove` and `openExternal` in
-  `plugin_services.rs`. The other 8 of the 17 `BRIDGE_METHODS` reject with
-  `not implemented: <method>`: `panel.getBounds/minimize/close`, `canvas.*`,
+- Plugin bridge: 9 of the 17 `BRIDGE_METHODS` are served. `log`, `panel.setTitle`,
+  `settings.get` and `settings.set` in `plugin_host.rs`; `github.api`,
+  `storage.get/set/remove` and `openExternal` in `plugin_services.rs` on the background
+  executor. The other 8 reject with code `not_implemented` (message
+  `not implemented: <method>`): `panel.getBounds/minimize/close`, `canvas.*`,
   `process.exec`, `theme.get`. `storage.keys` and `mailto:` for `openExternal` are not
-  served. No host events are sent other than `command`. Coded errors `{ code, message }` are
-  on `feat/api-v2-p1-errors`, not on `main` yet.
+  served. The only host event is `command`; the phase 6 `Coalescer` is not wired.
+- Plugin API v2 phases other than 1 and the phase 6 core are not built: no backends, no
+  background pages, no `calm.menus.register`, no capability display.
 - Clicking inside a plugin page does not focus or raise its panel; AppKit routes the click
   to the WKWebView.
-- Layouts and session: layout save and load, `--layout`, session autosave and restore are
-  not built. Only the core layout format exists. Plugin settings are not saved anywhere.
-  The session restore decision (restore on launch by default, Open replaces after one
-  confirmation, browser urls saved with `strip_all`, a seven item File menu) is recorded
-  in `decisions.md` and the spec; implementation (plan Tasks 3 to 12) is pending.
-  Layout v2 (persistence plan Task 2, PR #31): `saved_at_unix`, per-panel
-  `overrides`, `plugin_version`, browser `page_zoom`, and `PanelKind::Unsupported` that keeps
-  an unknown kind's JSON bytes. v1 files load as v2 and are never rewritten; version 3 and
-  up fail. The resize policy is not saved. Overrides are stored but not applied in the
-  chrome, page zoom is stored but not applied, and an unsupported panel draws chrome only.
-  Session storage primitives (persistence plan Task 3, `feat/session-storage`, not on `main`
-  yet): `layout::write_durable` (exclusive 0600 temp, fsync, rename, directory fsync, temp
-  removed on failure, created dirs 0700), used by layouts and `settings.json`;
-  `write_layout_file`, the one layout write path, stamps `saved_at_unix` and applies
-  `browser_url::scrub_for_save` (urls over 8 KiB save as `about:blank` in both modes) and
-  `scrub_text_for_save` (every url inside a browser title);
-  `session_path`, `rotate_backups` (copies `session.json` to `.1`, never moves it; backups
-  0600), `SessionWriter` (rotates once per writer, no-op when
-  `session.json` is missing, so a moved-aside failed restore never enters the backups);
-  `move_aside`, shared with the settings quarantine. Settings section `session`
-  (`restore_on_launch`, `autosave`, `debounce_ms` 250 to 10000, `backup_count` 0 to 20,
-  `browser_query`) with a Session section in the Settings form. Nothing calls the session
-  writer yet: autosave is Task 4, restore Task 5. Lowering `backup_count` leaves older
-  backups above the new count in place.
+- Layouts and session: session autosave and restore are not active. Nothing in `calm-app`
+  calls `SessionWriter`, `write_layout_file` or a layout load, so a launch still starts an
+  empty canvas. The `session` settings and the Settings window's Session section exist but
+  change nothing yet. Persistence plan Tasks 4 to 7 (autosave, restore and the steps after
+  them) are pending, then the later tasks. Layout save and load and `--layout` are not
+  built. Plugin settings are not saved anywhere.
+- Layout v2 limits: the resize policy is not saved, overrides are stored but not applied
+  in the chrome, `page_zoom` is stored but not applied, an unsupported panel draws chrome
+  only, `plugin_version` is not filled when panels are created (owned by Task 4), and the
+  terminal cwd is the spawn cwd. Lowering `backup_count` leaves older backups above the new
+  count in place.
 - `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
@@ -205,6 +218,13 @@ Pull requests:
 - Plugin menus: a real right click (the NSMenu), long titles, the github-prs "Open repo
   in browser" item.
 - App icon: the Dock, cmd-tab and About panel by eye.
+- Stats readout (#33): CPU and memory against Activity Monitor, the Developer settings, the
+  child process walk with real shells running.
+- Plugin API v2 phase 1 (#35): in the github-prs page's Web Inspector,
+  `calm.has("panel.setTitle")` is `true` and `calm.panel.close().catch(e => e.code)` gives
+  `"not_implemented"`; the gh logged-out message still shows.
+- GitHub PRs plugin with a real `gh` login and with a `.env` token (#23).
+- Session settings section in the Settings window (#36), by eye only: it has no effect yet.
 - Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
@@ -222,6 +242,12 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
   - `window_visible=Some(false)`: the window was occluded, and GPUI stops painting an
     occluded window, so frame checks fail.
   - The native z-order line did not match the scene order (`zorder` vs scene), seen twice.
+  - Stats step after the cmd-shift-f toggle. With the #37 diagnostics, one of three runs
+    showed the sampler holding a CPU reading while the pill stayed stuck on
+    `--% CPU` for 2 s more (`stats: sampler has CPU but the status bar does not show it`),
+    right after the FPS step printed fps=123.9. Another run failed one step earlier with
+    "only 1 frames with show_stats on". So the sampler works and paint stalls. Suspected
+    cause: window occlusion or the display link stopping. Not confirmed.
 - Escape on the close confirmation does not redraw until the next event.
 - Panel bottom corners are square because the native view is square.
 - Chrome hover is tracked from GPUI mouse moves only, so buttons can stay visible over a
@@ -235,4 +261,5 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
 2. `gmake release-upload VERSION=x.y.z` on the Mac after the release exists.
 3. Set `CALM_MACOS_HOSTED=true` once billing allows hosted macOS CI.
 4. The manual GUI passes listed above.
-5. Say go for the remaining plan tasks (10, 11, 12 app wiring, 13, 14) and the persistence plan.
+5. Say go for the remaining plan tasks (10, 11, 12 app wiring, 13, 14) and persistence plan
+   Tasks 4 onward.

@@ -8,14 +8,17 @@ page explains how the parts work together.
 ## Crates
 
 - `calm-core`: the pure model. Geometry, camera, scene, input state machine, snapping,
-  joins, resize policy, grid, preview policy, settings, layouts, TUI launch logic. No GPUI,
-  no AppKit, unit tested.
+  joins, resize policy, grid, preview policy, settings, terminal profiles, stats math,
+  layout v2 and the session storage primitives, TUI launch logic. No GPUI, no AppKit, unit
+  tested.
 - `calm-native`: every AppKit call and every `unsafe` block. Native child views, web views,
-  the browser view, the context menu, the Settings window, the status pill.
-- `calm-plugins`: plugin discovery and manifests (web and TUI), the JS bridge and prelude,
-  the `gh api` client.
+  the browser view, the context menu, the Settings window, the status pill, the runtime app
+  icon, the process stats sampler.
+- `calm-plugins`: plugin discovery and manifests (web and TUI), menu contributions, the
+  API v2 error codes, the JS bridge and prelude, the event coalescer (not wired), the
+  `gh api` client and its token lookup.
 - `calm-app`: the GPUI binary. Maps events to `calm-core`, places native views, hosts each
-  panel kind and runs the smoke gate.
+  panel kind, serves the plugin bridge and runs the smoke gate.
 
 ## Panel kinds
 
@@ -98,14 +101,29 @@ at a joined neighbor. Only right, bottom and corner handles exist.
 
 Discovery runs at startup over user folders, then built-in folders (the repo's `plugins/`
 in a dev build, `Contents/Resources/plugins` in a bundle). Web plugins load in a `WebPanel`
-with the prelude at document start; the bridge serves `log`, `panel.setTitle`,
-`settings.get` and `settings.set` today. TUI plugins run their command through a `/bin/sh`
-status wrapper that records the exit code. See [plugins.md](plugins.md).
+with `window.__calmHost` and the prelude at document start. TUI plugins run their command
+through a `/bin/sh` status wrapper that records the exit code. Both kinds may add
+right-click menu items; a web plugin gets a `command` event, a TUI item opens a new panel.
+
+A bridge call goes through `plugin_host::route`. `github.api`, `storage.*` and
+`openExternal` run on a background thread (`plugin_services.rs`) and answer from a GPUI
+task, so a slow `gh` never stalls the canvas. `log`, `panel.setTitle` and `settings.*` are
+served on the UI thread. Every other known method rejects with code `not_implemented`, an
+unknown one with `unknown_method`. Every reject is `{ code, message }`, and the prelude turns
+it into an `Error` with `code`. See [plugins.md](plugins.md).
+
+## Settings and storage
+
+Settings live in one `settings.json`, written privately through a temp file and rename.
+`calm-core::layout` holds the layout v2 format and the session storage primitives (durable
+writes, backup rotation, url scrubbing). The app does not call them yet: there is no
+autosave and no restore, and a launch starts an empty canvas.
 
 ## Not built
 
-Layout save and load, session restore, `--bench`, the plugin API v2 surface and the
-Ghostty shim patch. See `.ai/status.md`.
+Session autosave and restore, layout save and load, `--layout`, `--bench`, most of the
+plugin API v2 surface (phase 1 and the coalescer core are built) and the Ghostty shim
+patch. See `.ai/status.md`.
 
 ## Verified on
 
