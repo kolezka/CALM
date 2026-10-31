@@ -56,7 +56,7 @@ CALM injects `window.calm` before any of your scripts run. The types live in one
 it. Every call except `calm.log` and `calm.events.on` returns a Promise. A failed call rejects
 with an `Error` whose message comes from the host.
 
-No call is served by the app yet. Check [Host support](#host-support) before you rely on one.
+No host request is served by the app yet. Check [Host support](#host-support) before you rely on one.
 
 ### Settings
 
@@ -142,10 +142,10 @@ page in a normal browser while developing.
 
 ### Host support
 
-The prelude exposes every call above, but the app does not serve any of them yet: it has no
-plugin host and no dispatcher. Until the host is wired, no `window.calm` call resolves. Each
-returned Promise stays pending, and `calm.log` goes nowhere. Do not build on a call before the
-plugin host task lands.
+The prelude exposes every call above, but the app does not serve any host requests yet: it has
+no plugin host and no dispatcher. Until the host is wired, no host request resolves; a request
+whose `postMessage` throws rejects immediately. `events.on` is synchronous, and `calm.log` goes
+nowhere. Do not build on a call before the plugin host task lands.
 
 When the host lands, it is planned to answer methods it does not serve with
 `not implemented: <method>`, so they reject instead of hanging.
@@ -271,6 +271,8 @@ CALM_PLUGIN_PATH=./plugins cargo run -p calm-app
 No rebuild of CALM is needed. HTML and JS changes show up in a newly opened panel. Manifest
 changes need a CALM restart, because discovery runs at startup.
 Broken manifests are printed to stderr with their path and counted in the toolbar.
+
+Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
 
 ## Examples
 

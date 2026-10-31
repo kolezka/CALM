@@ -352,14 +352,32 @@ globalThis.window = { webkit: { messageHandlers: { calm: { postMessage: function
 } } } } };
 "#;
 
-    /// Runs the exact prelude plus `harness` under bun and parses the last stdout line as JSON.
-    /// Returns None, with a note, when bun is not on PATH.
+    /// Set CALM_SKIP_BUN_TESTS=1 to explicitly skip these Bun-backed runtime tests.
     fn run_prelude_under_bun(name: &str, harness: &str) -> Option<Value> {
+        use std::io::ErrorKind;
         use std::process::Command;
-        if Command::new("bun").arg("--version").output().is_err() {
-            eprintln!("note: bun is not on PATH, skipping the prelude run for {name}");
+
+        if std::env::var("CALM_SKIP_BUN_TESTS").as_deref() == Ok("1") {
             return None;
         }
+
+        let version = Command::new("bun")
+            .arg("--version")
+            .output()
+            .unwrap_or_else(|error| {
+                if error.kind() == ErrorKind::NotFound {
+                    panic!("bun is required for {name}; install bun or set CALM_SKIP_BUN_TESTS=1 to explicitly skip: {error}");
+                }
+                panic!("failed to run bun --version for {name}: {error}");
+            });
+        assert!(
+            version.status.success(),
+            "bun --version failed for {name} ({}): {}{}",
+            version.status,
+            String::from_utf8_lossy(&version.stdout),
+            String::from_utf8_lossy(&version.stderr)
+        );
+
         let dir = std::env::temp_dir().join(format!("calm-prelude-{}-{name}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("probe.js");
@@ -372,12 +390,13 @@ globalThis.window = { webkit: { messageHandlers: { calm: { postMessage: function
             .arg(&script)
             .current_dir(&dir)
             .output()
-            .unwrap();
+            .unwrap_or_else(|error| panic!("failed to run bun for {name}: {error}"));
         std::fs::remove_dir_all(&dir).unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             output.status.success(),
-            "bun failed: {}\n{stdout}",
+            "bun failed for {name} ({}): {}\n{stdout}",
+            output.status,
             String::from_utf8_lossy(&output.stderr)
         );
         let last = stdout.lines().last().expect("bun printed nothing");
