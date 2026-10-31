@@ -27,6 +27,7 @@ env:
 
 jobs:
   guard:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, calm]
     timeout-minutes: 5
     steps:
@@ -44,6 +45,7 @@ jobs:
   # Both jobs check out github.sha, the main commit the run was dispatched on.
   linux-arch:
     needs: guard
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, calm]
     timeout-minutes: 45
     steps:

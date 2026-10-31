@@ -24,6 +24,7 @@ jobs:
   # through scripts/ci-arch.sh, not `container:`, because the runner's work directory is not
   # visible to the host Docker daemon. See docs/release.md.
   linux-arch:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, calm]
     timeout-minutes: 45
     steps:

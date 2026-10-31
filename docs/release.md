@@ -32,6 +32,8 @@ and `target` caches in named Docker volumes (`calm-arch-*`) on the host. To clea
 `docker volume rm calm-arch-pacman calm-arch-rustup calm-arch-cargo calm-arch-target`. `.github/actionlint.yaml` lists the custom
 labels so `actionlint` accepts them. The macOS jobs stay on GitHub-hosted `macos-15`.
 
+Fork pull requests never run on the self-hosted runner because it has access to the host Docker daemon. The workflows enforce a same-repository check for every self-hosted job. The repository setting also blocks fork workflows today, but the job guard protects the runner if that setting changes.
+
 ## Linux limitation
 
 The app is macOS only. `calm-native` is AppKit and WebKit, and `calm-app` depends on it, so
