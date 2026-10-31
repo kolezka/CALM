@@ -1,4 +1,49 @@
-//! Turns what the user typed in a browser address bar into a URL to load.
+//! Turns what the user typed in a browser address bar into a URL to load, and scrubs a
+//! URL before it is saved in a layout.
+
+use serde::{Deserialize, Serialize};
+
+/// How much of a browser URL a saved layout keeps (`session.browser_query`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserQueryMode {
+    /// Drop the query, the fragment and any `user:password@`. They can carry tokens.
+    #[default]
+    StripAll,
+    /// Save the URL as is. A kept URL can carry a token into the file.
+    Keep,
+}
+
+impl BrowserQueryMode {
+    pub const ALL: [BrowserQueryMode; 2] = [BrowserQueryMode::StripAll, BrowserQueryMode::Keep];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BrowserQueryMode::StripAll => "Strip query and fragment",
+            BrowserQueryMode::Keep => "Keep full URL",
+        }
+    }
+}
+
+/// The URL as a layout saves it. `StripAll` keeps scheme, host, port and path and drops
+/// the rest; `Keep` returns `url` unchanged.
+pub fn scrub_for_save(url: &str, mode: BrowserQueryMode) -> String {
+    if mode == BrowserQueryMode::Keep {
+        return url.to_string();
+    }
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    let url = &url[..end];
+    // Userinfo sits between `://` and the first `/` of the path, ending at its last `@`.
+    if let Some(start) = url.find("://").map(|index| index + 3) {
+        let authority_end = url[start..]
+            .find('/')
+            .map_or(url.len(), |index| start + index);
+        if let Some(at) = url[start..authority_end].rfind('@') {
+            return format!("{}{}", &url[..start], &url[start + at + 1..]);
+        }
+    }
+    url.to_string()
+}
 
 /// Search used when the input does not look like an address. The query is appended,
 /// form-encoded.
@@ -98,6 +143,31 @@ fn form_encode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrub_for_save_table() {
+        use BrowserQueryMode::{Keep, StripAll};
+        let cases = [
+            ("https://example.com/a/b", "https://example.com/a/b"),
+            (
+                "https://example.com:8443/a?x=1&code=abc",
+                "https://example.com:8443/a",
+            ),
+            ("https://example.com/a#state=xyz", "https://example.com/a"),
+            ("https://example.com/a?x=1#y", "https://example.com/a"),
+            ("https://example.com?x=1", "https://example.com"),
+            ("http://localhost:3000/#/route", "http://localhost:3000/"),
+            ("https://user:pw@example.com/a?x", "https://example.com/a"),
+            ("about:blank", "about:blank"),
+            ("data:text/plain,hello", "data:text/plain,hello"),
+            ("data:text/plain,hello?x=1#f", "data:text/plain,hello"),
+            ("file:///tmp/a.html?q", "file:///tmp/a.html"),
+        ];
+        for (input, stripped) in cases {
+            assert_eq!(scrub_for_save(input, StripAll), stripped, "{input}");
+            assert_eq!(scrub_for_save(input, Keep), input, "{input}");
+        }
+    }
 
     fn norm(input: &str) -> String {
         normalize_address(input).expect("non-blank input")

@@ -7,12 +7,14 @@ use crate::background::{
     BackgroundKind, GradientKind, GradientStop, ImageFit, MAX_BLUR, MAX_FILTER_FACTOR,
     MAX_GRADIENT_STOPS, MIN_GRADIENT_STOPS, Rgb,
 };
+use crate::browser_url::BrowserQueryMode;
 use crate::chrome::parse_hex_color;
 use crate::grid::GridKind;
 use crate::process_stats::{INTERVAL_MS_RANGE, MemoryUnit, clamp_interval_ms};
 use crate::settings::{
     GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
-    SNAP_EDGE_RANGE, SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
+    RestoreOnLaunch, SESSION_BACKUP_COUNT_RANGE, SESSION_DEBOUNCE_MS_RANGE, SNAP_EDGE_RANGE,
+    SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
 };
 use crate::terminal_profile::{PALETTE_PRESETS, TerminalColors, TerminalColorsSetting, hex};
 
@@ -260,6 +262,52 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
     ));
 
     sections.push(section("Terminal", terminal_fields(settings)));
+
+    let session = &settings.session;
+    sections.push(section(
+        "Session",
+        vec![
+            choice(
+                "session.restore_on_launch",
+                "Restore last session at launch",
+                RestoreOnLaunch::ALL
+                    .iter()
+                    .map(|mode| mode.label().to_string())
+                    .collect(),
+                RestoreOnLaunch::ALL
+                    .iter()
+                    .position(|mode| *mode == session.restore_on_launch)
+                    .unwrap_or(0),
+            ),
+            checkbox("session.autosave", "Autosave", session.autosave),
+            slider(
+                "session.debounce_ms",
+                "Save after quiet (ms)",
+                session.debounce_ms as f64,
+                debounce_range(),
+                0,
+            ),
+            slider(
+                "session.backup_count",
+                "Backups kept",
+                f64::from(session.backup_count),
+                backup_count_range(),
+                0,
+            ),
+            choice(
+                "session.browser_query",
+                "Browser URLs",
+                BrowserQueryMode::ALL
+                    .iter()
+                    .map(|mode| mode.label().to_string())
+                    .collect(),
+                BrowserQueryMode::ALL
+                    .iter()
+                    .position(|mode| *mode == session.browser_query)
+                    .unwrap_or(0),
+            ),
+        ],
+    ));
 
     let stats = &settings.developer.stats;
     sections.push(section(
@@ -637,6 +685,31 @@ pub fn apply_field(
                 *MemoryUnit::ALL.get(index).ok_or("bad memory unit")?;
             changed
         }
+        ("session.restore_on_launch", FieldValue::Index(index)) => {
+            settings.session.restore_on_launch =
+                *RestoreOnLaunch::ALL.get(index).ok_or("bad restore mode")?;
+            changed
+        }
+        ("session.autosave", FieldValue::Bool(on)) => {
+            settings.session.autosave = on;
+            changed
+        }
+        ("session.debounce_ms", FieldValue::Number(_)) => {
+            settings.session.debounce_ms =
+                number(debounce_range(), 0).ok_or("bad session debounce")? as u64;
+            changed
+        }
+        ("session.backup_count", FieldValue::Number(_)) => {
+            settings.session.backup_count =
+                number(backup_count_range(), 0).ok_or("bad session backup count")? as u32;
+            changed
+        }
+        ("session.browser_query", FieldValue::Index(index)) => {
+            settings.session.browser_query = *BrowserQueryMode::ALL
+                .get(index)
+                .ok_or("bad browser url mode")?;
+            changed
+        }
         ("developer.open_folder", FieldValue::Pressed) => {
             Ok(FormOutcome::Command(FormCommand::OpenConfigFolder))
         }
@@ -676,6 +749,11 @@ pub fn apply_field(
             | "panels.terminal_width"
             | "panels.terminal_height"
             | "panels.preview_zoom"
+            | "session.restore_on_launch"
+            | "session.autosave"
+            | "session.debounce_ms"
+            | "session.backup_count"
+            | "session.browser_query"
             | "developer.show_stats"
             | "developer.stats.show_fps"
             | "developer.stats.show_cpu"
@@ -689,6 +767,14 @@ pub fn apply_field(
         ) => mismatch(),
         _ => Err(format!("unknown settings field {id:?}")),
     }
+}
+
+fn debounce_range() -> RangeInclusive<f64> {
+    *SESSION_DEBOUNCE_MS_RANGE.start() as f64..=*SESSION_DEBOUNCE_MS_RANGE.end() as f64
+}
+
+fn backup_count_range() -> RangeInclusive<f64> {
+    f64::from(*SESSION_BACKUP_COUNT_RANGE.start())..=f64::from(*SESSION_BACKUP_COUNT_RANGE.end())
 }
 
 fn interval_range() -> RangeInclusive<f64> {
@@ -1190,6 +1276,56 @@ mod tests {
         apply_field(&mut settings, "image.blur", FieldValue::Number(f64::NAN)).unwrap();
         assert_eq!(settings.background.image.filters.blur, 0.0);
         assert_eq!(settings.validate(), Ok(()));
+    }
+
+    #[test]
+    fn session_controls_show_and_apply_clamped_and_strict() {
+        let mut settings = Settings::default();
+        let sections = settings_form(&settings, &FormContext::default());
+        let session = sections.iter().find(|s| s.title == "Session").unwrap();
+        let session_ids: Vec<_> = session.fields.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(
+            session_ids,
+            [
+                "session.restore_on_launch",
+                "session.autosave",
+                "session.debounce_ms",
+                "session.backup_count",
+                "session.browser_query",
+            ]
+        );
+
+        let restore = "session.restore_on_launch";
+        apply_field(&mut settings, restore, FieldValue::Index(2)).unwrap();
+        assert_eq!(settings.session.restore_on_launch, RestoreOnLaunch::Ask);
+        assert!(apply_field(&mut settings, restore, FieldValue::Index(3)).is_err());
+        apply_field(&mut settings, "session.autosave", FieldValue::Bool(false)).unwrap();
+        assert!(!settings.session.autosave);
+        let debounce = "session.debounce_ms";
+        apply_field(&mut settings, debounce, FieldValue::Number(10.0)).unwrap();
+        assert_eq!(settings.session.debounce_ms, 250);
+        apply_field(&mut settings, debounce, FieldValue::Number(1e9)).unwrap();
+        assert_eq!(settings.session.debounce_ms, 10_000);
+        assert!(apply_field(&mut settings, debounce, FieldValue::Number(f64::NAN)).is_err());
+        let backups = "session.backup_count";
+        apply_field(&mut settings, backups, FieldValue::Number(-4.0)).unwrap();
+        assert_eq!(settings.session.backup_count, 0);
+        apply_field(&mut settings, backups, FieldValue::Number(99.0)).unwrap();
+        assert_eq!(settings.session.backup_count, 20);
+        apply_field(&mut settings, "session.browser_query", FieldValue::Index(1)).unwrap();
+        assert_eq!(settings.session.browser_query, BrowserQueryMode::Keep);
+        assert!(apply_field(&mut settings, "session.autosave", FieldValue::Index(0)).is_err());
+        assert!(settings.validate().is_ok());
+
+        let form = settings_form(&settings, &FormContext::default());
+        let session = form.iter().find(|s| s.title == "Session").unwrap();
+        assert_eq!(
+            session.fields[0].control,
+            Control::Choice {
+                options: vec!["Always".into(), "Never".into(), "Ask".into()],
+                selected: 2,
+            }
+        );
     }
 
     #[test]
