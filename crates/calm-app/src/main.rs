@@ -7,7 +7,7 @@ mod toolbar;
 
 use calm_core::geometry::Rect;
 use calm_core::scene::PanelKind;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -70,11 +70,14 @@ fn smoke_fail(reason: &str) -> ! {
 /// so every smoke exit path drops it explicitly through `remove_smoke_dir`.
 static SMOKE_DIR: Mutex<Option<tempfile::TempDir>> = Mutex::new(None);
 
+/// Safe to call any number of times and from the panic hook.
 fn remove_smoke_dir() {
-    let dir = SMOKE_DIR
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
+    let dir = match SMOKE_DIR.try_lock() {
+        Ok(mut slot) => slot.take(),
+        Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().take(),
+        // A panic while the lock is held; skipping beats deadlocking in the hook.
+        Err(TryLockError::WouldBlock) => None,
+    };
     if let Some(dir) = dir
         && let Err(err) = dir.close()
     {
@@ -233,11 +236,20 @@ fn main() {
         cx.bind_keys(canvas_view::key_bindings());
         cx.bind_keys(dev_menu::key_bindings());
         dev_menu::install(cx);
+        if args.smoke {
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                remove_smoke_dir();
+                previous(info);
+            }));
+        }
         let settings = startup_settings(args.smoke);
         settings_menu::install(cx, &settings.settings);
         // Single window in v1: closing it quits.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
+                // No-op outside the smoke; the smoke may quit here before its success path.
+                remove_smoke_dir();
                 cx.quit();
             }
         })
