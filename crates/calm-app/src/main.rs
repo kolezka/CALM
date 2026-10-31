@@ -7,6 +7,7 @@ mod icon_image;
 mod plugin_host;
 mod settings_menu;
 mod terminal;
+mod terminal_profiles;
 mod theme;
 mod tui_host;
 
@@ -505,6 +506,91 @@ fn smoke_tui_chrome(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut
     }
 }
 
+/// A plain terminal from a fixture profile, chosen the way the Add menu's profile item
+/// chooses it. Checks the chrome model takes the profile's accent and that the terminal
+/// started with a custom Ghostty theme, then swaps the palette on the live surface.
+fn smoke_terminal_profile(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::chrome::{ChromeState, chrome_colors};
+    use calm_core::terminal_profile::{
+        PALETTE_PRESETS, TerminalColorsSetting, TerminalProfile, TerminalSettings,
+    };
+    const ACCENT: u32 = 0xff4fd8ff;
+    let profile = |preset: usize| TerminalSettings {
+        profiles: vec![TerminalProfile {
+            id: "neon".to_string(),
+            name: "Neon".to_string(),
+            fields: calm_core::terminal_profile::TerminalFields {
+                title_template: Some("neon {n}".to_string()),
+                icon: Some("N".to_string()),
+                accent_color: Some("#ff4fd8".to_string()),
+                use_ghostty_user_config: Some(false),
+                terminal_colors: Some(TerminalColorsSetting::from_colors(
+                    &PALETTE_PRESETS[preset].colors,
+                )),
+                ..Default::default()
+            },
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let checked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let fixture = profile(0);
+            fixture.validate()?;
+            view.settings.settings.terminal = fixture;
+            let chosen = calm_core::menu::terminal_profile_choice("add.terminal_profile.neon")
+                .map(str::to_string);
+            let kind = PanelKind::Terminal {
+                command: None,
+                cwd: None,
+            };
+            let id = view.scene.add(kind, Rect::new(720.0, 660.0, 300.0, 160.0));
+            view.open_plain_terminal(id, chosen, None, None, window, cx)?;
+            let look = view.panel_look(id);
+            let ring = chrome_colors(
+                ChromeState::Focused,
+                &look.overrides,
+                &crate::canvas_view::chrome_palette(),
+            )
+            .border;
+            let meta = view.terminal_meta(id).cloned().ok_or("no terminal meta")?;
+            let title = view.scene.get(id).map(|panel| panel.title.clone());
+            // Live recolor: swap in another palette and let the settings hook apply it.
+            view.settings.settings.terminal = profile(1);
+            view.terminal_settings_changed(cx);
+            let recolored = view.terminal_meta(id).and_then(|meta| meta.applied_colors)
+                == Some(PALETTE_PRESETS[1].colors);
+            view.settings.settings.terminal = TerminalSettings::default();
+            view.apply_effects(
+                vec![calm_core::interaction::Effect::ClosePanel(id)],
+                window,
+                cx,
+            );
+            Ok::<_, String>((meta, ring, title, recolored))
+        })
+    });
+    match checked {
+        Ok(Ok((meta, ring, Some(title), true)))
+            if ring == ACCENT
+                && meta.configuration == "custom"
+                && meta.profile.as_deref() == Some("neon")
+                && title.starts_with("neon ") =>
+        {
+            println!(
+                "smoke: terminal profile=neon accent=#{ring:08x} theme={} title={title:?} recolor=ok",
+                meta.configuration
+            )
+        }
+        other => smoke_fail(&format!(
+            "terminal profile: expected ring #{ACCENT:08x}, theme custom and a recolor, got {other:?}"
+        )),
+    }
+}
+
 async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
     let fixtures = match tempfile::Builder::new().prefix("calm-smoke-tui-").tempdir() {
         Ok(dir) => dir,
@@ -642,6 +728,7 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
     }
     println!("smoke: tui ran=ok exit=0 missing=reported restarted=ok closed=ok");
     smoke_tui_chrome(view, window, cx);
+    smoke_terminal_profile(view, window, cx);
     if let Err(err) = fixtures.close() {
         eprintln!("smoke: could not remove the tui temp dir: {err}");
     }

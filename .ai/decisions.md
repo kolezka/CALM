@@ -245,3 +245,23 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   wins and the shadowing is logged. Off with `plugins.builtin=false` or
   `CALM_NO_BUILTIN_PLUGINS=1`. Reason: `gmake plugins && cargo run` showed no plugins. Cost:
   the dev path is baked in at compile time, so a moved checkout needs a rebuild.
+
+## Terminal profiles (2026-10-31)
+
+- **Terminal options live in `settings.json` under `terminal`, snake_case like the rest of the
+  file.** Defaults at the top level, named `profiles` beside them. No version bump: a file
+  without the section loads as before. Cost: TUI manifests say `accentColor`, settings say
+  `accent_color`.
+- **Unknown keys in `terminal` are errors.** Serde flatten collects them so `validate` can
+  name them. Other sections still ignore unknown keys. Cost: inconsistent strictness.
+- **`use_ghostty_user_config` is per profile; the global switch stays
+  `panels.terminal_user_config`.** One global knob, not two. `terminal_colors` lays over the
+  user config when it is on, over Ghostty defaults when off, same as TUI.
+- **`command` and `args` are one unit.** The layer that sets `command` gives the args; args
+  alone are an error. `env` merges key by key. Other fields are taken whole.
+- **Env goes through `/usr/bin/env` in argv.** gpui-libghostty 0.3.1 has no env option.
+  Values are never printed, and Settings masks them, but `ps` shows them. Documented.
+- **Live recolor uses `TerminalThemeState::apply`.** It exists in 0.3.1 and keeps the process.
+  It cannot remove a theme or flip the user config, so those apply to new terminals.
+- **The panel's profile is kept beside the scene, not in `PanelKind`.** Layouts are not
+  wired and other branches edit `PanelKind` users. Move it into the kind with layout save.
