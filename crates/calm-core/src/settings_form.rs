@@ -13,9 +13,7 @@ use crate::settings::{
     GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
     SNAP_EDGE_RANGE, SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
 };
-use crate::terminal_profile::{
-    PALETTE_PRESETS, TerminalColors, TerminalColorsSetting, TerminalProfile, hex,
-};
+use crate::terminal_profile::{PALETTE_PRESETS, TerminalColors, TerminalColorsSetting, hex};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
@@ -855,6 +853,7 @@ fn add_stop(settings: &mut Settings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal_profile::TerminalProfile;
     use std::path::PathBuf;
 
     fn ids(sections: &[Section]) -> Vec<String> {
