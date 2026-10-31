@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+        required: true
+      dry_run:
+        description: Build and upload the zip as a workflow artifact, but do not commit, tag or release
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require main
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::Release runs only from main, got $REF"
+            exit 1
+          fi
+
+  # Portable crates only: the app does not build on Linux yet.
+  linux-arch:
+    needs: guard
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    timeout-minutes: 30
+    steps:
+      - name: Install toolchain
+        run: |
+          pacman -Syu --noconfirm --needed rustup base-devel git
+          rustup default stable
+          rustc --version
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-arch-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: linux-arch-cargo-
+
+      - name: Test portable crates
+        run: cargo test -p calm-core -p calm-plugins
+
+  release:
+    needs: [guard, linux-arch]
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: ./.github/actions/macos-toolchain
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-cargo-${{ hashFiles('Cargo.lock') }}-zig-${{ env.ZIG_VERSION }}
+          restore-keys: macos-cargo-
+
+      - name: Bump version
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          version="$(scripts/bump-version.sh "$BUMP")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "New version: $version"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
+            echo "::error::Tag v$version already exists on origin"
+            exit 1
+          fi
+          git diff --stat
+
+      - name: Commit and tag
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): v$VERSION"
+          git tag -a "v$VERSION" -m "CALM v$VERSION"
+
+      - name: Build bundle
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: scripts/bundle-macos.sh "$VERSION" dist
+
+      - name: Upload dry-run artifact
+        if: ${{ inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: CALM-${{ steps.bump.outputs.version }}-macos-arm64
+          path: |
+            dist/CALM-*-macos-arm64.zip
+            dist/CALM-*-macos-arm64.zip.sha256
+          if-no-files-found: error
+
+      - name: Dry-run summary
+        if: ${{ inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          echo "Dry run: would commit 'chore(release): v$VERSION' on main, tag v$VERSION and create release v$VERSION with:"
+          ls -l dist/CALM-"$VERSION"-macos-arm64.zip dist/CALM-"$VERSION"-macos-arm64.zip.sha256
+          {
+            echo "### Dry run"
+            echo "Would tag \`v$VERSION\` and publish a release. Zip uploaded as a workflow artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push and release
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git push --atomic origin HEAD:main "refs/tags/v$VERSION"
+          gh release create "v$VERSION" \
+            --verify-tag \
+            --title "CALM v$VERSION" \
+            --generate-notes \
+            "dist/CALM-$VERSION-macos-arm64.zip" \
+            "dist/CALM-$VERSION-macos-arm64.zip.sha256"

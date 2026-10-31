@@ -1,0 +1,37 @@
+name: macOS toolchain
+description: Rust stable, Zig 0.16 (checksum verified) and the Xcode Metal Toolchain for the CALM build.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Zig 0.16
+      shell: bash
+      env:
+        # From https://ziglang.org/download/index.json, entry 0.16.0 / aarch64-macos.
+        ZIG_VERSION: 0.16.0
+        ZIG_SHA256: b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489
+      run: |
+        set -euo pipefail
+        name="zig-aarch64-macos-$ZIG_VERSION"
+        cd "$RUNNER_TEMP"
+        curl -fsSL --retry 3 -o "$name.tar.xz" "https://ziglang.org/download/$ZIG_VERSION/$name.tar.xz"
+        echo "$ZIG_SHA256  $name.tar.xz" | shasum -a 256 -c -
+        tar -xJf "$name.tar.xz"
+        "$RUNNER_TEMP/$name/zig" version
+        # .cargo/config.toml sets ZIG with force = false, so this wins.
+        echo "ZIG=$RUNNER_TEMP/$name/zig" >> "$GITHUB_ENV"
+
+    - name: Install Rust stable
+      shell: bash
+      run: |
+        set -euo pipefail
+        rustup toolchain install stable --profile minimal --component clippy,rustfmt
+        rustc --version
+        cargo --version
+
+    - name: Metal Toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        xcodebuild -version
+        xcrun -f metal || xcodebuild -downloadComponent MetalToolchain
