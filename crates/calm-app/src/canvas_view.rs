@@ -1,5 +1,6 @@
 //! The canvas: paints panels from the `calm-core` scene and feeds it input.
 
+use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect};
 use calm_core::interaction::{
     Button, CHROME_BUTTON_SIZE, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, Tool,
@@ -16,6 +17,9 @@ use gpui::{
     canvas, div, fill, outline, point, px, rgb, size,
 };
 
+use std::time::Instant;
+
+use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::terminal::{self, TerminalPanel};
 use crate::theme;
 use crate::toolbar::{TOOLBAR_HEIGHT, toolbar};
@@ -75,6 +79,8 @@ pub struct CanvasView {
     /// Last pointer position relative to the viewport, for the draft rect.
     pointer: Point,
     focus_handle: FocusHandle,
+    pub show_fps: bool,
+    pub frame_stats: FrameStats,
 }
 
 impl CanvasView {
@@ -89,7 +95,24 @@ impl CanvasView {
             native_order: Vec::new(),
             pointer: Point::new(0.0, 0.0),
             focus_handle: cx.focus_handle(),
+            show_fps: false,
+            frame_stats: FrameStats::default(),
         }
+    }
+
+    pub fn set_show_fps(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_fps = show;
+        self.frame_stats.reset();
+        // Rebuild the menu bar so the Show FPS check mark follows the state.
+        cx.defer(move |cx| cx.set_menus(dev_menu::menus(show)));
+        window.refresh();
+        cx.notify();
+    }
+
+    fn reset_fps(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.frame_stats.reset();
+        window.refresh();
+        cx.notify();
     }
 
     pub fn apply_effects(
@@ -530,7 +553,13 @@ impl Focusable for CanvasView {
 }
 
 impl Render for CanvasView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.show_fps {
+            // Each render records a frame and asks for the next one, so the readout
+            // measures the frame rate the window can sustain. Off means no extra frames.
+            self.frame_stats.record(Instant::now());
+            window.request_animation_frame();
+        }
         let entity = cx.entity().downgrade();
         let paint_entity = entity.clone();
         let snapshot = PaintSnapshot {
@@ -588,6 +617,10 @@ impl Render for CanvasView {
                 cx.listener(|view, _: &ConfirmEnter, window, cx| view.confirm_enter(window, cx)),
             )
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
+            .on_action(cx.listener(|view, _: &ToggleFps, window, cx| {
+                view.set_show_fps(!view.show_fps, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &ResetFps, window, cx| view.reset_fps(window, cx)))
             .child(toolbar(self, cx))
             .child(
                 div()

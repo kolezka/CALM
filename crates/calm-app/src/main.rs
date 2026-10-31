@@ -1,4 +1,5 @@
 mod canvas_view;
+mod dev_menu;
 mod terminal;
 mod theme;
 mod toolbar;
@@ -8,8 +9,8 @@ use calm_core::scene::PanelKind;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, Focusable, Window, WindowBounds, WindowOptions, px,
-    size,
+    AnyWindowHandle, App, AppContext, Bounds, Context, Entity, Focusable, Window, WindowBounds,
+    WindowOptions, px, size,
 };
 
 use crate::canvas_view::CanvasView;
@@ -61,12 +62,15 @@ fn smoke_fail(reason: &str) -> ! {
     std::process::exit(1);
 }
 
+const SMOKE_FPS_FRAMES: usize = 10;
+const SMOKE_FPS_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How long the native restack may take to show after the scene order changes.
 const SMOKE_ZORDER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Polls until both terminals have drawn a frame, raises the first one in the scene and
 /// checks that the native views restack to match. Prints the result and quits.
-fn wait_for_terminal_frames(view: Entity<CanvasView>, cx: &mut App) {
+fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, cx: &mut App) {
     let started = Instant::now();
     cx.spawn(async move |cx| {
         let status_line;
@@ -124,6 +128,34 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, cx: &mut App) {
                 smoke_fail(&format!("native order does not match the scene: {line}"));
             }
         }
+
+        let toggled = cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| view.set_show_fps(true, window, cx))
+        });
+        if let Err(err) = toggled {
+            smoke_fail(&format!("show_fps toggle: {err:#}"));
+        }
+        let shown = Instant::now();
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let (frames, fps) = cx.update(|cx| {
+                let stats = &view.read(cx).frame_stats;
+                (stats.frames(), stats.fps())
+            });
+            // The first frame after the toggle starts the window; wait for 10 more.
+            if frames > SMOKE_FPS_FRAMES {
+                match fps {
+                    Some(fps) if fps > 0.0 => println!("smoke: fps={fps:.1}"),
+                    _ => smoke_fail(&format!("no fps after {frames} frames")),
+                }
+                break;
+            }
+            if shown.elapsed() > SMOKE_FPS_TIMEOUT {
+                smoke_fail(&format!("only {frames} frames with show_fps on"));
+            }
+        }
         cx.update(|cx| cx.quit());
     })
     .detach();
@@ -133,6 +165,8 @@ fn main() {
     let args = parse_args();
     gpui_platform::application().run(move |cx: &mut App| {
         cx.bind_keys(canvas_view::key_bindings());
+        cx.bind_keys(dev_menu::key_bindings());
+        dev_menu::install(cx);
         // Single window in v1: closing it quits.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
@@ -182,7 +216,7 @@ fn main() {
                     if rect.size.width <= 0.0 || rect.size.height <= 0.0 || panels != 2 {
                         smoke_fail("canvas did not lay out with both panels");
                     }
-                    wait_for_terminal_frames(smoke_view, cx);
+                    wait_for_terminal_frames(smoke_view, window.window_handle(), cx);
                 });
             }
             view

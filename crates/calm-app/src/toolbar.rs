@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use crate::canvas_view::CanvasView;
-use crate::theme;
+use crate::{dev_menu, theme};
 
 pub const TOOLBAR_HEIGHT: f32 = 36.0;
 
@@ -34,9 +34,14 @@ pub fn toolbar(view: &CanvasView, cx: &mut Context<CanvasView>) -> impl IntoElem
         ));
     }
     // Save is wired up with layouts in Task 13.
-    bar.child(button("Save", false))
+    bar = bar
+        .child(button("Save", false))
         .child(div().flex_1())
-        .child(format!("{:.0}%", view.scene.camera.zoom * 100.0))
+        .child(format!("{:.0}%", view.scene.camera.zoom * 100.0));
+    if view.show_fps {
+        bar = bar.child(dev_menu::fps_text(&view.frame_stats));
+    }
+    bar
 }
 
 fn tool_button(
