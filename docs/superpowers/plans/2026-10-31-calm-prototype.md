@@ -247,6 +247,26 @@ Added 2026-10-31 at the user's request. Runs after Task 8 merges (same app files
 
 ---
 
+### Task 6d: Trackpad pinch zoom (`calm-core`, `calm-app`)
+
+Added 2026-10-31 at the user's request. Implemented in the same dispatch as 6b and 6c.
+
+**Files:**
+- Modify: `crates/calm-core/src/interaction.rs`, `crates/calm-app/src/canvas_view.rs`
+
+**Interfaces:**
+- Verified in the pinned GPUI (gpui-pre 0.3.4 `interactive.rs:571`, `elements/div.rs:1032`, gpui-pre-macos `events.rs:237`): `div().on_pinch(|event: &PinchEvent, window, cx| ..)` receives macOS magnify gestures with `position: Point<Pixels>` (window coordinates), `delta: f32` (fractional change per event, `0.1` = 10 % in, negative = out), `modifiers`, `phase: TouchPhase`.
+- Produces (`calm-core`): `InputHandler::pinch(&mut self, screen: Point, delta: f64, scene: &mut Scene) -> Vec<Effect>`: ignores non-finite deltas, clamps `delta` to `[-0.5, 0.5]`, then `scene.camera.zoom_by(1.0 + delta, screen)` (anchored at the pinch center, clamped to `MIN_ZOOM..=MAX_ZOOM` by `zoom_by`), returns `vec![Effect::Redraw]`; a zero delta returns an empty vec and leaves the camera unchanged. Pinch works in every interaction state except `Drawing` and `Resizing` (ignored there so a gesture cannot corrupt an in-progress rectangle).
+- App: the canvas root `div` gets `.on_pinch(..)` converting `event.position` to canvas coordinates (subtract the canvas origin) like the scroll handler, calling `input.pinch`, then `apply_effects`. Pinch over a terminal's content rect still zooms the canvas (Ghostty's view is hit-test transparent, so the gesture reaches GPUI). Existing zoom paths (`cmd` + scroll, `cmd-=`, `cmd--`, `cmd-0`) stay.
+
+- [ ] **Step 1: Write failing tests** (`calm-core`): `pinch_in_zooms_at_center` (delta 0.1 at (300,200): zoom becomes 1.1 and `screen_to_world((300,200))` is unchanged), `pinch_out_zooms_out` (delta -0.1 gives zoom 0.9), `pinch_clamps_large_delta` (delta 5.0 gives zoom 1.5), `pinch_ignores_nan_and_zero`, `pinch_ignored_while_drawing`.
+- [ ] **Step 2: Run** `cargo test -p calm-core` Expected: FAIL. **Step 3: Implement.** **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Wire `on_pinch`** in `canvas_view.rs`.
+- [ ] **Step 6: Verify** `cargo run -p calm-app -- --smoke; echo rc=$?` (unchanged lines), clippy and fmt once each. Manual: two-finger pinch on the trackpad zooms around the fingers, both over empty canvas and over a terminal; the terminal grid does not reflow.
+- [ ] **Step 7: Commit** `feat(app): trackpad pinch zoom`
+
+---
+
 ### Task 7: Native child host (`calm-native`)
 
 **Files:**
