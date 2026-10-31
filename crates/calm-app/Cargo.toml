@@ -9,3 +9,5 @@ publish = false
 calm-core = { path = "../calm-core" }
 gpui.workspace = true
 gpui_platform.workspace = true
+calm-native = { path = "../calm-native" }
+gpui-libghostty.workspace = true
