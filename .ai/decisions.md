@@ -232,3 +232,18 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   wins and the shadowing is logged. Off with `plugins.builtin=false` or
   `CALM_NO_BUILTIN_PLUGINS=1`. Reason: `gmake plugins && cargo run` showed no plugins. Cost:
   the dev path is baked in at compile time, so a moved checkout needs a rebuild.
+
+## Blur on outside click (2026-10-31)
+
+- **A click on nothing drops focus.** A left press and release on empty canvas within
+  `CLICK_SLOP` (4 points), or a right click there, emits `Effect::ClearFocus`: the scene
+  forgets the focused panel and the GPUI host view becomes the AppKit first responder, so a
+  Ghostty surface, web view or address field stops getting keys. Drawing with a tool clears
+  focus on press. Pans (space, middle button, scroll, pinch) never do. Setting
+  `canvas.click_empty_clears_focus`, default true. Reason: the focus ring and the keyboard
+  stayed with the last panel after clicking away. Cost: a click on empty canvas while typing
+  into a terminal moves the keyboard away, like any other app.
+- **Escape clears focus only when no native view has the keyboard.** The canvas `Cancel`
+  action checks the first responder; when a terminal, page or address field holds it,
+  Escape stays theirs and focus stays. Same setting. Reason: never steal Escape from a
+  running program. Cost: Escape cannot blur a panel whose native view holds the keyboard.

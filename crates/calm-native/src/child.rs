@@ -170,6 +170,29 @@ pub fn window_visible(window: &impl HasWindowHandle) -> Option<bool> {
     Some(state.contains(objc2_app_kit::NSWindowOcclusionState::Visible))
 }
 
+/// Makes the window's host view, the GPUI canvas, the first responder, so no Ghostty
+/// surface, web view or address field keeps the keyboard. False if AppKit refused or the
+/// handle is not an AppKit view in a window.
+pub fn focus_host_view(window: &impl HasWindowHandle) -> bool {
+    let Ok((host, _)) = host_view(window) else {
+        return false;
+    };
+    host.window()
+        .is_some_and(|ns_window| ns_window.makeFirstResponder(Some(&host)))
+}
+
+/// Whether the window's first responder is the host view itself, not a native panel view
+/// inside it. `None` when the handle is not an AppKit view in a window.
+pub fn host_view_is_first_responder(window: &impl HasWindowHandle) -> Option<bool> {
+    let (host, _) = host_view(window).ok()?;
+    let responder = host.window()?.firstResponder();
+    let host_ptr = Retained::as_ptr(&host).cast::<c_void>();
+    Some(
+        responder
+            .is_some_and(|responder| Retained::as_ptr(&responder).cast::<c_void>() == host_ptr),
+    )
+}
+
 impl HasWindowHandle for NativeChild {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         let ns_view = NonNull::new(self.ns_view()).ok_or(HandleError::Unavailable)?;
