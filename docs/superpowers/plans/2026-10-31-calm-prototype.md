@@ -267,6 +267,27 @@ Added 2026-10-31 at the user's request. Implemented in the same dispatch as 6b a
 
 ---
 
+### Task 6e: Settings menu with persisted options and canvas background (`calm-core`, `calm-app`)
+
+Added 2026-10-31 at the user's request. Runs in parallel with Task 9 in its own worktree; write scope is the two new files plus minimal touch points.
+
+**Files:**
+- Create: `crates/calm-core/src/settings.rs`, `crates/calm-app/src/settings_menu.rs`
+- Modify (minimal, a few lines each): `crates/calm-app/src/main.rs` (load settings at startup, register the menu), `crates/calm-app/src/canvas_view.rs` (read background and grid from settings when painting; apply setting actions), `crates/calm-app/src/theme.rs` (background becomes a settings value), `crates/calm-core/src/lib.rs`
+
+**Interfaces:**
+- Produces (`calm-core/settings.rs`, pure, tested): `Settings { background: BackgroundPreset, show_grid: bool, confirm_close: bool, terminal_user_config: bool, version: u32 /* = 1 */ }` with `Default` = `DarkGray`, `false`, `true`, `true`; `BackgroundPreset::{ DarkGray /* 0x151515 */, Black /* 0x000000 */, Graphite /* 0x2b2b2e */, MidnightBlue /* 0x101827 */, Forest /* 0x0f1a14 */ }` with `fn rgb(self) -> u32`, `fn label(self) -> &'static str`, `fn all() -> &'static [BackgroundPreset]`; `settings_path() -> PathBuf` (`$CALM_HOME/settings.json` else `~/.config/calm/settings.json`); `load_settings() -> Settings` (missing file gives `Default`; malformed or unknown version prints one warning to stderr naming the path and gives `Default`, never panics); `save_settings(&Settings) -> Result<PathBuf, SettingsError>` (pretty JSON, temp file + rename like layouts); `GRID_STEP_WORLD: f64 = 64.0`.
+- Produces (`calm-app/settings_menu.rs`): a top-level menu bar menu `Settings` (via the same `cx.set_menus` mechanism as the Developer menu; keep both menus registered from one place) with: `Background` submenu listing every preset as a checkable item (the current one checked); `Show Grid` (checkable); `Confirm Before Closing Panels` (checkable); `Terminal Uses Ghostty User Config` (checkable; applies to terminals spawned afterwards); separator; `Open Config Folder` (opens the settings directory in Finder via `open`); `Reset to Defaults`. GPUI actions `SetBackground(BackgroundPreset)`, `ToggleGrid`, `ToggleConfirmClose`, `ToggleTerminalUserConfig`, `OpenConfigFolder`, `ResetSettings`. Every change saves immediately and rebuilds the menus so check marks follow the state.
+- App behavior: the canvas background fill uses `settings.background.rgb()`; when `show_grid` is on, paint a dot grid every `GRID_STEP_WORLD` world units (screen spacing = step * zoom; skip when spacing < 8 px) in a color 12 % lighter than the background, under everything else; `confirm_close == false` makes `request_close` close immediately (pass `alive && settings.confirm_close`); `terminal_user_config == false` spawns terminals with `TerminalConfiguration::Default`.
+
+- [ ] **Step 1: Write failing tests** (`calm-core`): `default_settings_values`, `load_missing_file_gives_default`, `load_malformed_file_gives_default_without_panic`, `save_then_load_roundtrip`, `preset_rgb_and_labels_cover_all`, `grid_spacing_skips_below_8px` (pure helper `grid_screen_spacing(zoom) -> Option<f64>`).
+- [ ] **Step 2: Run** `cargo test -p calm-core` Expected: FAIL. **Step 3: Implement.** **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Implement the menu and wiring** with the minimal touch points above. Extend `--smoke`: print `smoke: settings background=<label> grid=<bool> path=<path>` using a `CALM_HOME` temp dir so the user's real settings are untouched.
+- [ ] **Step 6: Verify** `cargo run -p calm-app -- --smoke; echo rc=$?`, `cargo test --workspace; echo rc=$?`, clippy and fmt once each. Manual: Settings > Background > Midnight Blue recolors the canvas immediately and survives a restart; Show Grid draws dots that scale with zoom; Reset to Defaults restores Dark Gray.
+- [ ] **Step 7: Commit** `feat(app): add Settings menu with persisted options and canvas background`
+
+---
+
 ### Task 7: Native child host (`calm-native`)
 
 **Files:**
