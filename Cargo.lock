@@ -703,11 +703,15 @@ dependencies = [
 name = "calm-app"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "calm-core",
  "calm-native",
+ "calm-plugins",
+ "futures",
  "gpui-libghostty",
  "gpui-pre",
  "gpui-pre-platform",
+ "serde_json",
  "tempfile",
 ]
 

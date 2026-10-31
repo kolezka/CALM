@@ -31,7 +31,8 @@ const off = calm?.events.on("resize", ({ width, height, zoom }) => { /* ... */ }
 Importing the module also declares `window.calm` globally. Type check with
 `bunx tsc --noEmit -p .`.
 
-Until the plugin host is wired, no host request resolves; a request whose `postMessage` throws
-rejects immediately. `events.on` is synchronous. See "Host support" in `docs/plugins.md`.
+The host serves `settings.get`, `settings.set`, `panel.setTitle` and `log` so far. Other
+methods reject with `not implemented: <method>`. `events.on` is synchronous. See "Host
+support" in `docs/plugins.md`.
 
 Plugins are trusted code. `calm.process.exec` runs programs with the user's rights.

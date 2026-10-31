@@ -2,7 +2,6 @@
 //! The canvas background is a setting: `Settings::background` in calm-core.
 //! Values ending in an alpha byte are for `rgba`, the rest for `rgb`.
 
-pub const TEXT: u32 = 0xe6e6e6;
 pub const DRAFT_OUTLINE: u32 = 0x6fa8dc;
 
 /// Accent for focus. Also the focused panel's border.
