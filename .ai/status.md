@@ -1,7 +1,7 @@
 # Status
 
-Last updated: 2026-10-31. `main` at the CLAUDE.md refresh after fd41d94. Facts are
-verified unless marked otherwise.
+Last updated: 2026-10-31. `main` at the repo-intel config commit after the `.ai/` folder
+(0236d0c). Facts are verified unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -17,6 +17,11 @@ verified unless marked otherwise.
 - Plugins: `hello-world`, `github-prs` (TSX), `templates/plugin-tsx`, SDK `calm.d.ts`.
 - Docs: `dev-setup.md`, `architecture.md` (terminals, preview), `plugins.md`,
   `release.md`, `CLAUDE.md`, this folder.
+- Graphify graph: `repo-intel build` rc=0 on 2026-10-31 (graphify only, backend litellm
+  with `deepseek/deepseek-flash`, scope in `.graphifyignore`: `docs/superpowers/`, lock
+  files and the plist template excluded). 55 code files, 16 docs, 1247 nodes, 2472 edges.
+  `AGENTS.md` carries the routing block, imported from `CLAUDE.md`. A git post-commit hook
+  rebuilds it in the background.
 
 ## Verified on hardware
 
@@ -31,8 +36,7 @@ CI run on `main` green (linux-arch success, macos skipped).
   storage, `gh` dispatch. Today no `window.calm` call resolves (Tasks 11 and 12 app parts).
 - Layout save and load in the app (`--layout`, Task 13). The core format exists.
 - Benchmark mode (`--bench`, Task 14) and `docs/benchmarks.md`.
-- `docs/architecture.md` refresh for the whole system and `repo-intel build` (Task 15).
-  The build script currently fails with an unbound `tmp` variable.
+- `docs/architecture.md` refresh for the whole system (Task 15; the graph part is done).
 - Plan file lacks the text of Task 17 (Makefile) and Task 16b (release on Linux); both
   exist only as briefs in the git-ignored SDD workspace.
 
@@ -50,10 +54,13 @@ CI run on `main` green (linux-arch success, macos skipped).
   exists yet.
 - Escape on the close confirmation does not trigger a redraw until the next event.
 - A transitive `block 0.1.6` future-incompatibility warning from a dependency.
+- repo-intel 0.1.8 prints `tmp: nieustawiona zmienna` on its error path (for example after
+  an interrupted build). Upstream bug; harmless when the build succeeds.
 
 ## User-owned next steps
 
 1. `gh workflow run release.yml --ref main -f bump=patch -f dry_run=true`, then a real run.
 2. `gmake release-upload VERSION=x.y.z` on the Mac after the release exists.
 3. Set `CALM_MACOS_HOSTED=true` once billing allows hosted macOS CI.
-4. Say go for the remaining plan tasks (10, 11, 12 app wiring, 13, 14, 15).
+4. Push `main` (local commits: CLAUDE.md refresh, `.ai/`, repo-intel config).
+5. Say go for the remaining plan tasks (10, 11, 12 app wiring, 13, 14, 15 docs).
