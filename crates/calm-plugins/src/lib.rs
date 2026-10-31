@@ -17,4 +17,4 @@ pub use manifest::{
     PluginSearch, Shadowed, Size, discover, discover_search, plugin_dirs, plugin_search,
     workspace_plugins_dir,
 };
-pub use tui::{DEFAULT_TUI_SIZE, TuiRestart, TuiSpec};
+pub use tui::{DEFAULT_TUI_SIZE, TuiIcon, TuiRestart, TuiSpec, TuiTerminalColors, parse_hex_color};

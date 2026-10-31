@@ -3,11 +3,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use calm_core::chrome::ChromeOverrides;
 use calm_core::scene::PanelId;
 use calm_core::tui::{self, LaunchContext, LaunchSpec, RestartPolicy, Supervisor};
-use calm_plugins::{InstalledPlugin, TuiRestart, TuiSpec};
+use calm_plugins::{InstalledPlugin, TuiIcon, TuiRestart, TuiSpec};
 use gpui::Subscription;
-use gpui_libghostty::TerminalOptions;
+use gpui_libghostty::{TerminalColor, TerminalConfiguration, TerminalOptions, TerminalTheme};
 
 use crate::terminal;
 
@@ -55,12 +56,32 @@ impl TuiRun {
     }
 
     pub fn title(&self) -> String {
-        self.supervisor
-            .title(&self.plugin.manifest.name, &self.spec().command)
+        let name = self.spec().chrome_title(&self.plugin.manifest.name);
+        self.supervisor.title(&name, &self.spec().command)
     }
 
+    /// The text icon, if the manifest has one.
     pub fn glyph(&self) -> Option<&str> {
-        self.spec().icon.as_deref()
+        match &self.spec().icon {
+            Some(TuiIcon::Text(text)) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Absolute path of the image icon, if the manifest has one.
+    pub fn icon_path(&self) -> Option<PathBuf> {
+        self.spec()
+            .icon_image()
+            .map(|icon| self.plugin.dir.join(icon))
+    }
+
+    pub fn chrome_overrides(&self) -> ChromeOverrides {
+        let spec = self.spec();
+        ChromeOverrides {
+            accent: spec.accent_color,
+            title_bar: spec.title_bar_color,
+            title: spec.title_color,
+        }
     }
 
     /// Options for the next launch. Removes a stale status file first, so a missing file
@@ -109,6 +130,33 @@ impl TuiRun {
         self.supervisor.started();
         Ok(terminal::options(Some(&tui::command_line(&argv)), cwd))
     }
+
+    /// Puts the manifest's `terminalColors` on top of whatever config `options` loads.
+    /// Call after the settings have picked the base configuration.
+    pub fn apply_terminal_colors(&self, options: &mut TerminalOptions) {
+        let Some(colors) = &self.spec().terminal_colors else {
+            return;
+        };
+        let theme = TerminalTheme::new(
+            terminal_color(colors.background),
+            terminal_color(colors.foreground),
+            colors.palette.map(terminal_color),
+        );
+        options.configuration = match options.configuration {
+            TerminalConfiguration::UserDefault
+            | TerminalConfiguration::UserDefaultWithOverride(_) => {
+                TerminalConfiguration::UserDefaultWithOverride(theme)
+            }
+            TerminalConfiguration::Default | TerminalConfiguration::Custom(_) => {
+                TerminalConfiguration::Custom(theme)
+            }
+        };
+    }
+}
+
+/// 0xRRGGBB to a Ghostty color.
+fn terminal_color(rgb: u32) -> TerminalColor {
+    TerminalColor::new((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
 /// The exit code the wrapper wrote, or `None` if it never got there (e.g. killed).

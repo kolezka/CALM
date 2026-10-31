@@ -468,25 +468,28 @@ fn load_manifest(dir: &Path) -> Result<PluginManifest, PluginError> {
     let text = fs::read_to_string(&path).map_err(|e| invalid(e.to_string()))?;
     let manifest = PluginManifest::from_json(&text).map_err(invalid)?;
     if let Some(entry) = manifest.entry() {
-        check_entry_on_disk(dir, entry).map_err(invalid)?;
+        check_file_on_disk(dir, entry, "entry").map_err(invalid)?;
+    }
+    if let Some(icon) = manifest.tui().and_then(TuiSpec::icon_image) {
+        check_file_on_disk(dir, icon, "icon").map_err(invalid)?;
     }
     Ok(manifest)
 }
 
 // The lexical check in from_json cannot see symlinks, so resolve the real path here.
-fn check_entry_on_disk(dir: &Path, entry: &Path) -> Result<(), String> {
-    let shown = entry.display();
+fn check_file_on_disk(dir: &Path, file: &Path, field: &str) -> Result<(), String> {
+    let shown = file.display();
     let real_dir = fs::canonicalize(dir).map_err(|e| format!("cannot resolve plugin dir: {e}"))?;
-    let real_entry = fs::canonicalize(dir.join(entry))
-        .map_err(|e| format!("cannot resolve entry {shown}: {e}"))?;
-    if !real_entry.starts_with(&real_dir) {
+    let real_file = fs::canonicalize(dir.join(file))
+        .map_err(|e| format!("cannot resolve {field} {shown}: {e}"))?;
+    if !real_file.starts_with(&real_dir) {
         return Err(format!(
-            "entry {shown} resolves to {}, outside the plugin directory",
-            real_entry.display()
+            "{field} {shown} resolves to {}, outside the plugin directory",
+            real_file.display()
         ));
     }
-    if !real_entry.is_file() {
-        return Err(format!("entry {shown} is not a file"));
+    if !real_file.is_file() {
+        return Err(format!("{field} {shown} is not a file"));
     }
     Ok(())
 }

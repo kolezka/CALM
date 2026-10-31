@@ -712,6 +712,7 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "image",
+ "resvg",
  "serde_json",
  "tempfile",
 ]
