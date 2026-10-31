@@ -40,7 +40,8 @@ impl PanelIcon {
         match kind {
             PanelKind::Terminal { .. } | PanelKind::Tui { .. } => PanelIcon::Terminal,
             PanelKind::Browser { .. } => PanelIcon::Browser,
-            PanelKind::Plugin { .. } => PanelIcon::Plugin,
+            // A placeholder for a kind from a newer CALM; a plugin icon is the closest fit.
+            PanelKind::Plugin { .. } | PanelKind::Unsupported { .. } => PanelIcon::Plugin,
         }
     }
 }
@@ -581,9 +582,11 @@ mod tests {
             terminal(),
             PanelKind::Browser {
                 url: "https://example.com".into(),
+                page_zoom: None,
             },
             PanelKind::Plugin {
                 plugin_id: "hello".into(),
+                plugin_version: None,
                 settings: serde_json::Value::Null,
             },
         ];

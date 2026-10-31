@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use serde_json::value::RawValue;
 
 use crate::camera::Camera;
 use crate::geometry::{Point, Rect, Size};
@@ -16,8 +17,9 @@ pub const DUPLICATE_OFFSET: f64 = 32.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PanelId(pub u64);
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+/// Panel kinds as layouts store them. A `type` this build does not know loads as
+/// `Unsupported` and keeps its JSON bytes, so a newer file survives a save.
+#[derive(Clone, Debug, PartialEq)]
 pub enum PanelKind {
     Terminal {
         command: Option<String>,
@@ -25,24 +27,167 @@ pub enum PanelKind {
     },
     Browser {
         url: String,
+        /// Page zoom chosen by the user. Not applied yet; `None` means the default.
+        page_zoom: Option<f64>,
     },
     Plugin {
         plugin_id: String,
+        /// Manifest version the panel was saved with. `None` for v1 files.
+        plugin_version: Option<String>,
         settings: serde_json::Value,
     },
     /// A terminal running a TUI plugin's command. Only the id is stored, so layouts never
     /// hold the command, its args or its env.
     Tui {
         plugin_id: String,
+        plugin_version: Option<String>,
     },
+    /// Drawn as a placeholder and saved back unchanged.
+    Unsupported { raw: RawKind },
+}
+
+/// The exact JSON bytes of a panel kind with an unknown `type`.
+#[derive(Clone, Debug)]
+pub struct RawKind {
+    raw: Box<RawValue>,
+    type_name: String,
+}
+
+impl RawKind {
+    pub fn json(&self) -> &str {
+        self.raw.get()
+    }
+
+    pub fn type_name(&self) -> &str {
+        &self.type_name
+    }
+}
+
+impl PartialEq for RawKind {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw.get() == other.raw.get()
+    }
+}
+
+const KNOWN_KIND_TYPES: [&str; 4] = ["terminal", "browser", "plugin", "tui"];
+
+/// The serde shape of the known kinds. Kept private so `PanelKind` can route unknown
+/// types to `Unsupported` without going through `serde_json::Value`.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum KnownKind {
+    Terminal {
+        command: Option<String>,
+        cwd: Option<PathBuf>,
+    },
+    Browser {
+        url: String,
+        #[serde(default)]
+        page_zoom: Option<f64>,
+    },
+    Plugin {
+        plugin_id: String,
+        #[serde(default)]
+        plugin_version: Option<String>,
+        settings: serde_json::Value,
+    },
+    Tui {
+        plugin_id: String,
+        #[serde(default)]
+        plugin_version: Option<String>,
+    },
+}
+
+#[derive(Deserialize)]
+struct KindTypeProbe {
+    #[serde(rename = "type")]
+    type_name: String,
+}
+
+impl Serialize for PanelKind {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let known = match self.clone() {
+            PanelKind::Terminal { command, cwd } => KnownKind::Terminal { command, cwd },
+            PanelKind::Browser { url, page_zoom } => KnownKind::Browser { url, page_zoom },
+            PanelKind::Plugin {
+                plugin_id,
+                plugin_version,
+                settings,
+            } => KnownKind::Plugin {
+                plugin_id,
+                plugin_version,
+                settings,
+            },
+            PanelKind::Tui {
+                plugin_id,
+                plugin_version,
+            } => KnownKind::Tui {
+                plugin_id,
+                plugin_version,
+            },
+            PanelKind::Unsupported { raw } => return raw.raw.serialize(serializer),
+        };
+        known.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PanelKind {
+    /// Needs a serde_json text deserializer: `RawValue` cannot come from a `Value`.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Box::<RawValue>::deserialize(deserializer)?;
+        let probe: KindTypeProbe = serde_json::from_str(raw.get()).map_err(de::Error::custom)?;
+        if !KNOWN_KIND_TYPES.contains(&probe.type_name.as_str()) {
+            return Ok(PanelKind::Unsupported {
+                raw: RawKind {
+                    raw,
+                    type_name: probe.type_name,
+                },
+            });
+        }
+        // A known type with a bad shape stays an error.
+        let known: KnownKind = serde_json::from_str(raw.get()).map_err(de::Error::custom)?;
+        Ok(match known {
+            KnownKind::Terminal { command, cwd } => PanelKind::Terminal { command, cwd },
+            KnownKind::Browser { url, page_zoom } => PanelKind::Browser { url, page_zoom },
+            KnownKind::Plugin {
+                plugin_id,
+                plugin_version,
+                settings,
+            } => PanelKind::Plugin {
+                plugin_id,
+                plugin_version,
+                settings,
+            },
+            KnownKind::Tui {
+                plugin_id,
+                plugin_version,
+            } => PanelKind::Tui {
+                plugin_id,
+                plugin_version,
+            },
+        })
+    }
+}
+
+/// What the user chose for a panel's look. Always wins over what the panel sets.
+/// Applying them in the chrome is not wired yet.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PanelOverrides {
+    pub title: Option<String>,
+    pub icon: Option<String>,
+    pub accent: Option<String>,
 }
 
 impl PanelKind {
     fn default_title(&self) -> String {
         match self {
             PanelKind::Terminal { .. } => "Terminal".to_string(),
-            PanelKind::Browser { url } => url.clone(),
-            PanelKind::Plugin { plugin_id, .. } | PanelKind::Tui { plugin_id } => plugin_id.clone(),
+            PanelKind::Browser { url, .. } => url.clone(),
+            PanelKind::Plugin { plugin_id, .. } | PanelKind::Tui { plugin_id, .. } => {
+                plugin_id.clone()
+            }
+            PanelKind::Unsupported { raw } => format!("Unsupported: {}", raw.type_name()),
         }
     }
 }
@@ -55,7 +200,8 @@ pub struct Panel {
     pub rect: Rect,
     pub title: String,
     pub minimized: bool,
-    /// Set from the kind on add; a plugin's manifest can change it through
+    pub overrides: PanelOverrides,
+    /// Not saved in layouts. Set from the kind on add; a plugin's manifest can change it through
     /// `Scene::set_resize_policy`.
     pub resize: ResizePolicy,
 }
@@ -98,6 +244,7 @@ impl Scene {
             rect,
             title,
             minimized: false,
+            overrides: PanelOverrides::default(),
             resize,
         });
         id
@@ -314,6 +461,7 @@ mod tests {
         let second = scene.add(
             PanelKind::Browser {
                 url: "https://example.com".into(),
+                page_zoom: None,
             },
             Rect::new(0.0, 0.0, 200.0, 200.0),
         );

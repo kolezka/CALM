@@ -447,9 +447,11 @@ impl InputHandler {
             }),
             Tool::DrawBrowser => Some(PanelKind::Browser {
                 url: "about:blank".to_string(),
+                page_zoom: None,
             }),
             Tool::DrawPlugin(plugin_id) => Some(PanelKind::Plugin {
                 plugin_id: plugin_id.clone(),
+                plugin_version: None,
                 settings: serde_json::Value::Object(serde_json::Map::new()),
             }),
         }
@@ -596,9 +598,11 @@ mod tests {
             terminal(),
             PanelKind::Browser {
                 url: "https://example.com".into(),
+                page_zoom: None,
             },
             PanelKind::Plugin {
                 plugin_id: "hello-world".into(),
+                plugin_version: None,
                 settings: serde_json::json!({}),
             },
         ];
@@ -663,6 +667,7 @@ mod tests {
     fn plugin_kind() -> PanelKind {
         PanelKind::Plugin {
             plugin_id: "fixture".into(),
+            plugin_version: None,
             settings: serde_json::json!({}),
         }
     }
@@ -747,6 +752,7 @@ mod tests {
         scene.add(
             PanelKind::Browser {
                 url: "https://example.com".into(),
+                page_zoom: None,
             },
             Rect::new(0.0, 0.0, 800.0, 600.0),
         );

@@ -107,6 +107,11 @@ Pull requests:
   to the WKWebView.
 - Layouts and session: layout save and load, `--layout`, session autosave and restore are
   not built. Only the core layout format exists. Plugin settings are not saved anywhere.
+  Layout v2 (persistence plan Task 2, `feat/layout-v2`): `saved_at_unix`, per-panel
+  `overrides`, `plugin_version`, browser `page_zoom`, and `PanelKind::Unsupported` that keeps
+  an unknown kind's JSON bytes. v1 files load as v2 and are never rewritten; version 3 and
+  up fail. The resize policy is not saved. Overrides are stored but not applied in the
+  chrome, page zoom is stored but not applied, and an unsupported panel draws chrome only.
 - `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
