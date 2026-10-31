@@ -1,0 +1,5 @@
+# Custom labels of the self-hosted OVH runner, so actionlint accepts them.
+self-hosted-runner:
+  labels:
+    - ovh
+    - calm

@@ -27,21 +27,24 @@ env:
 
 jobs:
   guard:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, calm]
+    timeout-minutes: 5
     steps:
       - name: Require main
         env:
           REF: ${{ github.ref }}
         run: |
+          set -euo pipefail
           if [ "$REF" != "refs/heads/main" ]; then
             echo "::error::Release runs only from main, got $REF"
             exit 1
           fi
 
   # Portable crates only: the app does not build on Linux yet.
+  # Both jobs check out github.sha, the main commit the run was dispatched on.
   linux-arch:
     needs: guard
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, calm]
     container: archlinux:latest
     timeout-minutes: 30
     steps:
@@ -53,7 +56,7 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
 
       - uses: actions/cache@v4
         with:
@@ -70,11 +73,14 @@ jobs:
   release:
     needs: [guard, linux-arch]
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
 
       - uses: ./.github/actions/macos-toolchain
 
@@ -87,25 +93,101 @@ jobs:
           key: macos-cargo-${{ hashFiles('Cargo.lock') }}-zig-${{ env.ZIG_VERSION }}
           restore-keys: macos-cargo-
 
-      - name: Bump version
-        id: bump
+      # Decides between a new release and resuming one whose tag was pushed but whose
+      # release was never created. See docs/release.md, "Recovering a failed release".
+      - name: Plan version
+        id: plan
         env:
           BUMP: ${{ inputs.bump }}
         run: |
           set -euo pipefail
-          version="$(scripts/bump-version.sh "$BUMP")"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "New version: $version"
-          if git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
-            echo "::error::Tag v$version already exists on origin"
+          # Without this, a failure inside $(classify ...) would not stop the function.
+          shopt -s inherit_errexit
+
+          # Prints free, resume, released, draft or mismatch for tag v<version>.
+          classify() {
+            local version="$1" tag="v$1" rc=0 out tagged
+            git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || rc=$?
+            if [ "$rc" -eq 2 ]; then
+              echo free
+              return
+            elif [ "$rc" -ne 0 ]; then
+              echo "::error::git ls-remote for $tag failed with rc=$rc" >&2
+              return 1
+            fi
+            git fetch --quiet --depth=1 origin "+refs/tags/$tag:refs/tags/$tag"
+            git show "refs/tags/$tag^{commit}:Cargo.toml" >"$RUNNER_TEMP/tag-Cargo.toml"
+            tagged="$(scripts/bump-version.sh --current "$RUNNER_TEMP/tag-Cargo.toml")"
+            if out="$(gh release view "$tag" --json isDraft --jq .isDraft 2>&1)"; then
+              if [ "$out" = "true" ]; then echo draft; else echo released; fi
+            elif [ "$out" != "release not found" ]; then
+              echo "::error::gh release view $tag failed: $out" >&2
+              return 1
+            elif [ "$tagged" = "$version" ]; then
+              echo resume
+            else
+              echo mismatch
+            fi
+          }
+
+          resume() {
+            # Undo any local bump and build exactly the tagged commit.
+            git checkout -- Cargo.toml Cargo.lock
+            git checkout --quiet --detach "refs/tags/v$1"
+            echo "mode=resume" >>"$GITHUB_OUTPUT"
+            echo "version=$1" >>"$GITHUB_OUTPUT"
+            echo "Resuming v$1: tag exists on origin without a release."
+          }
+
+          # A new dispatch after a failed release: main already carries the tagged version.
+          current="$(scripts/bump-version.sh --current)"
+          state="$(classify "$current")"
+          if [ "$state" = "resume" ]; then
+            resume "$current"
+            exit 0
+          elif [ "$state" = "draft" ]; then
+            echo "::error::A draft release v$current exists. Delete it (gh release delete v$current) and run again."
             exit 1
           fi
-          git diff --stat
+
+          version="$(scripts/bump-version.sh "$BUMP")"
+          state="$(classify "$version")"
+          case "$state" in
+            free)
+              echo "mode=new" >>"$GITHUB_OUTPUT"
+              echo "version=$version" >>"$GITHUB_OUTPUT"
+              echo "New version: $version"
+              git diff --stat
+              ;;
+            resume)
+              # A rerun of a failed run: same dispatch commit, same bump, tag already pushed.
+              resume "$version"
+              ;;
+            released)
+              echo "::error::Tag v$version already exists and has a release. Nothing to resume."
+              exit 1
+              ;;
+            draft)
+              echo "::error::A draft release v$version exists. Delete it (gh release delete v$version) and run again."
+              exit 1
+              ;;
+            *)
+              echo "::error::Tag v$version already exists on origin but its Cargo.toml version differs. Refusing to release."
+              exit 1
+              ;;
+          esac
+
+      # Pushes made with GITHUB_TOKEN do not trigger ci.yml, so the full checks run here.
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Commit and tag
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && steps.plan.outputs.mode == 'new' }}
         env:
-          VERSION: ${{ steps.bump.outputs.version }}
+          VERSION: ${{ steps.plan.outputs.version }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -116,14 +198,14 @@ jobs:
 
       - name: Build bundle
         env:
-          VERSION: ${{ steps.bump.outputs.version }}
+          VERSION: ${{ steps.plan.outputs.version }}
         run: scripts/bundle-macos.sh "$VERSION" dist
 
       - name: Upload dry-run artifact
         if: ${{ inputs.dry_run }}
         uses: actions/upload-artifact@v4
         with:
-          name: CALM-${{ steps.bump.outputs.version }}-macos-arm64
+          name: CALM-${{ steps.plan.outputs.version }}-macos-arm64
           path: |
             dist/CALM-*-macos-arm64.zip
             dist/CALM-*-macos-arm64.zip.sha256
@@ -132,23 +214,37 @@ jobs:
       - name: Dry-run summary
         if: ${{ inputs.dry_run }}
         env:
-          VERSION: ${{ steps.bump.outputs.version }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          MODE: ${{ steps.plan.outputs.mode }}
         run: |
-          echo "Dry run: would commit 'chore(release): v$VERSION' on main, tag v$VERSION and create release v$VERSION with:"
+          set -euo pipefail
+          if [ "$MODE" = "resume" ]; then
+            what="create release v$VERSION from the existing tag"
+          else
+            what="commit 'chore(release): v$VERSION' on main, tag v$VERSION and create release v$VERSION"
+          fi
+          echo "Dry run: would $what with:"
           ls -l dist/CALM-"$VERSION"-macos-arm64.zip dist/CALM-"$VERSION"-macos-arm64.zip.sha256
           {
-            echo "### Dry run"
-            echo "Would tag \`v$VERSION\` and publish a release. Zip uploaded as a workflow artifact."
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "### Dry run ($MODE)"
+            echo "Would $what. Zip uploaded as a workflow artifact."
+          } >>"$GITHUB_STEP_SUMMARY"
 
-      - name: Push and release
-        if: ${{ !inputs.dry_run }}
+      # No force: if main moved since the dispatch, the push is rejected and nothing is tagged.
+      - name: Push commit and tag
+        if: ${{ !inputs.dry_run && steps.plan.outputs.mode == 'new' }}
         env:
-          VERSION: ${{ steps.bump.outputs.version }}
-          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.plan.outputs.version }}
         run: |
           set -euo pipefail
           git push --atomic origin HEAD:main "refs/tags/v$VERSION"
+
+      - name: Create release
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
           gh release create "v$VERSION" \
             --verify-tag \
             --title "CALM v$VERSION" \

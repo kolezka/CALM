@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bump the workspace version in Cargo.toml and print the new version.
 # Usage: scripts/bump-version.sh <patch|minor|major>
+#        scripts/bump-version.sh --current [Cargo.toml]
 #        scripts/bump-version.sh --self-test
 set -euo pipefail
 
@@ -90,6 +91,13 @@ EOF
     }
 
     check 0.1.9 patch 0.1.10
+    # --current reads the file it is given, without writing.
+    if [[ "$(read_version "$dir/Cargo.toml")" == "0.1.10" ]]; then
+        echo "ok: current reads 0.1.10"
+    else
+        echo "FAIL: current read '$(read_version "$dir/Cargo.toml")', want '0.1.10'"
+        fails=$((fails + 1))
+    fi
     check 0.1.9 minor 0.2.0
     check 1.2.3 major 2.0.0
 
@@ -111,7 +119,16 @@ EOF
     echo "self-test: all checks passed"
 }
 
-[[ $# -eq 1 ]] || die "usage: $0 <patch|minor|major> | --self-test"
+if [[ "${1:-}" == "--current" ]]; then
+    [[ $# -le 2 ]] || die "usage: $0 --current [Cargo.toml]"
+    file="${2:-$repo_root/Cargo.toml}"
+    current="$(read_version "$file")"
+    [[ -n "$current" ]] || die "no version in [workspace.package] of $file"
+    echo "$current"
+    exit 0
+fi
+
+[[ $# -eq 1 ]] || die "usage: $0 <patch|minor|major> | --current [Cargo.toml] | --self-test"
 
 if [[ "$1" == "--self-test" ]]; then
     self_test

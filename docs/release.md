@@ -4,16 +4,26 @@
 
 Runs on every push to any branch and on pull requests. Two jobs:
 
-- `linux-arch` (`archlinux:latest` container): `cargo fmt --check`, then tests and clippy for
-  `calm-core` and `calm-plugins` only.
+- `linux-arch` (`archlinux:latest` container on the self-hosted runner): `cargo fmt --check`,
+  then tests and clippy for `calm-core` and `calm-plugins` only.
 - `macos` (`macos-15`, arm64): installs Zig 0.16 from ziglang.org (checksum pinned in
   `.github/actions/macos-toolchain/action.yml`) and the Metal Toolchain, then fmt, build, test and
   clippy for the whole workspace, an informational `--smoke` run, and a bundle uploaded as the
   workflow artifact `CALM-<version>-macos-arm64`.
 
 The smoke step has `continue-on-error: true`. Hosted runners may not give the app a usable window
-server, so a failed smoke shows as a warning on the run, not a red job. Read its log before
-trusting it either way.
+server, so a failed smoke does not turn the job red. The next step, `Smoke result`, reads the
+smoke step's outcome and adds a warning annotation and a line in the job summary when it did not
+pass. Read the smoke log before trusting it either way.
+
+## Self-hosted Linux runner
+
+Every Linux job (`linux-arch` in both workflows and the release `guard`) runs on
+`[self-hosted, linux, calm]`: a `myoung34/github-runner` container on the OVH host, deployed
+with Coolify and registered to this repository with labels `self-hosted,linux,x64,ovh,calm`.
+Container jobs need the runner to reach a Docker daemon. If no runner with those labels is
+online, the jobs wait in the queue rather than fail. `.github/actionlint.yaml` lists the custom
+labels so `actionlint` accepts them. The macOS jobs stay on GitHub-hosted `macos-15`.
 
 ## Linux limitation
 
@@ -30,8 +40,28 @@ a Linux native backend exists, change the `linux-arch` job to build and test the
    commits, tags and pushes nothing.
 4. Run again with `dry_run` unchecked to publish.
 
-The workflow refuses to run from any branch other than `main`, and fails if the tag already
-exists. Only one release runs at a time (concurrency group `release`).
+The workflow refuses to run from any branch other than `main`. Only one release runs at a time
+(concurrency group `release`). Both jobs check out the commit the run was dispatched on
+(`github.sha`), so the Linux tests and the macOS build see the same revision. The final push is
+not forced: if `main` moved after the dispatch, it is rejected and nothing is tagged.
+
+The release commit is pushed with `GITHUB_TOKEN`, and GitHub does not trigger other workflows
+from such pushes, so it gets no separate `ci` run. The release job runs `cargo test --workspace`
+and clippy on macOS itself before bundling.
+
+## Recovering a failed release
+
+The push of the commit and tag happens before `gh release create`. If the release creation or the
+asset upload fails, the tag is on origin without a release. Recover by running the workflow again:
+
+- Re-run the failed run, or dispatch a new run on `main` with the same `bump`. The `Plan version`
+  step sees that tag `v<version>` exists, that the tagged commit's `Cargo.toml` has that version
+  and that no release exists. It then checks out the tag, skips the bump, commit, tag and push,
+  and goes straight to tests, bundle and `gh release create`.
+- If a draft release for that tag exists (an upload that failed halfway can leave one), the run
+  stops and asks you to delete it: `gh release delete v<version>`. Then run again.
+- If the tag already has a published release, or the tag's `Cargo.toml` version differs from the
+  tag, the run fails with a message and changes nothing.
 
 ## What a real release changes
 

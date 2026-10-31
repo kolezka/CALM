@@ -20,8 +20,10 @@ jobs:
   # The app is macOS only (calm-native is AppKit/WebKit and calm-app depends on it).
   # This job covers the portable crates. Switch it to the full workspace once a
   # Linux native backend exists.
+  # Runs on the self-hosted OVH runner (labels self-hosted, linux, calm), which needs Docker
+  # for the container.
   linux-arch:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, calm]
     container: archlinux:latest
     timeout-minutes: 30
     steps:
@@ -82,9 +84,25 @@ jobs:
 
       # Hosted runners may have no usable window server. The result is reported, not required.
       - name: Smoke (informational)
+        id: smoke
         continue-on-error: true
         timeout-minutes: 5
         run: cargo run -p calm-app -- --smoke
+
+      # A continued step reports conclusion success, so read its outcome to surface a failure.
+      - name: Smoke result
+        if: ${{ !cancelled() && steps.smoke.outcome != 'skipped' }}
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "$SMOKE_OUTCOME" = "success" ]; then
+            echo "Smoke passed."
+            echo "Smoke: passed" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning title=Smoke ${SMOKE_OUTCOME}::cargo run -p calm-app -- --smoke did not pass (outcome: ${SMOKE_OUTCOME}). Read the Smoke step log."
+            echo "Smoke: **${SMOKE_OUTCOME}**, informational only. Read the Smoke step log." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Bundle
         id: bundle
