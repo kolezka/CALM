@@ -5,6 +5,7 @@ mod dev_menu;
 mod grid_paint;
 mod icon_image;
 mod plugin_host;
+mod plugin_services;
 mod settings_menu;
 mod terminal;
 mod terminal_profiles;
@@ -438,6 +439,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_resize(&view, window, cx).await;
         smoke_blur(&view, window, cx);
         smoke_settings_dispatch(&view, window, cx).await;
+        smoke_github_api(&view, window, cx).await;
         smoke_plugin_menus(&view, window, cx).await;
 
         remove_smoke_dir();
@@ -1351,6 +1353,127 @@ fn smoke_grid_kind() -> GridKind {
         .into_iter()
         .find(|kind| kind.label().eq_ignore_ascii_case(&wanted))
         .unwrap_or_else(|| smoke_fail(&format!("CALM_SMOKE_GRID={wanted:?} is not a grid style")))
+}
+
+/// Calls `github.api` twice and storage once from a fixture page. `gh` is a fake script in
+/// a temp dir, so the smoke never reaches the network or the user's token. The PR list
+/// answers; any other path fails the way a logged-out `gh` does.
+const SMOKE_GH_SCRIPT: &str = r#"#!/bin/sh
+if [ "$1" = api ] && [ "$2" = "repos/smoke/calm/pulls?state=open&per_page=30" ]; then
+  echo '[{"number":1,"title":"Smoke PR","draft":false}]'
+else
+  echo "To get started with GitHub CLI, please run:  gh auth login" >&2
+  exit 4
+fi
+"#;
+const SMOKE_GH_HTML: &str = r#"<!doctype html><body>gh<script>
+calm.github.api("repos/smoke/calm/pulls?state=open&per_page=30").then(function (pulls) {
+  return calm.storage.set("seen", pulls.length)
+    .then(function () { return calm.storage.get("seen"); })
+    .then(function (seen) {
+      return calm.github.api("user").then(
+        function () { return "auth=answered"; },
+        function (err) { return "auth=" + err.message.split(" (")[0]; }
+      ).then(function (auth) {
+        return calm.panel.setTitle("gh-ok " + pulls[0].title + " stored=" + seen + " " + auth);
+      });
+    });
+}).catch(function (err) { calm.panel.setTitle("gh-err " + err.message); });
+</script></body>"#;
+
+async fn smoke_github_api(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixtures = match tempfile::Builder::new().prefix("calm-smoke-gh-").tempdir() {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("github.api temp dir: {err}")),
+    };
+    let gh = fixtures.path().join("bin/gh");
+    let written = std::fs::create_dir_all(fixtures.path().join("bin"))
+        .and_then(|()| std::fs::write(&gh, SMOKE_GH_SCRIPT))
+        .and_then(|()| std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)))
+        .and_then(|()| {
+            write_smoke_plugin(
+                &fixtures.path().join("plugins"),
+                "smoke-gh",
+                SMOKE_GH_HTML,
+                "",
+            )
+        });
+    if let Err(err) = written {
+        smoke_fail(&format!("github.api fixture: {err}"));
+    }
+    // Plugins get their own dir: discovery reads every subdir, `bin` included.
+    let discovery = calm_plugins::discover(&[fixtures.path().join("plugins")]);
+    if discovery.plugins.len() != 1 || !discovery.errors.is_empty() {
+        smoke_fail(&format!(
+            "github.api fixture not discovered: {:?}",
+            discovery.errors
+        ));
+    }
+    let services = crate::plugin_services::Services {
+        gh: calm_plugins::GhClient::new(gh),
+        data_dir: fixtures.path().join("plugin-data"),
+        opener: fixtures.path().join("no-open"),
+    };
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.plugin_services = std::sync::Arc::new(services);
+            view.install_plugins(discovery.plugins);
+            let kind = PanelKind::Plugin {
+                plugin_id: "smoke-gh".to_string(),
+                settings: serde_json::json!({}),
+            };
+            let id = view.scene.add(kind, Rect::new(20.0, 420.0, 300.0, 160.0));
+            view.open_plugin_panel(id, "smoke-gh", window)?;
+            cx.notify();
+            Ok::<_, String>(id)
+        })
+    });
+    let id = match opened {
+        Ok(Ok(id)) => id,
+        Ok(Err(err)) => smoke_fail(&format!("github.api panel: {err}")),
+        Err(err) => smoke_fail(&format!("github.api panel: {err:#}")),
+    };
+    let expected = "gh-ok Smoke PR stored=1 auth=gh is not logged in, run gh auth login";
+    let started = Instant::now();
+    let title = loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let title = cx.update(|cx| view.read(cx).scene.get(id).map(|p| p.title.clone()));
+        if title.as_deref().is_some_and(|t| t.starts_with("gh-")) {
+            break title.unwrap_or_default();
+        }
+        if started.elapsed() > SMOKE_FRAME_TIMEOUT {
+            smoke_fail(&format!(
+                "github.api did not answer within 10 s: title={title:?}"
+            ));
+        }
+    };
+    if title != expected {
+        smoke_fail(&format!(
+            "github.api: title={title:?}, expected {expected:?}"
+        ));
+    }
+    let stored = std::fs::read_to_string(fixtures.path().join("plugin-data/smoke-gh.json"))
+        .unwrap_or_else(|err| smoke_fail(&format!("github.api storage file: {err}")));
+    if stored != r#"{"seen":1}"# {
+        smoke_fail(&format!("github.api storage file holds {stored:?}"));
+    }
+    println!("smoke: github.api ok pulls=1 title=\"Smoke PR\" logged_out=reported storage=ok");
+    // Back to the real services; quit follows, but nothing should keep the fake.
+    cx.update(|cx| {
+        view.update(cx, |view, _| {
+            view.plugin_services = Default::default();
+        })
+    });
+    if let Err(err) = fixtures.close() {
+        eprintln!("smoke: could not remove the github.api temp dir: {err}");
+    }
 }
 
 /// Opens Settings the way a menu click or `cmd-,` does: `OpenSettings` dispatched on the

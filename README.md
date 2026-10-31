@@ -148,6 +148,11 @@ from the TSX template in [templates/plugin-tsx](templates/plugin-tsx/README.md).
 - `CALM_PLUGIN_PATH` adds plugin folders, `:` separated like `PATH`. For development:
   `CALM_PLUGIN_PATH=./plugins cargo run -p calm-app`.
 - Without it, plugins load from `$CALM_HOME/plugins` or `~/.config/calm/plugins`.
+- GitHub access for plugins goes through `gh`. Either run `gh auth login`, or put
+  `GITHUB_TOKEN=<your token>` in `~/.config/calm/.env` (`chmod 600` it). Order:
+  `GH_TOKEN` or `GITHUB_TOKEN` in CALM's environment, then `$CALM_HOME/.env`, then in dev
+  builds the checkout's `.env`, then `gh`'s own login. Details in
+  [docs/plugins.md](docs/plugins.md#github-access).
 
 ## Project status
 

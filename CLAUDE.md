@@ -51,10 +51,11 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
   window. Smoke prints viewport, canvas, terminals, zorder, fps, settings and preview lines
   and must exit 0. Gate before every push.
 - Plugin tests that need bun fail unless bun is installed; `CALM_SKIP_BUN_TESTS=1` skips them.
-- Not wired yet: `--bench`, `--layout`, layout save and load, session restore, and most of
-  the plugin bridge (only `log`, `panel.setTitle`, `settings.get` and `settings.set` answer).
-  The Makefile `bench` target exists; the flag does not. Do not document them as working.
-  Browser, plugin and TUI app panels are wired.
+- Not wired yet: `--bench`, `--layout`, layout save and load, session restore, and part of
+  the plugin bridge (`log`, `panel.setTitle`, `settings.*`, `storage.*`, `github.api` and
+  `openExternal` answer; the rest reject with `not implemented`). The Makefile `bench`
+  target exists; the flag does not. Do not document them as working. Browser, plugin and
+  TUI app panels are wired.
 - Benchmarks go to `docs/benchmarks.md` with hardware and method. Never quote a number
   without a run.
 

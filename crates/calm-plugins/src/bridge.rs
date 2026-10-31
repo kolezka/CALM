@@ -176,7 +176,11 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
       set: function (value) { return call({ method: "settings.set", params: value }); }
     }),
     storage: Object.freeze({
-      get: function (key) { return call({ method: "storage.get", params: { key: String(key) } }); },
+      // JSON has no undefined: the host answers null for a missing key.
+      get: function (key) {
+        return call({ method: "storage.get", params: { key: String(key) } })
+          .then(function (value) { return value === null ? undefined : value; });
+      },
       set: function (key, value) {
         return call({ method: "storage.set", params: { key: String(key), value: value } });
       },

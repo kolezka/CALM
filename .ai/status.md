@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-31, against `origin/main` at `a17fac3` (PRs #1 to #21, #24 to #28 merged). This
+Last updated: 2026-10-31, against `origin/main` at `a17fac3` (PRs #1 to #21, #23 to #28 merged). This
 file describes `main`, not branches. Facts are verified against the code unless marked
 otherwise.
 
@@ -96,19 +96,27 @@ Pull requests:
   plugins get a `command` event in an open panel or a new one; TUI items open a new panel
   with `run` args appended. Not built: `calm.menus.register`, `shortcut`,
   `contributes.commands`.
+- #23 Plugin services: `github.api`, `storage.get/set/remove` and `openExternal` (http and
+  https only) are served by `plugin_services` on the background executor. `GhClient` kills
+  `gh` after 30 s and refuses output over 8 MiB. `calm_plugins::gh_token` takes
+  `GH_TOKEN`/`GITHUB_TOKEN` from CALM's env, then `$CALM_HOME/.env`, then (dev builds) the
+  workspace `.env`, else `gh`'s own login; passed as child env `GH_TOKEN`, never argv, and
+  redacted in output and Debug. Smoke `github.api ok` runs against a fake `gh` script.
 
 ## In progress (not on `main`)
 
 - #22 (open): refresh of the plugin API v2 design, including layouts as a v2 phase.
-- No PR yet: `github.api` dispatch with `GITHUB_TOKEN` read from `.env`; a Linux port plan.
+- No PR yet: a Linux port plan.
 
 ## Not wired yet
 
-- Plugin bridge: only `log`, `panel.setTitle`, `settings.get` and `settings.set` are served
-  (`plugin_host.rs`). The other 13 of the 17 `BRIDGE_METHODS` reject with
-  `not implemented: <method>`: `storage.*`, `panel.getBounds/minimize/close`, `canvas.*`,
-  `process.exec`, `github.api`, `openExternal`, `theme.get`. No host events are sent other than `command`.
-  `github-prs` renders but its list shows the `github.api` error.
+- Plugin bridge: `log`, `panel.setTitle`, `settings.get` and `settings.set` are served in
+  `plugin_host.rs`; `github.api`, `storage.get/set/remove` and `openExternal` in
+  `plugin_services.rs`. The other 8 of the 17 `BRIDGE_METHODS` reject with
+  `not implemented: <method>`: `panel.getBounds/minimize/close`, `canvas.*`,
+  `process.exec`, `theme.get`. `storage.keys` and `mailto:` for `openExternal` are not
+  served. No host events are sent other than `command`. Errors are still v1 strings; the v2
+  `{ code, message }` shape is not done.
 - Clicking inside a plugin page does not focus or raise its panel; AppKit routes the click
   to the WKWebView.
 - Layouts and session: layout save and load, `--layout`, session autosave and restore are
@@ -146,7 +154,7 @@ Pull requests:
 - Terminal profiles: the live recolor, the profile submenu, the Settings > Terminal controls.
 - Blur: a real mouse click on empty canvas, Escape inside a web page.
 - Plugin menus: a real right click (the NSMenu), long titles, the github-prs "Open repo
-  in browser" item (needs `openExternal`).
+  in browser" item.
 - Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.

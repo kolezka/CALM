@@ -40,7 +40,8 @@ use crate::background::{self, BackgroundRenderer, BackgroundTexture};
 use crate::browser_panel::{BrowserEvents, BrowserPanel};
 use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::grid_paint::{self, GridFrame, GridTextures};
-use crate::plugin_host::{self, BridgeSender, PluginPanel};
+use crate::plugin_host::{self, BridgeSender, PluginPanel, Route};
+use crate::plugin_services::{self, ServiceCall};
 use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalEvent, TerminalPanel};
 use crate::terminal_profiles::{self, TerminalMeta};
@@ -126,6 +127,8 @@ pub struct CanvasView {
     bridge: BridgeSender,
     /// Feeds bridge messages from plugin pages into `plugin_message`.
     _bridge_task: Task<()>,
+    /// What background bridge calls (`gh`, storage, `open`) run against. The smoke swaps it.
+    pub plugin_services: Arc<plugin_services::Services>,
     /// Path of the last saved layout, shown in the status bar. Task 13 sets it.
     pub saved_flash: Option<String>,
     focused: Option<PanelId>,
@@ -208,6 +211,7 @@ impl CanvasView {
             plugin_panels: Vec::new(),
             bridge,
             _bridge_task: bridge_task,
+            plugin_services: Arc::new(plugin_services::Services::default()),
             saved_flash: None,
             focused: None,
             hover: None,
@@ -912,13 +916,44 @@ impl CanvasView {
         let Some(panel) = self.scene.get_mut(id) else {
             return;
         };
-        let Some(response) = plugin_host::dispatch(panel, &request) else {
-            return;
+        let response = match plugin_host::route(panel, &request) {
+            Route::Reply(Some(response)) => response,
+            Route::Reply(None) => return,
+            Route::Background(call) => return self.serve_in_background(id, request.id, call, cx),
         };
-        if let Some((_, plugin)) = self.plugin_panels.iter_mut().find(|(p, _)| *p == id) {
-            plugin.reply(&response);
-        }
+        self.reply_to_plugin(id, &response);
         cx.notify();
+    }
+
+    fn reply_to_plugin(&mut self, id: PanelId, response: &calm_plugins::BridgeResponse) {
+        if let Some((_, plugin)) = self.plugin_panels.iter_mut().find(|(p, _)| *p == id) {
+            plugin.reply(response);
+        }
+    }
+
+    /// Runs a blocking bridge call on the background executor and answers from a fresh
+    /// task, never from inside the message callback. A panel closed meanwhile gets nothing.
+    fn serve_in_background(
+        &mut self,
+        id: PanelId,
+        request_id: u64,
+        call: ServiceCall,
+        cx: &mut Context<Self>,
+    ) {
+        let services = self.plugin_services.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { services.run(call) })
+                .await;
+            let response = plugin_host::service_reply(request_id, result);
+            // Err means the canvas is gone, so there is no page left to answer.
+            let _ = this.update(cx, |view, cx| {
+                view.reply_to_plugin(id, &response);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Applies each plugin panel's mode for this frame. Called right after paint with the
