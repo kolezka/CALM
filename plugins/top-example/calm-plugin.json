@@ -1,0 +1,11 @@
+{
+  "kind": "tui",
+  "id": "top-example",
+  "name": "Top",
+  "description": "macOS top, sorted by CPU. Ships with every Mac, so it always starts.",
+  "command": "top",
+  "args": ["-o", "cpu"],
+  "icon": "▲",
+  "defaultSize": { "width": 720, "height": 420 },
+  "restart": "prompt"
+}

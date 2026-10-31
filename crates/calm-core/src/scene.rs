@@ -29,6 +29,11 @@ pub enum PanelKind {
         plugin_id: String,
         settings: serde_json::Value,
     },
+    /// A terminal running a TUI plugin's command. Only the id is stored, so layouts never
+    /// hold the command, its args or its env.
+    Tui {
+        plugin_id: String,
+    },
 }
 
 impl PanelKind {
@@ -36,7 +41,7 @@ impl PanelKind {
         match self {
             PanelKind::Terminal { .. } => "Terminal".to_string(),
             PanelKind::Browser { url } => url.clone(),
-            PanelKind::Plugin { plugin_id, .. } => plugin_id.clone(),
+            PanelKind::Plugin { plugin_id, .. } | PanelKind::Tui { plugin_id } => plugin_id.clone(),
         }
     }
 }

@@ -228,7 +228,10 @@ fn main() {
     }
 
     // Built and read back, never popped up: popping up would block on user input.
-    let sample = canvas_menu(&[("hello-world".to_string(), "Hello World".to_string())]);
+    let sample = canvas_menu(
+        &[("hello-world".to_string(), "Hello World".to_string())],
+        &[],
+    );
     let menu = ContextMenu::build(&sample).unwrap_or_else(|e| fail(&e.to_string()));
     let (items, submenus) = menu.counts();
     println!("native_smoke: menu items={items} submenus={submenus}");

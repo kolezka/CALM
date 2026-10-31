@@ -6,10 +6,12 @@ mod plugin_host;
 mod settings_menu;
 mod terminal;
 mod theme;
+mod tui_host;
 
 use calm_core::geometry::Rect;
 use calm_core::preview::PanelMode;
 use calm_core::scene::PanelKind;
+use calm_core::tui::TuiState;
 use std::sync::{Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -193,6 +195,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         }
 
         smoke_plugins(&view, window, cx).await;
+        smoke_tui(&view, window, cx).await;
 
         let toggled = cx.update_window(window, |_, window, cx| {
             view.update(cx, |view, cx| view.set_show_fps(true, window, cx))
@@ -363,6 +366,142 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+const SMOKE_TUI_TIMEOUT: Duration = Duration::from_secs(10);
+/// Prints a marker, proves it ran by writing `$1`, exits 0.
+const SMOKE_TUI_SCRIPT: &str = "#!/bin/sh\nprintf 'calm-smoke-tui-marker\\n'\nprintf ran > \"$1\"\nexit 0\n";
+
+/// Two TUI fixtures: a script that runs and exits 0 (restart "prompt", run directly), and
+/// a missing command through the login shell (restart "on-exit", which must not loop).
+async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
+    let fixtures = match tempfile::Builder::new().prefix("calm-smoke-tui-").tempdir() {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("tui temp dir: {err}")),
+    };
+    let root = fixtures.path();
+    // A space in the path checks that argv survives Ghostty's shell.
+    let marker = root.join("ran marker.txt");
+    let script = root.join("smoke-tui").join("run.sh");
+    let manifests = [
+        (
+            "smoke-tui",
+            serde_json::json!({
+                "kind": "tui", "id": "smoke-tui", "name": "Smoke TUI", "icon": "S",
+                "command": script, "args": [marker], "shell": false, "restart": "prompt"
+            }),
+        ),
+        (
+            "smoke-tui-missing",
+            serde_json::json!({
+                "kind": "tui", "id": "smoke-tui-missing", "name": "Missing",
+                "command": "calm-smoke-no-such-command", "restart": "on-exit"
+            }),
+        ),
+    ];
+    let written = manifests.iter().try_for_each(|(dir, manifest)| {
+        std::fs::create_dir_all(root.join(dir))?;
+        std::fs::write(root.join(dir).join("calm-plugin.json"), manifest.to_string())
+    });
+    let written = written.and_then(|()| {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::write(&script, SMOKE_TUI_SCRIPT)?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+    });
+    if let Err(err) = written {
+        smoke_fail(&format!("tui fixtures: {err}"));
+    }
+    let discovery = calm_plugins::discover(&[root.to_path_buf()]);
+    if discovery.plugins.len() != 2 || !discovery.errors.is_empty() {
+        smoke_fail(&format!("tui fixtures not discovered: {:?}", discovery.errors));
+    }
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.install_plugins(discovery.plugins);
+            let mut ids = Vec::new();
+            for (plugin_id, rect) in [
+                ("smoke-tui", Rect::new(720.0, 60.0, 300.0, 160.0)),
+                ("smoke-tui-missing", Rect::new(720.0, 260.0, 300.0, 160.0)),
+            ] {
+                let kind = PanelKind::Tui {
+                    plugin_id: plugin_id.to_string(),
+                };
+                let id = view.scene.add(kind, rect);
+                view.open_tui_panel(id, plugin_id, window, cx)?;
+                ids.push(id);
+            }
+            cx.notify();
+            Ok::<_, String>(ids)
+        })
+    });
+    let ids = match opened {
+        Ok(Ok(ids)) => ids,
+        Ok(Err(err)) => smoke_fail(&format!("tui panel: {err}")),
+        Err(err) => smoke_fail(&format!("tui panel: {err:#}")),
+    };
+
+    let wait_for = |launches: u64| {
+        let view = view.clone();
+        let marker = marker.clone();
+        async move |cx: &mut gpui::AsyncApp| {
+            let started = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let status = cx.update(|cx| view.read(cx).tui_status());
+                let ran = std::fs::read_to_string(&marker).is_ok_and(|text| text == "ran");
+                let done = match status.as_slice() {
+                    [(ok_title, TuiState::Exited(Some(0)), true, ok_launches), (missing_title, TuiState::NotFound, true, 1)] => {
+                        *ok_launches == launches
+                            && ok_title == "Smoke TUI: exited, code 0"
+                            && missing_title
+                                == "Missing: command not found: calm-smoke-no-such-command"
+                    }
+                    _ => false,
+                };
+                if done && ran {
+                    return;
+                }
+                if started.elapsed() > SMOKE_TUI_TIMEOUT {
+                    smoke_fail(&format!("tui: ran={ran} status={status:?}"));
+                }
+            }
+        }
+    };
+    wait_for(1)(cx).await;
+
+    // Restart from the exited state, as the menu and Enter do; the script runs again.
+    if let Err(err) = std::fs::remove_file(&marker) {
+        smoke_fail(&format!("tui marker: {err}"));
+    }
+    let restarted = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| view.restart_tui(ids[0], true, window, cx))
+    });
+    if let Err(err) = restarted {
+        smoke_fail(&format!("tui restart: {err:#}"));
+    }
+    wait_for(2)(cx).await;
+
+    // Both processes exited, so close skips the confirmation. Later steps count panels.
+    let closed = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let effects = ids
+                .iter()
+                .map(|id| calm_core::interaction::Effect::ClosePanelRequested(*id))
+                .collect();
+            view.apply_effects(effects, window, cx);
+            view.tui_status().len()
+        })
+    });
+    match closed {
+        Ok(0) => {}
+        other => smoke_fail(&format!("exited tui panels did not close without asking: {other:?}")),
+    }
+    println!("smoke: tui ran=ok exit=0 missing=reported restarted=ok closed=ok");
+    if let Err(err) = fixtures.close() {
+        eprintln!("smoke: could not remove the tui temp dir: {err}");
+    }
 }
 
 /// Whether AppKit has the window on screen. GPUI stops painting an occluded window, so a

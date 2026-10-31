@@ -9,6 +9,9 @@ pub const DEFAULT_BROWSER_SIZE: Size = Size::new(800.0, 600.0);
 pub const ADD_TERMINAL: &str = "add.terminal";
 pub const ADD_BROWSER: &str = "add.browser";
 pub const ADD_PLUGIN_PREFIX: &str = "add.plugin.";
+pub const ADD_TUI_PREFIX: &str = "add.tui.";
+/// Starts a TUI panel's command again after it exited.
+pub const PANEL_RESTART: &str = "panel.restart";
 pub const PANEL_MINIMIZE: &str = "panel.minimize";
 pub const PANEL_ZOOM_TO_FIT: &str = "panel.zoom_to_fit";
 pub const PANEL_BRING_TO_FRONT: &str = "panel.bring_to_front";
@@ -33,6 +36,7 @@ pub enum MenuCommand {
     SendToBack,
     Duplicate,
     Delete,
+    Restart,
 }
 
 fn action(id: &str, label: &str) -> MenuItem {
@@ -42,12 +46,19 @@ fn action(id: &str, label: &str) -> MenuItem {
     }
 }
 
-/// Right click on empty canvas. `plugins` is (id, name) per installed plugin.
-pub fn canvas_menu(plugins: &[(String, String)]) -> Vec<MenuItem> {
+/// Right click on empty canvas. `plugins` is (id, name) per installed web plugin and
+/// `apps` the same per TUI plugin. Apps sit next to Terminal: they are terminals too.
+pub fn canvas_menu(plugins: &[(String, String)], apps: &[(String, String)]) -> Vec<MenuItem> {
     let mut items = vec![
         action(ADD_TERMINAL, "Terminal"),
         action(ADD_BROWSER, "Browser"),
     ];
+    if !apps.is_empty() {
+        items.push(MenuItem::Separator);
+    }
+    for (plugin_id, name) in apps {
+        items.push(action(&format!("{ADD_TUI_PREFIX}{plugin_id}"), name));
+    }
     if !plugins.is_empty() {
         items.push(MenuItem::Separator);
     }
@@ -63,13 +74,18 @@ pub fn canvas_menu(plugins: &[(String, String)]) -> Vec<MenuItem> {
 /// Right click on a panel's chrome strip or minimized chip.
 /// Zoom to Fit needs the full panel, so a minimized panel omits it. Duplicate is offered
 /// for terminals only: browser and plugin panels have no native view in the app yet.
-pub fn panel_menu(panel: &Panel) -> Vec<MenuItem> {
+/// `can_restart` adds Restart on top, for a TUI panel whose process exited.
+pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
     let minimize = if panel.minimized {
         "Restore"
     } else {
         "Minimize"
     };
-    let mut items = vec![action(PANEL_MINIMIZE, minimize)];
+    let mut items = Vec::new();
+    if can_restart {
+        items.extend([action(PANEL_RESTART, "Restart"), MenuItem::Separator]);
+    }
+    items.push(action(PANEL_MINIMIZE, minimize));
     if !panel.minimized {
         items.push(action(PANEL_ZOOM_TO_FIT, "Zoom to Fit"));
     }
@@ -78,7 +94,10 @@ pub fn panel_menu(panel: &Panel) -> Vec<MenuItem> {
         action(PANEL_BRING_TO_FRONT, "Bring to Front"),
         action(PANEL_SEND_TO_BACK, "Send to Back"),
     ]);
-    if matches!(panel.kind, PanelKind::Terminal { .. }) {
+    if matches!(
+        panel.kind,
+        PanelKind::Terminal { .. } | PanelKind::Tui { .. }
+    ) {
         items.extend([MenuItem::Separator, action(PANEL_DUPLICATE, "Duplicate")]);
     }
     items.extend([MenuItem::Separator, action(PANEL_DELETE, "Delete")]);
@@ -117,6 +136,17 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
         PANEL_SEND_TO_BACK => Some(MenuCommand::SendToBack),
         PANEL_DUPLICATE => Some(MenuCommand::Duplicate),
         PANEL_DELETE => Some(MenuCommand::Delete),
+        PANEL_RESTART => Some(MenuCommand::Restart),
+        _ if id.starts_with(ADD_TUI_PREFIX) => {
+            let plugin_id = &id[ADD_TUI_PREFIX.len()..];
+            let (_, size) = plugin_sizes.iter().find(|(known, _)| known == plugin_id)?;
+            add(
+                PanelKind::Tui {
+                    plugin_id: plugin_id.to_string(),
+                },
+                *size,
+            )
+        }
         _ => {
             let plugin_id = id.strip_prefix(ADD_PLUGIN_PREFIX)?;
             let (_, size) = plugin_sizes.iter().find(|(known, _)| known == plugin_id)?;
@@ -145,7 +175,7 @@ mod tests {
     #[test]
     fn canvas_menu_lists_add_submenu_with_terminal_browser_and_plugins() {
         assert_eq!(
-            canvas_menu(&plugins()),
+            canvas_menu(&plugins(), &[]),
             vec![MenuItem::Submenu {
                 label: "Add".to_string(),
                 items: vec![
@@ -162,7 +192,7 @@ mod tests {
     #[test]
     fn canvas_menu_without_plugins_has_no_trailing_separator() {
         assert_eq!(
-            canvas_menu(&[]),
+            canvas_menu(&[], &[]),
             vec![MenuItem::Submenu {
                 label: "Add".to_string(),
                 items: vec![
@@ -232,7 +262,7 @@ mod tests {
     #[test]
     fn panel_menu_for_terminal_lists_all_actions_with_delete_last() {
         assert_eq!(
-            panel_menu(&panel(terminal_kind(), false)),
+            panel_menu(&panel(terminal_kind(), false), false),
             vec![
                 action("panel.minimize", "Minimize"),
                 action("panel.zoom_to_fit", "Zoom to Fit"),
@@ -249,7 +279,7 @@ mod tests {
 
     #[test]
     fn panel_menu_minimized_says_restore_and_drops_zoom_to_fit() {
-        let items = panel_menu(&panel(terminal_kind(), true));
+        let items = panel_menu(&panel(terminal_kind(), true), false);
         assert_eq!(items[0], action("panel.minimize", "Restore"));
         assert!(!items.contains(&action("panel.zoom_to_fit", "Zoom to Fit")));
         assert_eq!(items.last(), Some(&action("panel.delete", "Delete")));
@@ -260,7 +290,7 @@ mod tests {
         let browser = PanelKind::Browser {
             url: "about:blank".to_string(),
         };
-        let items = panel_menu(&panel(browser, false));
+        let items = panel_menu(&panel(browser, false), false);
         assert!(!items.contains(&action("panel.duplicate", "Duplicate")));
         assert_eq!(items.last(), Some(&action("panel.delete", "Delete")));
         // No two separators in a row once Duplicate is gone.
@@ -286,11 +316,54 @@ mod tests {
             assert_eq!(menu_action(id, world, &[]), Some(command), "{id}");
         }
         // Every id the menu can show has a command, so no item is a dead click.
-        for item in panel_menu(&panel(terminal_kind(), false)) {
+        for item in panel_menu(&panel(terminal_kind(), false), false) {
             if let MenuItem::Action { id, .. } = item {
                 assert!(menu_action(&id, world, &[]).is_some(), "{id}");
             }
         }
         assert_eq!(menu_action("panel.close", world, &[]), None);
+    }
+
+    #[test]
+    fn tui_apps_sit_next_to_terminal_and_add_a_tui_panel() {
+        let apps = vec![("slack".to_string(), "Slack".to_string())];
+        let [MenuItem::Submenu { items, .. }] = &canvas_menu(&plugins(), &apps)[..] else {
+            panic!("expected one Add submenu");
+        };
+        assert_eq!(items[2], MenuItem::Separator);
+        assert_eq!(items[3], action("add.tui.slack", "Slack"));
+        assert_eq!(items[4], MenuItem::Separator);
+        let sizes = vec![("slack".to_string(), Size::new(900.0, 600.0))];
+        let world = Point::new(5.0, 6.0);
+        assert_eq!(
+            menu_action("add.tui.slack", world, &sizes),
+            Some(MenuCommand::AddPanel {
+                kind: PanelKind::Tui {
+                    plugin_id: "slack".to_string()
+                },
+                rect: Rect {
+                    origin: world,
+                    size: Size::new(900.0, 600.0)
+                },
+            })
+        );
+        assert_eq!(menu_action("add.tui.missing", world, &sizes), None);
+    }
+
+    #[test]
+    fn exited_tui_panel_offers_restart_first_and_duplicate() {
+        let tui = PanelKind::Tui {
+            plugin_id: "slack".to_string(),
+        };
+        let items = panel_menu(&panel(tui.clone(), false), true);
+        assert_eq!(items[0], action("panel.restart", "Restart"));
+        assert_eq!(items[1], MenuItem::Separator);
+        assert!(items.contains(&action("panel.duplicate", "Duplicate")));
+        assert_eq!(
+            menu_action("panel.restart", Point::new(0.0, 0.0), &[]),
+            Some(MenuCommand::Restart)
+        );
+        let running = panel_menu(&panel(tui, false), false);
+        assert!(!running.contains(&action("panel.restart", "Restart")));
     }
 }

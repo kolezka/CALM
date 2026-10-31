@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions};
 
-pub use adapter::{KEY_CONTEXT, TerminalPanel};
+pub use adapter::{KEY_CONTEXT, TerminalEvent, TerminalPanel};
 
 /// `command` and `cwd` come from the panel; missing ones fall back to `$SHELL` and `$HOME`.
 pub fn options(command: Option<&str>, cwd: Option<PathBuf>) -> TerminalOptions {

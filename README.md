@@ -16,6 +16,9 @@ Every terminal keeps running while you pan, zoom or minimize it.
 - Move and resize panels, with snapping to an 8 point grid and to nearby panel edges.
 - Distant panels turn into still previews that refresh every 2 seconds.
 - Minimize and restore panels from the right-click menu.
+- TUI apps: a plugin folder with one manifest turns a terminal program into an Add menu entry,
+  for example "Slack" running `slk`. It runs through your login shell, shows when it exited and
+  can restart.
 - Closing a running terminal asks first (can be turned off in Settings).
 - Settings menu: background, grid on or off, close confirmation, and whether terminals use your
   own Ghostty config. Saved to `~/.config/calm/settings.json`.
@@ -67,6 +70,10 @@ Plugins are small HTML and JavaScript apps that run in a canvas panel and talk t
 `window.calm`. They are trusted code that you install yourself, with full access, so only install
 plugins you have read or whose author you trust. The plugin format and API are described in
 [docs/plugins.md](docs/plugins.md); showing plugin panels in the app is still in progress.
+
+A TUI app plugin needs no HTML: its manifest names a command, and CALM runs it in a terminal
+panel. See "TUI apps" in [docs/plugins.md](docs/plugins.md#tui-apps) and
+`templates/plugin-tui`.
 
 ## Status
 

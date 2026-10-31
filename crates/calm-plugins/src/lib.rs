@@ -4,6 +4,7 @@ pub mod assets;
 pub mod bridge;
 pub mod github;
 pub mod manifest;
+pub mod tui;
 
 pub use assets::missing_scripts;
 pub use bridge::{
@@ -11,5 +12,7 @@ pub use bridge::{
 };
 pub use github::{GhClient, GhError};
 pub use manifest::{
-    Discovery, InstalledPlugin, PluginError, PluginManifest, Size, discover, plugin_dirs,
+    Discovery, InstalledPlugin, PluginContent, PluginError, PluginManifest, Size, discover,
+    plugin_dirs,
 };
+pub use tui::{DEFAULT_TUI_SIZE, TuiRestart, TuiSpec};
