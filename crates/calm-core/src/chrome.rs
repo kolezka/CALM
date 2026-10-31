@@ -191,6 +191,20 @@ pub fn button_strokes(button: ChromeButton) -> Vec<Vec<(f64, f64)>> {
     }
 }
 
+/// `#rrggbb` or `#rrggbbaa` to 0xRRGGBBAA.
+pub fn parse_hex_color(text: &str) -> Option<u32> {
+    let hex = text.strip_prefix('#')?;
+    if !(hex.len() == 6 || hex.len() == 8) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let value = u32::from_str_radix(hex, 16).ok()?;
+    Some(if hex.len() == 6 {
+        (value << 8) | 0xff
+    } else {
+        value
+    })
+}
+
 /// Per-panel chrome colors, 0xRRGGBBAA. `None` falls back to the theme.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChromeOverrides {

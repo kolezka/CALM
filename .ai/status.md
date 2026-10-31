@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-31, against `origin/main` at `fa65450` (PRs #1 to #21 and #27 merged). This
+Last updated: 2026-10-31, against `origin/main` at `a17fac3` (PRs #1 to #21, #24, #25 and #27 merged). This
 file describes `main`, not branches. Facts are verified against the code unless marked
 otherwise.
 
@@ -80,12 +80,21 @@ Pull requests:
   hand-tuned 16 and 32 px icons, a 1024 px master and an iconset; `iconutil` builds
   `CALM.icns`. The bundle script copies it to `Contents/Resources` and the plist names it
   with `CFBundleIconFile`.
+- #24 Terminal profiles: a `terminal` settings section (`calm-core::terminal_profile`) with
+  defaults, named `profiles` and `default_profile`. Look (title template with `{n}` and
+  `{cwd}`, icon, chrome colors, `terminal_colors`, `use_ghostty_user_config`) and launch
+  (`command`, `args`, `cwd`, `env`), validated strictly. Add > Terminal Profiles submenu;
+  `t` and plain duplicates use `default_profile`. Running surfaces recolor live through
+  `TerminalThemeState::apply`. Settings > Terminal edits defaults only (no text fields yet).
+- #25 Blur on outside click: a click on empty canvas clears panel focus and makes the GPUI
+  host view the first responder; pans and zooms keep focus; Escape clears it only when no
+  native view has the keyboard. Setting `canvas.click_empty_clears_focus` (default true).
 
 ## In progress (not on `main`)
 
 - #22 (open): refresh of the plugin API v2 design, including layouts as a v2 phase.
 - No PR yet: `github.api` dispatch with `GITHUB_TOKEN` read from `.env`; plugin context menu
-  contributions; blur on outside click; terminal customization and profiles; a Linux port plan.
+  contributions; a Linux port plan.
 
 ## Not wired yet
 
@@ -128,6 +137,8 @@ Pull requests:
   accent ring and terminal colors.
 - Terminals: mouse selection at zoom 1.0 and 1.7, cmd-v paste, Polish letters through the
   input method, resize reflow, Enter to confirm close, pinch feel, `htop`.
+- Terminal profiles: the live recolor, the profile submenu, the Settings > Terminal controls.
+- Blur: a real mouse click on empty canvas, Escape inside a web page.
 - Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
