@@ -9,6 +9,15 @@ function Hello({ calm }: { calm: Calm }) {
     calm.panel.setTitle("My Plugin");
   }, [calm]);
 
+  // The "Say hi" item from contributes.menus in calm-plugin.json.
+  useEffect(
+    () =>
+      calm.events.on("command", (command) => {
+        if (command.id === "say-hi") calm.panel.setTitle("Hi from the menu");
+      }),
+    [calm],
+  );
+
   function click() {
     setClicks(clicks + 1);
     calm.log(`clicked ${clicks + 1} times`);

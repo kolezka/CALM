@@ -3,8 +3,9 @@
 A CALM plugin is a folder with a manifest and an HTML page. CALM shows the page in a panel on
 the canvas and gives it a small JavaScript API, `window.calm`, for talking to the host.
 
-Status: this page describes the plugin contract implemented in `crates/calm-plugins`. The host
-side that shows plugin panels in `calm-app` is still being wired up.
+Status: plugin panels and TUI app panels work. Of the `window.calm` calls, only four are
+served by the host so far (see [Host support](#host-support)). Plugin API v2 is a design, not
+built.
 
 ## Trust
 
@@ -66,6 +67,7 @@ Every plugin folder holds a `calm-plugin.json`:
 | `resizable`   | Optional. `false` keeps the panel at the size it was created with.       |
 | `minSize`     | Optional `{ "width", "height" }`. Smallest size a resize may reach.      |
 | `maxSize`     | Optional `{ "width", "height" }`. Largest size a resize may reach.       |
+| `contributes` | Optional. Context menu items, see Context menu contributions.            |
 
 Every panel can be resized by default, plugins included. Drag the right edge, the bottom
 edge or the corner. The handle reaches a few pixels outside the panel, so it works over a
@@ -93,6 +95,251 @@ and the plugin is skipped with a message on stderr; CALM never guesses a default
 }
 ```
 
+## TUI apps
+
+A TUI app plugin is a terminal panel that runs one command. Use it for programs with a text
+interface, such as a Slack client, `htop` or `lazygit`. It needs no HTML and no build step: the
+plugin folder holds only `calm-plugin.json`, with `"kind": "tui"`. It lives in the same plugin
+folders as HTML plugins.
+
+For example, to add "Slack" running the `slk` client, make
+`~/.config/calm/plugins/slack/calm-plugin.json`:
+
+```json
+{
+  "kind": "tui",
+  "id": "slack",
+  "name": "Slack",
+  "command": "slk",
+  "icon": "#"
+}
+```
+
+Restart CALM. "Slack" now shows in the right-click Add menu, next to Terminal. Choosing it opens
+a terminal panel titled "Slack" that runs `slk`.
+
+| Field         | Required | Meaning                                                              |
+| ------------- | -------- | -------------------------------------------------------------------- |
+| `kind`        | yes      | `"tui"`. Without `kind` a manifest is an HTML plugin (`"web"`).      |
+| `id`          | yes      | Unique id, lowercase letters, digits and `-` only.                   |
+| `name`        | yes      | Name in the Add menu and the panel title.                            |
+| `command`     | yes      | Program to run: a name looked up on `PATH`, or an absolute path.     |
+| `args`        | no       | Array of strings, passed as they are. Spaces and quotes are safe.    |
+| `cwd`         | no       | Working directory, absolute or starting with `~/`. Default: home.    |
+| `env`         | no       | Object of string values, set for the command only.                   |
+| `defaultSize` | no       | `{ "width", "height" }` in canvas points. Default 640 by 400.        |
+| `icon`        | no       | 1 to 4 characters, or a `.png` or `.svg` file in the plugin folder.  |
+| `title`       | no       | Title bar text. `{name}` is replaced by `name`. Default: `name`.     |
+| `accentColor` | no       | Focus ring, join divider and text icon color. Hex, see below.        |
+| `titleBarColor` | no     | Title bar background. Hex.                                           |
+| `titleColor`  | no       | Title text color. Hex.                                               |
+| `terminalColors` | no    | Terminal background, foreground and 16-color palette. See below.     |
+| `description` | no       | Free text for people reading the manifest.                           |
+| `restart`     | no       | `"prompt"` (default), `"on-exit"` or `"never"`. See below.           |
+| `shell`       | no       | `true` (default) runs through your login shell. See below.           |
+| `version`     | no       | Free form.                                                           |
+
+Any other field, or a value of the wrong type, is an error: the plugin is skipped and listed
+with the other plugin errors on stderr and in the status bar count. `entry` is an error too,
+since a TUI app has no page. `command` may not start with `-` or contain `=`.
+
+### PATH and the login shell
+
+An app started from Finder or the Dock does not get the `PATH` your shell sets up, so a program
+installed with Homebrew or `cargo install` would not be found. With `"shell": true` CALM starts
+the command through your login shell (`$SHELL`, else `/bin/zsh`) as
+`$SHELL -lc 'exec "$0" "$@"' command args...`, so your profile runs first and sets `PATH`. Every
+argument is passed as its own word; nothing is pasted into a shell string. The login shell must
+understand POSIX `sh` syntax (zsh, bash, sh and ksh do). With fish, use `"shell": false` and an
+absolute `command`.
+
+With `"shell": false` the command runs directly, with the `PATH` CALM itself has.
+
+`env` values are set with `/usr/bin/env` right before the command, after your profile ran, so
+they win over it. They are visible in the process list (`ps`) to other programs, so never put a
+token or password in `env`. Let the app keep its own credentials, as `slk` and most TUIs do.
+
+### When the program exits
+
+The panel stays open. The terminal shows the program's last output and a line such as
+`[calm] slk exited with code 0`, and the panel title says `Slack: exited, code 0`.
+
+| `restart`  | After the program exits                                                     |
+| ---------- | --------------------------------------------------------------------------- |
+| `prompt`   | Stays exited. Restart from the panel's right-click menu, or press Enter.     |
+| `on-exit`  | Starts again after 1 s. Quick exits (under 10 s) in a row wait 1, 2, 4, 8 s; after 5 in a row it gives up and offers Restart. |
+| `never`    | Stays exited. No Restart.                                                   |
+
+Enter only restarts once the program has exited; while it runs, every key goes to it.
+
+If the command is not found, the terminal shows `[calm] command not found: slk` and the plugin
+folder, and the title says `Slack: command not found: slk`. CALM never restarts that on its own:
+install the program or fix `PATH`, then use Restart.
+
+A TUI panel is a terminal in every other way: it moves, resizes, minimizes and turns into a
+preview like one, and closing it while the program runs asks first. Layouts store only the
+plugin `id`, never the command, `args` or `env`.
+
+`plugins/top-example` runs macOS `top` with its own accent, title and SVG icon.
+`templates/plugin-tui` is a starting point.
+
+### Customizing TUI apps
+
+Every part of a TUI panel's look can come from its manifest. Each field is optional and falls
+back to the theme. A bad value is an error that names the field, never a silent default.
+
+This Slack panel uses every field:
+
+```json
+{
+  "kind": "tui",
+  "id": "slack",
+  "name": "Slack",
+  "version": "1.0.0",
+  "description": "Slack in the terminal, through slk.",
+  "command": "slk",
+  "args": ["--workspace", "my team"],
+  "cwd": "~/work",
+  "env": { "SLK_THEME": "dark" },
+  "shell": true,
+  "restart": "on-exit",
+  "defaultSize": { "width": 900, "height": 600 },
+  "title": "{name} (work)",
+  "icon": "icons/slack.svg",
+  "accentColor": "#4a154b",
+  "titleBarColor": "#1a1d21",
+  "titleColor": "#d1d2d3",
+  "terminalColors": {
+    "background": "#1a1d21",
+    "foreground": "#d1d2d3",
+    "palette": [
+      "#1a1d21", "#e01e5a", "#2eb67d", "#ecb22e", "#36c5f0", "#4a154b", "#36c5f0", "#d1d2d3",
+      "#616061", "#e01e5a", "#2eb67d", "#ecb22e", "#36c5f0", "#ae6ec8", "#36c5f0", "#ffffff"
+    ]
+  },
+  "contributes": {
+    "menus": [
+      { "id": "home", "title": "Slack home workspace", "location": "canvas",
+        "run": ["--workspace", "home"] }
+    ]
+  }
+}
+```
+
+`contributes` adds context menu items, see Context menu contributions. The folder then holds `calm-plugin.json` and `icons/slack.svg`.
+
+- `title`: shown in the title bar. `{name}` is the only placeholder; any other `{` or `}` is an
+  error. It may not be empty or blank, may not hold control characters, and is at most 120
+  characters. Status text such as `: exited, code 0` is added after it.
+- `icon`: text of 1 to 4 characters, or a path ending in `.png` or `.svg`, relative to the
+  plugin folder. The image is scaled into the icon slot and decoded once, when the panel
+  opens. A path that is absolute, uses `..`, or resolves through a symlink to outside the
+  folder is an error, and so is a missing file. A file that exists but does not decode is
+  logged on stderr and the panel falls back to the terminal icon. Images keep their own
+  colors; `accentColor` tints only a text icon.
+- Colors are `#rrggbb` or `#rrggbbaa` (alpha last), upper or lower case.
+  `accentColor` colors the ring while the panel has focus, the divider between it and a
+  joined neighbor while it has focus, and a text icon. `titleBarColor` and `titleColor` apply
+  with or without focus; the accent ring is what marks focus. During a close confirmation the
+  bar always uses the theme's warning colors.
+- `terminalColors`: the Ghostty colors for this panel, laid over your Ghostty config (or over
+  Ghostty's defaults when Settings turns the user config off). `background`, `foreground` and
+  all 16 `palette` entries are required, each `#rrggbb` with no alpha. Other keys are errors.
+
+Planned, not supported yet: `fontSize`, `fontFamily` and `padding`. gpui-libghostty 0.3.1 takes
+only colors per terminal; fonts and padding come from your Ghostty config for all terminals.
+They need the planned libghostty shim patch. Until then these three fields are rejected with
+an error that says so, rather than being ignored.
+
+Per-panel edits after a panel is added (rename, change icon, pick an accent from the
+right-click menu) are not built yet.
+
+## Context menu contributions
+
+A plugin can add items to CALM's right-click menus with `contributes.menus` in
+`calm-plugin.json`. Web and TUI plugins both can.
+
+```json
+"contributes": {
+  "menus": [
+    { "id": "open-repo", "title": "Open repo in browser", "location": "panel",
+      "when": { "plugin": ["github-prs"] } },
+    { "id": "new-panel", "title": "New GitHub PRs panel here", "location": "canvas",
+      "open": "new" }
+  ]
+}
+```
+
+| Field      | Meaning                                                                          |
+| ---------- | -------------------------------------------------------------------------------- |
+| `id`       | Required. `[a-z0-9-]+`, unique within the plugin. Sent back in the command.      |
+| `title`    | Required. The menu text, 1 to 80 characters.                                     |
+| `location` | Required. `"canvas"`: right click on empty canvas. `"panel"`: right click on a panel's title bar or minimized chip. |
+| `when`     | Panel items only. Which panels show the item, see below. Absent: every panel.     |
+| `group`    | Items with the same group sit together, groups are split by a separator. Default: no group, listed first. |
+| `order`    | Integer, sorts items inside a group. Default 0; ties keep manifest order.         |
+| `icon`     | 1 to 4 characters drawn before the title.                                        |
+| `open`     | Web plugins. `"reuse"` (default) sends the command to an open panel of the plugin; `"new"` always opens a new panel for it. |
+| `run`      | TUI plugins. Arguments appended to the manifest's `args` for the panel the item opens. |
+
+`when` is a small filter, not an expression language. Every key is optional and the ones
+you set must all match:
+
+- `kind`: a list of `terminal`, `browser`, `plugin`, `tui`.
+- `plugin`: a list of plugin ids. Matches plugin and TUI panels of those plugins, so
+  `["<your id>"]` limits an item to your own panels.
+- `minimized`: `true` or `false`.
+
+Validation is strict. A missing `title`, an unknown `location`, an unknown field (in an item,
+in `when` or in `contributes`), a duplicate `id`, `when` on a canvas item, `run` on a web
+plugin or more than 32 items is a manifest error that names the field, and the plugin is
+skipped like any other broken manifest.
+
+**Where items show.** Built-in items always come first and plugins cannot remove or change
+them. After them comes a separator, then each plugin's items, plugins in discovery order and
+split by separators. A plugin with more than 3 visible items in one menu gets a submenu
+named after the plugin.
+
+**What a click does.** For a web plugin CALM sends a `command` event to a panel of the
+plugin: the right-clicked panel if it is one, else the focused one, else the plugin's
+frontmost panel. If none is open, or the item says `"open": "new"`, CALM opens a new panel
+at the click point (for a panel item, to the right of the clicked panel) and delivers the
+command once the page has loaded. The prelude keeps a command until the page registers a
+`command` handler, so a handler added after an `await` still gets it. A command that cannot
+be delivered (the panel closed, or the page did not load within 30 s) is logged to stderr,
+never dropped silently.
+
+```ts
+calm.events.on("command", (command) => {
+  // { id, location: "canvas" | "panel", panel: {...} | null, world: { x, y } | null }
+  if (command.id === "open-repo") openRepos();
+});
+```
+
+`panel` describes the right-clicked panel (`id`, `kind`, `pluginId`, `title`, `rect` in world
+coordinates, `minimized`) and is null for canvas items. `world` is the right-click point for
+canvas items and null for panel items. The type is `MenuCommand` in
+`packages/calm-plugin-sdk/calm.d.ts`.
+
+For a TUI plugin an item opens a new panel of the app at the click point, with the item's
+`run` arguments appended. A TUI app has no page, so it gets no event. Duplicate on such a
+panel starts the manifest's command without the extra arguments.
+
+**User settings.** In `~/.config/calm/settings.json`:
+
+```json
+"plugins": { "menus": { "hidden": ["github-prs", "hello-world/wave"], "submenu_above": 3 } }
+```
+
+`hidden` takes a plugin id, which hides all its items, or `<plugin-id>/<item-id>` for one
+item. `submenu_above` is how many items a plugin may show before they move into a submenu,
+0 to 50; 0 puts every plugin in a submenu. Bad values are settings errors. Both are read each
+time a menu opens.
+
+Not supported yet: runtime items (`calm.menus.register`), keyboard shortcuts on items
+(`shortcut` is rejected as an unknown field) and `contributes.commands` from the Plugin API
+v2 design.
+
 ## The `window.calm` API
 
 CALM injects `window.calm` before any of your scripts run. The types live in one place,
@@ -114,7 +361,10 @@ Settings are stored in the layout file, so never put a token or password in them
 ### Storage
 
 Plugin data that is not tied to one panel. Stored in
-`~/.config/calm/plugin-data/<plugin-id>.json`, not in layouts.
+`~/.config/calm/plugin-data/<plugin-id>.json` (`$CALM_HOME/plugin-data` when `CALM_HOME` is
+set), not in layouts. Keys are 1 to 256 bytes. A write that would make the file larger than
+5 MiB is refused. Writes go to a temp file that is renamed over the old one. A file that
+does not parse makes every call reject and is left as it is, never replaced by `{}`.
 
 | Call                           | Result                                            |
 | ------------------------------ | ------------------------------------------------- |
@@ -160,7 +410,7 @@ rights. This is why plugins must be trusted code (see [Trust](#trust)).
 | Call                     | Result                                                       |
 | ------------------------ | ------------------------------------------------------------ |
 | `calm.github.api(path)`  | Runs `gh api <path>` on the host, resolves with parsed JSON. |
-| `calm.openExternal(url)` | Opens `url` in the system browser.                           |
+| `calm.openExternal(url)` | Opens an `http` or `https` URL in the default browser (`open`). Other schemes reject. |
 | `calm.theme.get()`       | `{ background }`, a `"#rrggbb"` string.                      |
 | `calm.log(message)`      | Writes `message` to CALM's stderr, tagged with the plugin. Fire and forget: returns nothing, never waits for the host. |
 
@@ -177,6 +427,7 @@ The host sends these events:
 | `visibility`      | `{ mode: "live" \| "preview" \| "hidden" }`        |
 | `settingsChanged` | the new settings object                            |
 | `themeChanged`    | `{ background }`                                   |
+| `command`         | a chosen menu item, see Context menu contributions |
 
 An unknown event name throws a `TypeError`. A handler that throws is logged through
 `calm.log` and does not stop the other handlers.
@@ -187,7 +438,8 @@ page in a normal browser while developing.
 ### Host support
 
 The prelude exposes every call above. The app's plugin host (`crates/calm-app/src/plugin_host.rs`)
-serves the four methods marked below. Every other method rejects with
+serves the methods marked below. `github.api`, `storage.*` and `openExternal` run on a
+background thread, so a slow `gh` never stalls the canvas. Every other method rejects with
 `not implemented: <method>`, so no call hangs. An unknown method rejects with
 `unknown method: <method>`.
 
@@ -195,9 +447,9 @@ serves the four methods marked below. Every other method rejects with
 | -------------------- | ----------------------------------------- |
 | `settings.get`       | Served: the panel's settings object       |
 | `settings.set`       | Served: replaces it, objects only         |
-| `storage.get`        | Rejects with `not implemented: <method>` |
-| `storage.set`        | Rejects with `not implemented: <method>` |
-| `storage.remove`     | Rejects with `not implemented: <method>` |
+| `storage.get`        | Served: the value, `undefined` if unset   |
+| `storage.set`        | Served: atomic write of the plugin file   |
+| `storage.remove`     | Served                                    |
 | `panel.setTitle`     | Served: sets the chrome title             |
 | `panel.getBounds`    | Rejects with `not implemented: <method>` |
 | `panel.minimize`     | Rejects with `not implemented: <method>` |
@@ -206,13 +458,13 @@ serves the four methods marked below. Every other method rejects with
 | `canvas.focusPanel`  | Rejects with `not implemented: <method>` |
 | `canvas.listPanels`  | Rejects with `not implemented: <method>` |
 | `process.exec`       | Rejects with `not implemented: <method>` |
-| `github.api`         | Rejects with `not implemented: <method>` |
-| `openExternal`       | Rejects with `not implemented: <method>` |
+| `github.api`         | Served: `gh api <path>` on the host       |
+| `openExternal`       | Served: `http` and `https` only           |
 | `theme.get`          | Rejects with `not implemented: <method>` |
 | `log`                | Served: printed to stderr, no answer       |
 
-Events have no host sender yet, so handlers registered with `calm.events.on` do not fire
-until the app wiring lands.
+Only `command` has a host sender so far. Handlers for the other events do not fire until
+their app wiring lands.
 
 ### Wire format
 
@@ -270,10 +522,34 @@ brew install gh
 gh auth login
 ```
 
+Instead of `gh auth login` you can give `gh` a token. CALM looks in this order and uses the
+first one it finds:
+
+1. `GH_TOKEN`, then `GITHUB_TOKEN`, in the environment CALM was started with.
+2. `$CALM_HOME/.env`, by default `~/.config/calm/.env`.
+3. Dev builds only (`cargo run`): `.env` at the root of the checkout. `.gitignore` covers it.
+
+If none is set, `gh` uses its own login. A `.env` file looks like this:
+
+```sh
+# ~/.config/calm/.env
+GITHUB_TOKEN=<your token>
+```
+
+Lines are `KEY=VALUE`, with optional quotes, `#` comments and an `export ` prefix. Only
+`GH_TOKEN` and `GITHUB_TOKEN` are read (`GH_TOKEN` wins within one file); every other key is
+ignored and exported nowhere. A line that does not parse is reported on stderr by its line
+number. Keep the file private with `chmod 600`: CALM warns, naming the path, when other
+users can read it, but still loads it.
+
+The token goes to the `gh` process as `GH_TOKEN` in its environment, never on its command
+line. Plugin JS never sees it, and CALM replaces it with `<redacted>` in error messages and
+responses. Logs name only where it came from.
+
 `path` is the part after `https://api.github.com/`, for example
 `repos/OWNER/NAME/pulls?state=open&per_page=30`. It may only contain letters, digits and
 `_ . / ? = & % -`, and may not start with `-`. Only GET requests are possible, and results are
-not paginated.
+not paginated. `gh` is killed after 30 s, and a response over 8 MiB is refused.
 
 A failed call rejects with one of these messages:
 
@@ -283,6 +559,11 @@ A failed call rejects with one of these messages:
 | `gh is not logged in, run gh auth login` | `gh` has no credentials. Run `gh auth login`.                |
 | `gh api failed:`                         | GitHub or `gh` refused the call, e.g. 404 or no access.      |
 | `invalid gh api path`                    | `path` broke the rules above. `gh` was not run.              |
+| `gh api timed out`                       | `gh` ran longer than 30 s and was stopped.                   |
+| `gh api response is over`                | The response was larger than 8 MiB.                          |
+
+An HTTP 401 from GitHub also counts as not logged in. A rate limit shows as
+`gh api failed: ... API rate limit exceeded ...`.
 
 ## TypeScript and TSX
 
@@ -330,7 +611,13 @@ Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
 
 ## Examples
 
-- `plugins/hello-world`: plain HTML and JS. Shows text and sets the panel title.
+- `plugins/top-example`: a TUI app running macOS `top`, sorted by CPU. Its canvas menu
+  item "Top, refresh every 5 s" opens one with `-s 5` appended.
+- `plugins/hello-world`: plain HTML and JS. Shows text and sets the panel title. Its panel
+  menu item "Say hello" changes the title from a `command` handler.
 - `plugins/github-prs`: TSX. Lists open pull requests for the repositories saved in its
   settings (`{ "repos": ["owner/name"] }`), editable in the panel. Clicking a pull request
   opens it in the browser. Build it first with `bun install && bun run build` in its folder.
+  Menu items: "Open repo in browser" on its own panels, and "New GitHub PRs panel here" on
+  the canvas (`"open": "new"`, no code needed). Opening a URL goes through `openExternal`,
+  which the host does not serve yet, so for now the item logs the rejection.

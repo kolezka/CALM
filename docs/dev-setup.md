@@ -20,10 +20,12 @@ elsewhere, set `ZIG=/path/to/zig` in the environment; it wins over the config fi
 ```sh
 cargo run -p calm-app                 # windowed
 cargo run -p calm-app -- --fullscreen
-cargo run -p calm-app -- --layout work   # load ~/.config/calm/layouts/work.json
 cargo run -p calm-app -- --smoke; echo rc=$?   # GUI gate, exits 0 when the window and terminals work
-cargo run --release -p calm-app -- --bench 20   # see docs/benchmarks.md
 ```
+
+`--layout` and `--bench` are not built yet. Settings live in `~/.config/calm/settings.json`
+(`$CALM_HOME/settings.json` when `CALM_HOME` is set) and are edited in the Settings window
+(`cmd-,`).
 
 Plugins are read from every directory in `CALM_PLUGIN_PATH` (colon separated), from
 `~/.config/calm/plugins/<id>/` (or `$CALM_HOME/plugins`), and, in a development build, from the
@@ -32,6 +34,9 @@ repository's own `plugins/` folder. So the dev flow needs no setup:
 ```sh
 gmake plugins && cargo run -p calm-app   # then right-click > Add
 ```
+
+`gmake plugins` builds every folder with a `package.json` under `plugins/` and `templates/`
+and fails when bun is missing. TUI app plugins such as `plugins/top-example` need no build.
 
 `CALM_NO_BUILTIN_PLUGINS=1` or the setting `plugins.builtin: false` turns the built-in folders
 off. Startup prints every searched folder and every plugin found to stderr. See
@@ -53,7 +58,7 @@ CI, the release workflow and the macOS bundle script are described in `docs/rele
 Run `gmake help` to list targets. `gmake setup-check` prints prerequisite versions and checks the local toolchain.
 
 - `gmake build`, `gmake test`, `gmake lint`, and `gmake fmt` build, test, lint, and format the Rust workspace.
-- `gmake smoke` runs the GUI smoke gate; `gmake run ARGS=--fullscreen` launches the app; `gmake bench N=20 SECONDS=30 ZOOM=1.0` runs a benchmark.
+- `gmake smoke` runs the GUI smoke gate; `gmake run ARGS=--fullscreen` launches the app; `gmake bench` exists but calls `--bench`, which is not built yet.
 - `gmake bundle VERSION=0.1.0 OUT=dist` builds a macOS bundle.
 - `gmake plugins` installs and builds each plugin package and fails when bun is missing; `gmake plugins-check` type-checks each package.
 - `gmake ci` runs lint, tests, smoke, and plugin checks in order; `gmake graph` refreshes the repo-intel graphs.

@@ -8,7 +8,12 @@ use crate::manifest::InstalledPlugin;
 /// Local `<script src>` files the entry references but the plugin directory lacks.
 /// Typical cause: a TSX plugin whose `dist/` was never built with bun.
 pub fn missing_scripts(plugin: &InstalledPlugin) -> Result<Vec<PathBuf>, String> {
-    let entry = plugin.dir.join(&plugin.manifest.entry);
+    let entry = plugin.dir.join(
+        plugin
+            .manifest
+            .entry()
+            .ok_or_else(|| format!("plugin {} has no HTML entry", plugin.manifest.id))?,
+    );
     let html = fs::read_to_string(&entry)
         .map_err(|err| format!("cannot read entry {}: {err}", entry.display()))?;
     let base = entry.parent().unwrap_or(&plugin.dir);
@@ -73,7 +78,7 @@ fn is_local(src: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{PluginManifest, Size};
+    use crate::manifest::{PluginContent, PluginManifest, Size};
 
     fn plugin_with(html: &str, files: &[&str]) -> (tempfile::TempDir, InstalledPlugin) {
         let dir = tempfile::tempdir().unwrap();
@@ -88,14 +93,17 @@ mod tests {
                 id: "p".to_string(),
                 name: "P".to_string(),
                 version: "0.1.0".to_string(),
-                entry: "index.html".into(),
                 default_size: Size {
                     width: 100.0,
                     height: 100.0,
                 },
+                content: PluginContent::Web {
+                    entry: "index.html".into(),
+                },
                 resizable: None,
                 min_size: None,
                 max_size: None,
+                menus: Vec::new(),
             },
             dir: dir.path().to_path_buf(),
         };

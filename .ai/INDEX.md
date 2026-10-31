@@ -19,11 +19,12 @@ knowledge behind them. Read in this order for a cold start: `system.md`, `status
 | --- | --- |
 | `CLAUDE.md` | Session contract: rules that are easy to break, commands, bindings |
 | `docs/dev-setup.md` | Prerequisites, run commands, Make targets |
-| `docs/architecture.md` | Terminal hosting and preview mode in detail, with what was verified on real hardware |
+| `docs/architecture.md` | The whole system for humans: panel kinds, native hosting, paint, z-order, preview, joins, resize, plugins |
 | `docs/plugins.md` | Plugin manifest, `window.calm` API, wire format, GitHub access, TSX loop |
 | `docs/release.md` | CI jobs, the self-hosted runner, cutting and recovering a release, the bundle |
 | `docs/superpowers/specs/2026-10-31-calm-design.md` | The design spec. Binding authority when plan and code disagree |
 | `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md` | Plugin API v2 design: native browser, terminal and plugin-to-plugin APIs, capabilities, events, external socket channel, phases |
+| `docs/superpowers/specs/2026-10-31-claude-code-mods-integration.md` | Research: Claude Code mods integration and the external socket allowlist (PR #9) |
 | `docs/superpowers/plans/2026-10-31-calm-prototype.md` | The task plan the prototype follows |
 | `docs/superpowers/plans/2026-10-31-canvas-persistence.md` | Plan for session autosave, restore at launch, named layouts and layout v2 (not implemented) |
 | `packages/calm-plugin-sdk/calm.d.ts` | The plugin API as TypeScript types |

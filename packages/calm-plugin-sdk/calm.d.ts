@@ -84,6 +84,30 @@ export interface CalmEventPayloads {
   visibility: { mode: "live" | "preview" | "hidden" };
   settingsChanged: Record<string, unknown>;
   themeChanged: Theme;
+  /** A context menu item from the manifest's `contributes.menus` was chosen. */
+  command: MenuCommand;
+}
+
+/** The panel a panel menu item was chosen on. */
+export interface MenuCommandPanel {
+  id: number;
+  kind: "terminal" | "browser" | "plugin" | "tui";
+  /** Set for plugin and TUI panels. */
+  pluginId: string | null;
+  title: string;
+  /** World coordinates, chrome included. */
+  rect: { x: number; y: number; width: number; height: number };
+  minimized: boolean;
+}
+
+export interface MenuCommand {
+  /** The item's `id` from `contributes.menus`. */
+  id: string;
+  location: "canvas" | "panel";
+  /** The right-clicked panel for `location: "panel"`, else null. */
+  panel: MenuCommandPanel | null;
+  /** The right-click point in world coordinates for `location: "canvas"`, else null. */
+  world: { x: number; y: number } | null;
 }
 
 export type CalmEvent = keyof CalmEventPayloads;

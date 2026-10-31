@@ -8,6 +8,10 @@ use calm_core::scene::MIN_PANEL_SIZE;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+use crate::contributes;
+use crate::tui::{self, TuiSpec};
+use calm_core::plugin_menu::MenuContribution;
+
 pub const MANIFEST_FILE: &str = "calm-plugin.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -23,35 +27,45 @@ impl Size {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// What a plugin panel shows: an HTML page, or a terminal running one command.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PluginContent {
+    Web { entry: PathBuf },
+    Tui(TuiSpec),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PluginManifest {
     pub id: String,
     pub name: String,
     pub version: String,
-    pub entry: PathBuf,
     pub default_size: Size,
+    pub content: PluginContent,
     /// `false` locks the panel at the size it was created with. Absent means true.
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
     pub resizable: Option<bool>,
     /// Smallest size a user resize may reach, chrome included.
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
     pub min_size: Option<Size>,
     /// Largest size a user resize may reach, chrome included.
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
     pub max_size: Option<Size>,
+    /// Context menu items from `contributes.menus`, in manifest order.
+    pub menus: Vec<MenuContribution>,
+}
+
+/// The `"kind": "web"` manifest as it was before `kind` existed.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebManifestJson {
+    id: String,
+    name: String,
+    version: String,
+    entry: PathBuf,
+    default_size: Size,
+    #[serde(default, deserialize_with = "present")]
+    resizable: Option<bool>,
+    #[serde(default, deserialize_with = "present")]
+    min_size: Option<Size>,
+    #[serde(default, deserialize_with = "present")]
+    max_size: Option<Size>,
 }
 
 /// An optional field that, when written, must hold a value: `null` is an error, not absent.
@@ -65,9 +79,70 @@ where
 
 impl PluginManifest {
     pub fn from_json(json: &str) -> Result<Self, String> {
-        let manifest: Self = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let value: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let kind = match value.get("kind") {
+            None => "web",
+            Some(serde_json::Value::String(kind)) => kind.as_str(),
+            Some(other) => return Err(format!("kind must be a string, got {other}")),
+        };
+        let is_tui = kind == "tui";
+        let menus = contributes::parse(value.get("contributes"), is_tui)?;
+        let mut manifest = match kind {
+            "web" => {
+                let web: WebManifestJson =
+                    serde_json::from_value(value).map_err(|e| e.to_string())?;
+                Self {
+                    id: web.id,
+                    name: web.name,
+                    version: web.version,
+                    default_size: web.default_size,
+                    content: PluginContent::Web { entry: web.entry },
+                    resizable: web.resizable,
+                    min_size: web.min_size,
+                    max_size: web.max_size,
+                    menus: Vec::new(),
+                }
+            }
+            "tui" => {
+                let object = value.as_object().ok_or("manifest must be a JSON object")?;
+                let tui = tui::parse(object)?;
+                Self {
+                    id: tui.id,
+                    name: tui.name,
+                    version: tui.version,
+                    default_size: tui.default_size,
+                    content: PluginContent::Tui(tui.spec),
+                    // TUI panels resize freely, like terminals.
+                    resizable: None,
+                    min_size: None,
+                    max_size: None,
+                    menus: Vec::new(),
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unknown kind {other:?}, expected \"web\" or \"tui\""
+                ));
+            }
+        };
         manifest.validate()?;
+        manifest.menus = menus;
         Ok(manifest)
+    }
+
+    /// The HTML entry of a web plugin.
+    pub fn entry(&self) -> Option<&Path> {
+        match &self.content {
+            PluginContent::Web { entry } => Some(entry),
+            PluginContent::Tui(_) => None,
+        }
+    }
+
+    pub fn tui(&self) -> Option<&TuiSpec> {
+        match &self.content {
+            PluginContent::Tui(spec) => Some(spec),
+            PluginContent::Web { .. } => None,
+        }
     }
 
     /// The validated resize settings, as calm-core's policy takes them.
@@ -137,16 +212,18 @@ impl PluginManifest {
         if !id_ok {
             return Err(format!("id {:?} must match [a-z0-9-]+", self.id));
         }
+        let Some(entry) = self.entry() else {
+            return Ok(());
+        };
         // Only plain relative segments, so the entry cannot leave the plugin directory.
-        let entry_ok = self.entry.components().next().is_some()
-            && self
-                .entry
+        let entry_ok = entry.components().next().is_some()
+            && entry
                 .components()
                 .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
         if !entry_ok {
             return Err(format!(
                 "entry {} must be a relative path inside the plugin directory",
-                self.entry.display()
+                entry.display()
             ));
         }
         Ok(())
@@ -390,24 +467,29 @@ fn load_manifest(dir: &Path) -> Result<PluginManifest, PluginError> {
     };
     let text = fs::read_to_string(&path).map_err(|e| invalid(e.to_string()))?;
     let manifest = PluginManifest::from_json(&text).map_err(invalid)?;
-    check_entry_on_disk(dir, &manifest.entry).map_err(invalid)?;
+    if let Some(entry) = manifest.entry() {
+        check_file_on_disk(dir, entry, "entry").map_err(invalid)?;
+    }
+    if let Some(icon) = manifest.tui().and_then(TuiSpec::icon_image) {
+        check_file_on_disk(dir, icon, "icon").map_err(invalid)?;
+    }
     Ok(manifest)
 }
 
 // The lexical check in from_json cannot see symlinks, so resolve the real path here.
-fn check_entry_on_disk(dir: &Path, entry: &Path) -> Result<(), String> {
-    let shown = entry.display();
+fn check_file_on_disk(dir: &Path, file: &Path, field: &str) -> Result<(), String> {
+    let shown = file.display();
     let real_dir = fs::canonicalize(dir).map_err(|e| format!("cannot resolve plugin dir: {e}"))?;
-    let real_entry = fs::canonicalize(dir.join(entry))
-        .map_err(|e| format!("cannot resolve entry {shown}: {e}"))?;
-    if !real_entry.starts_with(&real_dir) {
+    let real_file = fs::canonicalize(dir.join(file))
+        .map_err(|e| format!("cannot resolve {field} {shown}: {e}"))?;
+    if !real_file.starts_with(&real_dir) {
         return Err(format!(
-            "entry {shown} resolves to {}, outside the plugin directory",
-            real_entry.display()
+            "{field} {shown} resolves to {}, outside the plugin directory",
+            real_file.display()
         ));
     }
-    if !real_entry.is_file() {
-        return Err(format!("entry {shown} is not a file"));
+    if !real_file.is_file() {
+        return Err(format!("{field} {shown} is not a file"));
     }
     Ok(())
 }
@@ -513,14 +595,17 @@ mod tests {
                     id: "hello-world".into(),
                     name: "Name hello-world".into(),
                     version: "0.1.0".into(),
-                    entry: PathBuf::from("index.html"),
                     default_size: Size {
                         width: 320.0,
                         height: 200.0
                     },
+                    content: PluginContent::Web {
+                        entry: PathBuf::from("index.html")
+                    },
                     resizable: None,
                     min_size: None,
                     max_size: None,
+                    menus: Vec::new(),
                 },
                 dir,
             }]
