@@ -116,9 +116,23 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
     });
   }
 
-  // Fire and forget: a failed log has nowhere better to go.
+  // Fire and forget: no pending entry, so the host never has to answer a log.
+  // A failed log has nowhere better to go, so its error is dropped.
   function log(message) {
-    call({ method: "log", params: { message: String(message) } }).catch(function () {});
+    try {
+      window.webkit.messageHandlers.calm.postMessage({
+        id: nextId++,
+        method: "log",
+        params: { message: String(message) }
+      });
+    } catch (err) {}
+  }
+
+  // Formatting a thrown value can throw too (a stack getter or toString that throws).
+  function describe(err) {
+    try { return String((err && err.stack) || err); } catch (e) {}
+    try { return String(err); } catch (e) {}
+    return "a value that cannot be printed";
   }
 
   window.__calm = Object.freeze({
@@ -137,7 +151,7 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
         try {
           handler(payload);
         } catch (err) {
-          log("calm.events handler for " + event + " threw: " + ((err && err.stack) || err));
+          log("calm.events handler for " + event + " threw: " + describe(err));
         }
       });
     }
@@ -301,6 +315,109 @@ mod tests {
                 "prelude calls {literal}, which is not in BRIDGE_METHODS"
             );
         }
+
+        // Each property must post its own method, not just some method from the list.
+        let harness = format!(
+            r#"var methods = {methods};
+var sent = {{}};
+methods.forEach(function (method) {{
+  var parts = method.split(".");
+  var fn = parts.length === 1 ? window.calm[parts[0]] : (window.calm[parts[0]] || {{}})[parts[1]];
+  if (typeof fn !== "function") {{ sent[method] = "not a function"; return; }}
+  var before = posted.length;
+  try {{ fn("x", ["y"]); }} catch (err) {{ sent[method] = "threw " + err; return; }}
+  sent[method] = posted.slice(before).map(function (m) {{ return m.method; }});
+}});
+console.log(JSON.stringify(sent));"#,
+            methods = json!(BRIDGE_METHODS)
+        );
+        let Some(sent) = run_prelude_under_bun("methods", &harness) else {
+            return;
+        };
+        for method in BRIDGE_METHODS {
+            assert_eq!(
+                sent[*method],
+                json!([method]),
+                "calm.{method} posted the wrong method"
+            );
+        }
+    }
+
+    /// Stands in for WKWebView: records every posted message, or throws when `failPosts` is set.
+    const FAKE_WEBKIT: &str = r#"var posted = [];
+var failPosts = false;
+globalThis.window = { webkit: { messageHandlers: { calm: { postMessage: function (message) {
+  if (failPosts) throw new Error("post failed");
+  posted.push(message);
+} } } } };
+"#;
+
+    /// Runs the exact prelude plus `harness` under bun and parses the last stdout line as JSON.
+    /// Returns None, with a note, when bun is not on PATH.
+    fn run_prelude_under_bun(name: &str, harness: &str) -> Option<Value> {
+        use std::process::Command;
+        if Command::new("bun").arg("--version").output().is_err() {
+            eprintln!("note: bun is not on PATH, skipping the prelude run for {name}");
+            return None;
+        }
+        let dir = std::env::temp_dir().join(format!("calm-prelude-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("probe.js");
+        std::fs::write(
+            &script,
+            format!("{FAKE_WEBKIT}{CALM_PRELUDE_JS}{harness}\n"),
+        )
+        .unwrap();
+        let output = Command::new("bun")
+            .arg(&script)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "bun failed: {}\n{stdout}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let last = stdout.lines().last().expect("bun printed nothing");
+        Some(serde_json::from_str(last).unwrap())
+    }
+
+    #[test]
+    fn emit_isolates_throwing_handlers() {
+        let harness = r#"var ran = [];
+window.calm.events.on("resize", function () { ran.push("error"); throw new Error("boom"); });
+window.calm.events.on("resize", function () {
+  ran.push("bad-stack");
+  throw { get stack() { throw new Error("bad-stack"); } };
+});
+window.calm.events.on("resize", function () {
+  ran.push("unprintable");
+  throw { get stack() { throw new Error("s"); }, toString: function () { throw new Error("t"); } };
+});
+window.calm.events.on("resize", function () { ran.push("later"); });
+function emit() {
+  try { window.__calm.emit("resize", { width: 1, height: 2, zoom: 1 }); return null; }
+  catch (err) { return "emit threw " + (err && err.message); }
+}
+var first = { emitError: emit(), ran: ran.splice(0) };
+var logs = posted.filter(function (m) { return m.method === "log"; })
+  .map(function (m) { return m.params.message; });
+failPosts = true;
+var second = { emitError: emit(), ran: ran.splice(0) };
+console.log(JSON.stringify({ first: first, second: second, logs: logs }));"#;
+        let Some(result) = run_prelude_under_bun("emit", harness) else {
+            return;
+        };
+        let all = json!(["error", "bad-stack", "unprintable", "later"]);
+        for run in ["first", "second"] {
+            assert_eq!(result[run]["emitError"], Value::Null, "{run}: {result}");
+            assert_eq!(result[run]["ran"], all, "{run}: {result}");
+        }
+        let logs = result["logs"].as_array().expect("logs array");
+        assert_eq!(logs.len(), 3, "one log per throwing handler: {result}");
+        assert!(logs[0].as_str().unwrap().contains("boom"), "{result}");
     }
 
     /// Body between the braces of `interface <name> {`, nested braces included.

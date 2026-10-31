@@ -56,7 +56,7 @@ CALM injects `window.calm` before any of your scripts run. The types live in one
 it. Every call except `calm.log` and `calm.events.on` returns a Promise. A failed call rejects
 with an `Error` whose message comes from the host.
 
-Not every call works yet. Check [Host support](#host-support) before you rely on one.
+No call is served by the app yet. Check [Host support](#host-support) before you rely on one.
 
 ### Settings
 
@@ -118,7 +118,7 @@ rights. This is why plugins must be trusted code (see [Trust](#trust)).
 | `calm.github.api(path)`  | Runs `gh api <path>` on the host, resolves with parsed JSON. |
 | `calm.openExternal(url)` | Opens `url` in the system browser.                           |
 | `calm.theme.get()`       | `{ background }`, a `"#rrggbb"` string.                      |
-| `calm.log(message)`      | Writes `message` to CALM's stderr, tagged with the plugin. Returns nothing. |
+| `calm.log(message)`      | Writes `message` to CALM's stderr, tagged with the plugin. Fire and forget: returns nothing, never waits for the host. |
 
 ### Events
 
@@ -142,28 +142,33 @@ page in a normal browser while developing.
 
 ### Host support
 
-The prelude exposes every call above, but the app only serves some of them. The rest reject
-with `not implemented: <method>` until the app wiring lands. They never hang.
+The prelude exposes every call above, but the app does not serve any of them yet: it has no
+plugin host and no dispatcher. Until the host is wired, no `window.calm` call resolves. Each
+returned Promise stays pending, and `calm.log` goes nowhere. Do not build on a call before the
+plugin host task lands.
 
-| `method`             | Host support                                    |
-| -------------------- | ----------------------------------------------- |
-| `settings.get`       | Implemented, wired in Task 11/12                |
-| `settings.set`       | Implemented, wired in Task 11/12                |
-| `panel.setTitle`     | Implemented, wired in Task 11/12                |
-| `github.api`         | Implemented, wired in Task 11/12                |
-| `log`                | Implemented, wired in Task 11/12                |
-| `openExternal`       | Implemented, wired in Task 11/12                |
-| `storage.get`        | Rejects with not implemented until wired        |
-| `storage.set`        | Rejects with not implemented until wired        |
-| `storage.remove`     | Rejects with not implemented until wired        |
-| `panel.getBounds`    | Rejects with not implemented until wired        |
-| `panel.minimize`     | Rejects with not implemented until wired        |
-| `panel.close`        | Rejects with not implemented until wired        |
-| `canvas.createPanel` | Rejects with not implemented until wired        |
-| `canvas.focusPanel`  | Rejects with not implemented until wired        |
-| `canvas.listPanels`  | Rejects with not implemented until wired        |
-| `process.exec`       | Rejects with not implemented until wired        |
-| `theme.get`          | Rejects with not implemented until wired        |
+When the host lands, it is planned to answer methods it does not serve with
+`not implemented: <method>`, so they reject instead of hanging.
+
+| `method`             | Host support                              |
+| -------------------- | ----------------------------------------- |
+| `settings.get`       | Planned, wired in the plugin host task    |
+| `settings.set`       | Planned, wired in the plugin host task    |
+| `storage.get`        | Planned, wired in the plugin host task    |
+| `storage.set`        | Planned, wired in the plugin host task    |
+| `storage.remove`     | Planned, wired in the plugin host task    |
+| `panel.setTitle`     | Planned, wired in the plugin host task    |
+| `panel.getBounds`    | Planned, wired in the plugin host task    |
+| `panel.minimize`     | Planned, wired in the plugin host task    |
+| `panel.close`        | Planned, wired in the plugin host task    |
+| `canvas.createPanel` | Planned, wired in the plugin host task    |
+| `canvas.focusPanel`  | Planned, wired in the plugin host task    |
+| `canvas.listPanels`  | Planned, wired in the plugin host task    |
+| `process.exec`       | Planned, wired in the plugin host task    |
+| `github.api`         | Planned, wired in the plugin host task    |
+| `openExternal`       | Planned, wired in the plugin host task    |
+| `theme.get`          | Planned, wired in the plugin host task    |
+| `log`                | Planned, wired in the plugin host task    |
 
 Events have no host sender yet, so handlers registered with `calm.events.on` do not fire
 until the app wiring lands.
@@ -200,8 +205,12 @@ the prelude and `calm.d.ts` in sync.
 | `log`                | `{ "message": string }`                                              |
 
 The host answers by evaluating `window.__calm.resolve(id, ok, value)` in the page. With `ok`
-true, `value` is the result. With `ok` false, `value` is an error message string. A method the
-host does not serve gets `ok` false and `not implemented: <method>`.
+true, `value` is the result. With `ok` false, `value` is an error message string. The planned
+host answers a method it does not serve with `ok` false and `not implemented: <method>`
+(`BridgeResponse::not_implemented`).
+
+`log` is fire and forget. The prelude posts it with an `id` but keeps no pending entry, so the
+host does not need to answer it, and an answer is ignored.
 
 The host sends an event by evaluating `window.__calm.emit("<event>", <payload json>)`
 (`BridgeEvent::to_js`). Both scripts JSON encode their values and escape U+2028 and U+2029.

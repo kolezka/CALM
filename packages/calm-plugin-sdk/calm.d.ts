@@ -4,7 +4,7 @@
 //
 // Keep one member per line: the Rust conformance test reads this file line by line.
 
-/** A canvas panel id, as the host reports it. */
+/** A canvas panel id, as the host reports it. Exact while below 2^53 (Number.MAX_SAFE_INTEGER). */
 export type PanelId = number;
 
 /** A rectangle in canvas points. */
@@ -122,7 +122,10 @@ export interface Calm {
   theme: CalmTheme;
   events: CalmEvents;
   openExternal(url: string): Promise<void>;
-  /** Writes to CALM's stderr, tagged with the plugin. Fire and forget. */
+  /**
+   * Writes to CALM's stderr, tagged with the plugin. Fire and forget: the prelude posts the
+   * message and keeps no pending entry, so nothing waits for a host answer.
+   */
   log(message: string): void;
 }
 
