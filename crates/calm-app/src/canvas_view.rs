@@ -81,8 +81,6 @@ pub struct CanvasView {
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Back-to-front terminal order the native views were last stacked in.
     native_order: Vec<PanelId>,
-    /// Last pointer position relative to the viewport, for the draft rect.
-    pointer: Point,
     focus_handle: FocusHandle,
     pub show_fps: bool,
     pub frame_stats: FrameStats,
@@ -100,7 +98,6 @@ impl CanvasView {
             focused: None,
             terminals: Vec::new(),
             native_order: Vec::new(),
-            pointer: Point::new(0.0, 0.0),
             focus_handle: cx.focus_handle(),
             show_fps: false,
             frame_stats: FrameStats::default(),
@@ -351,7 +348,6 @@ impl CanvasView {
             self.focus_handle.focus(window, cx);
         }
         let screen = self.to_canvas(event.position);
-        self.pointer = screen;
         let effects =
             self.input
                 .mouse_down(screen, button, to_mods(&event.modifiers), &mut self.scene);
@@ -360,8 +356,9 @@ impl CanvasView {
 
     fn mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         let screen = self.to_canvas(event.position);
-        self.pointer = screen;
-        let effects = self.input.mouse_move(screen, &mut self.scene);
+        let effects = self
+            .input
+            .mouse_move(screen, to_mods(&event.modifiers), &mut self.scene);
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
         }
@@ -371,9 +368,11 @@ impl CanvasView {
         if !matches!(event.button, MouseButton::Left | MouseButton::Middle) {
             return;
         }
-        let effects = self
-            .input
-            .mouse_up(self.to_canvas(event.position), &mut self.scene);
+        let effects = self.input.mouse_up(
+            self.to_canvas(event.position),
+            to_mods(&event.modifiers),
+            &mut self.scene,
+        );
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
         }
@@ -465,7 +464,6 @@ struct PaintSnapshot {
     state: Interaction,
     focused: Option<PanelId>,
     confirming: Option<PanelId>,
-    pointer: Point,
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
 }
 
@@ -515,13 +513,16 @@ impl PaintSnapshot {
                     .and_then(|panel| terminal_placement(panel, &self.scene, viewport));
                 terminal.update(cx, |terminal, _| terminal.set_placement(placement, window));
             }
-            if let Interaction::Drawing { start_world } = self.state {
-                let start = camera.world_to_screen(start_world);
+            if let Interaction::Drawing { draft, .. } = self.state {
+                // Painted from the snapped world rect so the outline matches the panel created.
+                let top_left = camera.world_to_screen(draft.origin);
+                let bottom_right =
+                    camera.world_to_screen(Point::new(draft.right(), draft.bottom()));
                 let draft = Rect::new(
-                    start.x.min(self.pointer.x),
-                    start.y.min(self.pointer.y),
-                    (self.pointer.x - start.x).abs(),
-                    (self.pointer.y - start.y).abs(),
+                    top_left.x,
+                    top_left.y,
+                    bottom_right.x - top_left.x,
+                    bottom_right.y - top_left.y,
                 );
                 window.paint_quad(outline(
                     to_bounds(draft, origin),
@@ -669,7 +670,6 @@ impl Render for CanvasView {
             state: self.input.state,
             focused: self.focused,
             confirming: self.input.confirming,
-            pointer: self.pointer,
             terminals: self.terminals.clone(),
         };
         // Mouse and key targets for terminals, at last frame's placement.

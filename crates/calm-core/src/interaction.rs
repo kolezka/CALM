@@ -1,5 +1,6 @@
 use crate::geometry::{Point, Rect};
-use crate::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene};
+use crate::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect};
+use crate::snap::{SnapConfig, snap_draw, snap_move, snap_resize};
 
 /// Width of the resize grab band inside a panel's right and bottom edges, in world units.
 pub const RESIZE_BAND: f64 = 12.0;
@@ -56,6 +57,8 @@ pub enum Interaction {
     Idle,
     Drawing {
         start_world: Point,
+        /// The rect a release here would create, already snapped. The app paints it.
+        draft: Rect,
     },
     Dragging {
         id: PanelId,
@@ -112,6 +115,7 @@ pub struct InputHandler {
     pub space_held: bool,
     /// Panel waiting for the user to confirm its close.
     pub confirming: Option<PanelId>,
+    pub snap: SnapConfig,
 }
 
 impl Default for InputHandler {
@@ -121,6 +125,7 @@ impl Default for InputHandler {
             state: Interaction::Idle,
             space_held: false,
             confirming: None,
+            snap: SnapConfig::default(),
         }
     }
 }
@@ -146,7 +151,10 @@ impl InputHandler {
         let world = scene.camera.screen_to_world(screen);
         let Some(id) = scene.hit_test(world) else {
             if self.tool != Tool::Select {
-                self.state = Interaction::Drawing { start_world: world };
+                self.state = Interaction::Drawing {
+                    start_world: world,
+                    draft: Rect::new(world.x, world.y, 0.0, 0.0),
+                };
             }
             return Vec::new();
         };
@@ -191,19 +199,29 @@ impl InputHandler {
         vec![Effect::FocusPanel(id)]
     }
 
-    pub fn mouse_move(&mut self, screen: Point, scene: &mut Scene) -> Vec<Effect> {
+    pub fn mouse_move(&mut self, screen: Point, mods: Modifiers, scene: &mut Scene) -> Vec<Effect> {
         let world = scene.camera.screen_to_world(screen);
+        let snap = !mods.alt;
         match self.state {
             Interaction::Idle => Vec::new(),
-            // The draft rect is drawn by the app from `start_world` and the pointer.
-            Interaction::Drawing { .. } => vec![Effect::Redraw],
+            Interaction::Drawing { start_world, .. } => {
+                self.state = Interaction::Drawing {
+                    start_world,
+                    draft: self.draft_rect(start_world, world, mods, scene),
+                };
+                vec![Effect::Redraw]
+            }
             Interaction::Dragging {
                 id,
                 grab_offset_world,
             } => {
+                let others = neighbor_rects(scene, Some(id));
                 if let Some(panel) = scene.get_mut(id) {
                     panel.rect.origin =
                         Point::new(world.x - grab_offset_world.x, world.y - grab_offset_world.y);
+                    if snap {
+                        panel.rect = snap_move(panel.rect, &others, &self.snap);
+                    }
                 }
                 vec![Effect::Redraw]
             }
@@ -212,10 +230,15 @@ impl InputHandler {
                 edge,
                 grab_offset_world,
             } => {
+                let others = neighbor_rects(scene, Some(id));
                 if let Some(panel) = scene.get_mut(id) {
                     let edge_world =
                         Point::new(world.x + grab_offset_world.x, world.y + grab_offset_world.y);
                     resize_panel(panel, edge, edge_world);
+                    if snap {
+                        let snapped = snap_resize(panel.rect, edge, &others, &self.snap);
+                        resize_panel(panel, edge, Point::new(snapped.right(), snapped.bottom()));
+                    }
                 }
                 vec![Effect::Redraw]
             }
@@ -233,19 +256,15 @@ impl InputHandler {
 
     /// Ends the current interaction. Drag and resize geometry comes only from
     /// `mouse_move`, so a press and release without movement changes nothing.
-    pub fn mouse_up(&mut self, screen: Point, scene: &mut Scene) -> Vec<Effect> {
+    pub fn mouse_up(&mut self, screen: Point, mods: Modifiers, scene: &mut Scene) -> Vec<Effect> {
         let mut effects = Vec::new();
         if self.state != Interaction::Idle {
             effects.push(Effect::Redraw);
         }
-        if let Interaction::Drawing { start_world } = self.state {
+        if let Interaction::Drawing { start_world, .. } = self.state {
+            // Recomputed from the release itself: alt may have changed since the last move.
             let end_world = scene.camera.screen_to_world(screen);
-            let draft = Rect::new(
-                start_world.x.min(end_world.x),
-                start_world.y.min(end_world.y),
-                (end_world.x - start_world.x).abs(),
-                (end_world.y - start_world.y).abs(),
-            );
+            let draft = self.draft_rect(start_world, end_world, mods, scene);
             if let Some(kind) = self.tool_panel_kind() {
                 let id = scene.add(kind.clone(), draft);
                 let rect = scene.get(id).map_or(draft, |panel| panel.rect);
@@ -315,6 +334,21 @@ impl InputHandler {
         }
     }
 
+    /// Rect spanned by a draw from `start` to `end`, snapped unless alt is held.
+    fn draft_rect(&self, start: Point, end: Point, mods: Modifiers, scene: &Scene) -> Rect {
+        let raw = Rect::new(
+            start.x.min(end.x),
+            start.y.min(end.y),
+            (end.x - start.x).abs(),
+            (end.y - start.y).abs(),
+        );
+        if mods.alt {
+            raw
+        } else {
+            snap_draw(raw, &neighbor_rects(scene, None), &self.snap)
+        }
+    }
+
     fn tool_panel_kind(&self) -> Option<PanelKind> {
         match &self.tool {
             Tool::Select => None,
@@ -331,6 +365,22 @@ impl InputHandler {
             }),
         }
     }
+}
+
+/// Rects that snapping lines up against. Minimized panels count as their chip.
+fn neighbor_rects(scene: &Scene, except: Option<PanelId>) -> Vec<Rect> {
+    scene
+        .panels
+        .iter()
+        .filter(|panel| Some(panel.id) != except)
+        .map(|panel| {
+            if panel.minimized {
+                chip_rect(panel)
+            } else {
+                panel.rect
+            }
+        })
+        .collect()
 }
 
 /// Right click: canvas menu on empty canvas, panel menu on chrome or a minimized chip,
@@ -403,6 +453,14 @@ mod tests {
         Modifiers::default()
     }
 
+    /// Alt held: moves place panels exactly, without snapping.
+    fn free() -> Modifiers {
+        Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        }
+    }
+
     #[test]
     fn draw_tool_creates_terminal_panel_on_release() {
         let mut scene = Scene::default();
@@ -417,8 +475,8 @@ mod tests {
             &mut scene,
         );
         assert!(matches!(handler.state, Interaction::Drawing { .. }));
-        handler.mouse_move(Point::new(400.0, 350.0), &mut scene);
-        let effects = handler.mouse_up(Point::new(400.0, 350.0), &mut scene);
+        handler.mouse_move(Point::new(400.0, 350.0), free(), &mut scene);
+        let effects = handler.mouse_up(Point::new(400.0, 350.0), free(), &mut scene);
 
         assert_eq!(scene.panels.len(), 1);
         let panel = &scene.panels[0];
@@ -445,8 +503,8 @@ mod tests {
         assert!(matches!(handler.state, Interaction::Dragging { id, .. } if id == back));
         assert_eq!(scene.panels.last().map(|panel| panel.id), Some(back));
 
-        handler.mouse_move(Point::new(150.0, 60.0), &mut scene);
-        handler.mouse_up(Point::new(150.0, 60.0), &mut scene);
+        handler.mouse_move(Point::new(150.0, 60.0), free(), &mut scene);
+        handler.mouse_up(Point::new(150.0, 60.0), no_mods(), &mut scene);
         assert_eq!(
             scene.get(back).unwrap().rect,
             Rect::new(50.0, 50.0, 400.0, 300.0)
@@ -475,8 +533,8 @@ mod tests {
             Interaction::Resizing { id: resizing, edge: ResizeEdge::BottomRight, .. } if resizing == id
         ));
         // Size follows the pointer delta (+100, +50), not the absolute pointer position.
-        handler.mouse_move(Point::new(495.0, 345.0), &mut scene);
-        handler.mouse_up(Point::new(495.0, 345.0), &mut scene);
+        handler.mouse_move(Point::new(495.0, 345.0), free(), &mut scene);
+        handler.mouse_up(Point::new(495.0, 345.0), no_mods(), &mut scene);
         assert_eq!(
             scene.get(id).unwrap().rect,
             Rect::new(0.0, 0.0, 500.0, 350.0)
@@ -492,7 +550,7 @@ mod tests {
         for (x, y) in [(395.0, 295.0), (395.0, 150.0), (200.0, 295.0)] {
             handler.mouse_down(Point::new(x, y), Button::Left, no_mods(), &mut scene);
             assert!(matches!(handler.state, Interaction::Resizing { .. }));
-            handler.mouse_up(Point::new(x, y), &mut scene);
+            handler.mouse_up(Point::new(x, y), no_mods(), &mut scene);
             assert_eq!(
                 scene.get(id).unwrap().rect,
                 Rect::new(0.0, 0.0, 400.0, 300.0),
@@ -510,13 +568,13 @@ mod tests {
 
         handler.mouse_down(Point::new(100.0, 10.0), Button::Left, no_mods(), &mut scene);
         // A one-unit move shifts the panel by one unit: no jump to the pointer.
-        handler.mouse_move(Point::new(101.0, 10.0), &mut scene);
+        handler.mouse_move(Point::new(101.0, 10.0), free(), &mut scene);
         assert_eq!(
             scene.get(id).unwrap().rect,
             Rect::new(1.0, 0.0, 400.0, 300.0)
         );
         // Release only ends the drag; geometry comes from moves alone.
-        handler.mouse_up(Point::new(300.0, 300.0), &mut scene);
+        handler.mouse_up(Point::new(300.0, 300.0), no_mods(), &mut scene);
         assert_eq!(
             scene.get(id).unwrap().rect,
             Rect::new(1.0, 0.0, 400.0, 300.0)
@@ -541,8 +599,8 @@ mod tests {
             &mut scene,
         );
         assert!(matches!(handler.state, Interaction::Panning { .. }));
-        handler.mouse_move(Point::new(150.0, 120.0), &mut scene);
-        handler.mouse_up(Point::new(150.0, 120.0), &mut scene);
+        handler.mouse_move(Point::new(150.0, 120.0), no_mods(), &mut scene);
+        handler.mouse_up(Point::new(150.0, 120.0), no_mods(), &mut scene);
         assert_eq!(scene.camera.offset, Point::new(-50.0, -20.0));
         assert_eq!(scene.panels[0].rect, Rect::new(0.0, 0.0, 400.0, 300.0));
         assert_eq!(handler.state, Interaction::Idle);
@@ -607,8 +665,8 @@ mod tests {
         );
         assert_eq!(effects, vec![Effect::FocusPanel(id)]);
         assert_eq!(handler.state, Interaction::Idle);
-        handler.mouse_move(Point::new(200.0, 250.0), &mut scene);
-        handler.mouse_up(Point::new(200.0, 250.0), &mut scene);
+        handler.mouse_move(Point::new(200.0, 250.0), no_mods(), &mut scene);
+        handler.mouse_up(Point::new(200.0, 250.0), no_mods(), &mut scene);
         assert_eq!(
             scene.get(id).unwrap().rect,
             Rect::new(0.0, 0.0, 400.0, 300.0)
@@ -811,5 +869,93 @@ mod tests {
             handler.pinch(Point::new(300.0, 200.0), 0.1, &mut scene),
             vec![Effect::Redraw]
         );
+    }
+
+    fn two_panels() -> (Scene, PanelId) {
+        let mut scene = Scene::default();
+        scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        let moving = scene.add(terminal(), Rect::new(300.0, 300.0, 200.0, 100.0));
+        (scene, moving)
+    }
+
+    #[test]
+    fn drag_with_alt_held_does_not_snap() {
+        let (mut scene, moving) = two_panels();
+        let mut handler = InputHandler::default();
+        handler.mouse_down(
+            Point::new(310.0, 310.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
+        handler.mouse_move(Point::new(215.0, 411.0), free(), &mut scene);
+        assert_eq!(
+            scene.get(moving).unwrap().rect,
+            Rect::new(205.0, 401.0, 200.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn drag_without_alt_snaps() {
+        let (mut scene, moving) = two_panels();
+        let mut handler = InputHandler::default();
+        handler.mouse_down(
+            Point::new(310.0, 310.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
+        // Left edge 205 snaps flush to the neighbor's right edge 200; top 401 to the grid.
+        handler.mouse_move(Point::new(215.0, 411.0), no_mods(), &mut scene);
+        assert_eq!(
+            scene.get(moving).unwrap().rect,
+            Rect::new(200.0, 400.0, 200.0, 100.0)
+        );
+    }
+
+    fn drawing_terminal() -> InputHandler {
+        InputHandler {
+            tool: Tool::DrawTerminal,
+            ..InputHandler::default()
+        }
+    }
+
+    #[test]
+    fn drawing_draft_is_snapped_while_moving() {
+        let mut scene = Scene::default();
+        let mut handler = drawing_terminal();
+        handler.mouse_down(Point::new(13.0, 21.0), Button::Left, no_mods(), &mut scene);
+        handler.mouse_move(Point::new(213.0, 121.0), no_mods(), &mut scene);
+        let Interaction::Drawing { draft, .. } = handler.state else {
+            panic!("expected Drawing, got {:?}", handler.state);
+        };
+        assert_eq!(draft, Rect::new(16.0, 24.0, 200.0, 96.0));
+        // Alt shows the free rect.
+        handler.mouse_move(Point::new(213.0, 121.0), free(), &mut scene);
+        let Interaction::Drawing { draft, .. } = handler.state else {
+            panic!("expected Drawing, got {:?}", handler.state);
+        };
+        assert_eq!(draft, Rect::new(13.0, 21.0, 200.0, 100.0));
+    }
+
+    #[test]
+    fn release_with_alt_does_not_snap_even_without_move() {
+        let mut scene = Scene::default();
+        let mut handler = drawing_terminal();
+        handler.mouse_down(Point::new(13.0, 21.0), Button::Left, no_mods(), &mut scene);
+        handler.mouse_move(Point::new(213.0, 121.0), no_mods(), &mut scene);
+        // Alt pressed after the last move, then released in place.
+        handler.mouse_up(Point::new(213.0, 121.0), free(), &mut scene);
+        assert_eq!(scene.panels[0].rect, Rect::new(13.0, 21.0, 200.0, 100.0));
+    }
+
+    #[test]
+    fn release_without_alt_snaps_after_alt_move() {
+        let mut scene = Scene::default();
+        let mut handler = drawing_terminal();
+        handler.mouse_down(Point::new(13.0, 21.0), Button::Left, no_mods(), &mut scene);
+        handler.mouse_move(Point::new(213.0, 121.0), free(), &mut scene);
+        handler.mouse_up(Point::new(213.0, 121.0), no_mods(), &mut scene);
+        assert_eq!(scene.panels[0].rect, Rect::new(16.0, 24.0, 200.0, 96.0));
     }
 }
