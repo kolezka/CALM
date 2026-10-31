@@ -25,12 +25,67 @@ impl BrowserQueryMode {
     }
 }
 
+/// The longest URL a layout saves. Longer ones (large `data:` pages) save as `about:blank`.
+pub const MAX_SAVED_URL_BYTES: usize = 8192;
+
 /// The URL as a layout saves it. `StripAll` keeps scheme, host, port and path and drops
-/// the rest; `Keep` returns `url` unchanged.
+/// the rest; `Keep` keeps `url` unchanged. In both modes a result over
+/// `MAX_SAVED_URL_BYTES` becomes `about:blank`.
 pub fn scrub_for_save(url: &str, mode: BrowserQueryMode) -> String {
-    if mode == BrowserQueryMode::Keep {
-        return url.to_string();
+    let scrubbed = match mode {
+        BrowserQueryMode::Keep => url.to_string(),
+        BrowserQueryMode::StripAll => strip_query(url),
+    };
+    if scrubbed.len() > MAX_SAVED_URL_BYTES {
+        "about:blank".to_string()
+    } else {
+        scrubbed
     }
+}
+
+/// Schemes recognized inside free text, such as a page title.
+const TEXT_URL_SCHEMES: &[&str] = &["https:", "http:", "file:", "about:", "data:"];
+
+/// `text` with every URL inside it passed through `scrub_for_save`, the rest kept. A URL
+/// starts at a known scheme and runs to whitespace or a quote or angle bracket. `Keep`
+/// returns `text` unchanged.
+pub fn scrub_text_for_save(text: &str, mode: BrowserQueryMode) -> String {
+    if mode == BrowserQueryMode::Keep {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = find_url_start(rest) {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>'))
+            .unwrap_or(tail.len());
+        out.push_str(&scrub_for_save(&tail[..end], mode));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Byte index of the first known scheme in `text` that does not continue a longer word.
+fn find_url_start(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    (0..bytes.len()).find(|&index| {
+        let continues_word = index > 0
+            && (bytes[index - 1].is_ascii_alphanumeric()
+                || matches!(bytes[index - 1], b'+' | b'-' | b'.'));
+        !continues_word
+            && TEXT_URL_SCHEMES.iter().any(|scheme| {
+                bytes[index..]
+                    .get(..scheme.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(scheme.as_bytes()))
+            })
+    })
+}
+
+/// Scheme, host, port and path of `url`: no query, fragment or `user:password@`.
+fn strip_query(url: &str) -> String {
     let end = url.find(['?', '#']).unwrap_or(url.len());
     let url = &url[..end];
     // Userinfo sits between `://` and the first `/` of the path, ending at its last `@`.

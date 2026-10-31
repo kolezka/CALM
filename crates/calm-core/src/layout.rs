@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::browser_url::{BrowserQueryMode, scrub_for_save};
+use crate::browser_url::{BrowserQueryMode, scrub_for_save, scrub_text_for_save};
 use crate::camera::{Camera, MAX_ZOOM, MIN_ZOOM};
 use crate::geometry::Rect;
 use crate::scene::{PanelKind, PanelOverrides, Scene};
@@ -229,9 +229,12 @@ fn prepare_for_save(layout: &LayoutFile, browser_query: BrowserQueryMode, now: u
     for panel in &mut prepared.panels {
         if let PanelKind::Browser { url, .. } = &mut panel.kind {
             let scrubbed = scrub_for_save(url, browser_query);
-            // A new browser panel is titled with its url, so the title would leak it too.
+            // A new browser panel is titled with its url; it follows the url, size guard
+            // included. Any other title is page text that can quote urls, so scrub those.
             if panel.title == *url {
                 panel.title.clone_from(&scrubbed);
+            } else {
+                panel.title = scrub_text_for_save(&panel.title, browser_query);
             }
             *url = scrubbed;
         }
@@ -1115,6 +1118,88 @@ mod tests {
         assert!(kept.contains(&format!("\"{url}\"")));
         // The caller's layout is not scrubbed in memory.
         assert_eq!(layout, browser_layout(url));
+    }
+
+    // Review fixes: browser titles and url size.
+
+    fn saved_browser(path: &Path) -> (String, String) {
+        let text = std::fs::read_to_string(path).unwrap();
+        let layout: LayoutFile = serde_json::from_str(&text).unwrap();
+        match &layout.panels[0].kind {
+            PanelKind::Browser { url, .. } => (url.clone(), layout.panels[0].title.clone()),
+            other => panic!("expected a browser, got {other:?}"),
+        }
+    }
+
+    fn save_titled(dir: &Path, url: &str, title: &str, mode: BrowserQueryMode) -> (String, String) {
+        let mut layout = browser_layout(url);
+        layout.panels[0].title = title.to_string();
+        let path = save_layout_in(dir, "titled", &layout, mode).unwrap();
+        saved_browser(&path)
+    }
+
+    #[test]
+    fn strip_all_scrubs_every_url_inside_a_browser_title() {
+        use BrowserQueryMode::{Keep, StripAll};
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://example.test/a";
+        let cases = [
+            (
+                "Viewing https://example.test/a?code=X done",
+                "Viewing https://example.test/a done",
+            ),
+            (
+                "From http://a.test/x?code=one to HTTPS://b.test/y#state=two (and file:///tmp/f?q=three)",
+                "From http://a.test/x to HTTPS://b.test/y (and file:///tmp/f",
+            ),
+            (
+                "Paste data:text/plain,hi#frag-four or about:blank?five",
+                "Paste data:text/plain,hi or about:blank",
+            ),
+            ("Plain title, no address", "Plain title, no address"),
+            ("https://u:pw@example.test/a?x", "https://example.test/a"),
+        ];
+        for (title, stripped) in cases {
+            assert_eq!(
+                save_titled(dir.path(), url, title, StripAll).1,
+                stripped,
+                "{title}"
+            );
+            assert_eq!(
+                save_titled(dir.path(), url, title, Keep).1,
+                title,
+                "{title}"
+            );
+        }
+    }
+
+    #[test]
+    fn urls_over_8_kib_save_as_about_blank_in_both_modes() {
+        use BrowserQueryMode::{Keep, StripAll};
+        let dir = tempfile::tempdir().unwrap();
+        let sized = |len: usize| {
+            let prefix = "data:text/plain,";
+            format!("{prefix}{}", "a".repeat(len - prefix.len()))
+        };
+        for mode in [StripAll, Keep] {
+            let at_limit = sized(8192);
+            assert_eq!(
+                save_titled(dir.path(), &at_limit, "Big page", mode),
+                (at_limit.clone(), "Big page".to_string()),
+                "{mode:?}"
+            );
+            assert_eq!(
+                save_titled(dir.path(), &sized(8193), "Big page", mode),
+                ("about:blank".to_string(), "Big page".to_string()),
+                "{mode:?}"
+            );
+        }
+        // The guard runs after scrubbing: a long query alone does not trigger it.
+        let long_query = format!("https://example.test/a?q={}", "x".repeat(9000));
+        assert_eq!(
+            save_titled(dir.path(), &long_query, "Search", StripAll).0,
+            "https://example.test/a"
+        );
     }
 
     // Layout v2.
