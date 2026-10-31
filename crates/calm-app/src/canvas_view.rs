@@ -47,6 +47,8 @@ use crate::terminal_profiles::{self, TerminalMeta};
 use crate::theme;
 use crate::tui_host::{self, TuiRun};
 
+mod plugin_menus;
+
 actions!(
     calm,
     [
@@ -171,6 +173,8 @@ pub struct CanvasView {
     status_bar_error: Option<String>,
     /// Joins and visible dividers in the last render. Read by the smoke.
     pub join_counts: (usize, usize),
+    /// `run` args of the plugin menu item opening a TUI panel right now.
+    pending_tui_args: Option<Vec<String>>,
 }
 
 impl CanvasView {
@@ -235,6 +239,7 @@ impl CanvasView {
             status_bar: None,
             status_bar_error: None,
             join_counts: (0, 0),
+            pending_tui_args: None,
         }
     }
 
@@ -330,11 +335,7 @@ impl CanvasView {
                     self.show_menu(items, screen, MenuTarget::Canvas { world }, window, cx);
                 }
                 Effect::ShowPanelMenu { id, screen } => {
-                    if let Some(panel) = self.scene.get(id) {
-                        let can_restart = self
-                            .tui_run(id)
-                            .is_some_and(|run| run.supervisor.can_restart());
-                        let items = menu::panel_menu(panel, can_restart);
+                    if let Some(items) = self.panel_menu(id) {
                         self.show_menu(items, screen, MenuTarget::Panel(id), window, cx);
                     }
                 }
@@ -401,13 +402,20 @@ impl CanvasView {
         .detach();
     }
 
-    fn apply_menu_choice(
+    /// Runs the item the native menu returned. The smoke calls this with an id from the
+    /// built menu, the same path a real click takes after the NSMenu closes.
+    pub(crate) fn apply_menu_choice(
         &mut self,
         id: &str,
         target: MenuTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.apply_plugin_choice(id, target, window, cx) {
+            window.refresh();
+            cx.notify();
+            return;
+        }
         let world = match target {
             MenuTarget::Canvas { world } => world,
             MenuTarget::Panel(_) => Point::new(0.0, 0.0),
@@ -654,7 +662,8 @@ impl CanvasView {
             .find(|plugin| plugin.manifest.id == plugin_id)
             .ok_or_else(|| format!("plugin {plugin_id} is not installed"))?
             .clone();
-        let run = TuiRun::new(plugin)?;
+        let mut run = TuiRun::new(plugin)?;
+        run.extra_args = self.pending_tui_args.take().unwrap_or_default();
         if let Some(path) = run.icon_path() {
             self.tui_icons.entry(path).or_insert_with_key(|path| {
                 crate::icon_image::load(path)
@@ -881,14 +890,6 @@ impl CanvasView {
         self.apps.extend(entries.apps);
         self.plugin_sizes.extend(entries.sizes);
         self.installed_plugins.extend(plugins);
-    }
-
-    /// The Add menu as the user would see it now.
-    pub fn canvas_menu(&self) -> Vec<menu::MenuItem> {
-        menu::with_terminal_profiles(
-            menu::canvas_menu(&self.plugins, &self.apps, &self.plugin_search_dirs),
-            &self.settings.settings.terminal.profile_names(),
-        )
     }
 
     /// (loading, load error) per plugin panel, in creation order.
@@ -1501,7 +1502,7 @@ impl CanvasView {
 
 /// What a context menu was opened on.
 #[derive(Clone, Copy, Debug)]
-enum MenuTarget {
+pub(crate) enum MenuTarget {
     /// Empty canvas; new panels go at `world`.
     Canvas {
         world: Point,

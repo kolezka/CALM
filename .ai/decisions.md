@@ -325,3 +325,30 @@ Plan in `docs/superpowers/plans/2026-10-31-canvas-persistence.md`, approved by t
   action checks the first responder; when a terminal, page or address field holds it,
   Escape stays theirs and focus stays. Same setting. Reason: never steal Escape from a
   running program. Cost: Escape cannot blur a panel whose native view holds the keyboard.
+
+## Plugin context menu items (2026-10-31)
+
+- **Flat `contributes.menus` items, not v2's `commands` plus `menus.canvas/panel`.** Each item
+  carries its own `id`, `title` and `location`, and `when` is a struct (`kind`, `plugin`,
+  `minimized`) instead of the `kind == terminal` string. Reason: the lead's brief for the
+  user's request, one place per item, and strict per-field validation without a parser.
+  Cost: a later `contributes.commands` (for key bindings) needs items to reference commands
+  or keep both shapes.
+- **The payload key is `id`, not v2's `command`,** and it adds `location`, the full `panel`
+  info and `world`. The event name stays `command`.
+- **Built-in items first, plugins cannot remove them.** Plugin sections follow a separator,
+  one per plugin in discovery order. Reason: plugins are trusted, but a broken plugin must
+  not hide Delete. Users hide plugin items with `plugins.menus.hidden`.
+- **Submenu above 3 items per plugin, a setting (`plugins.menus.submenu_above`).** Three
+  items inline keep a short menu flat; more nest under the plugin name.
+- **No background page target.** v2 sends commands to a background page first; those do not
+  exist, so the order is clicked panel, focused panel, frontmost panel, else a new panel.
+  `"open": "new"` skips reuse. The prelude queues commands until a handler registers, and
+  undeliverable commands are logged.
+- **`icon` is text before the title, no `shortcut`.** NSMenu images and key equivalents would
+  need `MenuItem` changes across the menu code; a key shown in a context menu that does not
+  work outside it would mislead. Key bindings belong to v2 `keybindings`.
+- **No runtime `calm.menus.register` yet.** It needs a per-plugin registry the bridge
+  dispatcher can reach, which is being changed in parallel for `github.api`.
+- **`apiVersion` is not required for `contributes`.** The host does not read `apiVersion`
+  yet.

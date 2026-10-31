@@ -1,6 +1,6 @@
 # Status
 
-Last updated: 2026-10-31, against `origin/main` at `a17fac3` (PRs #1 to #21, #24, #25 and #27 merged). This
+Last updated: 2026-10-31, against `origin/main` at `a17fac3` (PRs #1 to #21, #24 to #28 merged). This
 file describes `main`, not branches. Facts are verified against the code unless marked
 otherwise.
 
@@ -89,19 +89,25 @@ Pull requests:
 - #25 Blur on outside click: a click on empty canvas clears panel focus and makes the GPUI
   host view the first responder; pans and zooms keep focus; Escape clears it only when no
   native view has the keyboard. Setting `canvas.click_empty_clears_focus` (default true).
+- #28 Plugin context menu items: `contributes.menus` in web and TUI manifests
+  (`calm-plugins::contributes`, strict per-field errors), the merged menu model and
+  `command` payload in `calm-core::plugin_menu`, settings `plugins.menus.hidden` and
+  `plugins.menus.submenu_above`, glue in `calm-app/src/canvas_view/plugin_menus.rs`. Web
+  plugins get a `command` event in an open panel or a new one; TUI items open a new panel
+  with `run` args appended. Not built: `calm.menus.register`, `shortcut`,
+  `contributes.commands`.
 
 ## In progress (not on `main`)
 
 - #22 (open): refresh of the plugin API v2 design, including layouts as a v2 phase.
-- No PR yet: `github.api` dispatch with `GITHUB_TOKEN` read from `.env`; plugin context menu
-  contributions; a Linux port plan.
+- No PR yet: `github.api` dispatch with `GITHUB_TOKEN` read from `.env`; a Linux port plan.
 
 ## Not wired yet
 
 - Plugin bridge: only `log`, `panel.setTitle`, `settings.get` and `settings.set` are served
   (`plugin_host.rs`). The other 13 of the 17 `BRIDGE_METHODS` reject with
   `not implemented: <method>`: `storage.*`, `panel.getBounds/minimize/close`, `canvas.*`,
-  `process.exec`, `github.api`, `openExternal`, `theme.get`. No host events are sent.
+  `process.exec`, `github.api`, `openExternal`, `theme.get`. No host events are sent other than `command`.
   `github-prs` renders but its list shows the `github.api` error.
 - Clicking inside a plugin page does not focus or raise its panel; AppKit routes the click
   to the WKWebView.
@@ -139,6 +145,8 @@ Pull requests:
   input method, resize reflow, Enter to confirm close, pinch feel, `htop`.
 - Terminal profiles: the live recolor, the profile submenu, the Settings > Terminal controls.
 - Blur: a real mouse click on empty canvas, Escape inside a web page.
+- Plugin menus: a real right click (the NSMenu), long titles, the github-prs "Open repo
+  in browser" item (needs `openExternal`).
 - Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.

@@ -438,6 +438,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_resize(&view, window, cx).await;
         smoke_blur(&view, window, cx);
         smoke_settings_dispatch(&view, window, cx).await;
+        smoke_plugin_menus(&view, window, cx).await;
 
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
@@ -1108,6 +1109,170 @@ async fn smoke_plugins(
     }
     if let Err(err) = fixtures.close() {
         eprintln!("smoke: could not remove the plugin temp dir: {err}");
+    }
+}
+
+/// A fixture plugin with one canvas and one panel item. Its page registers the command
+/// handler late, so a command that arrives first must wait in the prelude.
+const SMOKE_MENUS_HTML: &str = r#"<!doctype html><body>menus<script>
+setTimeout(function () {
+  calm.events.on("command", function (c) {
+    calm.panel.setTitle("cmd:" + c.id + ":" + c.location + ":" +
+      (c.panel ? c.panel.id : "none") + ":" + (c.world ? "world" : "noworld"));
+  });
+}, 300);
+</script></body>"#;
+const SMOKE_MENUS_CONTRIBUTES: &str = r#","contributes":{"menus":[
+  {"id":"ping","title":"Smoke ping","location":"canvas"},
+  {"id":"pong","title":"Smoke pong","location":"panel","when":{"plugin":["smoke-menus"]}}
+]}"#;
+
+fn menu_ids(items: Vec<calm_core::menu::MenuItem>) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut stack = items;
+    while let Some(item) = stack.pop() {
+        match item {
+            calm_core::menu::MenuItem::Submenu { items, .. } => stack.extend(items),
+            calm_core::menu::MenuItem::Action { id, .. } => ids.push(id),
+            _ => {}
+        }
+    }
+    ids
+}
+
+/// Waits until panel `id` has `title`, which the fixture page sets from its command handler.
+async fn wait_for_title(
+    view: &Entity<CanvasView>,
+    id: calm_core::scene::PanelId,
+    title: &str,
+    cx: &mut gpui::AsyncApp,
+) {
+    let started = Instant::now();
+    loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let now = cx.update(|cx| view.read(cx).scene.get(id).map(|panel| panel.title.clone()));
+        if now.as_deref() == Some(title) {
+            return;
+        }
+        if started.elapsed() > SMOKE_FRAME_TIMEOUT {
+            smoke_fail(&format!("plugin menus: want title {title:?}, got {now:?}"));
+        }
+    }
+}
+
+/// Plugin menu items: both fixture items are in the built menus, the panel item only for
+/// the plugin's own panels. The canvas item runs through the real menu choice path with no
+/// panel open, so CALM opens one at the click point and delivers after load; the panel
+/// item then reuses that panel.
+async fn smoke_plugin_menus(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::plugin_menu::item_menu_id;
+    let fixtures = match tempfile::Builder::new()
+        .prefix("calm-smoke-menus-")
+        .tempdir()
+    {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("plugin menus temp dir: {err}")),
+    };
+    let id = "smoke-menus";
+    if let Err(err) = write_smoke_plugin(
+        fixtures.path(),
+        id,
+        SMOKE_MENUS_HTML,
+        SMOKE_MENUS_CONTRIBUTES,
+    ) {
+        smoke_fail(&format!("plugin fixture {id}: {err}"));
+    }
+    let discovery = calm_plugins::discover(&[fixtures.path().to_path_buf()]);
+    if discovery.plugins.len() != 1 || !discovery.errors.is_empty() {
+        smoke_fail(&format!(
+            "plugin menus fixture not discovered: {:?}",
+            discovery.errors
+        ));
+    }
+    let ping = item_menu_id(id, "ping");
+    let pong = item_menu_id(id, "pong");
+    let invoked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.install_plugins(discovery.plugins);
+            // Near the top-left corner, so the new page is on screen and live.
+            let world = view.scene.camera.screen_to_world(Point::new(40.0, 40.0));
+            let canvas = menu_ids(view.canvas_menu());
+            if !canvas.contains(&ping) || canvas.contains(&pong) {
+                return Err(format!("canvas menu: {canvas:?}"));
+            }
+            let other = view.scene.panels.first().map(|panel| panel.id);
+            let other_ids = other
+                .and_then(|panel| view.panel_menu(panel))
+                .unwrap_or_default();
+            if menu_ids(other_ids).contains(&pong) {
+                return Err("pong shown on a panel of another kind".to_string());
+            }
+            let before = view.scene.panels.len();
+            view.apply_menu_choice(&ping, canvas_view::MenuTarget::Canvas { world }, window, cx);
+            let opened: Vec<_> = view
+                .scene
+                .panels
+                .iter()
+                .filter(|panel| calm_core::plugin_menu::plugin_of(&panel.kind) == Some(id))
+                .map(|panel| (panel.id, panel.rect.origin))
+                .collect();
+            match opened[..] {
+                [(panel, origin)] if view.scene.panels.len() == before + 1 => {
+                    Ok((panel, origin, world))
+                }
+                _ => Err(format!("canvas item opened {opened:?}")),
+            }
+        })
+    });
+    let (panel, origin, world) = match invoked {
+        Ok(Ok(found)) => found,
+        Ok(Err(err)) => smoke_fail(&format!("plugin menus: {err}")),
+        Err(err) => smoke_fail(&format!("plugin menus: {err:#}")),
+    };
+    if (origin.x - world.x).abs() > 8.0 || (origin.y - world.y).abs() > 8.0 {
+        smoke_fail(&format!(
+            "plugin menus: panel at {origin:?}, clicked {world:?}"
+        ));
+    }
+    wait_for_title(view, panel, "cmd:ping:canvas:none:world", cx).await;
+
+    let invoked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let items = menu_ids(view.panel_menu(panel).unwrap_or_default());
+            // The canvas menu held ping (checked above); the panel menu must hold pong.
+            let count = 1 + usize::from(items.contains(&pong));
+            if !items.contains(&pong) {
+                return Err(format!("panel menu: {items:?}"));
+            }
+            let before = view.scene.panels.len();
+            view.apply_menu_choice(&pong, canvas_view::MenuTarget::Panel(panel), window, cx);
+            if view.scene.panels.len() != before {
+                return Err("panel item opened a panel instead of reusing it".to_string());
+            }
+            Ok(count)
+        })
+    });
+    let items = match invoked {
+        Ok(Ok(count)) => count,
+        Ok(Err(err)) => smoke_fail(&format!("plugin menus: {err}")),
+        Err(err) => smoke_fail(&format!("plugin menus: {err:#}")),
+    };
+    wait_for_title(
+        view,
+        panel,
+        &format!("cmd:pong:panel:{}:noworld", panel.0),
+        cx,
+    )
+    .await;
+    println!("smoke: plugin menus items={items} invoked=ok");
+    if let Err(err) = fixtures.close() {
+        eprintln!("smoke: could not remove the plugin menus temp dir: {err}");
     }
 }
 

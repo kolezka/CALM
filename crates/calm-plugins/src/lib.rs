@@ -2,6 +2,7 @@
 
 pub mod assets;
 pub mod bridge;
+pub mod contributes;
 pub mod github;
 pub mod manifest;
 pub mod tui;

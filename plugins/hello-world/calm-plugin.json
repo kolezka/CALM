@@ -3,5 +3,15 @@
   "name": "Hello World",
   "version": "0.1.0",
   "entry": "index.html",
-  "defaultSize": { "width": 320, "height": 200 }
+  "defaultSize": { "width": 320, "height": 200 },
+  "contributes": {
+    "menus": [
+      {
+        "id": "wave",
+        "title": "Say hello",
+        "location": "panel",
+        "when": { "plugin": ["hello-world"] }
+      }
+    ]
+  }
 }
