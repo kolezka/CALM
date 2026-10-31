@@ -139,6 +139,43 @@ mod tests {
     }
 
     #[test]
+    fn fit_one_rect_centers_and_fills_the_tighter_axis() {
+        let mut camera = Camera::default();
+        let world = Rect::new(100.0, 200.0, 400.0, 100.0);
+        camera.fit(Some(world), Size::new(1000.0, 800.0), 50.0);
+        // Width limits: (1000 - 100) / 400 = 2.25.
+        assert!((camera.zoom - 2.25).abs() < 1e-9);
+        assert_close(
+            camera.world_to_screen(Point::new(300.0, 250.0)),
+            Point::new(500.0, 400.0),
+        );
+        let screen = camera.world_rect_to_screen(world);
+        assert!((screen.origin.x - 50.0).abs() < 1e-9);
+        assert!(screen.origin.y > 50.0);
+    }
+
+    #[test]
+    fn fit_one_rect_clamps_zoom_for_tiny_and_huge_rects() {
+        let mut camera = Camera::default();
+        camera.fit(
+            Some(Rect::new(0.0, 0.0, 10.0, 10.0)),
+            Size::new(1000.0, 800.0),
+            40.0,
+        );
+        assert_eq!(camera.zoom, MAX_ZOOM);
+        assert_close(
+            camera.world_to_screen(Point::new(5.0, 5.0)),
+            Point::new(500.0, 400.0),
+        );
+        camera.fit(
+            Some(Rect::new(0.0, 0.0, 100_000.0, 100.0)),
+            Size::new(1000.0, 800.0),
+            40.0,
+        );
+        assert_eq!(camera.zoom, MIN_ZOOM);
+    }
+
+    #[test]
     fn zoom_clamps_to_bounds() {
         let mut camera = Camera::default();
         camera.zoom_by(100.0, Point::new(0.0, 0.0));

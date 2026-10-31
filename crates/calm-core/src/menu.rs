@@ -1,7 +1,7 @@
 //! Context menu contents and what each item does. The app shows them as a native menu.
 
 use crate::geometry::{Point, Rect, Size};
-use crate::scene::PanelKind;
+use crate::scene::{Panel, PanelKind};
 
 pub const DEFAULT_TERMINAL_SIZE: Size = Size::new(640.0, 400.0);
 pub const DEFAULT_BROWSER_SIZE: Size = Size::new(800.0, 600.0);
@@ -10,7 +10,12 @@ pub const ADD_TERMINAL: &str = "add.terminal";
 pub const ADD_BROWSER: &str = "add.browser";
 pub const ADD_PLUGIN_PREFIX: &str = "add.plugin.";
 pub const PANEL_MINIMIZE: &str = "panel.minimize";
-pub const PANEL_CLOSE: &str = "panel.close";
+pub const PANEL_ZOOM_TO_FIT: &str = "panel.zoom_to_fit";
+pub const PANEL_BRING_TO_FRONT: &str = "panel.bring_to_front";
+pub const PANEL_SEND_TO_BACK: &str = "panel.send_to_back";
+pub const PANEL_DUPLICATE: &str = "panel.duplicate";
+/// Goes through the same confirmed close as every other close.
+pub const PANEL_DELETE: &str = "panel.delete";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MenuItem {
@@ -23,7 +28,11 @@ pub enum MenuItem {
 pub enum MenuCommand {
     AddPanel { kind: PanelKind, rect: Rect },
     Minimize,
-    Close,
+    ZoomToFit,
+    BringToFront,
+    SendToBack,
+    Duplicate,
+    Delete,
 }
 
 fn action(id: &str, label: &str) -> MenuItem {
@@ -51,14 +60,29 @@ pub fn canvas_menu(plugins: &[(String, String)]) -> Vec<MenuItem> {
     }]
 }
 
-/// Right click on a panel's chrome strip.
-pub fn panel_menu(minimized: bool) -> Vec<MenuItem> {
-    let minimize = if minimized { "Restore" } else { "Minimize" };
-    vec![
-        action(PANEL_MINIMIZE, minimize),
+/// Right click on a panel's chrome strip or minimized chip.
+/// Zoom to Fit needs the full panel, so a minimized panel omits it. Duplicate is offered
+/// for terminals only: browser and plugin panels have no native view in the app yet.
+pub fn panel_menu(panel: &Panel) -> Vec<MenuItem> {
+    let minimize = if panel.minimized {
+        "Restore"
+    } else {
+        "Minimize"
+    };
+    let mut items = vec![action(PANEL_MINIMIZE, minimize)];
+    if !panel.minimized {
+        items.push(action(PANEL_ZOOM_TO_FIT, "Zoom to Fit"));
+    }
+    items.extend([
         MenuItem::Separator,
-        action(PANEL_CLOSE, "Close"),
-    ]
+        action(PANEL_BRING_TO_FRONT, "Bring to Front"),
+        action(PANEL_SEND_TO_BACK, "Send to Back"),
+    ]);
+    if matches!(panel.kind, PanelKind::Terminal { .. }) {
+        items.extend([MenuItem::Separator, action(PANEL_DUPLICATE, "Duplicate")]);
+    }
+    items.extend([MenuItem::Separator, action(PANEL_DELETE, "Delete")]);
+    items
 }
 
 /// Maps a chosen id to a command. A new panel's origin is the right-click point `world`.
@@ -88,7 +112,11 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
             DEFAULT_BROWSER_SIZE,
         ),
         PANEL_MINIMIZE => Some(MenuCommand::Minimize),
-        PANEL_CLOSE => Some(MenuCommand::Close),
+        PANEL_ZOOM_TO_FIT => Some(MenuCommand::ZoomToFit),
+        PANEL_BRING_TO_FRONT => Some(MenuCommand::BringToFront),
+        PANEL_SEND_TO_BACK => Some(MenuCommand::SendToBack),
+        PANEL_DUPLICATE => Some(MenuCommand::Duplicate),
+        PANEL_DELETE => Some(MenuCommand::Delete),
         _ => {
             let plugin_id = id.strip_prefix(ADD_PLUGIN_PREFIX)?;
             let (_, size) = plugin_sizes.iter().find(|(known, _)| known == plugin_id)?;
@@ -184,25 +212,85 @@ mod tests {
         assert_eq!(menu_action("add.plugin.missing", world, &sizes), None);
     }
 
+    fn panel(kind: PanelKind, minimized: bool) -> Panel {
+        Panel {
+            id: crate::scene::PanelId(1),
+            kind,
+            rect: Rect::new(0.0, 0.0, 400.0, 300.0),
+            title: "Terminal".to_string(),
+            minimized,
+        }
+    }
+
+    fn terminal_kind() -> PanelKind {
+        PanelKind::Terminal {
+            command: None,
+            cwd: None,
+        }
+    }
+
     #[test]
-    fn panel_menu_labels_restore_when_minimized() {
+    fn panel_menu_for_terminal_lists_all_actions_with_delete_last() {
         assert_eq!(
-            panel_menu(false),
+            panel_menu(&panel(terminal_kind(), false)),
             vec![
                 action("panel.minimize", "Minimize"),
+                action("panel.zoom_to_fit", "Zoom to Fit"),
                 MenuItem::Separator,
-                action("panel.close", "Close"),
+                action("panel.bring_to_front", "Bring to Front"),
+                action("panel.send_to_back", "Send to Back"),
+                MenuItem::Separator,
+                action("panel.duplicate", "Duplicate"),
+                MenuItem::Separator,
+                action("panel.delete", "Delete"),
             ]
         );
-        assert_eq!(panel_menu(true)[0], action("panel.minimize", "Restore"));
+    }
+
+    #[test]
+    fn panel_menu_minimized_says_restore_and_drops_zoom_to_fit() {
+        let items = panel_menu(&panel(terminal_kind(), true));
+        assert_eq!(items[0], action("panel.minimize", "Restore"));
+        assert!(!items.contains(&action("panel.zoom_to_fit", "Zoom to Fit")));
+        assert_eq!(items.last(), Some(&action("panel.delete", "Delete")));
+    }
+
+    #[test]
+    fn panel_menu_offers_duplicate_only_for_terminals() {
+        let browser = PanelKind::Browser {
+            url: "about:blank".to_string(),
+        };
+        let items = panel_menu(&panel(browser, false));
+        assert!(!items.contains(&action("panel.duplicate", "Duplicate")));
+        assert_eq!(items.last(), Some(&action("panel.delete", "Delete")));
+        // No two separators in a row once Duplicate is gone.
+        assert!(
+            !items
+                .windows(2)
+                .any(|pair| pair == [MenuItem::Separator, MenuItem::Separator])
+        );
+    }
+
+    #[test]
+    fn every_panel_menu_id_maps_to_its_command() {
         let world = Point::new(0.0, 0.0);
-        assert_eq!(
-            menu_action("panel.minimize", world, &[]),
-            Some(MenuCommand::Minimize)
-        );
-        assert_eq!(
-            menu_action("panel.close", world, &[]),
-            Some(MenuCommand::Close)
-        );
+        let cases = [
+            ("panel.minimize", MenuCommand::Minimize),
+            ("panel.zoom_to_fit", MenuCommand::ZoomToFit),
+            ("panel.bring_to_front", MenuCommand::BringToFront),
+            ("panel.send_to_back", MenuCommand::SendToBack),
+            ("panel.duplicate", MenuCommand::Duplicate),
+            ("panel.delete", MenuCommand::Delete),
+        ];
+        for (id, command) in cases {
+            assert_eq!(menu_action(id, world, &[]), Some(command), "{id}");
+        }
+        // Every id the menu can show has a command, so no item is a dead click.
+        for item in panel_menu(&panel(terminal_kind(), false)) {
+            if let MenuItem::Action { id, .. } = item {
+                assert!(menu_action(&id, world, &[]).is_some(), "{id}");
+            }
+        }
+        assert_eq!(menu_action("panel.close", world, &[]), None);
     }
 }

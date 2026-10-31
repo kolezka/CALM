@@ -1,7 +1,7 @@
 # Status
 
-Last updated: 2026-10-31. `main` at the repo-intel config commit after the `.ai/` folder
-(0236d0c). Facts are verified unless marked otherwise.
+Last updated: 2026-10-31. `main` with PR #1 (recenter) and PR #2 (panel menu actions)
+merged. Facts are verified unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -22,6 +22,18 @@ Last updated: 2026-10-31. `main` at the repo-intel config commit after the `.ai/
   files and the plist template excluded). 55 code files, 16 docs, 1247 nodes, 2472 edges.
   `AGENTS.md` carries the routing block, imported from `CLAUDE.md`. A git post-commit hook
   rebuilds it in the background.
+- Camera jumps (PR #1): `cmd-shift-h` centers the world origin at the current zoom,
+  `cmd-shift-0` fits all panels (32 px margin, zoom clamped, empty canvas centers the
+  origin), both in a View menu. One `Camera::fit` serves fit all and the panel Zoom to Fit.
+- Panel context menu (PR #2) on the title strip or a minimized chip: Minimize or Restore, Zoom to
+  Fit (hidden while minimized), Bring to Front, Send to Back, Duplicate (terminals only, a
+  new terminal of the same size 32 units down and right, fresh process), Delete.
+- Delete uses the normal close path: a live terminal shows the close confirmation unless
+  `confirm_close` is off in settings.
+- Right click on a live Ghostty view goes to Ghostty, not to CALM, so the menu opens only
+  from the title strip and the chip. Right click on content in preview mode does nothing.
+- Rename is not offered: it needs a native text input, which does not exist yet.
+- Manual GUI pass of each panel menu action is pending.
 
 ## Verified on hardware
 
@@ -44,11 +56,8 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 - Manual GUI pass: mouse selection at zoom 1.0 and 1.7, cmd-v paste, Polish letters through
   the input method, panel resize reflow, Enter to confirm close, pinch feel, `htop`.
-- Camera jumps on branch `feat/recenter` (not merged): `cmd-shift-h` centers the world
-  origin at the current zoom, `cmd-shift-0` fits all panels (32 px margin, zoom clamped,
-  empty canvas centers the origin), both in a new View menu. Math is unit tested in
-  `calm-core`; key delivery with a terminal focused, the `cmd-shift-0` match and the menu
-  shortcuts are untested in the GUI.
+- Camera jumps: math is unit tested in `calm-core`; key delivery with a terminal focused,
+  the `cmd-shift-0` match and the View menu shortcuts are untested in the GUI.
 - Performance with 20 terminals.
 - A real Release run on the runner (dry run not yet triggered) and the hosted macOS CI
   steps.
@@ -57,6 +66,8 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 - `docs/dev-setup.md` lists `--layout work` and `--bench 20` as run commands; neither flag
   exists yet.
+- Smoke fails on `main` (7d53cbb and later) under heavy load (load average 17 to 40) with
+  only `preview_snapshots_in_3s=[0,0]`; every other smoke line passes. Cause unconfirmed.
 - Escape on the close confirmation does not trigger a redraw until the next event.
 - A transitive `block 0.1.6` future-incompatibility warning from a dependency.
 - repo-intel 0.1.8 prints `tmp: nieustawiona zmienna` on its error path (for example after
