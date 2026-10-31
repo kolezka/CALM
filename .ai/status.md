@@ -170,6 +170,21 @@ Pull requests:
   `browser_query`) with a Session section in the Settings form. Nothing calls the session
   writer yet: autosave is Task 4, restore Task 5. Lowering `backup_count` leaves older
   backups above the new count in place.
+- Autosave (persistence plan Task 4, `feat/session-autosave`, not on `main`): built but not
+  active. `calm_core::autosave` holds `AutosaveClock` (quiet `session.debounce_ms`, max
+  dirty age 10 s), `SaveQueue` (one write in flight, the latest snapshot waiting) and
+  `OrderedWriter` (a write older than the file on disk is skipped, so a late background
+  write never replaces the quit write). `Scene` has a revision: every `Scene` mutator and
+  every `get_mut` bump it, and `sync_revision` counts direct camera writes. `CanvasView`
+  ticks it on each render and on a timer, writes on the background executor, shows a failed
+  write in the status pill and on stderr, and retries on the next change. A launch read
+  that fails (I/O or malformed) turns autosave off for that launch. `APP_AUTOSAVE_ACTIVE`
+  stays `false` until Task 5 adds restore, because a first change on the empty start canvas
+  would otherwise replace the last session. Only the smoke runs autosave, in its temp dir.
+  New plugin and TUI panels from the Add menu and plugin menu items now carry the
+  installed manifest `plugin_version`. Unverified: whether `on_app_quit` fires on cmd-q and
+  on every quit path (the smoke calls the quit save directly, not through a real quit), and
+  the manual "drag writes `session.json` about 1 s later" check, which needs the gate on.
 - `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
