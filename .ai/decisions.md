@@ -41,12 +41,41 @@ one means a new entry, not an edit.
 - **Default snap grid is 8 world units, not the requested 3 pixels.** Terminal cells are
   about 8 px wide at zoom 1, so 3 is not a cell multiple. Edge snap within 8, `alt`
   disables. One constant to change if the user wants finer.
+- **Settings live in a separate native NSWindow, not a GPUI modal.** Option (a) of two:
+  a GPUI modal would have to hide every live native view while open, and GPUI has no color
+  picker, slider or file dialog. A separate AppKit window never shares a rect with Ghostty
+  or WKWebView, terminals stay live while it is open, and `NSColorWell` and `NSOpenPanel`
+  come free. The form is data (`calm_core::settings_form`), so `calm-native` stays a
+  generic renderer and the logic is unit tested. Cost: about 300 lines of objc2 with
+  manual frame layout, and the window looks like AppKit, not like the GPUI canvas.
+- **Backgrounds render once per change, off the UI thread, into a cached texture.**
+  Gradients raster at most 512 px on the long edge and the GPU scales them up; images are
+  capped at 2048 px, then blur (`fast_blur`), color filters and tile repetition run once.
+  Paint draws one image (or a few tiles of at least 256 px). The image is read from its
+  path and not copied: a moved file shows an error in Settings and the fill color.
+- **Settings version 2 migrates version 1 and fails loud.** A version 1 preset becomes
+  its exact solid color. A malformed, out of range or unknown-version file is an error
+  from `load_settings_from`, never quiet defaults; at startup the app reports it, moves
+  the file to `settings.json.invalid-<n>` so the next save cannot overwrite it, uses
+  defaults and shows a notice at the top of the Settings window.
 - **Invalid layout files fail loudly.** Malformed JSON or out-of-range values are
   `LayoutError::Malformed` with path and field; tiny rects are clamped to the minimum size.
 - **Plugin entry must be a regular file under the canonical plugin directory.** Symlinked
   entries outside the folder are refused.
 - **SDK includes `canvas.createPanel` and `process.exec`.** Plugins are trusted and the
   user wants agents to spawn terminals. Documented as trusted-only.
+- **Status bar is a native translucent pill at the bottom; no top strip.** The GPUI
+  status strip on top is gone. Zoom, FPS and the save flash live in a centered,
+  rounded `NSVisualEffectView` (`calm_native::StatusBar`, material Popover, blending
+  WithinWindow) floating 14 pt above the canvas bottom. It is native because terminals
+  draw above GPUI, so a GPUI bar would be hidden by any panel passing under it. It stays
+  the topmost sibling: `ensure_front` runs after every native restack, and the smoke
+  fails if a panel ends up above it. Rect math is `calm_core::status_bar`. The window
+  title bar is transparent with a hidden title (`TitlebarOptions::appears_transparent`),
+  so the canvas fills the window and the traffic lights float over it. Rejected: a GPUI
+  bar with native views clipped above it, which keeps a hard edge where terminals end.
+  Cost if wrong: canvas clicks in the top 28 pt strip drag the window instead (native
+  title bar drag), and clicks on the bar fall through to the canvas.
 
 ## Process
 

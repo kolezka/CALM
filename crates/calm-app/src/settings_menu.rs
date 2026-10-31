@@ -1,15 +1,17 @@
-//! The Settings menu bar menu, its actions and the canvas grid.
+//! The Settings menu bar menu, the Settings window glue and the canvas grid.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use calm_core::camera::Camera;
 use calm_core::geometry::Point;
-use calm_core::settings::{
-    BackgroundPreset, Settings, grid_dot_rgb, grid_line_offsets, save_settings_to,
+use calm_core::settings::{GridSettings, Settings, grid_line_offsets, save_settings_to};
+use calm_core::settings_form::{
+    FieldValue, FormCommand, FormContext, FormOutcome, apply_field, settings_form,
 };
+use calm_native::{SettingsWindow, choose_image_file};
 use gpui::{
-    Action, App, Bounds, Context, InteractiveElement, Menu, MenuItem, Pixels, Window, actions,
-    fill, point, px, rgb, size,
+    App, AppContext as _, Bounds, Context, InteractiveElement, KeyBinding, Menu, MenuItem, Pixels,
+    Window, WindowHandle, actions, fill, point, px, rgba, size,
 };
 use gpui_libghostty::{TerminalConfiguration, TerminalOptions};
 
@@ -18,19 +20,8 @@ use crate::dev_menu;
 
 actions!(
     calm,
-    [
-        ToggleGrid,
-        ToggleConfirmClose,
-        ToggleTerminalUserConfig,
-        OpenConfigFolder,
-        ResetSettings
-    ]
+    [OpenSettings, ToggleGrid, OpenConfigFolder, ResetSettings]
 );
-
-/// Menu items carry the preset, so no JSON form is needed.
-#[derive(Clone, Debug, PartialEq, Action)]
-#[action(namespace = calm, no_json)]
-pub struct SetBackground(pub BackgroundPreset);
 
 const GRID_LINE_PX: f32 = 1.0;
 
@@ -38,31 +29,39 @@ const GRID_LINE_PX: f32 = 1.0;
 pub struct SettingsState {
     pub settings: Settings,
     pub path: PathBuf,
+    /// Shown at the top of the Settings window, such as a rejected file that was set aside.
+    pub notice: Option<String>,
+}
+
+pub fn key_bindings() -> Vec<KeyBinding> {
+    // No context, so it also works while a terminal has focus.
+    vec![KeyBinding::new("cmd-,", OpenSettings, None)]
 }
 
 /// Every menu bar menu, so the Developer and Settings menus are always set together.
+/// The app menu gets the standard "Settings…" item first, as macOS apps have it.
 pub fn menus(show_fps: bool, settings: &Settings) -> Vec<Menu> {
     let mut menus = dev_menu::menus(show_fps);
+    if let Some(app_menu) = menus.first_mut() {
+        app_menu.items.splice(
+            0..0,
+            [
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+            ],
+        );
+    }
     menus.push(settings_menu(settings));
     menus
 }
 
+/// GPUI turns every top-level `Menu` into a menu bar item with a submenu, so "Settings"
+/// cannot be a direct opener. Its first item opens the window instead.
 fn settings_menu(settings: &Settings) -> Menu {
-    let backgrounds = BackgroundPreset::all().iter().map(|preset| {
-        MenuItem::action(preset.label(), SetBackground(*preset))
-            .checked(*preset == settings.background)
-    });
     Menu::new("Settings").items([
-        MenuItem::submenu(Menu::new("Background").items(backgrounds)),
-        MenuItem::action("Show Grid", ToggleGrid).checked(settings.show_grid),
-        MenuItem::action("Confirm Before Closing Panels", ToggleConfirmClose)
-            .checked(settings.confirm_close),
-        MenuItem::action(
-            "Terminal Uses Ghostty User Config",
-            ToggleTerminalUserConfig,
-        )
-        .checked(settings.terminal_user_config),
+        MenuItem::action("Open Settings…", OpenSettings),
         MenuItem::separator(),
+        MenuItem::action("Show Grid", ToggleGrid).checked(settings.grid.show),
         MenuItem::action("Open Config Folder", OpenConfigFolder),
         MenuItem::action("Reset to Defaults", ResetSettings),
     ])
@@ -72,30 +71,38 @@ pub fn install(cx: &mut App, settings: &Settings) {
     cx.set_menus(menus(false, settings));
 }
 
+/// One global handler for `OpenSettings`, used by `cmd-,` and both menu items. Global, so
+/// it stays available while the Settings window, which is not a GPUI window, is key.
+pub fn install_open_handler(cx: &mut App, canvas: WindowHandle<CanvasView>) {
+    cx.on_action(move |_: &OpenSettings, cx| {
+        canvas
+            .update(cx, |view, window, cx| view.open_settings(window, cx))
+            .ok();
+    });
+}
+
+/// The window in `slot`, created by `create` only when there is none yet. Keeps every
+/// entry point on one Settings window.
+fn get_or_create<T, E>(
+    slot: &mut Option<T>,
+    create: impl FnOnce() -> Result<T, E>,
+) -> Result<&T, E> {
+    if slot.is_none() {
+        *slot = Some(create()?);
+    }
+    Ok(slot.as_ref().expect("filled above"))
+}
+
 /// Attaches the Settings action handlers to the canvas root element.
 pub fn bind<E: InteractiveElement>(element: E, cx: &mut Context<CanvasView>) -> E {
     element
-        .on_action(cx.listener(|view, action: &SetBackground, window, cx| {
-            let preset = action.0;
-            view.update_settings(|s| s.background = preset, window, cx);
-        }))
         .on_action(cx.listener(|view, _: &ToggleGrid, window, cx| {
-            view.update_settings(|s| s.show_grid = !s.show_grid, window, cx);
+            view.update_settings(|s| s.grid.show = !s.grid.show, window, cx);
+            view.refresh_settings_form();
         }))
-        .on_action(cx.listener(|view, _: &ToggleConfirmClose, window, cx| {
-            view.update_settings(|s| s.confirm_close = !s.confirm_close, window, cx);
-        }))
-        .on_action(
-            cx.listener(|view, _: &ToggleTerminalUserConfig, window, cx| {
-                view.update_settings(
-                    |s| s.terminal_user_config = !s.terminal_user_config,
-                    window,
-                    cx,
-                );
-            }),
-        )
         .on_action(cx.listener(|view, _: &ResetSettings, window, cx| {
             view.update_settings(|s| *s = Settings::default(), window, cx);
+            view.refresh_settings_form();
         }))
         .on_action(cx.listener(|view, _: &OpenConfigFolder, _, _| {
             open_config_folder(&view.settings.path);
@@ -114,14 +121,123 @@ impl CanvasView {
         if let Err(err) = save_settings_to(&self.settings.path, &self.settings.settings) {
             eprintln!("calm: {err}");
         }
-        let (show_fps, settings) = (self.show_fps, self.settings.settings);
+        self.apply_settings_to_input();
+        let show_fps = self.show_fps;
+        let settings = self.settings.settings.clone();
         cx.defer(move |cx| cx.set_menus(menus(show_fps, &settings)));
         window.refresh();
         cx.notify();
     }
+
+    pub fn form_context(&self) -> FormContext {
+        FormContext {
+            show_fps: self.show_fps,
+            settings_path: self.settings.path.display().to_string(),
+            notice: self.settings.notice.clone(),
+            image_error: self.background.error.clone(),
+        }
+    }
+
+    /// Opens the Settings window, creating it on first use. When it is already open it is
+    /// brought to the front; a second window is never made.
+    pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let created = get_or_create(&mut self.settings_window, || {
+            let this = cx.entity().downgrade();
+            let handle = window.window_handle();
+            let async_cx = cx.to_async();
+            let executor = cx.foreground_executor().clone();
+            // AppKit calls this inside the control's action. Hop onto GPUI's executor so
+            // the view is never updated while GPUI itself is mid-update.
+            SettingsWindow::new(move |id, value| {
+                let this = this.clone();
+                let mut cx = async_cx.clone();
+                executor
+                    .spawn(async move {
+                        cx.update_window(handle, |_, window, cx| {
+                            this.update(cx, |view, cx| {
+                                view.settings_field_changed(&id, value, window, cx);
+                            })
+                        })
+                        .ok();
+                    })
+                    .detach();
+            })
+        });
+        if let Err(err) = created {
+            eprintln!("calm: settings window unavailable: {err}");
+            return;
+        }
+        self.refresh_settings_form();
+        if let Some(settings_window) = &self.settings_window {
+            settings_window.show();
+        }
+    }
+
+    /// Rebuilds the controls from the current state. A no-op until the window exists.
+    pub fn refresh_settings_form(&self) {
+        if let Some(settings_window) = &self.settings_window {
+            settings_window.set_form(&settings_form(
+                &self.settings.settings,
+                &self.form_context(),
+            ));
+        }
+    }
+
+    fn settings_field_changed(
+        &mut self,
+        id: &str,
+        value: FieldValue,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut next = self.settings.settings.clone();
+        match apply_field(&mut next, id, value) {
+            Ok(FormOutcome::Changed { rebuild }) => {
+                self.update_settings(|s| *s = next, window, cx);
+                if rebuild {
+                    self.refresh_settings_form();
+                }
+            }
+            Ok(FormOutcome::Command(FormCommand::SetShowFps(show))) => {
+                self.set_show_fps(show, window, cx);
+            }
+            Ok(FormOutcome::Command(FormCommand::OpenConfigFolder)) => {
+                open_config_folder(&self.settings.path);
+            }
+            Ok(FormOutcome::Command(FormCommand::ChooseImage)) => {
+                // The open panel runs its own modal loop, so it runs outside this update.
+                cx.spawn_in(window, async move |this, cx| {
+                    let chosen = match choose_image_file() {
+                        Ok(chosen) => chosen,
+                        Err(err) => {
+                            eprintln!("calm: image chooser unavailable: {err}");
+                            return;
+                        }
+                    };
+                    let Some(path) = chosen else { return };
+                    this.update_in(cx, |view, window, cx| {
+                        view.background.error = None;
+                        view.update_settings(
+                            |s| {
+                                s.background.image.path = Some(path);
+                                s.background.kind = calm_core::background::BackgroundKind::Image;
+                            },
+                            window,
+                            cx,
+                        );
+                        view.refresh_settings_form();
+                    })
+                    .ok();
+                })
+                .detach();
+            }
+            // The form and `apply_field` disagree: a bug, so say so instead of guessing.
+            Err(err) => eprintln!("calm: settings window: {err}"),
+        }
+    }
 }
 
-fn open_config_folder(settings_path: &std::path::Path) {
+fn open_config_folder(settings_path: &Path) {
     let Some(dir) = settings_path.parent().map(PathBuf::from) else {
         eprintln!(
             "calm: settings path {} has no folder",
@@ -148,31 +264,106 @@ fn open_config_folder(settings_path: &std::path::Path) {
 
 /// Without the user config Ghostty uses its built-in defaults.
 pub fn apply_terminal_config(options: &mut TerminalOptions, settings: &Settings) {
-    if !settings.terminal_user_config {
+    if !settings.panels.terminal_user_config {
         options.configuration = TerminalConfiguration::Default;
     }
 }
 
-/// Lines every `GRID_STEP_WORLD` world units inside `bounds`. Paint it before panels.
+/// Lines every `grid.spacing` world units inside `bounds`. Paint it before panels.
 /// One quad per line: a quad per dot cost about 11 ms a frame at zoom 0.4 in a debug build
 /// and starved preview refresh.
-pub fn paint_grid(bounds: Bounds<Pixels>, camera: &Camera, background: u32, window: &mut Window) {
+pub fn paint_grid(
+    bounds: Bounds<Pixels>,
+    camera: &Camera,
+    grid: &GridSettings,
+    window: &mut Window,
+) {
     let width = f64::from(f32::from(bounds.size.width));
     let height = f64::from(f32::from(bounds.size.height));
     let zero = camera.world_to_screen(Point::new(0.0, 0.0));
-    let color = rgb(grid_dot_rgb(background));
-    for x in grid_line_offsets(zero.x, camera.zoom, width) {
+    let color = rgba(grid.line_rgba());
+    for x in grid_line_offsets(zero.x, grid.spacing, camera.zoom, width) {
         let line = Bounds {
             origin: point(bounds.origin.x + px(x as f32), bounds.origin.y),
             size: size(px(GRID_LINE_PX), bounds.size.height),
         };
         window.paint_quad(fill(line, color));
     }
-    for y in grid_line_offsets(zero.y, camera.zoom, height) {
+    for y in grid_line_offsets(zero.y, grid.spacing, camera.zoom, height) {
         let line = Bounds {
             origin: point(bounds.origin.x, bounds.origin.y + px(y as f32)),
             size: size(bounds.size.width, px(GRID_LINE_PX)),
         };
         window.paint_quad(fill(line, color));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_or_create_makes_one_window_and_reuses_it() {
+        let mut slot: Option<u32> = None;
+        let mut created = 0;
+        let mut open = |slot: &mut Option<u32>| {
+            get_or_create(slot, || {
+                created += 1;
+                Ok::<u32, String>(created)
+            })
+            .copied()
+        };
+        assert_eq!(open(&mut slot), Ok(1));
+        assert_eq!(open(&mut slot), Ok(1));
+        assert_eq!(open(&mut slot), Ok(1));
+        assert_eq!(created, 1);
+    }
+
+    #[test]
+    fn get_or_create_retries_after_a_failed_create() {
+        let mut slot: Option<u32> = None;
+        assert_eq!(
+            get_or_create(&mut slot, || Err("no main thread")),
+            Err("no main thread")
+        );
+        assert!(slot.is_none());
+        assert_eq!(
+            get_or_create(&mut slot, || Ok::<u32, &str>(7)).copied(),
+            Ok(7)
+        );
+    }
+
+    #[test]
+    fn every_menu_entry_opens_settings_through_one_action() {
+        let menus = menus(false, &Settings::default());
+        let openers: Vec<(String, String)> = menus
+            .iter()
+            .flat_map(|menu| {
+                menu.items.iter().filter_map(move |item| match item {
+                    MenuItem::Action { name, action, .. } if action.partial_eq(&OpenSettings) => {
+                        Some((menu.name.to_string(), name.to_string()))
+                    }
+                    _ => None,
+                })
+            })
+            .collect();
+        assert_eq!(
+            openers,
+            vec![
+                (menus[0].name.to_string(), "Settings…".to_string()),
+                ("Settings".to_string(), "Open Settings…".to_string()),
+            ]
+        );
+        // The app menu item comes first, as on every macOS app.
+        assert!(matches!(&menus[0].items[0], MenuItem::Action { name, .. } if name == "Settings…"));
+        assert!(
+            matches!(&menus.last().unwrap().items[0], MenuItem::Action { name, .. } if name == "Open Settings…")
+        );
+        assert!(
+            key_bindings()
+                .iter()
+                .any(|binding| binding.action().partial_eq(&OpenSettings)),
+            "cmd-, must dispatch the same action"
+        );
     }
 }

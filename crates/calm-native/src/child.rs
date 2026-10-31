@@ -4,7 +4,7 @@ use std::ptr::NonNull;
 use calm_core::geometry::{Rect, Size};
 use calm_core::viewport::NativePlacement;
 use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2::{MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{NSView, NSWindowOrderingMode};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{
@@ -52,6 +52,25 @@ pub(crate) fn ns_rect(rect: Rect) -> NSRect {
     )
 }
 
+/// The view behind `window`'s AppKit handle, which native panels and the status bar join.
+pub(crate) fn host_view(
+    window: &impl HasWindowHandle,
+) -> Result<(Retained<NSView>, MainThreadMarker), NativeError> {
+    let mtm = MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
+    let handle = window
+        .window_handle()
+        .map_err(|err| NativeError::UnsupportedWindowHandle(err.to_string()))?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return Err(NativeError::UnsupportedWindowHandle(
+            "not an AppKit handle".to_string(),
+        ));
+    };
+    // SAFETY: an AppKit window handle's ns_view is a live NSView for as long as the handle
+    // is borrowed, and we are on the main thread.
+    let parent: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+    Ok((parent.retain(), mtm))
+}
+
 fn plain_layer_view(mtm: MainThreadMarker) -> Retained<NSView> {
     let zero = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0));
     let view = NSView::initWithFrame(NSView::alloc(mtm), zero);
@@ -70,19 +89,7 @@ pub struct NativeChild {
 impl NativeChild {
     /// Adds a hidden clip view to the view behind `window`'s AppKit handle.
     pub fn new(window: &impl HasWindowHandle) -> Result<NativeChild, NativeError> {
-        let mtm = MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
-        let handle = window
-            .window_handle()
-            .map_err(|err| NativeError::UnsupportedWindowHandle(err.to_string()))?;
-        let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-            return Err(NativeError::UnsupportedWindowHandle(
-                "not an AppKit handle".to_string(),
-            ));
-        };
-        // SAFETY: an AppKit window handle's ns_view is a live NSView for as long as the handle
-        // is borrowed, and we are on the main thread.
-        let parent: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
-
+        let (parent, mtm) = host_view(window)?;
         let clip = plain_layer_view(mtm);
         // Off by default on macOS 14+, so an oversized child would paint past the clip rect.
         clip.setClipsToBounds(true);
@@ -142,6 +149,25 @@ impl NativeChild {
     pub(crate) fn zoom_view(&self) -> &Retained<NSView> {
         &self.zoom
     }
+
+    pub(crate) fn clip_view(&self) -> &Retained<NSView> {
+        &self.clip
+    }
+}
+
+/// Whether AppKit reports any part of `window` as visible on screen, or `None` when the
+/// handle is not an AppKit view in a window. GPUI stops drawing an occluded window.
+pub fn window_visible(window: &impl HasWindowHandle) -> Option<bool> {
+    MainThreadMarker::new()?;
+    let handle = window.window_handle().ok()?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    // SAFETY: as in `NativeChild::new`: a live NSView while the handle is borrowed, read on
+    // the main thread.
+    let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+    let state = view.window()?.occlusionState();
+    Some(state.contains(objc2_app_kit::NSWindowOcclusionState::Visible))
 }
 
 impl HasWindowHandle for NativeChild {

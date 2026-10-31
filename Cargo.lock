@@ -703,11 +703,16 @@ dependencies = [
 name = "calm-app"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "calm-core",
  "calm-native",
+ "calm-plugins",
+ "futures",
  "gpui-libghostty",
  "gpui-pre",
  "gpui-pre-platform",
+ "image",
+ "serde_json",
  "tempfile",
 ]
 
@@ -729,6 +734,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "objc2-web-kit",
  "raw-window-handle",
 ]
@@ -3487,6 +3493,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
 ]
 
 [[package]]

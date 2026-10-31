@@ -39,8 +39,11 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
   `PREVIEW_REFRESH_SECS = 2`.
 - `layout`: layout file format and validation (`LayoutError::Malformed` names path and
   field). Save and load are not wired into the app yet.
-- `settings`: persisted options, path `$CALM_HOME/settings.json` or
-  `~/.config/calm/settings.json`.
+- `settings`: persisted options (version 2, migrates version 1), path
+  `$CALM_HOME/settings.json` or `~/.config/calm/settings.json`.
+- `settings_form`: the Settings window as data (sections, controls) and `apply_field`.
+- `background`: solid, gradient and image backgrounds, gradient raster, image filters,
+  fit rects.
 - `menu`: context menu model (nested Add submenu, panel actions).
 - `frame_stats`, `stats`: FPS and percentile helpers.
 
@@ -55,6 +58,10 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
   message handler, `set_logical_size`.
 - `ContextMenu` and `show_context_menu`: a native NSMenu popped up at a point; returns the
   chosen item id. Native because anything GPUI paints is under the native views.
+- `SettingsWindow`: a separate NSWindow drawing a `settings_form` with AppKit controls;
+  `choose_image_file` runs an NSOpenPanel.
+- `StatusBar`: translucent rounded `NSVisualEffectView` with one label, kept as the
+  topmost subview so panels never cover it. Its rect comes from `calm_core::status_bar`.
 
 ### calm-plugins
 
@@ -74,7 +81,10 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
   places native views. Key bindings in `key_bindings()`.
 - `terminal/`: `TerminalPanel` with the libghostty adapter (CALM-owned copy of the
   gpui-libghostty 0.3.1 MIT adapter, using `spawn_surface(options, &native_child, scale)`).
-- `dev_menu.rs`, `settings_menu.rs`, `toolbar.rs` (slim status strip), `theme.rs`.
+- `dev_menu.rs`, `settings_menu.rs` (menu and Settings window glue), `background.rs`
+  (renders gradient and image backgrounds once per change), `theme.rs`. The canvas fills
+  the window under a transparent title bar; zoom and FPS show in the native `StatusBar` at
+  the bottom.
 
 ## Event and paint flow
 
@@ -91,14 +101,15 @@ calm-app       GPUI binary: CanvasView, menus, terminal adapter, smoke gate
 
 `cargo run -p calm-app -- --smoke` opens a window, adds two terminals at zoom 1.5, waits
 for frames, and prints `viewport`, `canvas`, `terminals` (frames and alive), `zorder`,
-`fps`, `settings` and `preview` lines, then exits 0. It is the only way an agent may run
+`status_bar`, `fps`, `settings` and `preview` lines, then exits 0. It is the only way an agent may run
 the GUI.
 
 ## Plugin model
 
 Plugins are directories with `calm-plugin.json` and an HTML entry. The entry loads in a
 `WebPanel` with `CALM_PRELUDE_JS` defining `window.calm` (settings, storage, panel, canvas,
-process, github, openExternal, log, theme, events). Calls post JSON to the `calm` message
-handler; the host answers with `eval_js`. The host-side dispatcher is not wired in the app
-yet, so today no `window.calm` call resolves. First-party plugins are Preact TSX built with
+process, github, openExternal, log, theme, events). Calls post to the `calm` message
+handler as JSON strings; the host answers with `eval_js`. On `feat/menu-plugins` the app
+serves `log`, `panel.setTitle` and `settings.get/set`; the rest reject with
+`not implemented: <method>`. First-party plugins are Preact TSX built with
 bun. See `docs/plugins.md` and `packages/calm-plugin-sdk/calm.d.ts`.
