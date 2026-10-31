@@ -6,14 +6,17 @@ use calm_core::interaction::{
     ZoomStep,
 };
 use calm_core::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
+use calm_core::viewport::{NativePlacement, place_native};
+use calm_native::NativeChild;
 use gpui::{
-    App, BorderStyle, Bounds, ContentMask, Context, DispatchPhase, FocusHandle, Focusable,
+    App, BorderStyle, Bounds, ContentMask, Context, DispatchPhase, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, Styled, TextAlign, TextRun, WeakEntity, Window, actions, canvas, div, fill,
-    outline, point, px, rgb, size,
+    MouseMoveEvent, MouseUpEvent, NoAction, ParentElement, Pixels, Render, ScrollDelta,
+    ScrollWheelEvent, SharedString, Styled, TextAlign, TextRun, WeakEntity, Window, actions,
+    canvas, div, fill, outline, point, px, rgb, size,
 };
 
+use crate::terminal::{self, TerminalPanel};
 use crate::theme;
 use crate::toolbar::{TOOLBAR_HEIGHT, toolbar};
 
@@ -26,6 +29,7 @@ actions!(
         DrawTerminal,
         DrawBrowser,
         Cancel,
+        ConfirmEnter,
         ToggleFullscreen
     ]
 );
@@ -34,6 +38,7 @@ pub const KEY_CONTEXT: &str = "Canvas";
 const TITLE_FONT_SIZE: f64 = 13.0;
 /// Below this the title is unreadable, so it is skipped.
 const MIN_TITLE_FONT_PX: f64 = 4.0;
+const CONFIRM_TITLE: &str = "Close? enter / esc";
 
 pub fn key_bindings() -> Vec<gpui::KeyBinding> {
     use gpui::KeyBinding;
@@ -45,7 +50,13 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("t", DrawTerminal, ctx),
         KeyBinding::new("b", DrawBrowser, ctx),
         KeyBinding::new("escape", Cancel, ctx),
+        KeyBinding::new("enter", ConfirmEnter, ctx),
         KeyBinding::new("cmd-ctrl-f", ToggleFullscreen, ctx),
+        // A focused terminal gets these keys; canvas zoom and fullscreen still apply.
+        KeyBinding::new("t", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("b", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("escape", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("enter", NoAction, Some(terminal::KEY_CONTEXT)),
     ]
 }
 
@@ -57,6 +68,10 @@ pub struct CanvasView {
     /// (id, name) per discovered plugin. Task 11 fills it.
     pub plugins: Vec<(String, String)>,
     focused: Option<PanelId>,
+    /// Live terminals by panel. Dropping an entry ends its process.
+    terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
+    /// Back-to-front terminal order the native views were last stacked in.
+    native_order: Vec<PanelId>,
     /// Last pointer position relative to the viewport, for the draft rect.
     pointer: Point,
     focus_handle: FocusHandle,
@@ -70,6 +85,8 @@ impl CanvasView {
             viewport: Rect::new(0.0, f64::from(TOOLBAR_HEIGHT), 0.0, 0.0),
             plugins: Vec::new(),
             focused: None,
+            terminals: Vec::new(),
+            native_order: Vec::new(),
             pointer: Point::new(0.0, 0.0),
             focus_handle: cx.focus_handle(),
         }
@@ -89,21 +106,31 @@ impl CanvasView {
                 Effect::CreatePanel { kind, .. } => created = Some(kind),
                 Effect::FocusPanel(id) => {
                     if let Some(kind) = created.take() {
-                        self.panel_created(id, &kind);
+                        self.panel_created(id, &kind, window, cx);
                     }
                     self.focused = Some(id);
+                    if let Some(terminal) = self.terminal(id) {
+                        terminal.update(cx, |terminal, cx| terminal.focus(window, cx));
+                    }
                 }
                 Effect::ClosePanelRequested(id) => {
-                    // Placeholders run no process yet, so nothing needs confirming.
-                    queue.push_back(self.input.request_close(id, false));
+                    let alive = self
+                        .terminal(id)
+                        .is_some_and(|terminal| terminal.read(cx).is_alive());
+                    queue.push_back(self.input.request_close(id, alive));
+                }
+                Effect::ConfirmClose(_) => {
+                    // Enter and Escape must reach the canvas, not the terminal.
+                    self.focus_handle.focus(window, cx);
                 }
                 Effect::ToggleMinimize(id) => {
                     if let Some(panel) = self.scene.get_mut(id) {
                         panel.minimized = !panel.minimized;
                     }
                 }
-                Effect::ConfirmClose(_) | Effect::Redraw => {}
+                Effect::Redraw => {}
                 Effect::ClosePanel(id) => {
+                    self.terminals.retain(|(panel, _)| *panel != id);
                     self.scene.remove(id);
                     if self.focused == Some(id) {
                         self.focused = None;
@@ -115,8 +142,94 @@ impl CanvasView {
         cx.notify();
     }
 
-    /// Hook for native view creation (Task 8). Placeholders need nothing.
-    fn panel_created(&mut self, _id: PanelId, _kind: &PanelKind) {}
+    fn panel_created(
+        &mut self,
+        id: PanelId,
+        kind: &PanelKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let PanelKind::Terminal { command, cwd } = kind {
+            let options = terminal::options(command.as_deref(), cwd.clone());
+            if let Err(err) = self.spawn_terminal(id, options, window, cx) {
+                eprintln!("calm: terminal failed to start: {err}");
+            }
+        }
+    }
+
+    pub fn spawn_terminal(
+        &mut self,
+        id: PanelId,
+        options: gpui_libghostty::TerminalOptions,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let host = NativeChild::new(window).map_err(|err| err.to_string())?;
+        let terminal = TerminalPanel::spawn(options, host, window, cx)?;
+        self.terminals.push((id, terminal));
+        Ok(())
+    }
+
+    fn terminal(&self, id: PanelId) -> Option<Entity<TerminalPanel>> {
+        self.terminals
+            .iter()
+            .find(|(panel, _)| *panel == id)
+            .map(|(_, terminal)| terminal.clone())
+    }
+
+    /// (frame count, alive) per terminal, in creation order.
+    pub fn terminal_status(&self, cx: &mut App) -> Vec<(u64, bool)> {
+        self.terminals
+            .iter()
+            .map(|(_, terminal)| {
+                terminal.update(cx, |terminal, _| {
+                    (terminal.frame_count(), terminal.is_alive())
+                })
+            })
+            .collect()
+    }
+
+    /// Terminal ids in scene order, back to front.
+    fn terminal_order(&self) -> Vec<PanelId> {
+        self.scene
+            .panels
+            .iter()
+            .map(|panel| panel.id)
+            .filter(|id| self.terminals.iter().any(|(t, _)| t == id))
+            .collect()
+    }
+
+    /// Native views stack in creation order, so restack them when the scene order changes.
+    fn sync_native_order(&mut self, cx: &mut Context<Self>) {
+        let order = self.terminal_order();
+        if order == self.native_order {
+            return;
+        }
+        for id in &order {
+            if let Some(terminal) = self.terminal(*id) {
+                terminal.update(cx, |terminal, _| terminal.bring_to_front());
+            }
+        }
+        self.native_order = order;
+    }
+
+    /// (scene order, native stacking order) of terminal ids, both back to front.
+    pub fn terminal_zorder(&self, cx: &App) -> (Vec<u64>, Vec<u64>) {
+        let scene = self.terminal_order().iter().map(|id| id.0).collect();
+        let mut native: Vec<(Option<usize>, u64)> = self
+            .terminals
+            .iter()
+            .map(|(id, terminal)| (terminal.read(cx).stack_index(), id.0))
+            .collect();
+        native.sort();
+        (scene, native.into_iter().map(|(_, id)| id).collect())
+    }
+
+    fn confirm_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(effect) = self.input.confirm_key(ConfirmKey::Enter) {
+            self.apply_effects(vec![effect], window, cx);
+        }
+    }
 
     fn to_canvas(&self, position: gpui::Point<Pixels>) -> Point {
         Point::new(
@@ -226,7 +339,22 @@ struct PaintSnapshot {
     scene: Scene,
     state: Interaction,
     focused: Option<PanelId>,
+    confirming: Option<PanelId>,
     pointer: Point,
+    terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
+}
+
+/// A panel's native placement in window points, or `None` when minimized or off screen.
+/// `viewport` is the canvas area in window points.
+fn terminal_placement(panel: &Panel, scene: &Scene, viewport: Rect) -> Option<NativePlacement> {
+    if panel.minimized {
+        return None;
+    }
+    let local = Rect::new(0.0, 0.0, viewport.size.width, viewport.size.height);
+    let mut placement = place_native(content_rect(panel), &scene.camera, local)?;
+    placement.container.origin.x += viewport.origin.x;
+    placement.container.origin.y += viewport.origin.y;
+    Some(placement)
 }
 
 impl PaintSnapshot {
@@ -249,6 +377,19 @@ impl PaintSnapshot {
             for panel in &self.scene.panels {
                 self.paint_panel(panel, origin, window, cx);
             }
+            let viewport = Rect::new(
+                origin.x,
+                origin.y,
+                f64::from(f32::from(bounds.size.width)),
+                f64::from(f32::from(bounds.size.height)),
+            );
+            for (id, terminal) in &self.terminals {
+                let placement = self
+                    .scene
+                    .get(*id)
+                    .and_then(|panel| terminal_placement(panel, &self.scene, viewport));
+                terminal.update(cx, |terminal, _| terminal.set_placement(placement, window));
+            }
             if let Interaction::Drawing { start_world } = self.state {
                 let start = camera.world_to_screen(start_world);
                 let draft = Rect::new(
@@ -264,6 +405,8 @@ impl PaintSnapshot {
                 ));
             }
         });
+
+        this.update(cx, |view, cx| view.sync_native_order(cx)).ok();
 
         // Moves and releases are tracked window-wide so a drag keeps going past the canvas edge.
         let weak = this.clone();
@@ -343,7 +486,11 @@ impl PaintSnapshot {
             (chrome.size.width - padding - reserved).max(0.0),
             chrome.size.height,
         );
-        let title: SharedString = panel.title.clone().into();
+        let title: SharedString = if self.confirming == Some(panel.id) {
+            CONFIRM_TITLE.into()
+        } else {
+            panel.title.clone().into()
+        };
         let run = TextRun {
             len: title.len(),
             font: window.text_style().font(),
@@ -390,8 +537,26 @@ impl Render for CanvasView {
             scene: self.scene.clone(),
             state: self.input.state,
             focused: self.focused,
+            confirming: self.input.confirming,
             pointer: self.pointer,
+            terminals: self.terminals.clone(),
         };
+        // Mouse and key targets for terminals, at last frame's placement.
+        let viewport = self.viewport;
+        let terminal_targets = self.terminals.iter().map(|(id, terminal)| {
+            let placement = self
+                .scene
+                .get(*id)
+                .and_then(|panel| terminal_placement(panel, &self.scene, viewport));
+            let rect = placement.map_or(Rect::new(0.0, 0.0, 0.0, 0.0), |p| p.container);
+            div()
+                .absolute()
+                .left(px((rect.origin.x - viewport.origin.x) as f32))
+                .top(px((rect.origin.y - viewport.origin.y) as f32))
+                .w(px(rect.size.width as f32))
+                .h(px(rect.size.height as f32))
+                .child(terminal.clone())
+        });
         div()
             .size_full()
             .flex()
@@ -419,12 +584,16 @@ impl Render for CanvasView {
                 view.set_tool(Tool::DrawBrowser, window, cx)
             }))
             .on_action(cx.listener(|view, _: &Cancel, window, cx| view.cancel(window, cx)))
+            .on_action(
+                cx.listener(|view, _: &ConfirmEnter, window, cx| view.confirm_enter(window, cx)),
+            )
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
             .child(toolbar(self, cx))
             .child(
                 div()
                     .flex_1()
                     .w_full()
+                    .relative()
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                     .on_mouse_down(MouseButton::Middle, cx.listener(Self::mouse_down))
                     .on_scroll_wheel(cx.listener(Self::scroll))
@@ -444,7 +613,8 @@ impl Render for CanvasView {
                             },
                         )
                         .size_full(),
-                    ),
+                    )
+                    .children(terminal_targets),
             )
     }
 }

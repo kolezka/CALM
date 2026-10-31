@@ -5,7 +5,7 @@ use calm_core::geometry::{Rect, Size};
 use calm_core::viewport::NativePlacement;
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::NSView;
+use objc2_app_kit::{NSView, NSWindowOrderingMode};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 use raw_window_handle::{
     AppKitWindowHandle, DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle,
@@ -112,6 +112,26 @@ impl NativeChild {
 
     pub fn set_visible(&mut self, visible: bool) {
         self.clip.setHidden(!visible);
+    }
+
+    /// Moves the clip view above its siblings, so this panel draws over other native panels.
+    pub fn bring_to_front(&mut self) {
+        // SAFETY: main thread only (NSView is MainThreadOnly); superview returns a retained view.
+        let Some(parent) = (unsafe { self.clip.superview() }) else {
+            return;
+        };
+        parent.addSubview_positioned_relativeTo(&self.clip, NSWindowOrderingMode::Above, None);
+    }
+
+    /// Position of the clip view among its superview's subviews, back to front.
+    pub fn stack_index(&self) -> Option<usize> {
+        // SAFETY: as in `bring_to_front`.
+        let parent = unsafe { self.clip.superview() }?;
+        let clip = Retained::as_ptr(&self.clip);
+        parent
+            .subviews()
+            .iter()
+            .position(|view| Retained::as_ptr(&view) == clip)
     }
 
     /// The zoom view, used as the parent for Ghostty and WKWebView.
