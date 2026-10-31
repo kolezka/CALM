@@ -141,7 +141,9 @@ on origin; allow the Actions bot or switch to a release PR.
 `scripts/bundle-macos.sh <version> <out-dir>` builds `calm-app` in release mode and assembles
 `CALM.app` (bundle id `pl.raqz.calm`, minimum macOS 14.0). It is ad-hoc signed, not notarized.
 After downloading, macOS Gatekeeper blocks it; open it once with right click, `Open`, or run
-`xattr -dr com.apple.quarantine CALM.app`. Check the zip first:
+`xattr -dr com.apple.quarantine CALM.app`.
+The script copies every first-party plugin into `Contents/Resources/plugins`, where the app
+looks for built-ins, and stops if a TSX plugin has no `dist/` (run `gmake plugins` first). Check the zip first:
 `shasum -a 256 -c CALM-<version>-macos-arm64.zip.sha256`.
 
 To bump locally without a release: `scripts/bump-version.sh patch`. Its self-test:

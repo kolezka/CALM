@@ -8,6 +8,8 @@
 	<string>CALM</string>
 	<key>CFBundleExecutable</key>
 	<string>calm-app</string>
+	<key>CFBundleIconFile</key>
+	<string>CALM.icns</string>
 	<key>CFBundleIdentifier</key>
 	<string>pl.raqz.calm</string>
 	<key>CFBundleInfoDictionaryVersion</key>

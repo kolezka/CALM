@@ -20,5 +20,6 @@ pub mod settings_form;
 pub mod snap;
 pub mod stats;
 pub mod status_bar;
+pub mod terminal_profile;
 pub mod tui;
 pub mod viewport;

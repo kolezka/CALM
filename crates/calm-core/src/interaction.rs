@@ -7,6 +7,8 @@ pub use crate::resize::RESIZE_BAND;
 /// Side of each square chrome button hit target, in world units.
 pub const CHROME_BUTTON_SIZE: f64 = crate::chrome::BUTTON_HIT_SIZE;
 pub use crate::chrome::{ChromeButton, chrome_hit};
+/// A press that moves less than this, in screen points, before release is a click.
+pub const CLICK_SLOP: f64 = 4.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tool {
@@ -67,6 +69,11 @@ pub enum Interaction {
     Panning {
         last_screen: Point,
     },
+    /// Left press on empty canvas with the select tool. A release within `CLICK_SLOP`
+    /// is a click on nothing.
+    Pressing {
+        start_screen: Point,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,6 +84,8 @@ pub enum Effect {
         rect: Rect,
     },
     FocusPanel(PanelId),
+    /// No panel is focused and the canvas takes the keyboard.
+    ClearFocus,
     ClosePanelRequested(PanelId),
     ToggleMinimize(PanelId),
     Redraw,
@@ -110,6 +119,8 @@ pub struct InputHandler {
     /// Panel waiting for the user to confirm its close.
     pub confirming: Option<PanelId>,
     pub snap: SnapConfig,
+    /// A click on empty canvas, or Escape, drops panel focus.
+    pub click_empty_clears_focus: bool,
 }
 
 impl Default for InputHandler {
@@ -120,6 +131,7 @@ impl Default for InputHandler {
             space_held: false,
             confirming: None,
             snap: SnapConfig::default(),
+            click_empty_clears_focus: true,
         }
     }
 }
@@ -133,7 +145,11 @@ impl InputHandler {
         scene: &mut Scene,
     ) -> Vec<Effect> {
         if button == Button::Right {
-            return context_menu(screen, scene);
+            let mut effects = context_menu(screen, scene);
+            if matches!(effects.first(), Some(Effect::ShowCanvasMenu { .. })) {
+                effects.splice(0..0, self.clear_focus());
+            }
+            return effects;
         }
         if button == Button::Middle || self.space_held {
             self.state = Interaction::Panning {
@@ -172,13 +188,22 @@ impl InputHandler {
             return vec![Effect::FocusPanel(id), Effect::Redraw];
         }
         let Some(panel) = hit.and_then(|id| scene.get(id)) else {
-            if self.tool != Tool::Select {
+            if self.tool == Tool::Select {
+                self.state = Interaction::Pressing {
+                    start_screen: screen,
+                };
+            } else {
                 self.state = Interaction::Drawing {
                     start_world: world,
                     draft: Rect::new(world.x, world.y, 0.0, 0.0),
                 };
             }
-            return Vec::new();
+            // Drawing starts on nothing, so it drops focus at once; the new panel takes it.
+            return if self.tool == Tool::Select {
+                Vec::new()
+            } else {
+                self.clear_focus()
+            };
         };
         let id = panel.id;
         if world.y < panel.rect.origin.y + CHROME_HEIGHT {
@@ -201,6 +226,12 @@ impl InputHandler {
         let snap = !mods.alt;
         match self.state {
             Interaction::Idle => Vec::new(),
+            Interaction::Pressing { start_screen } => {
+                if beyond_slop(start_screen, screen) {
+                    self.state = Interaction::Idle;
+                }
+                Vec::new()
+            }
             Interaction::Drawing { start_world, .. } => {
                 self.state = Interaction::Drawing {
                     start_world,
@@ -255,6 +286,13 @@ impl InputHandler {
     /// `mouse_move`, so a press and release without movement changes nothing.
     pub fn mouse_up(&mut self, screen: Point, mods: Modifiers, scene: &mut Scene) -> Vec<Effect> {
         let mut effects = Vec::new();
+        if let Interaction::Pressing { start_screen } = self.state {
+            self.state = Interaction::Idle;
+            if beyond_slop(start_screen, screen) {
+                return effects;
+            }
+            return self.clear_focus();
+        }
         if self.state != Interaction::Idle {
             effects.push(Effect::Redraw);
         }
@@ -320,6 +358,33 @@ impl InputHandler {
         } else {
             self.confirming = Some(id);
             Effect::ConfirmClose(id)
+        }
+    }
+
+    /// Escape answers a pending close first. Otherwise it drops the draw tool and the panel
+    /// focus, but only while no native view holds the keyboard: those get Escape themselves.
+    pub fn escape(&mut self, native_keyboard: bool) -> Vec<Effect> {
+        if self.confirming.is_some() {
+            return self.confirm_key(ConfirmKey::Escape).into_iter().collect();
+        }
+        self.tool = Tool::Select;
+        let effects = if native_keyboard {
+            Vec::new()
+        } else {
+            self.clear_focus()
+        };
+        if effects.is_empty() {
+            vec![Effect::Redraw]
+        } else {
+            effects
+        }
+    }
+
+    fn clear_focus(&self) -> Vec<Effect> {
+        if self.click_empty_clears_focus {
+            vec![Effect::ClearFocus, Effect::Redraw]
+        } else {
+            Vec::new()
         }
     }
 
@@ -389,6 +454,10 @@ impl InputHandler {
             }),
         }
     }
+}
+
+fn beyond_slop(start: Point, end: Point) -> bool {
+    (end.x - start.x).hypot(end.y - start.y) > CLICK_SLOP
 }
 
 /// Rects that snapping lines up against. Minimized panels count as their chip.
@@ -848,6 +917,143 @@ mod tests {
         assert_eq!(scene.panels.len(), 1);
     }
 
+    fn press_release(
+        handler: &mut InputHandler,
+        scene: &mut Scene,
+        button: Button,
+        from: Point,
+        to: Point,
+    ) -> Vec<Effect> {
+        let mut effects = handler.mouse_down(from, button, no_mods(), scene);
+        effects.extend(handler.mouse_move(to, no_mods(), scene));
+        effects.extend(handler.mouse_up(to, no_mods(), scene));
+        effects
+    }
+
+    /// One terminal at (0, 0, 400, 300); (600, 500) is empty canvas.
+    fn focus_scene() -> (Scene, PanelId) {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        (scene, id)
+    }
+
+    #[test]
+    fn empty_canvas_click_clears_focus() {
+        let (mut scene, _) = focus_scene();
+        let mut handler = InputHandler::default();
+        let at = Point::new(600.0, 500.0);
+        let down = handler.mouse_down(at, Button::Left, no_mods(), &mut scene);
+        assert!(
+            !down.contains(&Effect::ClearFocus),
+            "a press alone is not a click"
+        );
+        // Jitter inside the slop is still a click.
+        let wiggle = Point::new(at.x + CLICK_SLOP / 2.0, at.y);
+        handler.mouse_move(wiggle, no_mods(), &mut scene);
+        let up = handler.mouse_up(wiggle, no_mods(), &mut scene);
+        assert!(up.contains(&Effect::ClearFocus), "{up:?}");
+        assert_eq!(handler.state, Interaction::Idle);
+    }
+
+    #[test]
+    fn empty_canvas_right_click_clears_focus_before_menu() {
+        let (mut scene, _) = focus_scene();
+        let mut handler = InputHandler::default();
+        let at = Point::new(600.0, 500.0);
+        let effects = handler.mouse_down(at, Button::Right, no_mods(), &mut scene);
+        assert_eq!(effects.first(), Some(&Effect::ClearFocus), "{effects:?}");
+        assert!(matches!(
+            effects.last(),
+            Some(Effect::ShowCanvasMenu { .. })
+        ));
+    }
+
+    #[test]
+    fn pan_gestures_on_empty_canvas_keep_focus() {
+        let (mut scene, _) = focus_scene();
+        let mut handler = InputHandler::default();
+        let from = Point::new(600.0, 500.0);
+        let far = Point::new(700.0, 560.0);
+        let cases = [
+            // Left drag beyond the slop is not a click.
+            press_release(&mut handler, &mut scene, Button::Left, from, far),
+            // Middle drag and a middle click both pan.
+            press_release(&mut handler, &mut scene, Button::Middle, from, far),
+            press_release(&mut handler, &mut scene, Button::Middle, from, from),
+        ];
+        handler.space_held = true;
+        let space = press_release(&mut handler, &mut scene, Button::Left, from, far);
+        let space_click = press_release(&mut handler, &mut scene, Button::Left, from, from);
+        handler.space_held = false;
+        let mods = no_mods();
+        handler.scroll(from, 30.0, 20.0, mods, &mut scene);
+        let pinch = handler.pinch(from, 0.1, &mut scene);
+        for effects in cases.iter().chain([&space, &space_click, &pinch]) {
+            assert!(!effects.contains(&Effect::ClearFocus), "{effects:?}");
+        }
+    }
+
+    #[test]
+    fn panel_chrome_and_content_clicks_focus_the_panel() {
+        let (mut scene, id) = focus_scene();
+        let mut handler = InputHandler::default();
+        for at in [Point::new(100.0, 10.0), Point::new(100.0, 150.0)] {
+            let effects = press_release(&mut handler, &mut scene, Button::Left, at, at);
+            assert!(effects.contains(&Effect::FocusPanel(id)), "{effects:?}");
+            assert!(!effects.contains(&Effect::ClearFocus), "{effects:?}");
+        }
+    }
+
+    #[test]
+    fn draw_tool_clears_focus_then_focuses_the_new_panel() {
+        let (mut scene, _) = focus_scene();
+        let mut handler = InputHandler {
+            tool: Tool::DrawTerminal,
+            ..InputHandler::default()
+        };
+        let from = Point::new(600.0, 500.0);
+        let down = handler.mouse_down(from, Button::Left, no_mods(), &mut scene);
+        assert_eq!(down.first(), Some(&Effect::ClearFocus), "{down:?}");
+        assert!(matches!(handler.state, Interaction::Drawing { .. }));
+        handler.mouse_move(Point::new(900.0, 800.0), free(), &mut scene);
+        let up = handler.mouse_up(Point::new(900.0, 800.0), free(), &mut scene);
+        let new_id = scene.panels.last().unwrap().id;
+        assert!(up.contains(&Effect::FocusPanel(new_id)), "{up:?}");
+        assert_eq!(scene.panels.len(), 2);
+    }
+
+    #[test]
+    fn setting_off_keeps_focus_on_empty_clicks() {
+        let (mut scene, _) = focus_scene();
+        let mut handler = InputHandler {
+            click_empty_clears_focus: false,
+            ..InputHandler::default()
+        };
+        let at = Point::new(600.0, 500.0);
+        let left = press_release(&mut handler, &mut scene, Button::Left, at, at);
+        let right = handler.mouse_down(at, Button::Right, no_mods(), &mut scene);
+        let escape = handler.escape(false);
+        for effects in [&left, &right, &escape] {
+            assert!(!effects.contains(&Effect::ClearFocus), "{effects:?}");
+        }
+        assert!(matches!(right.as_slice(), [Effect::ShowCanvasMenu { .. }]));
+    }
+
+    #[test]
+    fn escape_clears_focus_only_without_native_keyboard() {
+        let mut handler = InputHandler {
+            tool: Tool::DrawBrowser,
+            ..InputHandler::default()
+        };
+        assert_eq!(handler.escape(true), vec![Effect::Redraw]);
+        assert_eq!(handler.tool, Tool::Select);
+        assert!(handler.escape(false).contains(&Effect::ClearFocus));
+        // A pending close takes Escape first and keeps focus.
+        handler.confirming = Some(PanelId(1));
+        assert!(handler.escape(false).is_empty());
+        assert_eq!(handler.confirming, None);
+    }
+
     #[test]
     fn content_click_focuses_without_dragging() {
         let mut scene = Scene::default();
@@ -931,10 +1137,14 @@ mod tests {
         let effects = handler.mouse_down(screen, Button::Right, no_mods(), &mut scene);
         assert_eq!(
             effects,
-            vec![Effect::ShowCanvasMenu {
-                screen,
-                world: Point::new(500.0, 50.0),
-            }]
+            vec![
+                Effect::ClearFocus,
+                Effect::Redraw,
+                Effect::ShowCanvasMenu {
+                    screen,
+                    world: Point::new(500.0, 50.0),
+                }
+            ]
         );
         assert_eq!(handler.state, Interaction::Idle);
         assert_eq!(scene.panels.len(), 1);

@@ -18,7 +18,7 @@ use gpui::{
 use gpui_libghostty::__private::{
     KeyAction, Modifiers, MouseButton, MouseState, NativeSurface, TerminalThemeState,
 };
-use gpui_libghostty::TerminalOptions;
+use gpui_libghostty::{TerminalOptions, TerminalTheme};
 
 pub const KEY_CONTEXT: &str = "Terminal";
 
@@ -34,7 +34,7 @@ pub enum TerminalEvent {
 pub struct TerminalPanel {
     // Dropped before `host`: Ghostty's view is a child of the host's zoom view.
     surface: NativeSurface,
-    _theme: TerminalThemeState,
+    theme: TerminalThemeState,
     focus: FocusHandle,
     placement: Option<NativePlacement>,
     tick_task: Option<Task<()>>,
@@ -92,7 +92,7 @@ impl TerminalPanel {
             ];
             let mut terminal = Self {
                 surface,
-                _theme: theme,
+                theme,
                 focus,
                 placement: None,
                 tick_task: None,
@@ -110,6 +110,12 @@ impl TerminalPanel {
             terminal.sync_focus(window);
             terminal
         }))
+    }
+
+    /// Recolors the running surface through libghostty's theme update. The process and
+    /// the screen contents stay; whether the user config is read was fixed at spawn.
+    pub fn apply_theme(&mut self, theme: &TerminalTheme) -> Result<(), String> {
+        self.theme.apply(&mut self.surface, theme)
     }
 
     pub fn is_alive(&self) -> bool {
