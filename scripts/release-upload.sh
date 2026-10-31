@@ -3,6 +3,7 @@
 # Usage: scripts/release-upload.sh <version>
 # Run it from a checkout of tag v<version>, after the Release workflow created the release.
 set -euo pipefail
+unset GH_REPO
 
 die() {
     echo "release-upload: $*" >&2
@@ -16,12 +17,23 @@ tag="v$version"
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bundle_script="$repo_root/scripts/bundle-macos.sh"
+origin_url="$(git -C "$repo_root" remote get-url origin)" || die "could not read origin URL"
+case "$origin_url" in
+    git@github.com:*) owner_repo="${origin_url#git@github.com:}" ;;
+    https://github.com/*) owner_repo="${origin_url#https://github.com/}" ;;
+    *) die "origin URL does not point to github.com: $origin_url" ;;
+esac
+owner_repo="${owner_repo%.git}"
+[[ "$owner_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] ||
+    die "origin URL does not identify a GitHub owner/repository: $origin_url"
+printf 'release-upload: using repository %s\n' "$owner_repo"
+cd "$repo_root"
 
 command -v gh >/dev/null || die "gh is not installed (brew install gh)"
 command -v codesign >/dev/null || die "codesign is not available (install the Xcode command line tools)"
 [[ -x "$bundle_script" ]] || die "bundle script $bundle_script is missing or not executable"
 
-gh release view "$tag" --json tagName >/dev/null || die "release $tag not found; run the Release workflow first"
+gh release view "$tag" --repo "$owner_repo" --json tagName >/dev/null || die "release $tag not found; run the Release workflow first"
 
 # The zip must match the tagged source, so refuse to build any other commit.
 git -C "$repo_root" fetch --quiet origin "+refs/tags/$tag:refs/tags/$tag" ||
@@ -30,12 +42,14 @@ head_commit="$(git -C "$repo_root" rev-parse HEAD)"
 tag_commit="$(git -C "$repo_root" rev-parse "refs/tags/$tag^{commit}")"
 [[ "$head_commit" == "$tag_commit" ]] ||
     die "HEAD is $head_commit but $tag is $tag_commit; run git checkout $tag first"
-[[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]] ||
-    die "the checkout has uncommitted changes; the bundle must be built from the clean tag"
+working_tree_status="$(git -C "$repo_root" status --porcelain --untracked-files=all)"
+[[ -z "$working_tree_status" ]] ||
+    die "the checkout has uncommitted changes; the bundle must be built from the clean tag:
+$working_tree_status"
 
 out_dir="$repo_root/dist"
 zip="$out_dir/CALM-$version-macos-arm64.zip"
 "$bundle_script" "$version" "$out_dir"
 
-gh release upload "$tag" "$zip" "$zip.sha256" --clobber
-gh release view "$tag" --json url --jq .url
+gh release upload "$tag" "$zip" "$zip.sha256" --clobber --repo "$owner_repo"
+gh release view "$tag" --repo "$owner_repo" --json url --jq .url
