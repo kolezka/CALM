@@ -93,6 +93,9 @@ mod tests {
                     width: 100.0,
                     height: 100.0,
                 },
+                resizable: None,
+                min_size: None,
+                max_size: None,
             },
             dir: dir.path().to_path_buf(),
         };

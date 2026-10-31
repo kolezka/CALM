@@ -48,6 +48,35 @@ Every plugin folder holds a `calm-plugin.json`:
 | `version`     | Plugin version, free form.                                               |
 | `entry`       | HTML file to load, relative to the plugin folder. No `..`, no `/` start. |
 | `defaultSize` | Size of a new panel in canvas points.                                    |
+| `resizable`   | Optional. `false` keeps the panel at the size it was created with.       |
+| `minSize`     | Optional `{ "width", "height" }`. Smallest size a resize may reach.      |
+| `maxSize`     | Optional `{ "width", "height" }`. Largest size a resize may reach.       |
+
+Every panel can be resized by default, plugins included. Drag the right edge, the bottom
+edge or the corner. The handle reaches a few pixels outside the panel, so it works over a
+web view too. Sizes include the 28 point title bar.
+
+The resize fields are checked when CALM loads the plugin. A bad value is a manifest error,
+and the plugin is skipped with a message on stderr; CALM never guesses a default. Errors:
+
+- `resizable` that is not `true` or `false`, or any field set to `null`;
+- a size that is not an object with exactly `width` and `height` as positive numbers;
+- a `minSize` or `maxSize` below the smallest panel, 120 by 80;
+- a `maxSize` smaller than `minSize` on either axis;
+- `minSize` or `maxSize` together with `"resizable": false`;
+- a `defaultSize` outside `minSize` and `maxSize`.
+
+```json
+{
+  "id": "clock",
+  "name": "Clock",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "defaultSize": { "width": 240, "height": 160 },
+  "minSize": { "width": 200, "height": 120 },
+  "maxSize": { "width": 480, "height": 320 }
+}
+```
 
 ## The `window.calm` API
 

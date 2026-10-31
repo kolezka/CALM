@@ -170,3 +170,27 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   `engines.bun`, fails loud with an install hint in the panel and the status bar error count.
   Reason: developers already need bun; bundling adds size, signing and delayed security
   fixes. Cost if wrong: a bundled copy can be added later as the last lookup step.
+
+## Panel resize (2026-10-31)
+
+- **One resize policy for every kind, in `calm-core::resize`.** `ResizePolicy::derive`
+  takes the kind and, for plugins, the manifest's `resizable`, `minSize` and `maxSize`.
+  Press, drag clamp and the hover cursor all read it through `resize_target` and
+  `InputHandler::hover_resize`. Terminals and browsers are always free. Bad manifest values
+  are errors in `calm-plugins`, never defaults. Cost: `calm-plugins` depends on `calm-core`.
+- **Resize handles live outside the panel, in GPUI pixels.** A band of 8 screen px past the
+  right and bottom edges, plus the old 12 unit band inside (which only reaches GPUI over
+  terminals and previews). Rejected: insetting the web view from its edges, which would
+  break "zoom view bounds equal the panel's logical size", and painting over the native
+  rect. Cost: a press just outside a panel resizes it instead of hitting what is behind,
+  and over a joined or overlapping neighbor that is a live web view, the web view still
+  wins the click.
+- **On a joined edge the outer band stops at the neighbor.** Merged with PR #12: the band
+  skips any point inside a panel joined to this one, so a press on the neighbor's title bar
+  or content goes to the neighbor. The inner band and the 1 unit join gap still resize the
+  left or top panel, and only that panel moves. Unjoined edges keep the full 8 px band.
+  Cost: over a joined web view the shared edge is grabbable only in the 1 unit gap and the
+  inner band, which a web view keeps for itself.
+- **Only right, bottom and corner handles.** Left and top edges would move the origin and
+  touch `snap_resize`, which PR #12 rewrites. Cost: no resize from the left or top yet.
+- **No `aspectRatio`.** Snapping and two clamped axes make it more than cheap.
