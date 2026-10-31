@@ -126,6 +126,8 @@ pub struct CanvasView {
     pub plugin_counts: (usize, usize),
     /// Plugin folders skipped at startup, shown in the status bar; stderr names each one.
     pub plugin_errors: usize,
+    /// Plugins loaded with a warning (unknown capability words); stderr names each one.
+    pub plugin_warnings: usize,
     /// Live plugin pages by panel. Dropping an entry closes the page.
     plugin_panels: Vec<(PanelId, PluginPanel)>,
     bridge: BridgeSender,
@@ -166,6 +168,8 @@ pub struct CanvasView {
     pub frame_stats: FrameStats,
     /// Latest CPU and memory reading, from `stats_timer`.
     pub process_stats: Option<ProcessSample>,
+    /// Successful samples since the timer last started. The smoke waits on it.
+    pub process_samples: u64,
     /// Samples CPU and memory off the main thread while the readout needs them.
     stats_timer: Option<Task<()>>,
     /// (interval ms, include children) the running timer was started with.
@@ -219,6 +223,7 @@ impl CanvasView {
             plugin_search_dirs,
             plugin_counts,
             plugin_errors: discovery.errors.len(),
+            plugin_warnings: discovery.warnings.len(),
             plugin_panels: Vec::new(),
             bridge,
             _bridge_task: bridge_task,
@@ -241,6 +246,7 @@ impl CanvasView {
             show_stats: false,
             frame_stats: FrameStats::default(),
             process_stats: None,
+            process_samples: 0,
             stats_timer: None,
             stats_timer_config: None,
             menu_open: false,
@@ -1163,6 +1169,7 @@ impl CanvasView {
             self.stats_timer = None;
             self.stats_timer_config = None;
             self.process_stats = None;
+            self.process_samples = 0;
             return;
         }
         let config = (clamp_interval_ms(stats.interval_ms), stats.include_children);
@@ -1172,6 +1179,7 @@ impl CanvasView {
         let (interval_ms, include_children) = config;
         self.stats_timer_config = Some(config);
         self.process_stats = None;
+        self.process_samples = 0;
         self.stats_timer = Some(cx.spawn(async move |this, cx| {
             let mut sampler = ProcessSampler::new();
             let mut reported = false;
@@ -1195,6 +1203,9 @@ impl CanvasView {
                     }
                 };
                 let updated = this.update(cx, |view, cx| {
+                    if sample.is_some() {
+                        view.process_samples += 1;
+                    }
                     view.process_stats = sample;
                     cx.notify();
                 });
@@ -1269,12 +1280,9 @@ impl CanvasView {
             None => "-- MB".to_string(),
         });
         let [fps, cpu, memory] = stats_items(fps, cpu, memory);
-        // The pill has one text color, so the warning sign marks the error item.
-        let plugin_errors = if self.plugin_errors > 0 {
-            format!("⚠ plugins: {} errors", self.plugin_errors)
-        } else {
-            String::new()
-        };
+        // The pill has one text color, so the warning sign marks the plugin item.
+        let plugin_errors =
+            plugin_host::plugin_problems_text(self.plugin_errors, self.plugin_warnings);
         let text = status_text([
             saved.as_str(),
             plugin_errors.as_str(),

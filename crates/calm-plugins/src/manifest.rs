@@ -8,6 +8,7 @@ use calm_core::scene::MIN_PANEL_SIZE;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
+use crate::api::{API_VERSION, unknown_capabilities};
 use crate::contributes;
 use crate::tui::{self, TuiSpec};
 use calm_core::plugin_menu::MenuContribution;
@@ -49,6 +50,288 @@ pub struct PluginManifest {
     pub max_size: Option<Size>,
     /// Context menu items from `contributes.menus`, in manifest order.
     pub menus: Vec<MenuContribution>,
+    /// `apiVersion`. Missing means 1; above `API_VERSION` the plugin is skipped.
+    pub api_version: u32,
+    /// `capabilities`: declared words, shown to the user, never a gate. Unknown words warn.
+    pub capabilities: Vec<String>,
+    /// `main`: the backend entry run under bun, relative to the plugin folder. Web only.
+    pub main: Option<PathBuf>,
+    /// `backend`: when the backend starts and restarts. Needs `main`.
+    pub backend: BackendSpec,
+    /// `engines`: the bun range the backend needs. Needs `main`.
+    pub engines: Engines,
+    /// `background`: opt-in hidden page. Web only. Parsed, not served yet.
+    pub background: bool,
+}
+
+/// `backend.start`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BackendStart {
+    #[default]
+    OnDemand,
+    AtLaunch,
+}
+
+/// `backend.restart`. The words are the spec's; whether to align them with TUI `restart`
+/// (`prompt`, `on-exit`, `never`) is still open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BackendRestart {
+    #[default]
+    OnFailure,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BackendSpec {
+    pub start: BackendStart,
+    pub restart: BackendRestart,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Engines {
+    /// A semver range such as `>=1.2`. Only the syntax is checked here.
+    pub bun: Option<String>,
+}
+
+/// The v2 manifest fields, shared by both kinds where they apply.
+struct ApiFields {
+    api_version: u32,
+    capabilities: Vec<String>,
+    main: Option<PathBuf>,
+    backend: BackendSpec,
+    engines: Engines,
+    background: bool,
+}
+
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    use serde_json::Value;
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+/// Parses the v2 fields by hand so each error names its field. A TUI manifest stops after
+/// `capabilities`: `tui::parse` refuses the web-only fields with its own message.
+fn parse_api_fields(value: &serde_json::Value, is_tui: bool) -> Result<ApiFields, String> {
+    use serde_json::Value;
+    let api_version = match value.get("apiVersion") {
+        None => 1,
+        Some(v) => v
+            .as_u64()
+            .filter(|n| *n >= 1)
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| format!("apiVersion must be a positive integer, got {v}"))?,
+    };
+    if api_version > API_VERSION {
+        return Err(format!(
+            "requires API v{api_version}, host has v{API_VERSION}"
+        ));
+    }
+    let capabilities = match value.get("capabilities") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                item.as_str().map(str::to_string).ok_or_else(|| {
+                    format!(
+                        "capabilities[{index}] must be a string, got {}",
+                        json_kind(item)
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?,
+        Some(other) => {
+            return Err(format!(
+                "capabilities must be an array of strings, got {}",
+                json_kind(other)
+            ));
+        }
+    };
+    if is_tui {
+        return Ok(ApiFields {
+            api_version,
+            capabilities,
+            main: None,
+            backend: BackendSpec::default(),
+            engines: Engines::default(),
+            background: false,
+        });
+    }
+    let main = match value.get("main") {
+        None => None,
+        Some(Value::String(path)) => {
+            let path = PathBuf::from(path);
+            if !is_inside_relative(&path) {
+                return Err(format!(
+                    "main {} must be a relative path inside the plugin directory",
+                    path.display()
+                ));
+            }
+            Some(path)
+        }
+        Some(other) => return Err(format!("main must be a string, got {}", json_kind(other))),
+    };
+    let backend = match value.get("backend") {
+        None => BackendSpec::default(),
+        Some(v) => parse_backend(v)?,
+    };
+    let engines = match value.get("engines") {
+        None => Engines::default(),
+        Some(v) => parse_engines(v)?,
+    };
+    if main.is_none() {
+        for field in ["backend", "engines"] {
+            if value.get(field).is_some() {
+                return Err(format!("{field} applies only to a plugin with main"));
+            }
+        }
+    }
+    let background = match value.get("background") {
+        None => false,
+        Some(Value::Bool(b)) => *b,
+        Some(other) => {
+            return Err(format!(
+                "background must be true or false, got {}",
+                json_kind(other)
+            ));
+        }
+    };
+    Ok(ApiFields {
+        api_version,
+        capabilities,
+        main,
+        backend,
+        engines,
+        background,
+    })
+}
+
+fn parse_backend(value: &serde_json::Value) -> Result<BackendSpec, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("backend must be an object, got {}", json_kind(value)))?;
+    if let Some(key) = object
+        .keys()
+        .find(|k| !["start", "restart"].contains(&k.as_str()))
+    {
+        return Err(format!(
+            "backend.{key}: unknown field, expected \"start\" or \"restart\""
+        ));
+    }
+    let word = |field: &str| -> Result<Option<&str>, String> {
+        match object.get(field) {
+            None => Ok(None),
+            Some(serde_json::Value::String(s)) => Ok(Some(s.as_str())),
+            Some(other) => Err(format!(
+                "backend.{field} must be a string, got {}",
+                json_kind(other)
+            )),
+        }
+    };
+    let start = match word("start")? {
+        None | Some("on-demand") => BackendStart::OnDemand,
+        Some("at-launch") => BackendStart::AtLaunch,
+        Some(other) => {
+            return Err(format!(
+                "backend.start {other:?} must be \"on-demand\" or \"at-launch\""
+            ));
+        }
+    };
+    let restart = match word("restart")? {
+        None | Some("on-failure") => BackendRestart::OnFailure,
+        Some("never") => BackendRestart::Never,
+        Some(other) => {
+            return Err(format!(
+                "backend.restart {other:?} must be \"on-failure\" or \"never\""
+            ));
+        }
+    };
+    Ok(BackendSpec { start, restart })
+}
+
+fn parse_engines(value: &serde_json::Value) -> Result<Engines, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("engines must be an object, got {}", json_kind(value)))?;
+    if let Some(key) = object.keys().find(|k| k.as_str() != "bun") {
+        return Err(format!("engines.{key}: unknown field, expected \"bun\""));
+    }
+    let bun = match object.get("bun") {
+        None => None,
+        Some(serde_json::Value::String(range)) => {
+            if !is_semver_range(range) {
+                return Err(format!(
+                    "engines.bun {range:?} is not a semver range, e.g. \">=1.2\""
+                ));
+            }
+            Some(range.clone())
+        }
+        Some(other) => {
+            return Err(format!(
+                "engines.bun must be a string, got {}",
+                json_kind(other)
+            ));
+        }
+    };
+    Ok(Engines { bun })
+}
+
+/// Syntax only, npm style: `||` alternatives of comparators (`>=1.2 <2`, `^1.2.3`, `~1`,
+/// `1.x`, `*`) or a hyphen range (`1.2 - 1.4`).
+fn is_semver_range(range: &str) -> bool {
+    // Dot-separated identifiers of `[0-9A-Za-z-]`, as in semver prerelease and build parts.
+    fn identifiers(text: &str) -> bool {
+        text.split('.')
+            .all(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    }
+    fn version(text: &str) -> bool {
+        let text = text.strip_prefix('v').unwrap_or(text);
+        let (text, build) = match text.split_once('+') {
+            Some((text, build)) => (text, Some(build)),
+            None => (text, None),
+        };
+        let (core, pre) = match text.split_once('-') {
+            Some((core, pre)) => (core, Some(pre)),
+            None => (text, None),
+        };
+        let parts: Vec<&str> = core.split('.').collect();
+        let parts_ok = (1..=3).contains(&parts.len())
+            && parts.iter().all(|part| {
+                (!part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+                    || matches!(*part, "x" | "X" | "*")
+            });
+        // Prerelease and build only follow a full `major.minor.patch`.
+        let suffix_ok = (pre.is_none() && build.is_none()) || parts.len() == 3;
+        parts_ok && suffix_ok && pre.is_none_or(identifiers) && build.is_none_or(identifiers)
+    }
+    fn comparator(text: &str) -> bool {
+        let rest = [">=", "<=", ">", "<", "=", "^", "~"]
+            .iter()
+            .find_map(|op| text.strip_prefix(op))
+            .unwrap_or(text);
+        version(rest)
+    }
+    range.split("||").all(|alternative| {
+        let alternative = alternative.trim();
+        if let Some((low, high)) = alternative.split_once(" - ") {
+            return version(low.trim()) && version(high.trim());
+        }
+        !alternative.is_empty() && alternative.split_whitespace().all(comparator)
+    })
+}
+
+/// Only plain relative segments, so the path cannot leave the plugin directory.
+fn is_inside_relative(path: &Path) -> bool {
+    path.components().next().is_some()
+        && path
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
 /// The `"kind": "web"` manifest as it was before `kind` existed.
@@ -87,6 +370,7 @@ impl PluginManifest {
         };
         let is_tui = kind == "tui";
         let menus = contributes::parse(value.get("contributes"), is_tui)?;
+        let api = parse_api_fields(&value, is_tui)?;
         let mut manifest = match kind {
             "web" => {
                 let web: WebManifestJson =
@@ -101,6 +385,12 @@ impl PluginManifest {
                     min_size: web.min_size,
                     max_size: web.max_size,
                     menus: Vec::new(),
+                    api_version: api.api_version,
+                    capabilities: api.capabilities,
+                    main: api.main,
+                    backend: api.backend,
+                    engines: api.engines,
+                    background: api.background,
                 }
             }
             "tui" => {
@@ -117,6 +407,12 @@ impl PluginManifest {
                     min_size: None,
                     max_size: None,
                     menus: Vec::new(),
+                    api_version: api.api_version,
+                    capabilities: api.capabilities,
+                    main: None,
+                    backend: BackendSpec::default(),
+                    engines: Engines::default(),
+                    background: false,
                 }
             }
             other => {
@@ -215,12 +511,7 @@ impl PluginManifest {
         let Some(entry) = self.entry() else {
             return Ok(());
         };
-        // Only plain relative segments, so the entry cannot leave the plugin directory.
-        let entry_ok = entry.components().next().is_some()
-            && entry
-                .components()
-                .all(|c| matches!(c, Component::Normal(_) | Component::CurDir));
-        if !entry_ok {
+        if !is_inside_relative(entry) {
             return Err(format!(
                 "entry {} must be a relative path inside the plugin directory",
                 entry.display()
@@ -258,10 +549,20 @@ pub struct Shadowed {
     pub hidden: PathBuf,
 }
 
+/// A problem that does not skip the plugin, such as an unknown capability word.
+#[derive(Debug, Clone, PartialEq, Error)]
+#[error("{}: {message}", path.display())]
+pub struct PluginWarning {
+    pub path: PathBuf,
+    pub message: String,
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Discovery {
     pub plugins: Vec<InstalledPlugin>,
     pub errors: Vec<PluginError>,
+    /// Loaded plugins with something to fix. The status bar counts them next to errors.
+    pub warnings: Vec<PluginWarning>,
     pub shadowed: Vec<Shadowed>,
     /// How many of `plugins` came from built-in dirs. They come after the user plugins.
     pub builtin_count: usize,
@@ -419,6 +720,14 @@ pub fn discover_search(search: &PluginSearch) -> Discovery {
                 continue;
             }
             seen.insert(manifest.id.clone(), (dir.clone(), builtin));
+            let unknown = unknown_capabilities(&manifest.capabilities);
+            if !unknown.is_empty() {
+                let words: Vec<String> = unknown.iter().map(|w| format!("{w:?}")).collect();
+                found.warnings.push(PluginWarning {
+                    path: dir.join(MANIFEST_FILE),
+                    message: format!("unknown capabilities {}", words.join(", ")),
+                });
+            }
             if builtin {
                 found.builtin_count += 1;
             }
@@ -469,6 +778,9 @@ fn load_manifest(dir: &Path) -> Result<PluginManifest, PluginError> {
     let manifest = PluginManifest::from_json(&text).map_err(invalid)?;
     if let Some(entry) = manifest.entry() {
         check_file_on_disk(dir, entry, "entry").map_err(invalid)?;
+    }
+    if let Some(main) = &manifest.main {
+        check_file_on_disk(dir, main, "main").map_err(invalid)?;
     }
     if let Some(icon) = manifest.tui().and_then(TuiSpec::icon_image) {
         check_file_on_disk(dir, icon, "icon").map_err(invalid)?;
@@ -606,6 +918,12 @@ mod tests {
                     min_size: None,
                     max_size: None,
                     menus: Vec::new(),
+                    api_version: 1,
+                    capabilities: Vec::new(),
+                    main: None,
+                    backend: BackendSpec::default(),
+                    engines: Engines::default(),
+                    background: false,
                 },
                 dir,
             }]
@@ -617,6 +935,302 @@ mod tests {
             r#"{{ "id": "p", "name": "P", "version": "0.1.0", "entry": "index.html",
                  "defaultSize": {{ "width": 320, "height": 200 }}{extra} }}"#
         )
+    }
+
+    fn tui_with(extra: &str) -> Result<PluginManifest, String> {
+        PluginManifest::from_json(&format!(
+            r#"{{ "kind": "tui", "id": "t", "name": "T", "command": "top"{extra} }}"#
+        ))
+    }
+
+    #[test]
+    fn api_fields_default_when_absent() {
+        let manifest = PluginManifest::from_json(&with_fields("")).unwrap();
+        assert_eq!(manifest.api_version, 1);
+        assert_eq!(manifest.capabilities, Vec::<String>::new());
+        assert_eq!(manifest.main, None);
+        assert_eq!(
+            manifest.backend,
+            BackendSpec {
+                start: BackendStart::OnDemand,
+                restart: BackendRestart::OnFailure,
+            }
+        );
+        assert_eq!(manifest.engines, Engines { bun: None });
+        assert!(!manifest.background);
+    }
+
+    #[test]
+    fn api_fields_parse_every_value() {
+        let manifest = PluginManifest::from_json(&with_fields(
+            r#", "apiVersion": 2, "capabilities": ["panels.create", "github"],
+               "main": "dist/main.js", "backend": { "start": "at-launch", "restart": "never" },
+               "engines": { "bun": ">=1.2 <2 || ^3.0.0-beta.1" }, "background": true"#,
+        ))
+        .unwrap();
+        assert_eq!(manifest.api_version, 2);
+        assert_eq!(manifest.capabilities, vec!["panels.create", "github"]);
+        assert_eq!(manifest.main, Some(PathBuf::from("dist/main.js")));
+        assert_eq!(manifest.backend.start, BackendStart::AtLaunch);
+        assert_eq!(manifest.backend.restart, BackendRestart::Never);
+        assert_eq!(
+            manifest.engines.bun.as_deref(),
+            Some(">=1.2 <2 || ^3.0.0-beta.1")
+        );
+        assert!(manifest.background);
+
+        let explicit = PluginManifest::from_json(&with_fields(
+            r#", "main": "m.js", "backend": { "start": "on-demand", "restart": "on-failure" }"#,
+        ))
+        .unwrap();
+        assert_eq!(explicit.backend, BackendSpec::default());
+    }
+
+    #[test]
+    fn api_version_above_the_host_skips_with_both_versions() {
+        assert_eq!(
+            PluginManifest::from_json(&with_fields(r#", "apiVersion": 3"#)),
+            Err(format!("requires API v3, host has v{API_VERSION}"))
+        );
+        assert_eq!(
+            tui_with(r#", "apiVersion": 9"#),
+            Err(format!("requires API v9, host has v{API_VERSION}"))
+        );
+    }
+
+    #[test]
+    fn bad_api_fields_name_the_field() {
+        let cases = [
+            (
+                r#", "apiVersion": 0"#,
+                "apiVersion must be a positive integer, got 0",
+            ),
+            (
+                r#", "apiVersion": "2""#,
+                "apiVersion must be a positive integer, got \"2\"",
+            ),
+            (
+                r#", "apiVersion": 1.5"#,
+                "apiVersion must be a positive integer, got 1.5",
+            ),
+            (
+                r#", "capabilities": "github""#,
+                "capabilities must be an array of strings, got a string",
+            ),
+            (
+                r#", "capabilities": ["github", 3]"#,
+                "capabilities[1] must be a string, got a number",
+            ),
+            (r#", "main": 1"#, "main must be a string, got a number"),
+            (
+                r#", "main": "../x.js""#,
+                "main ../x.js must be a relative path inside the plugin directory",
+            ),
+            (
+                r#", "main": "/abs.js""#,
+                "main /abs.js must be a relative path inside the plugin directory",
+            ),
+            (
+                r#", "main": "m.js", "backend": []"#,
+                "backend must be an object, got an array",
+            ),
+            (
+                r#", "main": "m.js", "backend": { "when": "x" }"#,
+                "backend.when: unknown field, expected \"start\" or \"restart\"",
+            ),
+            (
+                r#", "main": "m.js", "backend": { "start": "eager" }"#,
+                "backend.start \"eager\" must be \"on-demand\" or \"at-launch\"",
+            ),
+            (
+                r#", "main": "m.js", "backend": { "restart": "on-exit" }"#,
+                "backend.restart \"on-exit\" must be \"on-failure\" or \"never\"",
+            ),
+            (
+                r#", "main": "m.js", "backend": { "restart": 1 }"#,
+                "backend.restart must be a string, got a number",
+            ),
+            (
+                r#", "main": "m.js", "engines": { "node": ">=20" }"#,
+                "engines.node: unknown field, expected \"bun\"",
+            ),
+            (
+                r#", "main": "m.js", "engines": { "bun": "latest" }"#,
+                "engines.bun \"latest\" is not a semver range, e.g. \">=1.2\"",
+            ),
+            (
+                r#", "main": "m.js", "engines": { "bun": 1 }"#,
+                "engines.bun must be a string, got a number",
+            ),
+            (
+                r#", "main": "m.js", "engines": "bun""#,
+                "engines must be an object, got a string",
+            ),
+            (
+                r#", "backend": {}"#,
+                "backend applies only to a plugin with main",
+            ),
+            (
+                r#", "engines": { "bun": "1" }"#,
+                "engines applies only to a plugin with main",
+            ),
+            (
+                r#", "background": "yes""#,
+                "background must be true or false, got a string",
+            ),
+        ];
+        for (extra, expected) in cases {
+            assert_eq!(
+                PluginManifest::from_json(&with_fields(extra)),
+                Err(expected.to_string()),
+                "{extra}"
+            );
+        }
+    }
+
+    #[test]
+    fn semver_range_accepts_full_prerelease_and_build_grammar() {
+        for good in [
+            "^1.2.3-rc-1",
+            "^1.2.3+build.4",
+            "1.2.3-alpha.1+exp.sha.5114f85",
+            "=1.0.0-x-y-z.--",
+            "1.2.3-rc.1 - 1.4.0+b",
+            ">=1.1 <2",
+            "1.x",
+            "~1.2",
+        ] {
+            assert!(is_semver_range(good), "{good}");
+        }
+        for bad in [
+            "abc",
+            "^",
+            "1..2",
+            "1.2.3-",
+            "1.2.3+",
+            "1.2.3-rc..1",
+            "1.2.3+b..4",
+            "1.2.3-r_c",
+            "1.2+b",
+        ] {
+            assert!(!is_semver_range(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn semver_range_syntax() {
+        for good in [
+            "1",
+            "1.2",
+            "1.2.3",
+            ">=1.2",
+            "^1.2.3",
+            "~1",
+            "1.x",
+            "*",
+            "1.2 - 1.4",
+            ">=1 <2 || 3",
+            "=1.0.0-rc.1",
+            "v1.2.3",
+        ] {
+            assert!(is_semver_range(good), "{good}");
+        }
+        for bad in [
+            "", " ", "latest", ">=", "1.2.3.4", "1..2", "||", "1 ||", ">= 1.2", "1.2-rc", "^a.b",
+        ] {
+            assert!(!is_semver_range(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn tui_takes_api_version_and_capabilities_but_not_web_only_fields() {
+        let tui = tui_with(r#", "apiVersion": 2, "capabilities": ["terminal.read"]"#).unwrap();
+        assert_eq!(tui.api_version, 2);
+        assert_eq!(tui.capabilities, vec!["terminal.read"]);
+        for field in ["main", "backend", "engines", "background"] {
+            let value = if field == "background" {
+                "true"
+            } else {
+                r#""x""#
+            };
+            assert_eq!(
+                tui_with(&format!(r#", "{field}": {value}"#)),
+                Err(format!("a tui plugin has no {field}: it runs `command`")),
+            );
+        }
+    }
+
+    #[test]
+    fn discovery_warns_on_unknown_capabilities_without_skipping() {
+        let root = tempfile::tempdir().unwrap();
+        let typo = write_plugin(
+            root.path(),
+            "typo",
+            &with_fields(r#", "capabilities": ["panels.create", "panel.create", "gitub"]"#)
+                .replace(r#""id": "p""#, r#""id": "typo""#),
+        );
+        write_plugin(
+            root.path(),
+            "good",
+            &with_fields(r#", "capabilities": ["github"]"#)
+                .replace(r#""id": "p""#, r#""id": "good""#),
+        );
+
+        let found = discover(&[root.path().to_path_buf()]);
+
+        assert_eq!(found.errors, vec![]);
+        assert_eq!(found.plugins.len(), 2);
+        assert_eq!(
+            found.warnings,
+            vec![PluginWarning {
+                path: typo.join(MANIFEST_FILE),
+                message: r#"unknown capabilities "panel.create", "gitub""#.into(),
+            }]
+        );
+        assert!(
+            found.warnings[0]
+                .to_string()
+                .ends_with(r#"calm-plugin.json: unknown capabilities "panel.create", "gitub""#)
+        );
+    }
+
+    #[test]
+    fn discovery_checks_main_on_disk() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = write_plugin(
+            root.path(),
+            "missing",
+            &with_fields(r#", "main": "dist/main.js""#)
+                .replace(r#""id": "p""#, r#""id": "missing""#),
+        );
+        let present = write_plugin(
+            root.path(),
+            "present",
+            &with_fields(r#", "main": "dist/main.js""#)
+                .replace(r#""id": "p""#, r#""id": "present""#),
+        );
+        fs::create_dir_all(present.join("dist")).unwrap();
+        fs::write(present.join("dist/main.js"), "").unwrap();
+
+        let found = discover(&[root.path().to_path_buf()]);
+
+        let ids: Vec<&str> = found
+            .plugins
+            .iter()
+            .map(|p| p.manifest.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["present"]);
+        assert_eq!(
+            only_invalid_path(&found),
+            Some(missing.join(MANIFEST_FILE).as_path())
+        );
+        assert!(
+            found.errors[0]
+                .to_string()
+                .contains("cannot resolve main dist/main.js"),
+            "{:?}",
+            found.errors
+        );
     }
 
     #[test]
