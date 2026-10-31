@@ -521,3 +521,19 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   CPU reading" from "pill does not show it", without weakening the check. Reason: the old
   step already polled for 5 s, so it was not an early read. Cost: the flake remains until
   the paint stall is understood.
+
+## Restore at launch (2026-10-31, persistence plan Task 5)
+
+- **`ask` restores with a notice until the dialog exists.** The NSAlert needs new
+  `calm-native` code outside this task's files. `ask` behaves like `on` and the status pill
+  and stderr say so, so it never silently picks a side. Cost: `ask` users get no choice yet.
+- **The session file is read on every launch, whatever the source.** Autosave writes it
+  even with `--layout`, `--no-restore` or restore off, so a malformed one is moved aside in
+  those cases too, before any write could rotate it into the backups. Cost: a file the user
+  did not ask to restore can be renamed to `.invalid-<n>`, with a notice.
+- **A terminal whose saved cwd is gone keeps that cwd in its saved kind.** It starts in
+  home with a notice, and the next launch tries the path again (an unmounted drive comes
+  back). Cost: the notice repeats until the panel is closed or the path returns.
+- **Placeholders are an app-side mark, not a new kind.** The saved `PanelKind` stays as
+  loaded, so every save writes it back unchanged and an install brings the panel back at
+  the next launch. The plugin version is not restamped on restore.

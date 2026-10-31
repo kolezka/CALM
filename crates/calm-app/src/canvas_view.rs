@@ -21,6 +21,9 @@ use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
+use calm_core::restore::{
+    AutosaveStart, RestorePlan, placeholder_reason, restored_cwd, version_note,
+};
 use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
 use calm_core::terminal_profile::{ResolvedTerminal, TerminalIcon, display_cwd, render_title};
@@ -39,7 +42,7 @@ use gpui::{
     canvas, div, fill, outline, point, px, quad, rgb, rgba, size,
 };
 
-use calm_plugins::{BridgeRequest, InstalledPlugin};
+use calm_plugins::{BridgeRequest, InstalledPlugin, PluginContent};
 use futures::StreamExt as _;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -220,6 +223,13 @@ pub struct CanvasView {
     pub autosave_gate: bool,
     /// Where the last autosave wrote, so turning it back on resumes the same file.
     autosave_path: Option<PathBuf>,
+    /// Restored panels that cannot run, with the line they show. GPUI-only: no native
+    /// view, and their saved kind is kept unchanged for the next save.
+    placeholders: HashMap<PanelId, String>,
+    /// What the launch restore reported, shown in the status pill.
+    restore_notice: Option<String>,
+    /// The named layout this canvas came from, kept for a later save.
+    pub layout_name: Option<String>,
 }
 
 impl CanvasView {
@@ -296,18 +306,118 @@ impl CanvasView {
             autosave_writes: 0,
             autosave_gate: APP_AUTOSAVE_ACTIVE,
             autosave_path: None,
+            placeholders: HashMap::new(),
+            restore_notice: None,
+            layout_name: None,
         }
     }
 
-    /// Starts autosave at launch when the build gate and `session.autosave` allow it.
-    /// The gate stays off until restore at launch exists.
-    pub fn start_autosave_at_launch(&mut self, cx: &mut Context<Self>) {
-        if !autosave_active(self.autosave_gate, self.settings.settings.session.autosave) {
-            return;
+    /// Carries out a launch plan whose quarantine is done: builds its panels, then
+    /// starts autosave to `session` on the result, so an untouched start never writes.
+    pub fn apply_restore_plan(
+        &mut self,
+        plan: RestorePlan,
+        session: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut notices = plan.notices;
+        if let Some(layout) = plan.layout {
+            notices.extend(self.restore_layout(layout, window, cx));
         }
-        if let Err(err) = self.start_autosave(calm_core::layout::session_path(), cx) {
-            eprintln!("calm: {err}");
+        self.layout_name = plan.layout_name;
+        for notice in &notices {
+            eprintln!("calm: {notice}");
         }
+        self.restore_notice = match notices.len() {
+            0 => None,
+            1 => notices.pop(),
+            n => Some(format!("{} (+{} more on stderr)", notices[0], n - 1)),
+        };
+        match plan.autosave {
+            AutosaveStart::On => {
+                if autosave_active(self.autosave_gate, self.settings.settings.session.autosave)
+                    && let Err(err) = self.start_autosave(session, cx)
+                {
+                    eprintln!("calm: {err}");
+                }
+            }
+            AutosaveStart::Off(reason) => self.autosave_notice = Some(reason),
+        }
+        window.refresh();
+        cx.notify();
+    }
+
+    fn plugin_installed(&self, plugin_id: &str, tui: bool) -> bool {
+        self.installed_plugins.iter().any(|plugin| {
+            plugin.manifest.id == plugin_id
+                && matches!(plugin.manifest.content, PluginContent::Tui(_)) == tui
+        })
+    }
+
+    /// Creates `layout`'s panels back to front with fresh ids, through the same open paths
+    /// as new panels (so current resize limits apply), then sets the camera. Returns the
+    /// notices for the pill.
+    fn restore_layout(
+        &mut self,
+        layout: LayoutFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<String> {
+        let mut notices = Vec::new();
+        for saved in layout.panels {
+            let id = self.scene.add(saved.kind.clone(), saved.rect);
+            if let Some(panel) = self.scene.get_mut(id) {
+                panel.title = saved.title;
+                panel.minimized = saved.minimized;
+                panel.overrides = saved.overrides;
+            }
+            let reason = placeholder_reason(
+                &saved.kind,
+                |plugin_id| self.plugin_installed(plugin_id, false),
+                |plugin_id| self.plugin_installed(plugin_id, true),
+            );
+            if let Some(reason) = reason {
+                notices.push(reason.clone());
+                self.placeholders.insert(id, reason);
+                continue;
+            }
+            match &saved.kind {
+                PanelKind::Terminal { command, cwd } => {
+                    let (cwd, notice) = restored_cwd(cwd.as_deref(), std::path::Path::is_dir);
+                    notices.extend(notice);
+                    let opened =
+                        self.open_plain_terminal(id, None, command.as_deref(), cwd, window, cx);
+                    if let Err(err) = opened {
+                        notices.push(format!("a restored terminal failed to start: {err}"));
+                    }
+                }
+                kind => {
+                    if let PanelKind::Plugin {
+                        plugin_id,
+                        plugin_version,
+                        ..
+                    } = kind
+                        && let Some(note) = version_note(
+                            plugin_id,
+                            plugin_version.as_deref(),
+                            self.installed_version(plugin_id).as_deref(),
+                        )
+                    {
+                        eprintln!("calm: {note}");
+                    }
+                    self.panel_created(id, kind, window, cx);
+                }
+            }
+        }
+        // Last, so placement runs once with the saved zoom.
+        self.scene.camera = layout.camera;
+        notices
+    }
+
+    /// The line a placeholder panel shows, if `id` is one.
+    pub fn placeholder(&self, id: PanelId) -> Option<&str> {
+        self.placeholders.get(&id).map(String::as_str)
     }
 
     /// Starts writing the scene to `path`. The scene as it is now counts as saved, so an
@@ -342,6 +452,11 @@ impl CanvasView {
         self.autosave_notice = None;
         self.autosave_path = Some(path);
         Ok(())
+    }
+
+    /// Whether autosave is writing this launch.
+    pub fn autosave_running(&self) -> bool {
+        self.autosave.is_some()
     }
 
     /// Ends autosave without a last write. The smoke uses it before removing its dir.
@@ -612,6 +727,7 @@ impl CanvasView {
                     self.terminal_meta.retain(|(panel, _)| *panel != id);
                     self.browsers.retain(|(panel, _)| *panel != id);
                     self.plugin_panels.retain(|(panel, _)| *panel != id);
+                    self.placeholders.remove(&id);
                     self.scene.remove(id);
                     if self.focused == Some(id) {
                         self.focused = None;
@@ -794,8 +910,12 @@ impl CanvasView {
                     }
                 }
             }
-            // No native view: the panel draws as chrome only until a placeholder exists.
-            PanelKind::Unsupported { .. } => {}
+            // No native view: drawn by GPUI as a placeholder, so it never covers a live one.
+            PanelKind::Unsupported { raw } => {
+                let reason = placeholder_reason(kind, |_| true, |_| true)
+                    .unwrap_or_else(|| format!("Unknown panel type {}", raw.type_name()));
+                self.placeholders.insert(id, reason);
+            }
         }
     }
 
@@ -1337,7 +1457,7 @@ impl CanvasView {
         Ok(())
     }
 
-    fn terminal(&self, id: PanelId) -> Option<Entity<TerminalPanel>> {
+    pub(crate) fn terminal(&self, id: PanelId) -> Option<Entity<TerminalPanel>> {
         self.terminals
             .iter()
             .find(|(panel, _)| *panel == id)
@@ -1524,6 +1644,7 @@ impl CanvasView {
             .and_then(|autosave| autosave.queue.error())
             .map(save_error_text)
             .or_else(|| self.autosave_notice.clone())
+            .or_else(|| self.restore_notice.clone())
             .unwrap_or_default();
         let text = status_text([
             session_error.as_str(),
@@ -1933,6 +2054,8 @@ struct PaintSnapshot {
     grid: GridFrame,
     /// Computed once per render from `scene`.
     joins: JoinLayout,
+    /// Restored panels that cannot run, with their line.
+    placeholders: HashMap<PanelId, String>,
 }
 
 /// How a terminal or plugin panel's content is drawn this paint. A plugin in Preview has
@@ -2414,7 +2537,22 @@ impl PaintSnapshot {
                         cx,
                     );
                 }
-                Some(TerminalContent::Live) | None => {}
+                Some(TerminalContent::Live) | None => {
+                    if let Some(reason) = self.placeholders.get(&panel.id) {
+                        let padding = 8.0 * zoom;
+                        let line = Rect::new(
+                            content_screen.origin.x + padding,
+                            content_screen.origin.y + padding,
+                            (content_screen.size.width - 2.0 * padding).max(0.0),
+                            TITLE_BAR_HEIGHT * zoom,
+                        );
+                        let look = TextLook {
+                            align: TextAlign::Left,
+                            color: opaque(theme::TITLE_TEXT),
+                        };
+                        paint_text(reason, line, look, zoom, origin, window, cx);
+                    }
+                }
             }
         }
 
@@ -2698,6 +2836,7 @@ impl Render for CanvasView {
             background,
             grid,
             joins: JoinLayout::compute(&self.scene.panels),
+            placeholders: self.placeholders.clone(),
         };
         self.join_counts = (
             snapshot.joins.joins.len(),

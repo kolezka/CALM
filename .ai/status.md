@@ -158,6 +158,20 @@ Pull requests:
 ## In progress (not on `main`)
 
 - No PR yet: a Linux port plan.
+- `feat/session-restore` (persistence plan Task 5): restore at launch and autosave on.
+  `calm_core::restore` decides the launch (`pick_source`: `--layout NAME`, then
+  `--no-restore`, then `session.restore_on_launch`; `plan_restore`, `after_quarantine`,
+  `placeholder_reason`, `restored_cwd`, `version_note`). A missing session starts empty; a
+  malformed or unsupported one moves to `session.json.invalid-<n>` with a path-only notice
+  and autosave stays on; an unreadable one turns autosave off for the launch; a missing
+  named layout starts empty with the name kept; a malformed one exits 2 and is not moved.
+  `CanvasView::apply_restore_plan` builds panels back to front through the normal open
+  paths, then the camera, then starts autosave on the result (the empty start guard). A
+  missing plugin, TUI app or unknown kind is a GPUI-only placeholder with a Delete-only
+  menu that keeps its saved kind. `APP_AUTOSAVE_ACTIVE` is `true`. `ask` has no dialog: it
+  restores like `on` with a notice. Smoke lines `session saved=4 restored=4 ...` and
+  `session malformed moved=session.json.invalid-0 started_empty=true`. Unverified: the
+  manual quit and relaunch, and a native restack after restore before #40 lands.
 
 ## Not wired yet
 
