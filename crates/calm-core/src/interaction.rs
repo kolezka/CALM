@@ -67,6 +67,16 @@ pub enum Effect {
     ClosePanelRequested(PanelId),
     ToggleMinimize(PanelId),
     Redraw,
+    /// Ask the user before ending a live process.
+    ConfirmClose(PanelId),
+    /// Remove the panel and end its process.
+    ClosePanel(PanelId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmKey {
+    Enter,
+    Escape,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -74,6 +84,8 @@ pub struct InputHandler {
     pub tool: Tool,
     pub state: Interaction,
     pub space_held: bool,
+    /// Panel waiting for the user to confirm its close.
+    pub confirming: Option<PanelId>,
 }
 
 impl Default for InputHandler {
@@ -82,6 +94,7 @@ impl Default for InputHandler {
             tool: Tool::Select,
             state: Interaction::Idle,
             space_held: false,
+            confirming: None,
         }
     }
 }
@@ -218,6 +231,27 @@ impl InputHandler {
         scene.camera.zoom_by(factor, anchor_screen);
     }
 
+    /// A live process needs a second request or Enter before the panel closes.
+    pub fn request_close(&mut self, id: PanelId, alive: bool) -> Effect {
+        if !alive || self.confirming == Some(id) {
+            if self.confirming == Some(id) {
+                self.confirming = None;
+            }
+            Effect::ClosePanel(id)
+        } else {
+            self.confirming = Some(id);
+            Effect::ConfirmClose(id)
+        }
+    }
+
+    pub fn confirm_key(&mut self, key: ConfirmKey) -> Option<Effect> {
+        let id = self.confirming.take()?;
+        match key {
+            ConfirmKey::Enter => Some(Effect::ClosePanel(id)),
+            ConfirmKey::Escape => None,
+        }
+    }
+
     fn tool_panel_kind(&self) -> Option<PanelKind> {
         match &self.tool {
             Tool::Select => None,
@@ -277,7 +311,7 @@ fn resize_panel(panel: &mut Panel, edge: ResizeEdge, world: Point) {
 mod tests {
     use super::*;
     use crate::geometry::{Point, Rect};
-    use crate::scene::{PanelKind, Scene};
+    use crate::scene::{PanelId, PanelKind, Scene};
 
     fn terminal() -> PanelKind {
         PanelKind::Terminal { command: None, cwd: None }
@@ -402,5 +436,47 @@ mod tests {
         handler.mouse_move(Point::new(200.0, 250.0), &mut scene);
         handler.mouse_up(Point::new(200.0, 250.0), &mut scene);
         assert_eq!(scene.get(id).unwrap().rect, Rect::new(0.0, 0.0, 400.0, 300.0));
+    }
+
+    #[test]
+    fn close_requires_confirmation_when_alive() {
+        let mut handler = InputHandler::default();
+        let id = PanelId(7);
+        assert_eq!(handler.request_close(id, true), Effect::ConfirmClose(id));
+        assert_eq!(handler.confirming, Some(id));
+        assert_eq!(handler.confirm_key(ConfirmKey::Enter), Some(Effect::ClosePanel(id)));
+        assert_eq!(handler.confirming, None);
+        assert_eq!(handler.confirm_key(ConfirmKey::Enter), None);
+    }
+
+    #[test]
+    fn close_without_live_process_is_immediate() {
+        let mut handler = InputHandler::default();
+        assert_eq!(handler.request_close(PanelId(3), false), Effect::ClosePanel(PanelId(3)));
+        assert_eq!(handler.confirming, None);
+    }
+
+    #[test]
+    fn second_close_within_confirmation_closes() {
+        let mut handler = InputHandler::default();
+        let id = PanelId(4);
+        assert_eq!(handler.request_close(id, true), Effect::ConfirmClose(id));
+        assert_eq!(handler.request_close(id, true), Effect::ClosePanel(id));
+        assert_eq!(handler.confirming, None);
+
+        // A close on another panel moves the confirmation instead of closing.
+        handler.request_close(id, true);
+        assert_eq!(handler.request_close(PanelId(5), true), Effect::ConfirmClose(PanelId(5)));
+        assert_eq!(handler.confirming, Some(PanelId(5)));
+    }
+
+    #[test]
+    fn escape_cancels_confirmation() {
+        let mut handler = InputHandler::default();
+        let id = PanelId(9);
+        handler.request_close(id, true);
+        assert_eq!(handler.confirm_key(ConfirmKey::Escape), None);
+        assert_eq!(handler.confirming, None);
+        assert_eq!(handler.confirm_key(ConfirmKey::Enter), None);
     }
 }
