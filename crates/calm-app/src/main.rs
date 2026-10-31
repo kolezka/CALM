@@ -7,6 +7,7 @@ mod toolbar;
 
 use calm_core::geometry::Rect;
 use calm_core::scene::PanelKind;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -61,7 +62,24 @@ const SMOKE_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn smoke_fail(reason: &str) -> ! {
     eprintln!("smoke: FAILED {reason}");
+    remove_smoke_dir();
     std::process::exit(1);
+}
+
+/// The smoke's settings dir. Held here because `process::exit` and statics skip destructors,
+/// so every smoke exit path drops it explicitly through `remove_smoke_dir`.
+static SMOKE_DIR: Mutex<Option<tempfile::TempDir>> = Mutex::new(None);
+
+fn remove_smoke_dir() {
+    let dir = SMOKE_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    if let Some(dir) = dir
+        && let Err(err) = dir.close()
+    {
+        eprintln!("smoke: could not remove the settings temp dir: {err}");
+    }
 }
 
 const SMOKE_FPS_FRAMES: usize = 10;
@@ -158,23 +176,26 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 smoke_fail(&format!("only {frames} frames with show_fps on"));
             }
         }
+        remove_smoke_dir();
         cx.update(|cx| cx.quit());
     })
     .detach();
 }
 
-/// The smoke keeps its settings in a fresh temp dir, so the user's file is never touched.
+/// The smoke keeps its settings in a fresh, uniquely named temp dir it owns, so the user's
+/// file is never touched.
 fn startup_settings(smoke: bool) -> SettingsState {
     if !smoke {
         let path = calm_core::settings::settings_path();
         let settings = calm_core::settings::load_settings_from(&path);
         return SettingsState { settings, path };
     }
-    let dir = std::env::temp_dir().join(format!("calm-smoke-{}", std::process::id()));
-    if let Err(err) = std::fs::create_dir_all(&dir) {
-        smoke_fail(&format!("settings temp dir {}: {err}", dir.display()));
-    }
-    let path = dir.join("settings.json");
+    let dir = match tempfile::Builder::new().prefix("calm-smoke-").tempdir() {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("settings temp dir: {err}")),
+    };
+    let path = dir.path().join("settings.json");
+    *SMOKE_DIR.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir);
     let settings = calm_core::settings::load_settings_from(&path);
     SettingsState { settings, path }
 }
@@ -204,11 +225,6 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
         saved.show_grid,
         path.display()
     );
-    if let Some(dir) = path.parent()
-        && let Err(err) = std::fs::remove_dir_all(dir)
-    {
-        eprintln!("smoke: could not remove {}: {err}", dir.display());
-    }
 }
 
 fn main() {
@@ -277,7 +293,7 @@ fn main() {
         });
         if let Err(err) = opened {
             if smoke {
-                eprintln!("smoke: FAILED open_window: {err:#}");
+                smoke_fail(&format!("open_window: {err:#}"));
             } else {
                 eprintln!("calm: failed to open window: {err:#}");
             }
