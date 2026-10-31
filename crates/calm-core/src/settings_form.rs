@@ -201,6 +201,11 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
     sections.push(section(
         "Canvas and Snapping",
         vec![
+            checkbox(
+                "canvas.click_empty_clears_focus",
+                "Click on empty canvas clears focus",
+                settings.canvas.click_empty_clears_focus,
+            ),
             checkbox("snap.enabled", "Snap panels", snap.enabled),
             choice("snap.grid", "Snap grid", steps, selected),
             slider(
@@ -537,6 +542,10 @@ pub fn apply_field(
             settings.snap.edge_distance = number(SNAP_EDGE_RANGE, 0).unwrap_or_default();
             changed
         }
+        ("canvas.click_empty_clears_focus", FieldValue::Bool(on)) => {
+            settings.canvas.click_empty_clears_focus = on;
+            changed
+        }
         ("panels.confirm_close", FieldValue::Bool(on)) => {
             settings.panels.confirm_close = on;
             changed
@@ -592,6 +601,7 @@ pub fn apply_field(
             | "grid.mark_size"
             | "grid.major_every"
             | "grid.major_opacity"
+            | "canvas.click_empty_clears_focus"
             | "snap.enabled"
             | "snap.grid"
             | "snap.edge"

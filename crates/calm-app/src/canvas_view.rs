@@ -236,6 +236,8 @@ impl CanvasView {
     /// Pushes the settings the input handler reads.
     pub fn apply_settings_to_input(&mut self) {
         self.input.snap = self.settings.settings.snap.config();
+        self.input.click_empty_clears_focus =
+            self.settings.settings.canvas.click_empty_clears_focus;
     }
 
     pub fn set_show_fps(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -284,6 +286,14 @@ impl CanvasView {
                             browser.focus_page();
                         }
                     }
+                }
+                Effect::ClearFocus => {
+                    self.focused = None;
+                    // GPUI focus alone leaves a web view or Ghostty surface holding the keys.
+                    if !calm_native::focus_host_view(window) {
+                        eprintln!("focus: the canvas could not take the first responder");
+                    }
+                    self.focus_handle.focus(window, cx);
                 }
                 Effect::ClosePanelRequested(id) => {
                     // A browser's page is state too, so it confirms like a running terminal.
@@ -1252,14 +1262,60 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// Escape that reached the canvas. A native view with the keyboard keeps it, and its
+    /// panel keeps focus: Escape belongs to the program or page in there.
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.input.confirming.is_some() {
-            if let Some(effect) = self.input.confirm_key(ConfirmKey::Escape) {
-                self.apply_effects(vec![effect], window, cx);
-            }
-            return;
-        }
-        self.set_tool(Tool::Select, window, cx);
+        let native_keyboard = calm_native::host_view_is_first_responder(window) != Some(true);
+        let effects = self.input.escape(native_keyboard);
+        self.apply_effects(effects, window, cx);
+    }
+
+    /// A world point on screen over no panel, chrome or resize band. Only the smoke uses it.
+    pub fn smoke_empty_point(&self) -> Option<Point> {
+        let size = self.viewport.size;
+        let steps = |len: f64| (1..(len / 20.0) as usize).map(|i| i as f64 * 20.0);
+        steps(size.height)
+            .flat_map(|y| steps(size.width).map(move |x| Point::new(x, y)))
+            .map(|screen| self.scene.camera.screen_to_world(screen))
+            .find(|world| {
+                self.scene.hit_test(*world).is_none() && self.resize_cursor_at(*world).is_none()
+            })
+    }
+
+    pub fn focused(&self) -> Option<PanelId> {
+        self.focused
+    }
+
+    /// Presses and releases `button` at `world` through the real mouse handlers, without
+    /// moving. Only the smoke uses it.
+    pub fn smoke_click(
+        &mut self,
+        world: Point,
+        button: MouseButton,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let screen = self.scene.camera.world_to_screen(world);
+        let position = point(
+            px((screen.x + self.viewport.origin.x) as f32),
+            px((screen.y + self.viewport.origin.y) as f32),
+        );
+        let modifiers = gpui::Modifiers::default();
+        let down = MouseDownEvent {
+            button,
+            position,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        };
+        self.mouse_down(&down, window, cx);
+        let up = MouseUpEvent {
+            button,
+            position,
+            modifiers,
+            click_count: 1,
+        };
+        self.mouse_up(&up, window, cx);
     }
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {

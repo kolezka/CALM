@@ -231,6 +231,7 @@ fn main() {
     let sample = canvas_menu(
         &[("hello-world".to_string(), "Hello World".to_string())],
         &[],
+        &[],
     );
     let menu = ContextMenu::build(&sample).unwrap_or_else(|e| fail(&e.to_string()));
     let (items, submenus) = menu.counts();

@@ -12,7 +12,7 @@ mod tui_host;
 
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::grid::{GridKind, mark_primitive_bound};
-use calm_core::interaction::ResizeEdge;
+use calm_core::interaction::{Effect, ResizeEdge};
 use calm_core::join::JOIN_SNAP_GAP;
 use calm_core::preview::PanelMode;
 use calm_core::scene::{PanelId, PanelKind};
@@ -435,6 +435,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         }
 
         smoke_resize(&view, window, cx).await;
+        smoke_blur(&view, window, cx);
         smoke_settings_dispatch(&view, window, cx).await;
 
         remove_smoke_dir();
@@ -650,6 +651,66 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
 /// Drags the browser's bottom-right handle just outside its web view, and every edge of a
 /// fixture plugin with `"resizable": false`, through the real mouse handlers. The browser
 /// grows and its web view follows; the locked plugin keeps its rect.
+/// Focuses a terminal, then the browser's page, and clicks empty canvas through the real
+/// mouse handlers each time. Focus must drop in the scene and in AppKit.
+fn smoke_blur(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
+    let outcome = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let empty = view
+                .smoke_empty_point()
+                .ok_or("no empty canvas on screen")?;
+            let terminal = view
+                .scene
+                .panels
+                .iter()
+                .find(|panel| matches!(panel.kind, PanelKind::Terminal { .. }))
+                .map(|panel| panel.id)
+                .ok_or("no terminal panel")?;
+            let browser = view
+                .browser_page_sizes()
+                .first()
+                .map(|(id, _)| *id)
+                .ok_or("no browser panel")?;
+            let click =
+                |view: &mut CanvasView, window: &mut Window, cx: &mut Context<CanvasView>| {
+                    view.smoke_click(empty, gpui::MouseButton::Left, window, cx);
+                    let responder = calm_native::host_view_is_first_responder(window);
+                    let canvas_keys = view.focus_handle(cx).is_focused(window);
+                    (view.focused(), responder, canvas_keys)
+                };
+
+            view.apply_effects(vec![Effect::FocusPanel(terminal)], window, cx);
+            if view.focus_handle(cx).is_focused(window) || view.focused() != Some(terminal) {
+                return Err("terminal did not take focus".to_string());
+            }
+            let after_terminal = click(view, window, cx);
+            if after_terminal != (None, Some(true), true) {
+                return Err(format!("after terminal: {after_terminal:?}"));
+            }
+
+            view.apply_effects(vec![Effect::FocusPanel(browser)], window, cx);
+            // Positive control: the web view really holds the keyboard before the click.
+            let before = calm_native::host_view_is_first_responder(window);
+            if view.focused() != Some(browser) || before != Some(false) {
+                return Err(format!(
+                    "browser focus: focused={:?} host_responder={before:?}",
+                    view.focused()
+                ));
+            }
+            let after_browser = click(view, window, cx);
+            if after_browser != (None, Some(true), true) {
+                return Err(format!("after browser: {after_browser:?}"));
+            }
+            Ok(())
+        })
+    });
+    match outcome {
+        Ok(Ok(())) => println!("smoke: blur focused=none responder=canvas"),
+        Ok(Err(err)) => smoke_fail(&format!("blur: {err}")),
+        Err(err) => smoke_fail(&format!("blur: window gone: {err}")),
+    }
+}
+
 async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
     let fixtures = match tempfile::Builder::new()
         .prefix("calm-smoke-resize-")

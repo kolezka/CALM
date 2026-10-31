@@ -173,6 +173,14 @@ research doc and grid styles. Facts are verified unless marked otherwise.
   unsupported for `shell: true`), and the glyph icon at all zoom levels.
 - Not wired: TUI panels in saved layouts (layout save and load are not wired at all).
 
+## On `fix/blur-on-outside-click` (PR open, not merged)
+
+- A click on empty canvas (left or right) clears panel focus in the scene and makes the GPUI
+  host view the first responder; pans and zooms keep focus; Escape clears it only when no
+  native view has the keyboard. Setting `canvas.click_empty_clears_focus` (default true).
+  Smoke line `smoke: blur focused=none responder=canvas` covers a terminal and the browser.
+- Unverified: manual GUI pass of a real mouse click, and of Escape inside a web page.
+
 ## On `feat/tui-customize` (PR open, based on `feat/tui-plugins`)
 
 - TUI manifest look fields: `title` (with `{name}`), image `icon` (`.png`/`.svg` in the
