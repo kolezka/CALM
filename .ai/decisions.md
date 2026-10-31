@@ -213,3 +213,12 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   wins and the shadowing is logged. Off with `plugins.builtin=false` or
   `CALM_NO_BUILTIN_PLUGINS=1`. Reason: `gmake plugins && cargo run` showed no plugins. Cost:
   the dev path is baked in at compile time, so a moved checkout needs a rebuild.
+
+## Plugin API v2 refresh (2026-10-31)
+
+- **Layouts move into plugin API v2 as phase 16.** The v2 design listed layout save and
+  load as a non-goal; the canvas persistence plan needs `layouts.list`, `save`, `open`,
+  `delete` and `session.saveNow`, so the design now has them. `layouts.open` closes live
+  terminals only through the user's confirmation, and the write methods sit in the
+  external socket's `layout` group. The plan's File menu and restore on launch are
+  decided. Cost: phase 16 waits on the plan's PRs 1 to 7.
