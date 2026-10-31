@@ -215,11 +215,17 @@ This Slack panel uses every field:
       "#1a1d21", "#e01e5a", "#2eb67d", "#ecb22e", "#36c5f0", "#4a154b", "#36c5f0", "#d1d2d3",
       "#616061", "#e01e5a", "#2eb67d", "#ecb22e", "#36c5f0", "#ae6ec8", "#36c5f0", "#ffffff"
     ]
+  },
+  "contributes": {
+    "menus": [
+      { "id": "home", "title": "Slack home workspace", "location": "canvas",
+        "run": ["--workspace", "home"] }
+    ]
   }
 }
 ```
 
-The folder then holds `calm-plugin.json` and `icons/slack.svg`.
+`contributes` adds context menu items, see Context menu contributions. The folder then holds `calm-plugin.json` and `icons/slack.svg`.
 
 - `title`: shown in the title bar. `{name}` is the only placeholder; any other `{` or `}` is an
   error. It may not be empty or blank, may not hold control characters, and is at most 120
