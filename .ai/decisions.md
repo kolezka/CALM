@@ -237,6 +237,14 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   touch `snap_resize`, which PR #12 rewrites. Cost: no resize from the left or top yet.
 - **No `aspectRatio`.** Snapping and two clamped axes make it more than cheap.
 
+## Brand assets (2026-10-31)
+
+- **The shipped app identity uses a fixed pixel palette.** The user requested a cyberpunk,
+  pixel-art CALM wordmark and icon. The source pixel grids, palette and all export sizes live
+  in `assets/brand/build.py`, so anyone can rebuild or change the artwork without a runtime
+  setting. This is a release asset, not an in-canvas feature or a plugin appearance. Cost: a
+  custom icon needs a rebuild of the app bundle rather than a setting.
+
 ## Built-in plugin dirs (2026-10-31)
 
 - **First-party plugins load without install.** A dev build (debug, or a binary in a cargo
@@ -265,3 +273,18 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   It cannot remove a theme or flip the user config, so those apply to new terminals.
 - **The panel's profile is kept beside the scene, not in `PanelKind`.** Layouts are not
   wired and other branches edit `PanelKind` users. Move it into the kind with layout save.
+
+## Blur on outside click (2026-10-31)
+
+- **A click on nothing drops focus.** A left press and release on empty canvas within
+  `CLICK_SLOP` (4 points), or a right click there, emits `Effect::ClearFocus`: the scene
+  forgets the focused panel and the GPUI host view becomes the AppKit first responder, so a
+  Ghostty surface, web view or address field stops getting keys. Drawing with a tool clears
+  focus on press. Pans (space, middle button, scroll, pinch) never do. Setting
+  `canvas.click_empty_clears_focus`, default true. Reason: the focus ring and the keyboard
+  stayed with the last panel after clicking away. Cost: a click on empty canvas while typing
+  into a terminal moves the keyboard away, like any other app.
+- **Escape clears focus only when no native view has the keyboard.** The canvas `Cancel`
+  action checks the first responder; when a terminal, page or address field holds it,
+  Escape stays theirs and focus stays. Same setting. Reason: never steal Escape from a
+  running program. Cost: Escape cannot blur a panel whose native view holds the keyboard.

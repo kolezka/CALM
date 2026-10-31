@@ -131,6 +131,17 @@ research doc and grid styles. Facts are verified unless marked otherwise.
   cross frame draws more than `mark_primitive_bound` grid primitives.
 - Unverified: manual look of dots, crosses and the major grid while zooming.
 
+## On `feat/brand-pixelart` (not merged)
+
+- `assets/brand/build.py` generates CALM pixel-grid wordmarks, a README banner, hand-tuned 16
+  and 32 px icons, a 1024 px master and a full iconset; `iconutil` builds `CALM.icns`.
+- The bundle script copies the icon to `Contents/Resources` and the plist names it with
+  `CFBundleIconFile`. A release bundle built in a temp directory was signed and verified,
+  and contains the same icon bytes as the source. `cargo run -p calm-app -- --smoke`
+  exited 0 with `preview_snapshots_in_3s=[1,1]`.
+- The 16 px mark reads as a C without a prompt; the 32 px mark shows panel tiles and `>_`.
+  Visual judgment of the logo and icon by the user is pending.
+
 ## On `fix/panel-resize` (PR open, not merged)
 
 - Fixed: browser panels could not be resized. The 12 unit grab band sat inside the
@@ -161,6 +172,14 @@ research doc and grid styles. Facts are verified unless marked otherwise.
 - Unverified: a manual GUI pass, a real `slk`, fish as login shell (documented as
   unsupported for `shell: true`), and the glyph icon at all zoom levels.
 - Not wired: TUI panels in saved layouts (layout save and load are not wired at all).
+
+## On `fix/blur-on-outside-click` (PR open, not merged)
+
+- A click on empty canvas (left or right) clears panel focus in the scene and makes the GPUI
+  host view the first responder; pans and zooms keep focus; Escape clears it only when no
+  native view has the keyboard. Setting `canvas.click_empty_clears_focus` (default true).
+  Smoke line `smoke: blur focused=none responder=canvas` covers a terminal and the browser.
+- Unverified: manual GUI pass of a real mouse click, and of Escape inside a web page.
 
 ## On `feat/tui-customize` (PR open, based on `feat/tui-plugins`)
 

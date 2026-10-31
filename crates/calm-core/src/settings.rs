@@ -79,6 +79,24 @@ pub struct Settings {
     pub plugins: PluginSettings,
     /// Plain terminal defaults and profiles.
     pub terminal: TerminalSettings,
+    pub canvas: CanvasSettings,
+}
+
+/// How the empty canvas reacts to input.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CanvasSettings {
+    /// A click on empty canvas, or Escape while no native view has the keyboard, drops
+    /// panel focus. Pans and zooms never do.
+    pub click_empty_clears_focus: bool,
+}
+
+impl Default for CanvasSettings {
+    fn default() -> Self {
+        CanvasSettings {
+            click_empty_clears_focus: true,
+        }
+    }
 }
 
 /// Plugin discovery options. Read once at startup.
@@ -106,6 +124,7 @@ impl Default for Settings {
             panels: PanelSettings::default(),
             plugins: PluginSettings::default(),
             terminal: TerminalSettings::default(),
+            canvas: CanvasSettings::default(),
         }
     }
 }
@@ -540,6 +559,7 @@ mod tests {
 
     fn custom_settings() -> Settings {
         let mut settings = Settings::default();
+        settings.canvas.click_empty_clears_focus = false;
         settings.background.kind = BackgroundKind::Gradient;
         settings.background.gradient.kind = GradientKind::Radial;
         settings.background.gradient.stops.push(GradientStop {
@@ -680,6 +700,14 @@ mod tests {
             (
                 "v2 wrong type",
                 r#"{"version": 2, "grid": {"show": "yes"}}"#,
+            ),
+            (
+                "click clears focus type",
+                r#"{"version": 2, "canvas": {"click_empty_clears_focus": "yes"}}"#,
+            ),
+            (
+                "click clears focus number",
+                r#"{"version": 2, "canvas": {"click_empty_clears_focus": 1}}"#,
             ),
             (
                 "bad color",

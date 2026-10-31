@@ -1,3 +1,5 @@
+![CALM pixel-art logo and infinite canvas tagline](assets/brand/banner.png)
+
 # CALM
 
 An infinite pan and zoom canvas for macOS that hosts live terminals, browsers and plugins
@@ -38,6 +40,9 @@ pan, zoom or minimize it. Only an explicit, confirmed close ends it.
 - Right-click a title bar for Minimize or Restore, Zoom to Fit, Bring to Front, Send to Back,
   Duplicate (terminals) and Delete.
 - Closing a running terminal or a browser asks first. This can be turned off.
+- A click on empty canvas, left or right, drops panel focus: the focus ring goes and typing
+  goes back to the canvas. Pans and zooms keep focus. Off with
+  `canvas.click_empty_clears_focus=false` (Settings, Canvas and Snapping).
 
 ### Browser
 
