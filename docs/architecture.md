@@ -23,6 +23,24 @@ Ghostty surface parented to the zoom view at `(0, 0, logical size)`. The adapter
   moves to the canvas so Enter and Escape reach it. Closing drops the entity, which frees the
   surface (ends the process) and then removes the host views.
 
+## Preview and minimize (Task 9)
+
+- Each paint, each terminal gets `decide_mode(zoom, content rect on screen, viewport,
+  minimized, modal_open)` from `calm-core/src/preview.rs`. `modal_open` is the close
+  confirmation or an open context menu.
+- `Live`: hidden rendering off, native view placed as before.
+- `Preview` (zoom below 50 % or a modal up): on entry the terminal takes a snapshot, then
+  hides its native view and keeps hidden rendering on. The canvas paints the snapshot
+  scaled into the content rect with GPUI. A canvas timer repaints every
+  `PREVIEW_REFRESH_SECS` while any terminal is in preview, and the terminal retakes its
+  snapshot when the last one is that old (250 ms slack). A failed snapshot logs once and
+  the canvas draws a flat rect with the title. Old snapshots are dropped from the atlas.
+- `Hidden` (minimized or off screen): native view hidden, no snapshots, no hidden rendering.
+- Only `Live` terminals get the invisible input div, so clicks on a preview reach the canvas.
+- Minimized panels draw only the 200x28 chip. A left click on the chip, the chrome minimize
+  button and the context menu item all emit `Effect::ToggleMinimize`.
+- The process keeps running in every mode.
+
 ## Verified on
 
 macOS 27.0.1, Apple M4 Pro, 2026-10-31.

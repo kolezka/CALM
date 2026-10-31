@@ -713,6 +713,29 @@ mod tests {
     }
 
     #[test]
+    fn left_click_on_chip_restores() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        scene.get_mut(id).unwrap().minimized = true;
+        let mut handler = InputHandler::default();
+
+        // Below the chip is empty canvas while minimized.
+        let below = handler.mouse_down(
+            Point::new(100.0, 100.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
+        assert!(below.is_empty());
+        handler.mouse_up(Point::new(100.0, 100.0), &mut scene);
+
+        let effects =
+            handler.mouse_down(Point::new(100.0, 10.0), Button::Left, no_mods(), &mut scene);
+        assert_eq!(effects, vec![Effect::ToggleMinimize(id), Effect::Redraw]);
+        assert_eq!(handler.state, Interaction::Idle);
+    }
+
+    #[test]
     fn right_click_on_content_emits_nothing() {
         let mut scene = Scene::default();
         scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));

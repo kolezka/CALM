@@ -5,6 +5,7 @@ mod theme;
 mod toolbar;
 
 use calm_core::geometry::Rect;
+use calm_core::preview::PanelMode;
 use calm_core::scene::PanelKind;
 use std::time::{Duration, Instant};
 
@@ -64,6 +65,11 @@ fn smoke_fail(reason: &str) -> ! {
 
 const SMOKE_FPS_FRAMES: usize = 10;
 const SMOKE_FPS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long both terminals may take to reach a mode after a zoom change.
+const SMOKE_PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
+const SMOKE_PREVIEW_ZOOM: f64 = 0.4;
+const SMOKE_LIVE_ZOOM: f64 = 1.5;
 
 /// How long the native restack may take to show after the scene order changes.
 const SMOKE_ZORDER_TIMEOUT: Duration = Duration::from_secs(2);
@@ -156,9 +162,62 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
                 smoke_fail(&format!("only {frames} frames with show_fps on"));
             }
         }
+        // Zoom out: both terminals switch to GPUI-drawn snapshots.
+        cx.update(|cx| set_zoom(&view, SMOKE_PREVIEW_ZOOM, cx));
+        let zoomed = Instant::now();
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let previews = cx.update(|cx| view.read(cx).terminal_previews(cx));
+            let ready = previews.len() == 2
+                && previews
+                    .iter()
+                    .all(|(mode, snapshot)| *mode == PanelMode::Preview && *snapshot);
+            if ready {
+                println!("smoke: preview=2 snapshots=[true,true]");
+                break;
+            }
+            if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
+                smoke_fail(&format!("no preview snapshots at zoom 0.4: {previews:?}"));
+            }
+        }
+
+        // Zoom back in: both return to live native views.
+        cx.update(|cx| set_zoom(&view, SMOKE_LIVE_ZOOM, cx));
+        let zoomed = Instant::now();
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let (previews, status) = cx.update(|cx| {
+                let previews = view.read(cx).terminal_previews(cx);
+                let status = view.update(cx, |view, cx| view.terminal_status(cx));
+                (previews, status)
+            });
+            let live =
+                previews.len() == 2 && previews.iter().all(|(mode, _)| *mode == PanelMode::Live);
+            if live {
+                if !status.iter().all(|(_, alive)| *alive) {
+                    smoke_fail(&format!("a terminal exited during preview: {status:?}"));
+                }
+                println!("smoke: live=2");
+                break;
+            }
+            if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
+                smoke_fail(&format!("terminals not live at zoom 1.5: {previews:?}"));
+            }
+        }
         cx.update(|cx| cx.quit());
     })
     .detach();
+}
+
+fn set_zoom(view: &Entity<CanvasView>, zoom: f64, cx: &mut App) {
+    view.update(cx, |view, cx| {
+        view.scene.camera.zoom = zoom;
+        cx.notify();
+    });
 }
 
 fn main() {

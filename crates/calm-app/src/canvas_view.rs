@@ -7,18 +7,21 @@ use calm_core::interaction::{
     ZoomStep,
 };
 use calm_core::menu::{self, MenuCommand, MenuItem};
+use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, decide_mode};
 use calm_core::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{HostView, NativeChild, show_context_menu};
 use gpui::{
     App, BorderStyle, Bounds, ContentMask, Context, DispatchPhase, Entity, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, NoAction, ParentElement, PinchEvent, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, SharedString, Styled, TextAlign, TextRun, WeakEntity, Window, actions,
-    canvas, div, fill, outline, point, px, rgb, size,
+    MouseMoveEvent, MouseUpEvent, NoAction, ParentElement, PinchEvent, Pixels, Render, RenderImage,
+    ScrollDelta, ScrollWheelEvent, SharedString, Styled, Task, TextAlign, TextRun, WeakEntity,
+    Window, actions, canvas, div, fill, outline, point, px, rgb, size,
 };
 
-use std::time::Instant;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::terminal::{self, TerminalPanel};
@@ -86,6 +89,10 @@ pub struct CanvasView {
     focus_handle: FocusHandle,
     pub show_fps: bool,
     pub frame_stats: FrameStats,
+    /// True while a native context menu is up. Terminals show previews meanwhile.
+    menu_open: bool,
+    /// Repaints every `PREVIEW_REFRESH_SECS` while any terminal is in `Preview`.
+    preview_timer: Option<Task<()>>,
 }
 
 impl CanvasView {
@@ -104,6 +111,8 @@ impl CanvasView {
             focus_handle: cx.focus_handle(),
             show_fps: false,
             frame_stats: FrameStats::default(),
+            menu_open: false,
+            preview_timer: None,
         }
     }
 
@@ -169,6 +178,9 @@ impl CanvasView {
                     self.show_menu(items, screen, MenuTarget::Panel(id), window, cx);
                 }
                 Effect::ClosePanel(id) => {
+                    if let Some(terminal) = self.terminal(id) {
+                        terminal.update(cx, |terminal, _| terminal.release_preview(window));
+                    }
                     self.terminals.retain(|(panel, _)| *panel != id);
                     self.scene.remove(id);
                     if self.focused == Some(id) {
@@ -203,12 +215,21 @@ impl CanvasView {
             screen.x + self.viewport.origin.x,
             screen.y + self.viewport.origin.y,
         );
+        // A menu counts as modal: terminals switch to previews while it is up.
+        self.menu_open = true;
+        window.refresh();
+        cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let Some(id) = show_context_menu(&items, at, &host) else {
-                return;
-            };
+            let choice = show_context_menu(&items, at, &host);
             this.update_in(cx, |view, window, cx| {
-                view.apply_menu_choice(&id, target, window, cx)
+                view.menu_open = false;
+                match choice {
+                    Some(id) => view.apply_menu_choice(&id, target, window, cx),
+                    None => {
+                        window.refresh();
+                        cx.notify();
+                    }
+                }
             })
             .ok();
         })
@@ -288,6 +309,38 @@ impl CanvasView {
                 })
             })
             .collect()
+    }
+
+    /// (mode, has a snapshot) per terminal, in creation order.
+    pub fn terminal_previews(&self, cx: &App) -> Vec<(PanelMode, bool)> {
+        self.terminals
+            .iter()
+            .map(|(_, terminal)| {
+                let terminal = terminal.read(cx);
+                (terminal.mode(), terminal.preview().is_some())
+            })
+            .collect()
+    }
+
+    /// Runs the refresh timer only while some terminal is in `Preview`.
+    fn sync_preview_timer(&mut self, previewing: bool, cx: &mut Context<Self>) {
+        if !previewing {
+            self.preview_timer = None;
+            return;
+        }
+        if self.preview_timer.is_some() {
+            return;
+        }
+        self.preview_timer = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(PREVIEW_REFRESH_SECS))
+                    .await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        }));
     }
 
     /// Terminal ids in scene order, back to front.
@@ -467,6 +520,16 @@ struct PaintSnapshot {
     confirming: Option<PanelId>,
     pointer: Point,
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
+    /// Close confirmation or context menu up: native views must not cover it.
+    modal_open: bool,
+}
+
+/// How a terminal panel's content is drawn this paint.
+enum TerminalContent {
+    /// The native view covers the content rect.
+    Live,
+    /// A GPUI-drawn snapshot, or `None` for a flat rect with the title.
+    Preview(Option<Arc<RenderImage>>),
 }
 
 /// A panel's native placement in window points, or `None` when minimized or off screen.
@@ -494,26 +557,24 @@ impl PaintSnapshot {
             f64::from(f32::from(bounds.origin.x)),
             f64::from(f32::from(bounds.origin.y)),
         );
+        let mut previewing = false;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             window.paint_quad(fill(bounds, rgb(theme::BACKGROUND)));
             let camera = self.scene.camera;
-            // Panels paint inside this mask; nested masks intersect with it, so nothing
-            // a panel draws can reach the toolbar.
-            for panel in &self.scene.panels {
-                self.paint_panel(panel, origin, window, cx);
-            }
             let viewport = Rect::new(
                 origin.x,
                 origin.y,
                 f64::from(f32::from(bounds.size.width)),
                 f64::from(f32::from(bounds.size.height)),
             );
-            for (id, terminal) in &self.terminals {
-                let placement = self
-                    .scene
-                    .get(*id)
-                    .and_then(|panel| terminal_placement(panel, &self.scene, viewport));
-                terminal.update(cx, |terminal, _| terminal.set_placement(placement, window));
+            let contents = self.apply_terminal_modes(viewport, window, cx);
+            previewing = contents
+                .values()
+                .any(|content| matches!(content, TerminalContent::Preview(_)));
+            // Panels paint inside this mask; nested masks intersect with it, so nothing
+            // a panel draws can reach the toolbar.
+            for panel in &self.scene.panels {
+                self.paint_panel(panel, contents.get(&panel.id), origin, window, cx);
             }
             if let Interaction::Drawing { start_world } = self.state {
                 let start = camera.world_to_screen(start_world);
@@ -531,7 +592,11 @@ impl PaintSnapshot {
             }
         });
 
-        this.update(cx, |view, cx| view.sync_native_order(cx)).ok();
+        this.update(cx, |view, cx| {
+            view.sync_native_order(cx);
+            view.sync_preview_timer(previewing, cx);
+        })
+        .ok();
 
         // Moves and releases are tracked window-wide so a drag keeps going past the canvas edge.
         let weak = this.clone();
@@ -549,9 +614,43 @@ impl PaintSnapshot {
         });
     }
 
+    /// Decides each terminal's mode, applies it, and returns what to draw in its content rect.
+    /// `viewport` is the canvas area in window points.
+    fn apply_terminal_modes(
+        &self,
+        viewport: Rect,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> HashMap<PanelId, TerminalContent> {
+        let camera = self.scene.camera;
+        let local = Rect::new(0.0, 0.0, viewport.size.width, viewport.size.height);
+        let mut contents = HashMap::new();
+        for (id, terminal) in &self.terminals {
+            let Some(panel) = self.scene.get(*id) else {
+                continue;
+            };
+            let screen = camera.world_rect_to_screen(content_rect(panel));
+            let mode = decide_mode(camera.zoom, screen, local, panel.minimized, self.modal_open);
+            let placement = terminal_placement(panel, &self.scene, viewport);
+            let content = terminal.update(cx, |terminal, _| {
+                terminal.apply_mode(mode, placement, window);
+                match mode {
+                    PanelMode::Preview => Some(TerminalContent::Preview(terminal.preview())),
+                    PanelMode::Live => Some(TerminalContent::Live),
+                    PanelMode::Hidden => None,
+                }
+            });
+            if let Some(content) = content {
+                contents.insert(*id, content);
+            }
+        }
+        contents
+    }
+
     fn paint_panel(
         &self,
         panel: &Panel,
+        content: Option<&TerminalContent>,
         origin: gpui::Point<f64>,
         window: &mut Window,
         cx: &mut App,
@@ -575,11 +674,36 @@ impl PaintSnapshot {
         window.paint_quad(fill(to_bounds(chrome, origin), rgb(chrome_color)));
 
         if !panel.minimized {
-            let content = camera.world_rect_to_screen(content_rect(panel));
-            window.paint_quad(fill(
-                to_bounds(content, origin),
-                rgb(theme::CONTENT_PLACEHOLDER),
-            ));
+            let content_screen = camera.world_rect_to_screen(content_rect(panel));
+            let content_bounds = to_bounds(content_screen, origin);
+            window.paint_quad(fill(content_bounds, rgb(theme::CONTENT_PLACEHOLDER)));
+            match content {
+                Some(TerminalContent::Preview(Some(image))) => {
+                    let painted = window.paint_image(
+                        content_bounds,
+                        content_bounds,
+                        Default::default(),
+                        image.clone(),
+                        0,
+                        false,
+                    );
+                    if let Err(err) = painted {
+                        eprintln!("calm: preview paint failed: {err:#}");
+                    }
+                }
+                Some(TerminalContent::Preview(None)) => {
+                    // No snapshot yet or it failed: flat rect with the title.
+                    let padding = 8.0 * zoom;
+                    let line = Rect::new(
+                        content_screen.origin.x + padding,
+                        content_screen.origin.y + padding,
+                        (content_screen.size.width - 2.0 * padding).max(0.0),
+                        CHROME_HEIGHT * zoom,
+                    );
+                    paint_title(&panel.title, line, zoom, origin, window, cx);
+                }
+                Some(TerminalContent::Live) | None => {}
+            }
             // Same squares as `chrome_hit`: Close rightmost, Minimize to its left.
             let margin = (CHROME_HEIGHT - CHROME_BUTTON_SIZE) / 2.0;
             let top = panel.rect.origin.y + margin;
@@ -594,10 +718,6 @@ impl PaintSnapshot {
             }
         }
 
-        let font_px = TITLE_FONT_SIZE * zoom;
-        if font_px < MIN_TITLE_FONT_PX {
-            return;
-        }
         // Leave room for the two buttons on the right of a full chrome strip.
         let reserved = if panel.minimized {
             0.0
@@ -611,41 +731,58 @@ impl PaintSnapshot {
             (chrome.size.width - padding - reserved).max(0.0),
             chrome.size.height,
         );
-        let title: SharedString = if self.confirming == Some(panel.id) {
-            CONFIRM_TITLE.into()
+        let title = if self.confirming == Some(panel.id) {
+            CONFIRM_TITLE
         } else {
-            panel.title.clone().into()
+            panel.title.as_str()
         };
-        let run = TextRun {
-            len: title.len(),
-            font: window.text_style().font(),
-            color: rgb(theme::TEXT).into(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
-        };
-        let line = window
-            .text_system()
-            .shape_line(title, px(font_px as f32), &[run], None);
-        let text_bounds = to_bounds(text_rect, origin);
-        window.with_content_mask(
-            Some(ContentMask {
-                bounds: text_bounds,
-            }),
-            |window| {
-                if let Err(err) = line.paint(
-                    text_bounds.origin,
-                    px(chrome.size.height as f32),
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                ) {
-                    eprintln!("calm: title paint failed: {err:#}");
-                }
-            },
-        );
+        paint_title(title, text_rect, zoom, origin, window, cx);
     }
+}
+
+/// One line of text, left aligned and clipped to `rect` (canvas pixels). Skipped when too small.
+fn paint_title(
+    text: &str,
+    rect: Rect,
+    zoom: f64,
+    origin: gpui::Point<f64>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let font_px = TITLE_FONT_SIZE * zoom;
+    if font_px < MIN_TITLE_FONT_PX || text.is_empty() {
+        return;
+    }
+    let title: SharedString = text.to_string().into();
+    let run = TextRun {
+        len: title.len(),
+        font: window.text_style().font(),
+        color: rgb(theme::TEXT).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let line = window
+        .text_system()
+        .shape_line(title, px(font_px as f32), &[run], None);
+    let text_bounds = to_bounds(rect, origin);
+    window.with_content_mask(
+        Some(ContentMask {
+            bounds: text_bounds,
+        }),
+        |window| {
+            if let Err(err) = line.paint(
+                text_bounds.origin,
+                px(rect.size.height as f32),
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            ) {
+                eprintln!("calm: title paint failed: {err:#}");
+            }
+        },
+    );
 }
 
 impl Focusable for CanvasView {
@@ -671,13 +808,16 @@ impl Render for CanvasView {
             confirming: self.input.confirming,
             pointer: self.pointer,
             terminals: self.terminals.clone(),
+            modal_open: self.input.confirming.is_some() || self.menu_open,
         };
         // Mouse and key targets for terminals, at last frame's placement.
         let viewport = self.viewport;
+        // Only live terminals take input; a preview's clicks go to the canvas.
         let terminal_targets = self.terminals.iter().map(|(id, terminal)| {
             let placement = self
                 .scene
                 .get(*id)
+                .filter(|_| terminal.read(cx).mode() == PanelMode::Live)
                 .and_then(|panel| terminal_placement(panel, &self.scene, viewport));
             let rect = placement.map_or(Rect::new(0.0, 0.0, 0.0, 0.0), |p| p.container);
             div()
