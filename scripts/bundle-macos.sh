@@ -29,6 +29,19 @@ rm -rf "${app:?}" "${out_dir:?}/$zip_name" "${out_dir:?}/$zip_name.sha256"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 cp "$target_dir/release/calm-app" "$app/Contents/MacOS/calm-app"
+# First-party plugins ship in Resources/plugins, where the app looks for built-ins.
+mkdir -p "$app/Contents/Resources/plugins"
+for manifest in "$repo_root"/plugins/*/calm-plugin.json; do
+    plugin_dir="$(dirname "$manifest")"
+    name="$(basename "$plugin_dir")"
+    if [[ -f "$plugin_dir/package.json" && ! -d "$plugin_dir/dist" ]]; then
+        die "plugin $name is not built; run gmake plugins first"
+    fi
+    rsync -a --exclude node_modules --exclude src --exclude '*.lock' \
+        --exclude package.json --exclude tsconfig.json \
+        "$plugin_dir/" "$app/Contents/Resources/plugins/$name/"
+done
+
 sed "s/@VERSION@/$version/g" "$repo_root/scripts/Info.plist.template" >"$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 

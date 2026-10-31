@@ -117,4 +117,9 @@ impl BrowserPanel {
     pub fn url(&self) -> Option<String> {
         self.view.url()
     }
+
+    /// The web view's frame size, which follows the panel's content size on a resize.
+    pub fn page_size(&self) -> Size {
+        self.view.page_size()
+    }
 }

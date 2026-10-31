@@ -7,8 +7,8 @@ use calm_core::scene::{Panel, PanelId, PanelKind};
 use calm_core::viewport::NativePlacement;
 use calm_native::{NativeChild, WebPanel};
 use calm_plugins::{
-    BridgeRequest, BridgeResponse, CALM_PRELUDE_JS, Discovery, InstalledPlugin, discover,
-    is_known_method, missing_scripts, plugin_dirs,
+    BridgeRequest, BridgeResponse, CALM_PRELUDE_JS, Discovery, InstalledPlugin, discover_search,
+    is_known_method, missing_scripts, plugin_search,
 };
 use futures::channel::mpsc::UnboundedSender;
 use gpui::Window;
@@ -17,13 +17,59 @@ use serde_json::Value;
 /// Carries raw bridge messages from a page's script handler to the canvas view.
 pub type BridgeSender = UnboundedSender<(PanelId, String)>;
 
-/// Scans the plugin folders once. Broken plugins are skipped and named on stderr.
-pub fn discover_installed() -> Discovery {
-    let discovery = discover(&plugin_dirs());
+/// Scans the plugin folders once and logs every searched dir and every plugin found,
+/// shadowed or skipped. `builtin` is the `plugins.builtin` setting. Also returns the
+/// searched dirs, user dirs first, for the empty Add menu.
+pub fn discover_installed(builtin: bool) -> (Discovery, Vec<String>) {
+    let search = plugin_search(builtin);
+    let mut searched = Vec::new();
+    for (kind, dirs) in [("user", &search.user), ("builtin", &search.builtin)] {
+        for dir in dirs {
+            let state = if dir.is_dir() { "" } else { " (missing)" };
+            eprintln!("calm: plugin dir {kind} {}{state}", dir.display());
+            searched.push(dir.display().to_string());
+        }
+    }
+    if let Some(reason) = search.builtin_disabled_by {
+        eprintln!("calm: built-in plugins off ({reason})");
+    }
+    let discovery = discover_search(&search);
+    for (index, plugin) in discovery.plugins.iter().enumerate() {
+        let kind = if index < discovery.user_count() {
+            "user"
+        } else {
+            "builtin"
+        };
+        let unbuilt = missing_scripts(plugin)
+            .map(|missing| {
+                if missing.is_empty() {
+                    ""
+                } else {
+                    " (not built)"
+                }
+            })
+            .unwrap_or(" (entry unreadable)");
+        eprintln!(
+            "calm: plugin found {kind} {} at {}{unbuilt}",
+            plugin.manifest.id,
+            plugin.dir.display()
+        );
+    }
+    for shadowed in &discovery.shadowed {
+        eprintln!(
+            "calm: plugin {} at {} shadows the built-in at {}",
+            shadowed.id,
+            shadowed.kept.display(),
+            shadowed.hidden.display()
+        );
+    }
     for err in &discovery.errors {
         eprintln!("calm: plugin skipped: {err}");
     }
-    discovery
+    if discovery.plugins.is_empty() {
+        eprintln!("calm: no plugins found");
+    }
+    (discovery, searched)
 }
 
 /// Menu lists as `CanvasView` keeps them, in the shape `calm_core::menu` takes.
