@@ -193,6 +193,26 @@ research doc and grid styles. Facts are verified unless marked otherwise.
   `padding` are rejected as planned until the libghostty shim patch.
 - Unverified: a manual GUI look at the accent ring, image icon and terminal colors.
 
+## On `feat/terminal-customize` (PR open, based on `main`)
+
+- `terminal` settings section (`calm-core::terminal_profile`): defaults plus named
+  `profiles` and `default_profile`. Look (`title_template` with `{n}` and `{cwd}`, `icon`,
+  accent, title bar and title colors, `terminal_colors`, `use_ghostty_user_config` per
+  profile) and launch (`command`, `args`, `cwd` home/inherit/path, `env`). Strict
+  validation names each field. Resolution: profile, then defaults, then theme.
+- Add menu: Terminal Profiles submenu when profiles exist. `t`, Add > Terminal and plain
+  duplicates use `default_profile`; Duplicate keeps the source's profile.
+- Chrome goes through the same `chrome_colors`, `divider_color`, `icon_tint` as TUI. Title,
+  icon and chrome follow settings changes live. A changed palette recolors running surfaces
+  through `TerminalThemeState::apply` (libghostty `surface_update_theme`).
+- Settings > Terminal: defaults only (chrome wells, 16 palette wells, 3 presets, default
+  profile, masked env keys). Smoke prints `smoke: terminal profile=neon accent=... theme=custom`.
+- Not built: text fields in the Settings window, so no title, icon, launch or profile
+  add/duplicate/rename/delete there; per-panel overrides from the right-click menu; the
+  profile is not stored in `PanelKind` (layouts are not wired yet).
+- Unverified: a manual GUI look at the recolor (smoke checks only that libghostty accepted
+  the theme), the profile submenu, and the new Settings controls.
+
 ## Verified on hardware
 
 macOS 27.0.1, Apple M4 Pro: smoke passes; two terminals render in zoom views at zoom 1.5;

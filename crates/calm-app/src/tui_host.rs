@@ -8,9 +8,10 @@ use calm_core::scene::PanelId;
 use calm_core::tui::{self, LaunchContext, LaunchSpec, RestartPolicy, Supervisor};
 use calm_plugins::{InstalledPlugin, TuiIcon, TuiRestart, TuiSpec};
 use gpui::Subscription;
-use gpui_libghostty::{TerminalColor, TerminalConfiguration, TerminalOptions, TerminalTheme};
+use gpui_libghostty::TerminalOptions;
 
 use crate::terminal;
+use crate::terminal_profiles::{self, login_shell};
 
 /// One TUI panel: its plugin, restart state and the current launch.
 pub struct TuiRun {
@@ -131,29 +132,10 @@ impl TuiRun {
     /// Puts the manifest's `terminalColors` on top of whatever config `options` loads.
     /// Call after the settings have picked the base configuration.
     pub fn apply_terminal_colors(&self, options: &mut TerminalOptions) {
-        let Some(colors) = &self.spec().terminal_colors else {
-            return;
-        };
-        let theme = TerminalTheme::new(
-            terminal_color(colors.background),
-            terminal_color(colors.foreground),
-            colors.palette.map(terminal_color),
-        );
-        options.configuration = match options.configuration {
-            TerminalConfiguration::UserDefault
-            | TerminalConfiguration::UserDefaultWithOverride(_) => {
-                TerminalConfiguration::UserDefaultWithOverride(theme)
-            }
-            TerminalConfiguration::Default | TerminalConfiguration::Custom(_) => {
-                TerminalConfiguration::Custom(theme)
-            }
-        };
+        if let Some(colors) = &self.spec().terminal_colors {
+            terminal_profiles::apply_colors(options, colors);
+        }
     }
-}
-
-/// 0xRRGGBB to a Ghostty color.
-fn terminal_color(rgb: u32) -> TerminalColor {
-    TerminalColor::new((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
 /// The exit code the wrapper wrote, or `None` if it never got there (e.g. killed).
@@ -174,14 +156,6 @@ pub fn read_exit_code(path: &Path) -> Option<i32> {
             None
         }
     }
-}
-
-/// `$SHELL`, else zsh, the macOS default. Apps started from Finder may lack `$SHELL`.
-fn login_shell() -> String {
-    std::env::var("SHELL")
-        .ok()
-        .filter(|shell| !shell.is_empty())
-        .unwrap_or_else(|| "/bin/zsh".to_string())
 }
 
 /// Per app run, so two CALM instances never read each other's status files.

@@ -142,7 +142,8 @@ from the TSX template in [templates/plugin-tsx](templates/plugin-tsx/README.md).
 
 ## Configuration
 
-- Settings live in `~/.config/calm/settings.json`.
+- Settings live in `~/.config/calm/settings.json`. Terminal defaults and profiles are
+  described in [docs/configuration.md](docs/configuration.md).
 - `CALM_HOME` replaces `~/.config/calm` for settings and plugins.
 - `CALM_PLUGIN_PATH` adds plugin folders, `:` separated like `PATH`. For development:
   `CALM_PLUGIN_PATH=./plugins cargo run -p calm-app`.
@@ -167,6 +168,7 @@ and most of the plugin bridge.
 
 - [Developer setup](docs/dev-setup.md): prerequisites, running, tests, make targets.
 - [Architecture](docs/architecture.md): terminals, native views and previews.
+- [Configuration](docs/configuration.md): `settings.json`, terminal defaults and profiles.
 - [Plugins](docs/plugins.md): manifest, `window.calm` API and the trust model.
 - [Releases and CI](docs/release.md): CI jobs, cutting a release, the macOS bundle.
 - [Design spec](docs/superpowers/specs/2026-10-31-calm-design.md) and
