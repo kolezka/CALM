@@ -1936,11 +1936,14 @@ async fn smoke_autosave(view: &Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
         ));
     }
 
-    // The quit hook writes a new order at once, before any debounce.
+    // The quit hook writes a newer change at once, before any debounce. A move, not a
+    // reorder: a reorder and back leaves the native stack out of order (backlog item 6).
     let last = view.read_with(cx, |view, _| view.scene.panels.last().map(|panel| panel.id));
     let after_quit = view.update(cx, |view, _| {
-        if let Some(id) = last {
-            view.scene.send_to_back(id);
+        if let Some(id) = last
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.y += 16.0;
         }
         view.save_on_quit();
         view.scene.to_layout()
@@ -1965,8 +1968,10 @@ async fn smoke_autosave(view: &Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
     // Undo the move and the reorder, so later steps see the scene they expect.
     let written = view.update(cx, |view, cx| {
         view.stop_autosave();
-        if let Some(id) = last {
-            view.scene.bring_to_front(id);
+        if let Some(id) = last
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.y -= 16.0;
         }
         if let Some(id) = first
             && let Some(panel) = view.scene.get_mut(id)
