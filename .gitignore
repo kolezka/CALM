@@ -1,0 +1,11 @@
+target/
+graphify-out/
+.codegraph/
+node_modules/
+plugins/*/dist/
+templates/*/dist/
+.superpowers/
+.worktrees/
+bench-results/
+.DS_Store
+*.log
