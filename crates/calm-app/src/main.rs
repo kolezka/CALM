@@ -310,6 +310,8 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         }
 
         cx.update(|_| smoke_app_icon());
+        // Before the steps known to flake; it leaves the scene as it found it.
+        smoke_autosave(&view, cx).await;
         smoke_plugins(&view, window, cx).await;
         smoke_tui(&view, window, cx).await;
 
@@ -508,7 +510,6 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_settings_dispatch(&view, window, cx).await;
         smoke_github_api(&view, window, cx).await;
         smoke_plugin_menus(&view, window, cx).await;
-        smoke_autosave(&view, cx).await;
 
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
@@ -1899,12 +1900,19 @@ async fn smoke_autosave(view: &Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
     }
 
     // A move, then wait for the debounced write.
+    let original = view.read_with(cx, |view, _| view.scene.to_layout());
+    let first = view.read_with(cx, |view, _| {
+        view.scene.panels.first().map(|panel| panel.id)
+    });
     view.update(cx, |view, cx| {
-        if let Some(id) = view.scene.panels.first().map(|panel| panel.id)
+        if let Some(id) = first
             && let Some(panel) = view.scene.get_mut(id)
         {
             panel.rect.origin.x += 16.0;
         }
+        // An explicit tick: a window that is not painting would never run the render hook.
+        // The debounce timer it sets still does the write.
+        view.autosave_tick(cx);
         cx.notify();
     });
     let started = Instant::now();
@@ -1929,8 +1937,9 @@ async fn smoke_autosave(view: &Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
     }
 
     // The quit hook writes a new order at once, before any debounce.
+    let last = view.read_with(cx, |view, _| view.scene.panels.last().map(|panel| panel.id));
     let after_quit = view.update(cx, |view, _| {
-        if let Some(id) = view.scene.panels.last().map(|panel| panel.id) {
+        if let Some(id) = last {
             view.scene.send_to_back(id);
         }
         view.save_on_quit();
@@ -1953,10 +1962,41 @@ async fn smoke_autosave(view: &Entity<CanvasView>, cx: &mut gpui::AsyncApp) {
     if settled != Some(layout_order(&after_quit)) {
         smoke_fail(&format!("autosave: file changed after quit: {settled:?}"));
     }
-    let written = view.update(cx, |view, _| {
+    // Undo the move and the reorder, so later steps see the scene they expect.
+    let written = view.update(cx, |view, cx| {
         view.stop_autosave();
+        if let Some(id) = last {
+            view.scene.bring_to_front(id);
+        }
+        if let Some(id) = first
+            && let Some(panel) = view.scene.get_mut(id)
+        {
+            panel.rect.origin.x -= 16.0;
+        }
+        cx.notify();
         view.autosave_writes
     });
+    let restored = view.read_with(cx, |view, _| view.scene.to_layout());
+    if layout_order(&restored) != layout_order(&original) {
+        smoke_fail("autosave: could not put the scene back");
+    }
+    // The reorder restacked the native views; wait for a paint to restack them back.
+    let started = Instant::now();
+    loop {
+        let (scene, native) = cx.update(|cx| view.read(cx).native_zorder(cx));
+        if scene == native {
+            break;
+        }
+        if started.elapsed() > SMOKE_AUTOSAVE_TIMEOUT {
+            smoke_fail(&format!(
+                "autosave: native order {native:?}, scene {scene:?}"
+            ));
+        }
+        view.update(cx, |_, cx| cx.notify());
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
     if written < 2 {
         smoke_fail(&format!("autosave: written={written}, expected at least 2"));
     }

@@ -79,6 +79,12 @@ impl AutosaveClock {
         self.seen != self.submitted
     }
 
+    /// Whether `revision` differs from the last one handed to a writer. The quit path asks
+    /// this with the live revision, which the clock may not have observed yet.
+    pub fn changed_since_submit(&self, revision: u64) -> bool {
+        revision != self.submitted
+    }
+
     /// The revision to save now, if one is due.
     pub fn due(&self, now: Duration) -> Option<u64> {
         let deadline = self.next_deadline()?;
@@ -385,6 +391,17 @@ mod tests {
         assert_eq!(writer.inner(), &vec!["first", "second"]);
         assert_eq!(queue.saved(), Some(2));
         assert!(!clock.is_dirty());
+    }
+
+    #[test]
+    fn quit_sees_a_change_the_clock_has_not_observed() {
+        let mut clock = AutosaveClock::new(SECOND, 0);
+        clock.observe(1, ms(0));
+        clock.submitted(1);
+        // A change right before quit, with no tick in between.
+        assert!(!clock.is_dirty());
+        assert!(clock.changed_since_submit(2));
+        assert!(!clock.changed_since_submit(1));
     }
 
     #[test]

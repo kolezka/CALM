@@ -436,7 +436,9 @@ impl CanvasView {
             return;
         };
         let queued = autosave.queue.take_queued().is_some();
-        let pending = autosave.clock.is_dirty() || autosave.queue.in_flight().is_some();
+        // The live revision, not the clock's: a change since the last tick must be saved.
+        let pending =
+            autosave.clock.changed_since_submit(revision) || autosave.queue.in_flight().is_some();
         if !queued && !pending {
             return;
         }
