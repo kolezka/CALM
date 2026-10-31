@@ -146,5 +146,9 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   processes), no `calm` bridge in browser panels, CALM never hands its own secrets to
   plugins, and the API never closes a live terminal without the user's confirmation (a
   guard for the user's work against plugin bugs; a backend could still kill the process).
-- **Bun runtime source: pending the user.** Recommended: bun on the user's system with a
-  fixed lookup order and a loud failure, not a bundled copy.
+- **Bun runtime source: the user's installed bun (decided 2026-10-31).** Lookup order: the
+  `plugins.bun_path` setting, then a one-time login shell `$SHELL -lc 'command -v bun'`,
+  then `~/.bun/bin`, `/opt/homebrew/bin` and `/usr/local/bin`. A missing bun, or one outside
+  `engines.bun`, fails loud with an install hint in the panel and the status bar error count.
+  Reason: developers already need bun; bundling adds size, signing and delayed security
+  fixes. Cost if wrong: a bundled copy can be added later as the last lookup step.
