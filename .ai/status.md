@@ -156,6 +156,20 @@ Pull requests:
   an unknown kind's JSON bytes. v1 files load as v2 and are never rewritten; version 3 and
   up fail. The resize policy is not saved. Overrides are stored but not applied in the
   chrome, page zoom is stored but not applied, and an unsupported panel draws chrome only.
+  Session storage primitives (persistence plan Task 3, `feat/session-storage`, not on `main`
+  yet): `layout::write_durable` (exclusive 0600 temp, fsync, rename, directory fsync, temp
+  removed on failure, created dirs 0700), used by layouts and `settings.json`;
+  `write_layout_file`, the one layout write path, stamps `saved_at_unix` and applies
+  `browser_url::scrub_for_save` (urls over 8 KiB save as `about:blank` in both modes) and
+  `scrub_text_for_save` (every url inside a browser title);
+  `session_path`, `rotate_backups` (copies `session.json` to `.1`, never moves it; backups
+  0600), `SessionWriter` (rotates once per writer, no-op when
+  `session.json` is missing, so a moved-aside failed restore never enters the backups);
+  `move_aside`, shared with the settings quarantine. Settings section `session`
+  (`restore_on_launch`, `autosave`, `debounce_ms` 250 to 10000, `backup_count` 0 to 20,
+  `browser_query`) with a Session section in the Settings form. Nothing calls the session
+  writer yet: autosave is Task 4, restore Task 5. Lowering `backup_count` leaves older
+  backups above the new count in place.
 - `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title

@@ -6,7 +6,6 @@ use std::fs;
 use std::io;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,8 +13,10 @@ use crate::background::{
     BackgroundKind, BackgroundSettings, MAX_BLUR, MAX_FILTER_FACTOR, MAX_GRADIENT_STOPS,
     MIN_GRADIENT_STOPS, Rgb,
 };
+use crate::browser_url::BrowserQueryMode;
 use crate::geometry::Size;
 use crate::grid::GridKind;
+use crate::layout::{move_aside, write_durable};
 use crate::menu::DEFAULT_TERMINAL_SIZE;
 use crate::preview::PREVIEW_ZOOM_THRESHOLD;
 use crate::process_stats::{DEFAULT_INTERVAL_MS, INTERVAL_MS_RANGE, MemoryUnit};
@@ -27,8 +28,6 @@ use crate::terminal_profile::TerminalSettings;
 /// mark size and the major grid were added later with defaults, so they need no new version.
 /// The same holds for the `terminal` section: a file without it gets the defaults.
 pub const SETTINGS_VERSION: u32 = 2;
-/// Makes temp file names unique per save call, not just per process.
-static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Below this screen spacing the grid lines turn into noise, so the grid is skipped.
 pub const MIN_GRID_SPACING_PX: f64 = 8.0;
 
@@ -82,6 +81,83 @@ pub struct Settings {
     pub terminal: TerminalSettings,
     pub canvas: CanvasSettings,
     pub developer: DeveloperSettings,
+    /// Session restore and autosave. A file without the section gets the defaults.
+    pub session: SessionSettings,
+}
+
+pub const SESSION_DEBOUNCE_MS_RANGE: RangeInclusive<u64> = 250..=10_000;
+pub const SESSION_BACKUP_COUNT_RANGE: RangeInclusive<u32> = 0..=20;
+
+/// Whether the last session comes back at launch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestoreOnLaunch {
+    #[default]
+    On,
+    Off,
+    Ask,
+}
+
+impl RestoreOnLaunch {
+    pub const ALL: [RestoreOnLaunch; 3] = [
+        RestoreOnLaunch::On,
+        RestoreOnLaunch::Off,
+        RestoreOnLaunch::Ask,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RestoreOnLaunch::On => "Always",
+            RestoreOnLaunch::Off => "Never",
+            RestoreOnLaunch::Ask => "Ask",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionSettings {
+    pub restore_on_launch: RestoreOnLaunch,
+    pub autosave: bool,
+    /// Quiet time after the last change before an autosave.
+    pub debounce_ms: u64,
+    /// `session.json.1` to `.n`, rotated once per launch. 0 keeps none.
+    pub backup_count: u32,
+    pub browser_query: BrowserQueryMode,
+}
+
+impl Default for SessionSettings {
+    fn default() -> Self {
+        SessionSettings {
+            restore_on_launch: RestoreOnLaunch::On,
+            autosave: true,
+            debounce_ms: 1000,
+            backup_count: 3,
+            browser_query: BrowserQueryMode::StripAll,
+        }
+    }
+}
+
+impl SessionSettings {
+    fn validate(&self) -> Result<(), String> {
+        if !SESSION_DEBOUNCE_MS_RANGE.contains(&self.debounce_ms) {
+            return Err(format!(
+                "\"session.debounce_ms\" is {}, expected {} to {}",
+                self.debounce_ms,
+                SESSION_DEBOUNCE_MS_RANGE.start(),
+                SESSION_DEBOUNCE_MS_RANGE.end()
+            ));
+        }
+        if !SESSION_BACKUP_COUNT_RANGE.contains(&self.backup_count) {
+            return Err(format!(
+                "\"session.backup_count\" is {}, expected {} to {}",
+                self.backup_count,
+                SESSION_BACKUP_COUNT_RANGE.start(),
+                SESSION_BACKUP_COUNT_RANGE.end()
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -220,6 +296,7 @@ impl Default for Settings {
             terminal: TerminalSettings::default(),
             canvas: CanvasSettings::default(),
             developer: DeveloperSettings::default(),
+            session: SessionSettings::default(),
         }
     }
 }
@@ -457,6 +534,7 @@ impl Settings {
                 INTERVAL_MS_RANGE.end()
             ));
         }
+        self.session.validate()?;
         self.plugins.menus.validate()
     }
 }
@@ -535,25 +613,9 @@ pub fn load_settings_from(path: &Path) -> Result<Settings, SettingsError> {
 /// Moves a rejected settings file aside to `settings.json.invalid-<n>` so it survives the
 /// next save. Returns the new path.
 pub fn set_aside_invalid(path: &Path) -> Result<PathBuf, SettingsError> {
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "settings.json".to_string());
-    for attempt in 0..1000 {
-        let target = path.with_file_name(format!("{name}.invalid-{attempt}"));
-        if target.exists() {
-            continue;
-        }
-        return fs::rename(path, &target)
-            .map(|()| target)
-            .map_err(|source| SettingsError::Io {
-                path: path.to_path_buf(),
-                source,
-            });
-    }
-    Err(SettingsError::Io {
+    move_aside(path).map_err(|source| SettingsError::Io {
         path: path.to_path_buf(),
-        source: io::Error::new(io::ErrorKind::AlreadyExists, "too many invalid copies"),
+        source,
     })
 }
 
@@ -603,30 +665,18 @@ pub fn save_settings(settings: &Settings) -> Result<PathBuf, SettingsError> {
     save_settings_to(&settings_path(), settings)
 }
 
-/// Pretty JSON through a temp file and a rename, like layouts, so a crash never
-/// leaves a half-written file.
+/// Pretty JSON through `write_durable`, like layouts: a crash never leaves a half-written
+/// file, and the file is 0600.
 pub fn save_settings_to(path: &Path, settings: &Settings) -> Result<PathBuf, SettingsError> {
-    let io_error = |source| SettingsError::Io {
-        path: path.to_path_buf(),
-        source,
-    };
     let json =
         serde_json::to_string_pretty(settings).map_err(|error| SettingsError::Malformed {
             path: path.to_path_buf(),
             message: error.to_string(),
         })?;
-    let dir = path.parent().unwrap_or(Path::new("."));
-    fs::create_dir_all(dir).map_err(io_error)?;
-    let temp_path = dir.join(format!(
-        ".settings.json.tmp-{}-{}",
-        std::process::id(),
-        SAVE_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    if let Err(source) = fs::write(&temp_path, json).and_then(|()| fs::rename(&temp_path, path)) {
-        // Best effort cleanup; the write or rename error is the one worth reporting.
-        let _ = fs::remove_file(&temp_path);
-        return Err(io_error(source));
-    }
+    write_durable(path, json.as_bytes()).map_err(|source| SettingsError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
     Ok(path.to_path_buf())
 }
 
@@ -684,6 +734,96 @@ mod tests {
         settings.panels.default_terminal_width = 800.0;
         settings.panels.preview_below_zoom = 0.3;
         settings
+    }
+
+    #[test]
+    fn session_settings_missing_file_and_missing_section_give_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("settings.json");
+        assert!(matches!(
+            read_settings_from(&missing),
+            Err(SettingsError::NotFound(_))
+        ));
+        assert_eq!(
+            load_settings_from(&missing).unwrap().session,
+            SessionSettings::default()
+        );
+
+        // An existing v2 file written before the section existed.
+        std::fs::write(&missing, r#"{ "version": 2, "grid": { "show": true } }"#).unwrap();
+        let old = read_settings_from(&missing).unwrap();
+        assert!(old.grid.show);
+        let session = old.session;
+        assert_eq!(session.restore_on_launch, RestoreOnLaunch::On);
+        assert!(session.autosave);
+        assert_eq!(session.debounce_ms, 1000);
+        assert_eq!(session.backup_count, 3);
+        assert_eq!(session.browser_query, BrowserQueryMode::StripAll);
+    }
+
+    #[test]
+    fn session_settings_reject_malformed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let file = |session: &str| format!(r#"{{ "version": 2, "session": {session} }}"#);
+
+        // Positive control: every field set to a valid non-default value, edges included.
+        std::fs::write(
+            &path,
+            file(
+                r#"{ "restore_on_launch": "ask", "autosave": false, "debounce_ms": 10000,
+                "backup_count": 0, "browser_query": "keep" }"#,
+            ),
+        )
+        .unwrap();
+        let valid = read_settings_from(&path).unwrap().session;
+        assert_eq!(
+            valid,
+            SessionSettings {
+                restore_on_launch: RestoreOnLaunch::Ask,
+                autosave: false,
+                debounce_ms: 10_000,
+                backup_count: 0,
+                browser_query: BrowserQueryMode::Keep,
+            }
+        );
+
+        for (session, field) in [
+            (r#"{ "debounce_ms": 249 }"#, "session.debounce_ms"),
+            (r#"{ "debounce_ms": 10001 }"#, "session.debounce_ms"),
+            (r#"{ "backup_count": 21 }"#, "session.backup_count"),
+            (r#"{ "backup_count": -1 }"#, "integer `-1`"),
+            (r#"{ "restore_on_launch": "maybe" }"#, "maybe"),
+            (
+                r#"{ "browser_query": "strip_sensitive" }"#,
+                "strip_sensitive",
+            ),
+            (r#"{ "autosave": "yes" }"#, "invalid type"),
+            (r#"{ "debounce": 500 }"#, "debounce"),
+            (r#""on""#, "invalid type"),
+        ] {
+            std::fs::write(&path, file(session)).unwrap();
+            match read_settings_from(&path) {
+                Err(SettingsError::Malformed { message, .. }) => {
+                    assert!(message.contains(field), "{session}: {message}");
+                }
+                other => panic!("{session}: expected Malformed, got {other:?}"),
+            }
+            // The tolerant loader must not turn a malformed file into defaults.
+            assert!(load_settings_from(&path).is_err(), "{session}");
+        }
+    }
+
+    #[test]
+    fn saved_settings_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new/settings.json");
+        save_settings_to(&path, &Settings::default()).unwrap();
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&dir.path().join("new")), 0o700);
+        assert_eq!(read_settings_from(&path).unwrap(), Settings::default());
     }
 
     #[test]

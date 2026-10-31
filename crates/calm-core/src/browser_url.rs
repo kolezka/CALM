@@ -1,4 +1,104 @@
-//! Turns what the user typed in a browser address bar into a URL to load.
+//! Turns what the user typed in a browser address bar into a URL to load, and scrubs a
+//! URL before it is saved in a layout.
+
+use serde::{Deserialize, Serialize};
+
+/// How much of a browser URL a saved layout keeps (`session.browser_query`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserQueryMode {
+    /// Drop the query, the fragment and any `user:password@`. They can carry tokens.
+    #[default]
+    StripAll,
+    /// Save the URL as is. A kept URL can carry a token into the file.
+    Keep,
+}
+
+impl BrowserQueryMode {
+    pub const ALL: [BrowserQueryMode; 2] = [BrowserQueryMode::StripAll, BrowserQueryMode::Keep];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BrowserQueryMode::StripAll => "Strip query and fragment",
+            BrowserQueryMode::Keep => "Keep full URL",
+        }
+    }
+}
+
+/// The longest URL a layout saves. Longer ones (large `data:` pages) save as `about:blank`.
+pub const MAX_SAVED_URL_BYTES: usize = 8192;
+
+/// The URL as a layout saves it. `StripAll` keeps scheme, host, port and path and drops
+/// the rest; `Keep` keeps `url` unchanged. In both modes a result over
+/// `MAX_SAVED_URL_BYTES` becomes `about:blank`.
+pub fn scrub_for_save(url: &str, mode: BrowserQueryMode) -> String {
+    let scrubbed = match mode {
+        BrowserQueryMode::Keep => url.to_string(),
+        BrowserQueryMode::StripAll => strip_query(url),
+    };
+    if scrubbed.len() > MAX_SAVED_URL_BYTES {
+        "about:blank".to_string()
+    } else {
+        scrubbed
+    }
+}
+
+/// Schemes recognized inside free text, such as a page title.
+const TEXT_URL_SCHEMES: &[&str] = &["https:", "http:", "file:", "about:", "data:"];
+
+/// `text` with every URL inside it passed through `scrub_for_save`, the rest kept. A URL
+/// starts at a known scheme and runs to whitespace or a quote or angle bracket. `Keep`
+/// returns `text` unchanged.
+pub fn scrub_text_for_save(text: &str, mode: BrowserQueryMode) -> String {
+    if mode == BrowserQueryMode::Keep {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = find_url_start(rest) {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>'))
+            .unwrap_or(tail.len());
+        out.push_str(&scrub_for_save(&tail[..end], mode));
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Byte index of the first known scheme in `text` that does not continue a longer word.
+fn find_url_start(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    (0..bytes.len()).find(|&index| {
+        let continues_word = index > 0
+            && (bytes[index - 1].is_ascii_alphanumeric()
+                || matches!(bytes[index - 1], b'+' | b'-' | b'.'));
+        !continues_word
+            && TEXT_URL_SCHEMES.iter().any(|scheme| {
+                bytes[index..]
+                    .get(..scheme.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(scheme.as_bytes()))
+            })
+    })
+}
+
+/// Scheme, host, port and path of `url`: no query, fragment or `user:password@`.
+fn strip_query(url: &str) -> String {
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    let url = &url[..end];
+    // Userinfo sits between `://` and the first `/` of the path, ending at its last `@`.
+    if let Some(start) = url.find("://").map(|index| index + 3) {
+        let authority_end = url[start..]
+            .find('/')
+            .map_or(url.len(), |index| start + index);
+        if let Some(at) = url[start..authority_end].rfind('@') {
+            return format!("{}{}", &url[..start], &url[start + at + 1..]);
+        }
+    }
+    url.to_string()
+}
 
 /// Search used when the input does not look like an address. The query is appended,
 /// form-encoded.
@@ -98,6 +198,31 @@ fn form_encode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrub_for_save_table() {
+        use BrowserQueryMode::{Keep, StripAll};
+        let cases = [
+            ("https://example.com/a/b", "https://example.com/a/b"),
+            (
+                "https://example.com:8443/a?x=1&code=abc",
+                "https://example.com:8443/a",
+            ),
+            ("https://example.com/a#state=xyz", "https://example.com/a"),
+            ("https://example.com/a?x=1#y", "https://example.com/a"),
+            ("https://example.com?x=1", "https://example.com"),
+            ("http://localhost:3000/#/route", "http://localhost:3000/"),
+            ("https://user:pw@example.com/a?x", "https://example.com/a"),
+            ("about:blank", "about:blank"),
+            ("data:text/plain,hello", "data:text/plain,hello"),
+            ("data:text/plain,hello?x=1#f", "data:text/plain,hello"),
+            ("file:///tmp/a.html?q", "file:///tmp/a.html"),
+        ];
+        for (input, stripped) in cases {
+            assert_eq!(scrub_for_save(input, StripAll), stripped, "{input}");
+            assert_eq!(scrub_for_save(input, Keep), input, "{input}");
+        }
+    }
 
     fn norm(input: &str) -> String {
         normalize_address(input).expect("non-blank input")

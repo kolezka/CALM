@@ -1,12 +1,15 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::browser_url::{BrowserQueryMode, scrub_for_save, scrub_text_for_save};
 use crate::camera::{Camera, MAX_ZOOM, MIN_ZOOM};
 use crate::geometry::Rect;
 use crate::scene::{PanelKind, PanelOverrides, Scene};
@@ -177,38 +180,269 @@ pub fn layouts_dir_from(calm_home: Option<OsString>, home: Option<OsString>) -> 
     }
 }
 
-pub fn save_layout(name: &str, layout: &LayoutFile) -> Result<PathBuf, LayoutError> {
-    save_layout_in(&layouts_dir(), name, layout)
+/// `save_layout_in` at `layouts_dir()`.
+pub fn save_layout(
+    name: &str,
+    layout: &LayoutFile,
+    browser_query: BrowserQueryMode,
+) -> Result<PathBuf, LayoutError> {
+    save_layout_in(&layouts_dir(), name, layout, browser_query)
 }
 
 pub fn load_layout(name: &str) -> Result<LayoutFile, LayoutError> {
     load_layout_from(&layouts_dir(), name)
 }
 
-/// Writes `<dir>/<name>.json` through a temp file and a rename, so a crash never
-/// leaves a half-written layout behind.
-pub fn save_layout_in(dir: &Path, name: &str, layout: &LayoutFile) -> Result<PathBuf, LayoutError> {
+/// Writes `<dir>/<name>.json` with `write_layout_file`.
+pub fn save_layout_in(
+    dir: &Path,
+    name: &str,
+    layout: &LayoutFile,
+    browser_query: BrowserQueryMode,
+) -> Result<PathBuf, LayoutError> {
     let path = layout_path(dir, name)?;
-    let io_error = |source| LayoutError::Io {
-        path: path.clone(),
-        source,
-    };
-    let json = serde_json::to_string_pretty(layout).map_err(|error| LayoutError::Malformed {
-        path: path.clone(),
+    write_layout_file(&path, layout, browser_query)?;
+    Ok(path)
+}
+
+/// The one write path for named layouts and the session. Stamps `saved_at_unix` with
+/// the current time, scrubs browser URLs per `browser_query`, then writes durably.
+pub fn write_layout_file(
+    path: &Path,
+    layout: &LayoutFile,
+    browser_query: BrowserQueryMode,
+) -> Result<(), LayoutError> {
+    let prepared = prepare_for_save(layout, browser_query, now_unix());
+    let json = serde_json::to_string_pretty(&prepared).map_err(|error| LayoutError::Malformed {
+        path: path.to_path_buf(),
         message: error.to_string(),
     })?;
-    fs::create_dir_all(dir).map_err(io_error)?;
+    write_durable(path, json.as_bytes()).map_err(|source| LayoutError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn prepare_for_save(layout: &LayoutFile, browser_query: BrowserQueryMode, now: u64) -> LayoutFile {
+    let mut prepared = layout.clone();
+    prepared.saved_at_unix = Some(now);
+    for panel in &mut prepared.panels {
+        if let PanelKind::Browser { url, .. } = &mut panel.kind {
+            let scrubbed = scrub_for_save(url, browser_query);
+            // A new browser panel is titled with its url; it follows the url, size guard
+            // included. Any other title is page text that can quote urls, so scrub those.
+            if panel.title == *url {
+                panel.title.clone_from(&scrubbed);
+            } else {
+                panel.title = scrub_text_for_save(&panel.title, browser_query);
+            }
+            *url = scrubbed;
+        }
+    }
+    prepared
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Writes `bytes` to `path` so a crash leaves either the old file or the new one: a new
+/// same-directory temp file (mode 0600, created exclusively), write, fsync, rename over
+/// `path`, fsync the directory. Missing directories are created with mode 0700. The temp
+/// file is removed on failure.
+pub fn write_durable(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_durable_with(path, bytes, |from, to| fs::rename(from, to))
+}
+
+/// `write_durable` with the rename step injectable, so tests can fail it.
+fn write_durable_with(
+    path: &Path,
+    bytes: &[u8],
+    rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let dir = parent_dir(path);
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?
+        .to_string_lossy();
+    create_private_dir(dir)?;
     let temp_path = dir.join(format!(
-        ".{name}.json.tmp-{}-{}",
+        ".{name}.tmp-{}-{}",
         std::process::id(),
         SAVE_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    if let Err(source) = fs::write(&temp_path, json).and_then(|()| fs::rename(&temp_path, &path)) {
-        // Best effort cleanup; the write or rename error is the one worth reporting.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temp_path)?;
+    let written = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| {
+            drop(file);
+            rename(&temp_path, path)
+        });
+    if let Err(error) = written {
+        // The write or rename error is the one worth reporting; the temp may already be gone.
         let _ = fs::remove_file(&temp_path);
-        return Err(io_error(source));
+        return Err(error);
     }
-    Ok(path)
+    sync_dir(dir)
+}
+
+/// The directory holding `path`, `.` for a bare file name.
+fn parent_dir(path: &Path) -> &Path {
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    }
+}
+
+/// Creates `dir` and its missing ancestors with mode 0700, top down. After each one the
+/// parent is fsynced, so the new entry survives a power loss.
+pub fn create_private_dir(dir: &Path) -> io::Result<()> {
+    create_private_dir_with(dir, sync_dir)
+}
+
+/// `create_private_dir` with the parent fsync injectable, so tests can record it.
+fn create_private_dir_with(
+    dir: &Path,
+    mut sync_parent: impl FnMut(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut missing = Vec::new();
+    let mut current = dir;
+    while !current.exists() {
+        missing.push(current);
+        match current.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => current = parent,
+            _ => break,
+        }
+    }
+    for new_dir in missing.into_iter().rev() {
+        match fs::DirBuilder::new().mode(0o700).create(new_dir) {
+            Ok(()) => sync_parent(parent_dir(new_dir))?,
+            // Another save created it first; that save syncs the parent.
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && new_dir.is_dir() => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn sync_dir(dir: &Path) -> io::Result<()> {
+    fs::File::open(dir)?.sync_all()
+}
+
+/// Renames `path` to `<name>.invalid-<n>` with the first free `n`, so a file CALM refused
+/// to load survives the next save. A rename keeps the file's mode. Returns the new path.
+pub fn move_aside(path: &Path) -> io::Result<PathBuf> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?
+        .to_string_lossy()
+        .into_owned();
+    for attempt in 0..1000 {
+        let target = path.with_file_name(format!("{name}.invalid-{attempt}"));
+        if target.symlink_metadata().is_ok() {
+            continue;
+        }
+        fs::rename(path, &target)?;
+        return Ok(target);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "too many invalid copies",
+    ))
+}
+
+pub const SESSION_FILE_NAME: &str = "session.json";
+
+/// `session_path_from` with the process environment.
+pub fn session_path() -> PathBuf {
+    session_path_from(std::env::var_os("CALM_HOME"), std::env::var_os("HOME"))
+}
+
+/// `$CALM_HOME/session.json` when `CALM_HOME` is set, else
+/// `$HOME/.config/calm/session.json`. Empty variables count as unset.
+pub fn session_path_from(calm_home: Option<OsString>, home: Option<OsString>) -> PathBuf {
+    layouts_dir_from(calm_home, home).with_file_name(SESSION_FILE_NAME)
+}
+
+/// `<path>.<n>`, the n-th backup of `path`. `.1` is the newest.
+pub fn backup_path(path: &Path, n: u32) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{n}"));
+    path.with_file_name(name)
+}
+
+/// Shifts `.1..` up by one, dropping the oldest past `count`, and copies `path` to `.1`.
+/// `path` stays in place, so a write that fails after rotation still leaves the session
+/// to restore. Every backup ends up 0600. Does nothing when `path` is missing, so a file
+/// already moved aside never enters the backups, or when `count` is 0.
+pub fn rotate_backups(path: &Path, count: u32) -> io::Result<()> {
+    if count == 0 || path.symlink_metadata().is_err() {
+        return Ok(());
+    }
+    for n in (1..count).rev() {
+        let from = backup_path(path, n);
+        if from.symlink_metadata().is_ok() {
+            let to = backup_path(path, n + 1);
+            fs::rename(&from, &to)?;
+            fs::set_permissions(&to, fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    // A durable write creates the copy 0600 and fsyncs the directory.
+    write_durable(&backup_path(path, 1), &fs::read(path)?)
+}
+
+/// Writes the session file for one launch. Backups rotate once, before the first save,
+/// never on later autosaves: rotating on every save would push out all backups within
+/// seconds of a bad session.
+#[derive(Debug)]
+pub struct SessionWriter {
+    path: PathBuf,
+    backup_count: u32,
+    browser_query: BrowserQueryMode,
+    rotated: bool,
+}
+
+impl SessionWriter {
+    pub fn new(path: PathBuf, backup_count: u32, browser_query: BrowserQueryMode) -> Self {
+        SessionWriter {
+            path,
+            backup_count,
+            browser_query,
+            rotated: false,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Rotates on the first call of this writer, then writes `layout`.
+    pub fn save(&mut self, layout: &LayoutFile) -> Result<(), LayoutError> {
+        self.save_with(layout, write_layout_file)
+    }
+
+    /// `save` with the write step injectable, so tests can fail it after rotation.
+    fn save_with(
+        &mut self,
+        layout: &LayoutFile,
+        write: impl FnOnce(&Path, &LayoutFile, BrowserQueryMode) -> Result<(), LayoutError>,
+    ) -> Result<(), LayoutError> {
+        if !self.rotated {
+            rotate_backups(&self.path, self.backup_count).map_err(|source| LayoutError::Io {
+                path: self.path.clone(),
+                source,
+            })?;
+            self.rotated = true;
+        }
+        write(&self.path, layout, self.browser_query)
+    }
 }
 
 pub fn load_layout_from(dir: &Path, name: &str) -> Result<LayoutFile, LayoutError> {
@@ -342,7 +576,13 @@ mod tests {
     fn roundtrip_preserves_panels_camera_and_order() {
         let dir = tempfile::tempdir().unwrap();
         let scene = sample_scene();
-        let path = save_layout_in(dir.path(), "work", &scene.to_layout()).unwrap();
+        let path = save_layout_in(
+            dir.path(),
+            "work",
+            &scene.to_layout(),
+            BrowserQueryMode::Keep,
+        )
+        .unwrap();
         assert_eq!(path, dir.path().join("work.json"));
         let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(entries.len(), 1, "temp file must not be left behind");
@@ -443,7 +683,13 @@ mod tests {
             },
             Rect::new(0.0, 0.0, 300.0, 200.0),
         );
-        save_layout_in(dir.path(), "plugins", &scene.to_layout()).unwrap();
+        save_layout_in(
+            dir.path(),
+            "plugins",
+            &scene.to_layout(),
+            BrowserQueryMode::Keep,
+        )
+        .unwrap();
         let loaded = load_layout_from(dir.path(), "plugins").unwrap();
         match &loaded.panels[0].kind {
             PanelKind::Plugin {
@@ -458,14 +704,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = Scene::default().to_layout();
         for name in ["../escape", "a/b", "", "with space", "dot.json"] {
-            let error = save_layout_in(dir.path(), name, &layout).unwrap_err();
+            let error =
+                save_layout_in(dir.path(), name, &layout, BrowserQueryMode::Keep).unwrap_err();
             assert!(
                 matches!(error, LayoutError::Malformed { .. }),
                 "{name}: {error:?}"
             );
         }
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-        assert!(save_layout_in(dir.path(), "My_layout-2", &layout).is_ok());
+        assert!(save_layout_in(dir.path(), "My_layout-2", &layout, BrowserQueryMode::Keep).is_ok());
     }
 
     #[test]
@@ -649,7 +896,7 @@ mod tests {
                 scope.spawn(move || {
                     barrier.wait();
                     for _ in 0..200 {
-                        let saved = save_layout_in(dir, "shared", layout);
+                        let saved = save_layout_in(dir, "shared", layout, BrowserQueryMode::Keep);
                         assert!(saved.is_ok(), "save failed: {saved:?}");
                     }
                 });
@@ -657,7 +904,11 @@ mod tests {
         });
 
         let loaded = load_layout_from(dir.path(), "shared").unwrap();
-        assert!(loaded == big || loaded == small, "final file mixes writers");
+        // The stamp differs per save, so compare what the writers chose.
+        assert!(
+            loaded.panels == big.panels || loaded.panels == small.panels,
+            "final file mixes writers"
+        );
         let names: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|entry| entry.unwrap().file_name())
@@ -666,6 +917,415 @@ mod tests {
             names,
             vec![std::ffi::OsString::from("shared.json")],
             "temp files left behind"
+        );
+    }
+
+    // Durable writes, session file and backups.
+
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn dir_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn browser_layout(url: &str) -> LayoutFile {
+        let mut scene = Scene::default();
+        scene.add(
+            PanelKind::Browser {
+                url: url.to_string(),
+                page_zoom: None,
+            },
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        scene.to_layout()
+    }
+
+    fn saved_url(path: &Path) -> String {
+        let text = std::fs::read_to_string(path).unwrap();
+        let layout: LayoutFile = serde_json::from_str(&text).unwrap();
+        match &layout.panels[0].kind {
+            PanelKind::Browser { url, .. } => url.clone(),
+            other => panic!("expected a browser, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn durable_write_is_private_and_tightens_a_wide_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("a/b/session.json");
+        write_durable(&path, b"one").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"one");
+        assert_eq!(mode_of(&path), 0o600);
+        assert_eq!(mode_of(&root.path().join("a")), 0o700);
+        assert_eq!(mode_of(&root.path().join("a/b")), 0o700);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_durable(&path, b"two").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"two");
+        assert_eq!(mode_of(&path), 0o600);
+        assert_eq!(dir_names(&root.path().join("a/b")), ["session.json"]);
+    }
+
+    #[test]
+    fn durable_write_failure_removes_the_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // A non-empty directory where the file should go makes the real rename fail.
+        let target = dir.path().join("session.json");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("keep"), b"x").unwrap();
+        assert!(write_durable(&target, b"new").is_err());
+        assert_eq!(dir_names(dir.path()), ["session.json"]);
+        assert_eq!(dir_names(&target), ["keep"]);
+    }
+
+    #[test]
+    fn rename_failure_keeps_the_prior_valid_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("work.json");
+        write_layout_file(
+            &path,
+            &browser_layout("https://example.com/old"),
+            BrowserQueryMode::Keep,
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let error = write_durable_with(&path, b"{ broken", |_, _| {
+            Err(io::Error::other("injected rename failure"))
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "injected rename failure");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(dir_names(dir.path()), ["work.json"]);
+        assert!(load_layout_from(dir.path(), "work").is_ok());
+    }
+
+    #[test]
+    fn session_path_follows_calm_home() {
+        assert_eq!(
+            session_path_from(Some("/tmp/calm".into()), Some("/home/u".into())),
+            PathBuf::from("/tmp/calm/session.json")
+        );
+        assert_eq!(
+            session_path_from(Some("".into()), Some("/home/u".into())),
+            PathBuf::from("/home/u/.config/calm/session.json")
+        );
+        assert_eq!(
+            backup_path(Path::new("/x/session.json"), 2),
+            PathBuf::from("/x/session.json.2")
+        );
+    }
+
+    /// One simulated launch: a fresh writer that autosaves three times.
+    fn launch(path: &Path, count: u32, number: u32) {
+        let mut writer = SessionWriter::new(path.to_path_buf(), count, BrowserQueryMode::Keep);
+        for save in ["a", "b", "c"] {
+            let url = format!("https://example.com/launch-{number}-{save}");
+            writer.save(&browser_layout(&url)).unwrap();
+        }
+    }
+
+    #[test]
+    fn backups_rotate_once_per_launch() {
+        let url = |number: u32| format!("https://example.com/launch-{number}-c");
+        for (count, expected_backups) in [(0, vec![]), (1, vec![4]), (3, vec![4, 3, 2])] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(SESSION_FILE_NAME);
+            for number in 1..=5 {
+                launch(&path, count, number);
+            }
+            assert_eq!(saved_url(&path), url(5), "count {count}");
+            let mut expected_names = vec![SESSION_FILE_NAME.to_string()];
+            for (index, number) in expected_backups.iter().enumerate() {
+                let backup = backup_path(&path, index as u32 + 1);
+                assert_eq!(saved_url(&backup), url(*number), "count {count}");
+                assert_eq!(mode_of(&backup), 0o600);
+                expected_names.push(format!("{SESSION_FILE_NAME}.{}", index + 1));
+            }
+            assert_eq!(dir_names(dir.path()), expected_names, "count {count}");
+        }
+    }
+
+    #[test]
+    fn a_quarantined_failed_restore_never_enters_the_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SESSION_FILE_NAME);
+        launch(&path, 3, 1);
+        launch(&path, 3, 2);
+        std::fs::write(&path, b"{ not a layout").unwrap();
+
+        // The next launch fails to restore and moves the file aside before any save.
+        let failed = load_layout_from(dir.path(), "session").unwrap_err();
+        assert!(matches!(failed, LayoutError::Malformed { .. }), "{failed}");
+        let aside = move_aside(&path).unwrap();
+        assert_eq!(aside, dir.path().join("session.json.invalid-0"));
+        launch(&path, 3, 3);
+
+        assert_eq!(
+            dir_names(dir.path()),
+            ["session.json", "session.json.1", "session.json.invalid-0"]
+        );
+        assert_eq!(std::fs::read(&aside).unwrap(), b"{ not a layout");
+        assert_eq!(
+            saved_url(&backup_path(&path, 1)),
+            "https://example.com/launch-1-c"
+        );
+    }
+
+    #[test]
+    fn move_aside_picks_the_first_free_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, b"1").unwrap();
+        assert_eq!(
+            move_aside(&path).unwrap(),
+            dir.path().join("settings.json.invalid-0")
+        );
+        std::fs::write(&path, b"2").unwrap();
+        assert_eq!(
+            move_aside(&path).unwrap(),
+            dir.path().join("settings.json.invalid-1")
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_normal_save_stamps_saved_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut scene = Scene::default();
+        scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+            },
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        let layout = scene.to_layout();
+        assert_eq!(layout.saved_at_unix, None);
+        let before = now_unix();
+        save_layout_in(dir.path(), "named", &layout, BrowserQueryMode::StripAll).unwrap();
+        let mut writer = SessionWriter::new(
+            dir.path().join(SESSION_FILE_NAME),
+            3,
+            BrowserQueryMode::StripAll,
+        );
+        writer.save(&layout).unwrap();
+        let after = now_unix();
+        for name in ["named", "session"] {
+            let stamp = load_layout_from(dir.path(), name).unwrap().saved_at_unix;
+            assert!(
+                stamp.is_some_and(|stamp| (before..=after).contains(&stamp)),
+                "{name}: {stamp:?} not in {before}..={after}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_write_path_scrubs_browser_urls_per_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://example.com/a?code=fixture-code#state=fixture-state";
+        let layout = browser_layout(url);
+        let strip =
+            save_layout_in(dir.path(), "strip", &layout, BrowserQueryMode::StripAll).unwrap();
+        let keep = save_layout_in(dir.path(), "keep", &layout, BrowserQueryMode::Keep).unwrap();
+        let mut session = SessionWriter::new(
+            dir.path().join(SESSION_FILE_NAME),
+            0,
+            BrowserQueryMode::StripAll,
+        );
+        session.save(&layout).unwrap();
+
+        for path in [&strip, session.path()] {
+            let bytes = std::fs::read_to_string(path).unwrap();
+            assert!(
+                bytes.contains("\"https://example.com/a\""),
+                "{}",
+                path.display()
+            );
+            assert!(!bytes.contains("fixture-code"), "{}", path.display());
+            assert!(!bytes.contains("fixture-state"), "{}", path.display());
+        }
+        let kept = std::fs::read_to_string(&keep).unwrap();
+        assert!(kept.contains(&format!("\"{url}\"")));
+        // The caller's layout is not scrubbed in memory.
+        assert_eq!(layout, browser_layout(url));
+    }
+
+    // Review fixes on the session write path.
+
+    #[test]
+    fn rotation_never_leaves_the_primary_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SESSION_FILE_NAME);
+        launch(&path, 3, 1);
+        let before = std::fs::read(&path).unwrap();
+        // A crash or failed write right after rotation must still find the session.
+        rotate_backups(&path, 3).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(load_layout_from(dir.path(), "session").is_ok());
+        assert_eq!(std::fs::read(backup_path(&path, 1)).unwrap(), before);
+    }
+
+    #[test]
+    fn a_write_failing_after_rotation_keeps_the_primary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SESSION_FILE_NAME);
+        launch(&path, 3, 1);
+        let before = std::fs::read(&path).unwrap();
+
+        let mut writer = SessionWriter::new(path.clone(), 3, BrowserQueryMode::Keep);
+        let error = writer
+            .save_with(&browser_layout("https://example.com/new"), |path, _, _| {
+                Err(LayoutError::Io {
+                    path: path.to_path_buf(),
+                    source: io::Error::from_raw_os_error(24), // EMFILE
+                })
+            })
+            .unwrap_err();
+        assert!(matches!(error, LayoutError::Io { .. }), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(saved_url(&path), "https://example.com/launch-1-c");
+        assert_eq!(std::fs::read(backup_path(&path, 1)).unwrap(), before);
+    }
+
+    #[test]
+    fn missing_dirs_are_created_top_down_and_their_parents_synced() {
+        let root = tempfile::tempdir().unwrap();
+        let leaf = root.path().join("a/b/c");
+        let mut synced = Vec::new();
+        create_private_dir_with(&leaf, |dir| {
+            synced.push(dir.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        let a = root.path().join("a");
+        let b = a.join("b");
+        assert_eq!(synced, [root.path().to_path_buf(), a.clone(), b.clone()]);
+        for dir in [&a, &b, &leaf] {
+            assert_eq!(mode_of(dir), 0o700, "{}", dir.display());
+        }
+
+        // Only the missing part of a path is created and synced.
+        synced.clear();
+        create_private_dir_with(&b.join("x/y"), |dir| {
+            synced.push(dir.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(synced, [b.clone(), b.join("x")]);
+        synced.clear();
+        create_private_dir_with(&leaf, |dir| {
+            synced.push(dir.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert!(synced.is_empty(), "{synced:?}");
+    }
+
+    #[test]
+    fn rotated_backups_end_up_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let wide = || std::fs::Permissions::from_mode(0o644);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SESSION_FILE_NAME);
+        std::fs::write(&path, b"primary").unwrap();
+        std::fs::set_permissions(&path, wide()).unwrap();
+        std::fs::write(backup_path(&path, 1), b"older").unwrap();
+        std::fs::set_permissions(backup_path(&path, 1), wide()).unwrap();
+
+        rotate_backups(&path, 3).unwrap();
+        assert_eq!(std::fs::read(backup_path(&path, 1)).unwrap(), b"primary");
+        assert_eq!(std::fs::read(backup_path(&path, 2)).unwrap(), b"older");
+        assert_eq!(mode_of(&backup_path(&path, 1)), 0o600);
+        assert_eq!(mode_of(&backup_path(&path, 2)), 0o600);
+    }
+
+    fn saved_browser(path: &Path) -> (String, String) {
+        let text = std::fs::read_to_string(path).unwrap();
+        let layout: LayoutFile = serde_json::from_str(&text).unwrap();
+        match &layout.panels[0].kind {
+            PanelKind::Browser { url, .. } => (url.clone(), layout.panels[0].title.clone()),
+            other => panic!("expected a browser, got {other:?}"),
+        }
+    }
+
+    fn save_titled(dir: &Path, url: &str, title: &str, mode: BrowserQueryMode) -> (String, String) {
+        let mut layout = browser_layout(url);
+        layout.panels[0].title = title.to_string();
+        let path = save_layout_in(dir, "titled", &layout, mode).unwrap();
+        saved_browser(&path)
+    }
+
+    #[test]
+    fn strip_all_scrubs_every_url_inside_a_browser_title() {
+        use BrowserQueryMode::{Keep, StripAll};
+        let dir = tempfile::tempdir().unwrap();
+        let url = "https://example.test/a";
+        let cases = [
+            (
+                "Viewing https://example.test/a?code=X done",
+                "Viewing https://example.test/a done",
+            ),
+            (
+                "From http://a.test/x?code=one to HTTPS://b.test/y#state=two (and file:///tmp/f?q=three)",
+                "From http://a.test/x to HTTPS://b.test/y (and file:///tmp/f",
+            ),
+            (
+                "Paste data:text/plain,hi#frag-four or about:blank?five",
+                "Paste data:text/plain,hi or about:blank",
+            ),
+            ("Plain title, no address", "Plain title, no address"),
+            ("https://u:pw@example.test/a?x", "https://example.test/a"),
+        ];
+        for (title, stripped) in cases {
+            assert_eq!(
+                save_titled(dir.path(), url, title, StripAll).1,
+                stripped,
+                "{title}"
+            );
+            assert_eq!(
+                save_titled(dir.path(), url, title, Keep).1,
+                title,
+                "{title}"
+            );
+        }
+    }
+
+    #[test]
+    fn urls_over_8_kib_save_as_about_blank_in_both_modes() {
+        use BrowserQueryMode::{Keep, StripAll};
+        let dir = tempfile::tempdir().unwrap();
+        let sized = |len: usize| {
+            let prefix = "data:text/plain,";
+            format!("{prefix}{}", "a".repeat(len - prefix.len()))
+        };
+        for mode in [StripAll, Keep] {
+            let at_limit = sized(8192);
+            assert_eq!(
+                save_titled(dir.path(), &at_limit, "Big page", mode),
+                (at_limit.clone(), "Big page".to_string()),
+                "{mode:?}"
+            );
+            assert_eq!(
+                save_titled(dir.path(), &sized(8193), "Big page", mode),
+                ("about:blank".to_string(), "Big page".to_string()),
+                "{mode:?}"
+            );
+        }
+        // The guard runs after scrubbing: a long query alone does not trigger it.
+        let long_query = format!("https://example.test/a?q={}", "x".repeat(9000));
+        assert_eq!(
+            save_titled(dir.path(), &long_query, "Search", StripAll).0,
+            "https://example.test/a"
         );
     }
 
@@ -757,11 +1417,13 @@ mod tests {
         scene.bring_to_front(plugin);
 
         let mut layout = scene.to_layout();
-        layout.saved_at_unix = Some(1_793_450_000);
-        save_layout_in(dir.path(), "all", &layout).unwrap();
+        // The writer stamps the save time over whatever the layout carried.
+        layout.saved_at_unix = Some(1);
+        save_layout_in(dir.path(), "all", &layout, BrowserQueryMode::Keep).unwrap();
         let loaded = load_layout_from(dir.path(), "all").unwrap();
         assert_eq!(loaded.version, LAYOUT_VERSION);
-        assert_eq!(loaded.saved_at_unix, Some(1_793_450_000));
+        assert!(loaded.saved_at_unix.is_some_and(|stamp| stamp > 1));
+        layout.saved_at_unix = loaded.saved_at_unix;
         assert_eq!(loaded, layout);
         let restored = Scene::from_layout(loaded);
         assert_eq!(restored.camera, scene.camera);
@@ -828,8 +1490,11 @@ mod tests {
                 saved,
                 serde_json::json!({"type": "tui", "plugin_id": "top-example", "plugin_version": null})
             );
-            save_layout_in(dir.path(), "again", &loaded).unwrap();
-            assert_eq!(load_layout_from(dir.path(), "again").unwrap(), loaded);
+            save_layout_in(dir.path(), "again", &loaded, BrowserQueryMode::Keep).unwrap();
+            let mut again = load_layout_from(dir.path(), "again").unwrap();
+            assert!(again.saved_at_unix.is_some());
+            again.saved_at_unix = loaded.saved_at_unix;
+            assert_eq!(again, loaded);
         }
     }
 
@@ -948,7 +1613,13 @@ mod tests {
 
         let restored = Scene::from_layout(loaded.clone());
         assert_eq!(restored.panels[1].title, "panel 1");
-        save_layout_in(dir.path(), "saved", &restored.to_layout()).unwrap();
+        save_layout_in(
+            dir.path(),
+            "saved",
+            &restored.to_layout(),
+            BrowserQueryMode::Keep,
+        )
+        .unwrap();
         let saved_text = std::fs::read_to_string(dir.path().join("saved.json")).unwrap();
         assert!(
             saved_text.contains(UNKNOWN_KIND),
