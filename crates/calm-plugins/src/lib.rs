@@ -3,6 +3,7 @@
 pub mod assets;
 pub mod bridge;
 pub mod contributes;
+pub mod events;
 pub mod gh_token;
 pub mod github;
 pub mod manifest;
