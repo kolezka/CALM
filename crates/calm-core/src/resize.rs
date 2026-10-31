@@ -6,6 +6,7 @@
 
 use crate::geometry::{Point, Rect, Size};
 use crate::interaction::ResizeEdge;
+use crate::join::JoinLayout;
 use crate::scene::{MIN_PANEL_SIZE, Panel, PanelId, PanelKind, Scene, chip_rect};
 
 /// Grab band inside a panel's right and bottom edges, in world units. It only reaches
@@ -113,8 +114,12 @@ fn grab_zone(panel: &Panel, zoom: f64) -> Rect {
 /// Panels are tried front to back. The first one whose rect or outer band holds the
 /// point decides: a locked panel, a minimized chip or a point away from the edges gives
 /// `None`, so a grab never reaches a panel hidden behind another one.
+///
+/// The outer band never reaches into a joined neighbor: there the inner band and the
+/// gap between the two panels resize, and the neighbor keeps its own clicks.
 pub fn resize_target(scene: &Scene, world: Point) -> Option<(PanelId, ResizeEdge)> {
     let zoom = scene.camera.zoom;
+    let joins = JoinLayout::compute(&scene.panels);
     for panel in scene.panels.iter().rev() {
         if panel.minimized {
             if chip_rect(panel).contains(world) {
@@ -123,6 +128,9 @@ pub fn resize_target(scene: &Scene, world: Point) -> Option<(PanelId, ResizeEdge
             continue;
         }
         if !grab_zone(panel, zoom).contains(world) {
+            continue;
+        }
+        if !panel.rect.contains(world) && in_joined_neighbor(scene, &joins, panel.id, world) {
             continue;
         }
         if !panel.resize.resizable {
@@ -139,6 +147,20 @@ pub fn resize_target(scene: &Scene, world: Point) -> Option<(PanelId, ResizeEdge
         return Some((panel.id, edge));
     }
     None
+}
+
+/// Whether `world` lies inside a panel joined to `id`.
+fn in_joined_neighbor(scene: &Scene, joins: &JoinLayout, id: PanelId, world: Point) -> bool {
+    joins
+        .joins
+        .iter()
+        .filter_map(|join| match (join.first == id, join.second == id) {
+            (true, _) => Some(join.second),
+            (_, true) => Some(join.first),
+            _ => None,
+        })
+        .filter_map(|other| scene.get(other))
+        .any(|other| other.rect.contains(world))
 }
 
 #[cfg(test)]
@@ -338,5 +360,69 @@ mod tests {
         scene.get_mut(id).unwrap().minimized = true;
         assert_eq!(resize_target(&scene, Point::new(195.0, 20.0)), None);
         assert_eq!(resize_target(&scene, Point::new(398.0, 200.0)), None);
+    }
+
+    /// A on the left, B one join gap to its right. `a_front` puts A in front of B.
+    fn joined_pair(a_front: bool) -> (Scene, PanelId, PanelId) {
+        let mut scene = Scene::default();
+        let a = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        let b = scene.add(browser(), Rect::new(201.0, 0.0, 200.0, 100.0));
+        if a_front {
+            scene.bring_to_front(a);
+        }
+        assert_eq!(JoinLayout::compute(&scene.panels).joins.len(), 1);
+        (scene, a, b)
+    }
+
+    #[test]
+    fn joined_edge_band_does_not_reach_into_the_neighbor() {
+        for zoom in [0.5, 1.0, 2.0] {
+            for a_front in [true, false] {
+                let (mut scene, _, _) = joined_pair(a_front);
+                scene.camera.zoom = zoom;
+                // B's title bar and content right of the shared edge, inside A's 8 px band.
+                for x in [201.0, 203.0, 201.0 + RESIZE_OUTER_PX / zoom - 0.1] {
+                    for y in [5.0, 50.0] {
+                        assert_eq!(
+                            resize_target(&scene, Point::new(x, y)),
+                            None,
+                            "zoom {zoom} a_front {a_front} at ({x}, {y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn joined_gap_and_inner_band_resize_the_left_panel() {
+        for a_front in [true, false] {
+            let (scene, a, _) = joined_pair(a_front);
+            for x in [195.0, 200.0, 200.5] {
+                assert_eq!(
+                    resize_target(&scene, Point::new(x, 50.0)),
+                    Some((a, ResizeEdge::Right)),
+                    "a_front {a_front} at x {x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unjoined_edges_of_a_joined_pair_keep_the_outer_band() {
+        let (scene, a, b) = joined_pair(true);
+        let outer = RESIZE_OUTER_PX - 1.0;
+        assert_eq!(
+            resize_target(&scene, Point::new(401.0 + outer, 50.0)),
+            Some((b, ResizeEdge::Right))
+        );
+        assert_eq!(
+            resize_target(&scene, Point::new(50.0, 100.0 + outer)),
+            Some((a, ResizeEdge::Bottom))
+        );
+        assert_eq!(
+            resize_target(&scene, Point::new(300.0, 100.0 + outer)),
+            Some((b, ResizeEdge::Bottom))
+        );
     }
 }

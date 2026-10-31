@@ -1125,11 +1125,11 @@ mod tests {
             no_mods(),
             &mut scene,
         );
-        // Left edge 205 snaps flush to the neighbor's right edge 200; top 401 to the grid.
+        // Left edge 205 joins the neighbor's right edge 200 one unit off; top 401 to the grid.
         handler.mouse_move(Point::new(215.0, 411.0), no_mods(), &mut scene);
         assert_eq!(
             scene.get(moving).unwrap().rect,
-            Rect::new(200.0, 400.0, 200.0, 100.0)
+            Rect::new(201.0, 400.0, 200.0, 100.0)
         );
     }
 
@@ -1177,5 +1177,59 @@ mod tests {
         handler.mouse_move(Point::new(213.0, 121.0), free(), &mut scene);
         handler.mouse_up(Point::new(213.0, 121.0), no_mods(), &mut scene);
         assert_eq!(scene.panels[0].rect, Rect::new(16.0, 24.0, 200.0, 96.0));
+    }
+
+    #[test]
+    fn shared_edge_resize_moves_only_the_left_panel() {
+        let mut scene = Scene::default();
+        let left = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        let right = scene.add(terminal(), Rect::new(201.0, 0.0, 200.0, 100.0));
+        scene.bring_to_front(left);
+        let mut handler = InputHandler::default();
+
+        // A press in the 1 unit gap grabs the left panel's right edge.
+        handler.mouse_down(Point::new(200.5, 50.0), Button::Left, no_mods(), &mut scene);
+        assert!(matches!(
+            handler.state,
+            Interaction::Resizing { id, edge: ResizeEdge::Right, .. } if id == left
+        ));
+        handler.mouse_move(Point::new(150.5, 50.0), free(), &mut scene);
+        handler.mouse_up(Point::new(150.5, 50.0), free(), &mut scene);
+        assert_eq!(
+            scene.get(left).unwrap().rect,
+            Rect::new(0.0, 0.0, 150.0, 100.0)
+        );
+        assert_eq!(
+            scene.get(right).unwrap().rect,
+            Rect::new(201.0, 0.0, 200.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn press_on_joined_neighbor_title_bar_does_not_resize() {
+        let mut scene = Scene::default();
+        let left = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        let right = scene.add(terminal(), Rect::new(201.0, 0.0, 200.0, 100.0));
+        scene.bring_to_front(left);
+        let mut handler = InputHandler::default();
+
+        // Inside the left panel's 8 px outer band, but on the right panel's title bar.
+        let press = Point::new(204.0, 5.0);
+        assert_eq!(handler.hover_resize(press, &scene), None);
+        handler.mouse_down(press, Button::Left, no_mods(), &mut scene);
+        assert!(
+            !matches!(handler.state, Interaction::Resizing { .. }),
+            "got {:?}",
+            handler.state
+        );
+        handler.mouse_up(press, no_mods(), &mut scene);
+        assert_eq!(
+            scene.get(left).unwrap().rect,
+            Rect::new(0.0, 0.0, 200.0, 100.0)
+        );
+        assert_eq!(
+            scene.get(right).unwrap().rect,
+            Rect::new(201.0, 0.0, 200.0, 100.0)
+        );
     }
 }

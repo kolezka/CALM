@@ -9,8 +9,10 @@ mod theme;
 
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::ResizeEdge;
+use calm_core::join::JOIN_SNAP_GAP;
 use calm_core::preview::PanelMode;
-use calm_core::scene::PanelKind;
+use calm_core::scene::{PanelId, PanelKind};
+use calm_core::snap::{SnapConfig, snap_move};
 use std::sync::{Mutex, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -193,6 +195,48 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             }
         }
 
+        // Drop the second terminal 5 units right of the first through the real snap path:
+        // it must land one unit off and render as one joined pair with a visible divider.
+        let gap = cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                let mut ids: Vec<PanelId> = view.scene.panels.iter().map(|p| p.id).collect();
+                ids.sort();
+                let anchor = view.scene.get(ids[0]).map(|p| p.rect)?;
+                let moving = view.scene.get_mut(ids[1])?;
+                let dropped = Rect::new(
+                    anchor.right() + 5.0,
+                    anchor.origin.y,
+                    moving.rect.size.width,
+                    moving.rect.size.height,
+                );
+                moving.rect = snap_move(dropped, &[anchor], &SnapConfig::default());
+                let gap = moving.rect.origin.x - anchor.right();
+                cx.notify();
+                Some(gap)
+            })
+        });
+        if gap != Some(JOIN_SNAP_GAP) {
+            smoke_fail(&format!(
+                "flush drop landed at gap {gap:?}, not {JOIN_SNAP_GAP}"
+            ));
+        }
+        let moved = Instant::now();
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let (pairs, dividers) = cx.update(|cx| view.read(cx).join_counts);
+            if (pairs, dividers) == (1, 1) {
+                println!("smoke: join pairs={pairs} dividers={dividers} gap={JOIN_SNAP_GAP}");
+                break;
+            }
+            if moved.elapsed() > SMOKE_ZORDER_TIMEOUT {
+                smoke_fail(&format!(
+                    "flush pair not joined: pairs={pairs} dividers={dividers}"
+                ));
+            }
+        }
+
         smoke_plugins(&view, window, cx).await;
 
         let toggled = cx.update_window(window, |_, window, cx| {
@@ -361,6 +405,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         }
 
         smoke_resize(&view, window, cx).await;
+        smoke_settings_dispatch(&view, window, cx).await;
 
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
@@ -712,6 +757,66 @@ fn load_startup_settings(path: std::path::PathBuf) -> SettingsState {
         path,
         notice: Some(notice),
     }
+}
+
+/// Opens Settings the way a menu click or `cmd-,` does: `OpenSettings` dispatched on the
+/// canvas window, so handlers run while GPUI holds that window. Calling `open_settings`
+/// directly skips that path, which is how a dead menu item once passed the smoke.
+async fn smoke_settings_dispatch(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use gpui::Action as _;
+    let (available, bindings) = cx.update(|cx| {
+        let available = cx.is_action_available(&settings_menu::OpenSettings);
+        let bindings = window
+            .update(cx, |_, window, _| {
+                window
+                    .bindings_for_action(&settings_menu::OpenSettings)
+                    .len()
+            })
+            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+        if let Some(settings_window) = &view.read(cx).settings_window {
+            settings_window.hide();
+        }
+        window
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(settings_menu::OpenSettings.boxed_clone(), cx)
+            })
+            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+        (available, bindings)
+    });
+    let started = Instant::now();
+    let (visible, on_screen) = loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let state = cx.update(|cx| {
+            view.read(cx)
+                .settings_window
+                .as_ref()
+                .map(|w| (w.is_visible(), w.is_on_screen()))
+                .unwrap_or((false, false))
+        });
+        if state.0 || started.elapsed() > Duration::from_secs(2) {
+            break state;
+        }
+    };
+    println!(
+        "smoke: settings_dispatch available={available} bindings={bindings} visible={visible} on_screen={on_screen}"
+    );
+    if !(available && bindings > 0 && visible && on_screen) {
+        smoke_fail("OpenSettings dispatched on the canvas window did not show Settings");
+    }
+    cx.update(|cx| {
+        if let Some(settings_window) = &view.read(cx).settings_window {
+            settings_window.hide();
+        }
+        window
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+    });
 }
 
 /// Sets a gradient background and the grid through the settings path, reads the file back,

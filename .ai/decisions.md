@@ -77,6 +77,17 @@ one means a new entry, not an edit.
   Cost if wrong: canvas clicks in the top 28 pt strip drag the window instead (native
   title bar drag), and clicks on the bar fall through to the canvas.
 
+- **Joined panels leave a 1 unit gap, filled by the divider.** Panels join when facing
+  edges are 0 to 2 world units apart (`JOIN_GAP`) and their spans overlap. Edge snapping
+  puts facing edges exactly 1 unit apart (`JOIN_SNAP_GAP`), never flush, because GPUI
+  cannot paint over a native view: a 0 gap leaves the divider no room beside two live
+  terminals. The divider fills the gap, so it is 1 px at zoom 1 and scales with zoom.
+  Over the title bars it is at least 1 px wide, so a pair at gap 0 (only reachable with
+  `alt`) still shows a seam in the bar, but none over the content. All panel kinds join.
+  Resizing a shared edge moves one panel; snapping keeps it joined. Rejected: a 0 gap
+  with the divider drawn on chrome only, which leaves two terminals visually fused.
+  Cost if wrong: the 1 unit offset breaks exact grid alignment of the second panel.
+
 ## Process
 
 - **Agent Teams with disjoint write scopes.** SDD forbids parallel implementers; lanes run
@@ -163,6 +174,12 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   rect. Cost: a press just outside a panel resizes it instead of hitting what is behind,
   and over a joined or overlapping neighbor that is a live web view, the web view still
   wins the click.
+- **On a joined edge the outer band stops at the neighbor.** Merged with PR #12: the band
+  skips any point inside a panel joined to this one, so a press on the neighbor's title bar
+  or content goes to the neighbor. The inner band and the 1 unit join gap still resize the
+  left or top panel, and only that panel moves. Unjoined edges keep the full 8 px band.
+  Cost: over a joined web view the shared edge is grabbable only in the 1 unit gap and the
+  inner band, which a web view keeps for itself.
 - **Only right, bottom and corner handles.** Left and top edges would move the origin and
   touch `snap_resize`, which PR #12 rewrites. Cost: no resize from the left or top yet.
 - **No `aspectRatio`.** Snapping and two clamped axes make it more than cheap.
