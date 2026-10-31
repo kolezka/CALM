@@ -7,7 +7,7 @@ use calm_core::interaction::{
     ZoomStep,
 };
 use calm_core::menu::{self, MenuCommand, MenuItem};
-use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, decide_mode};
+use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{HostView, NativeChild, show_context_menu};
@@ -46,6 +46,11 @@ pub const KEY_CONTEXT: &str = "Canvas";
 const TITLE_FONT_SIZE: f64 = 13.0;
 /// Below this the title is unreadable, so it is skipped.
 const MIN_TITLE_FONT_PX: f64 = 4.0;
+/// Width of the `preview stale` label in the chrome strip, in world units.
+const STALE_LABEL_WIDTH: f64 = 96.0;
+const STALE_LABEL: &str = "preview stale";
+/// Added to the refresh timer so its repaint lands just after a snapshot is due.
+const PREVIEW_TIMER_MARGIN: Duration = Duration::from_millis(100);
 const CONFIRM_TITLE: &str = "Close? enter / esc";
 
 pub fn key_bindings() -> Vec<gpui::KeyBinding> {
@@ -93,6 +98,8 @@ pub struct CanvasView {
     menu_open: bool,
     /// Repaints every `PREVIEW_REFRESH_SECS` while any terminal is in `Preview`.
     preview_timer: Option<Task<()>>,
+    /// Terminal input divs that a paint found over a `Preview` panel. Smoke expects 0.
+    pub preview_input_targets: usize,
 }
 
 impl CanvasView {
@@ -113,6 +120,7 @@ impl CanvasView {
             frame_stats: FrameStats::default(),
             menu_open: false,
             preview_timer: None,
+            preview_input_targets: 0,
         }
     }
 
@@ -317,8 +325,16 @@ impl CanvasView {
             .iter()
             .map(|(_, terminal)| {
                 let terminal = terminal.read(cx);
-                (terminal.mode(), terminal.preview().is_some())
+                (terminal.mode(), terminal.preview().image().is_some())
             })
+            .collect()
+    }
+
+    /// Snapshot attempts per terminal, in creation order.
+    pub fn snapshot_counts(&self, cx: &App) -> Vec<u64> {
+        self.terminals
+            .iter()
+            .map(|(_, terminal)| terminal.read(cx).snapshot_count())
             .collect()
     }
 
@@ -334,7 +350,7 @@ impl CanvasView {
         self.preview_timer = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(Duration::from_secs(PREVIEW_REFRESH_SECS))
+                    .timer(Duration::from_secs(PREVIEW_REFRESH_SECS) + PREVIEW_TIMER_MARGIN)
                     .await;
                 if this.update(cx, |_, cx| cx.notify()).is_err() {
                     break;
@@ -522,14 +538,30 @@ struct PaintSnapshot {
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Close confirmation or context menu up: native views must not cover it.
     modal_open: bool,
+    /// Terminals that got an input div in this render.
+    input_targets: Vec<PanelId>,
 }
 
 /// How a terminal panel's content is drawn this paint.
 enum TerminalContent {
     /// The native view covers the content rect.
     Live,
-    /// A GPUI-drawn snapshot, or `None` for a flat rect with the title.
-    Preview(Option<Arc<RenderImage>>),
+    /// A GPUI-drawn snapshot, possibly stale, or a flat rect with the title.
+    Preview(PreviewImage<Arc<RenderImage>>),
+}
+
+/// The mode a terminal panel gets this frame. Render and paint both use it, so input
+/// targets match what paint applies. `viewport` is the canvas area; only its size counts.
+fn terminal_mode(panel: &Panel, scene: &Scene, viewport: Rect, modal_open: bool) -> PanelMode {
+    let local = Rect::new(0.0, 0.0, viewport.size.width, viewport.size.height);
+    let screen = scene.camera.world_rect_to_screen(content_rect(panel));
+    decide_mode(
+        scene.camera.zoom,
+        screen,
+        local,
+        panel.minimized,
+        modal_open,
+    )
 }
 
 /// A panel's native placement in window points, or `None` when minimized or off screen.
@@ -558,6 +590,8 @@ impl PaintSnapshot {
             f64::from(f32::from(bounds.origin.y)),
         );
         let mut previewing = false;
+        let mut modes_changed = false;
+        let mut preview_targets = 0;
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             window.paint_quad(fill(bounds, rgb(theme::BACKGROUND)));
             let camera = self.scene.camera;
@@ -567,7 +601,13 @@ impl PaintSnapshot {
                 f64::from(f32::from(bounds.size.width)),
                 f64::from(f32::from(bounds.size.height)),
             );
-            let contents = self.apply_terminal_modes(viewport, window, cx);
+            let (contents, changed) = self.apply_terminal_modes(viewport, window, cx);
+            modes_changed = changed;
+            preview_targets = self
+                .input_targets
+                .iter()
+                .filter(|id| matches!(contents.get(id), Some(TerminalContent::Preview(_))))
+                .count();
             previewing = contents
                 .values()
                 .any(|content| matches!(content, TerminalContent::Preview(_)));
@@ -595,6 +635,11 @@ impl PaintSnapshot {
         this.update(cx, |view, cx| {
             view.sync_native_order(cx);
             view.sync_preview_timer(previewing, cx);
+            view.preview_input_targets += preview_targets;
+            // Render picks input targets from the mode; rebuild them if paint disagreed.
+            if modes_changed {
+                cx.notify();
+            }
         })
         .ok();
 
@@ -614,25 +659,24 @@ impl PaintSnapshot {
         });
     }
 
-    /// Decides each terminal's mode, applies it, and returns what to draw in its content rect.
-    /// `viewport` is the canvas area in window points.
+    /// Decides each terminal's mode, applies it, and returns what to draw in its content
+    /// rect, plus whether any mode changed. `viewport` is the canvas area in window points.
     fn apply_terminal_modes(
         &self,
         viewport: Rect,
         window: &mut Window,
         cx: &mut App,
-    ) -> HashMap<PanelId, TerminalContent> {
-        let camera = self.scene.camera;
-        let local = Rect::new(0.0, 0.0, viewport.size.width, viewport.size.height);
+    ) -> (HashMap<PanelId, TerminalContent>, bool) {
         let mut contents = HashMap::new();
+        let mut changed = false;
         for (id, terminal) in &self.terminals {
             let Some(panel) = self.scene.get(*id) else {
                 continue;
             };
-            let screen = camera.world_rect_to_screen(content_rect(panel));
-            let mode = decide_mode(camera.zoom, screen, local, panel.minimized, self.modal_open);
+            let mode = terminal_mode(panel, &self.scene, viewport, self.modal_open);
             let placement = terminal_placement(panel, &self.scene, viewport);
             let content = terminal.update(cx, |terminal, _| {
+                changed |= terminal.mode() != mode;
                 terminal.apply_mode(mode, placement, window);
                 match mode {
                     PanelMode::Preview => Some(TerminalContent::Preview(terminal.preview())),
@@ -644,7 +688,7 @@ impl PaintSnapshot {
                 contents.insert(*id, content);
             }
         }
-        contents
+        (contents, changed)
     }
 
     fn paint_panel(
@@ -678,7 +722,9 @@ impl PaintSnapshot {
             let content_bounds = to_bounds(content_screen, origin);
             window.paint_quad(fill(content_bounds, rgb(theme::CONTENT_PLACEHOLDER)));
             match content {
-                Some(TerminalContent::Preview(Some(image))) => {
+                Some(TerminalContent::Preview(
+                    PreviewImage::Fresh(image) | PreviewImage::Stale(image),
+                )) => {
                     let painted = window.paint_image(
                         content_bounds,
                         content_bounds,
@@ -691,8 +737,8 @@ impl PaintSnapshot {
                         eprintln!("calm: preview paint failed: {err:#}");
                     }
                 }
-                Some(TerminalContent::Preview(None)) => {
-                    // No snapshot yet or it failed: flat rect with the title.
+                Some(TerminalContent::Preview(PreviewImage::None)) => {
+                    // No snapshot has succeeded yet: flat rect with the title.
                     let padding = 8.0 * zoom;
                     let line = Rect::new(
                         content_screen.origin.x + padding,
@@ -700,7 +746,15 @@ impl PaintSnapshot {
                         (content_screen.size.width - 2.0 * padding).max(0.0),
                         CHROME_HEIGHT * zoom,
                     );
-                    paint_title(&panel.title, line, zoom, origin, window, cx);
+                    paint_text(
+                        &panel.title,
+                        line,
+                        TextAlign::Left,
+                        zoom,
+                        origin,
+                        window,
+                        cx,
+                    );
                 }
                 Some(TerminalContent::Live) | None => {}
             }
@@ -719,12 +773,34 @@ impl PaintSnapshot {
         }
 
         // Leave room for the two buttons on the right of a full chrome strip.
-        let reserved = if panel.minimized {
+        let mut reserved = if panel.minimized {
             0.0
         } else {
             2.0 * CHROME_HEIGHT * zoom
         };
         let padding = 8.0 * zoom;
+        let stale = !panel.minimized
+            && matches!(content, Some(TerminalContent::Preview(image)) if image.is_stale());
+        if stale {
+            // Right end of the strip, just left of the buttons.
+            let width = STALE_LABEL_WIDTH * zoom;
+            let label = Rect::new(
+                chrome.origin.x + chrome.size.width - reserved - width,
+                chrome.origin.y,
+                width,
+                chrome.size.height,
+            );
+            paint_text(
+                STALE_LABEL,
+                label,
+                TextAlign::Right,
+                zoom,
+                origin,
+                window,
+                cx,
+            );
+            reserved += width + padding;
+        }
         let text_rect = Rect::new(
             chrome.origin.x + padding,
             chrome.origin.y,
@@ -736,14 +812,15 @@ impl PaintSnapshot {
         } else {
             panel.title.as_str()
         };
-        paint_title(title, text_rect, zoom, origin, window, cx);
+        paint_text(title, text_rect, TextAlign::Left, zoom, origin, window, cx);
     }
 }
 
-/// One line of text, left aligned and clipped to `rect` (canvas pixels). Skipped when too small.
-fn paint_title(
+/// One line of text, aligned and clipped to `rect` (canvas pixels). Skipped when too small.
+fn paint_text(
     text: &str,
     rect: Rect,
+    align: TextAlign,
     zoom: f64,
     origin: gpui::Point<f64>,
     window: &mut Window,
@@ -774,8 +851,8 @@ fn paint_title(
             if let Err(err) = line.paint(
                 text_bounds.origin,
                 px(rect.size.height as f32),
-                TextAlign::Left,
-                None,
+                align,
+                Some(text_bounds.size.width),
                 window,
                 cx,
             ) {
@@ -801,7 +878,7 @@ impl Render for CanvasView {
         }
         let entity = cx.entity().downgrade();
         let paint_entity = entity.clone();
-        let snapshot = PaintSnapshot {
+        let mut snapshot = PaintSnapshot {
             scene: self.scene.clone(),
             state: self.input.state,
             focused: self.focused,
@@ -809,25 +886,47 @@ impl Render for CanvasView {
             pointer: self.pointer,
             terminals: self.terminals.clone(),
             modal_open: self.input.confirming.is_some() || self.menu_open,
+            input_targets: Vec::new(),
         };
-        // Mouse and key targets for terminals, at last frame's placement.
+        // Mouse and key targets for terminals, at last frame's viewport.
         let viewport = self.viewport;
-        // Only live terminals take input; a preview's clicks go to the canvas.
-        let terminal_targets = self.terminals.iter().map(|(id, terminal)| {
-            let placement = self
-                .scene
-                .get(*id)
-                .filter(|_| terminal.read(cx).mode() == PanelMode::Live)
-                .and_then(|panel| terminal_placement(panel, &self.scene, viewport));
-            let rect = placement.map_or(Rect::new(0.0, 0.0, 0.0, 0.0), |p| p.container);
-            div()
-                .absolute()
-                .left(px((rect.origin.x - viewport.origin.x) as f32))
-                .top(px((rect.origin.y - viewport.origin.y) as f32))
-                .w(px(rect.size.width as f32))
-                .h(px(rect.size.height as f32))
-                .child(terminal.clone())
-        });
+        // Only live terminals take input; a preview's clicks and scrolls go to the canvas.
+        // The mode comes from the current scene, not last paint, so a target never
+        // outlives the switch to `Preview`.
+        let placements: Vec<Option<NativePlacement>> = self
+            .terminals
+            .iter()
+            .map(|(id, _)| {
+                self.scene
+                    .get(*id)
+                    .filter(|panel| {
+                        terminal_mode(panel, &self.scene, viewport, snapshot.modal_open)
+                            == PanelMode::Live
+                    })
+                    .and_then(|panel| terminal_placement(panel, &self.scene, viewport))
+            })
+            .collect();
+        snapshot.input_targets = self
+            .terminals
+            .iter()
+            .zip(&placements)
+            .filter(|(_, placement)| placement.is_some())
+            .map(|((id, _), _)| *id)
+            .collect();
+        let terminal_targets =
+            self.terminals
+                .iter()
+                .zip(placements)
+                .map(|((_, terminal), placement)| {
+                    let rect = placement.map_or(Rect::new(0.0, 0.0, 0.0, 0.0), |p| p.container);
+                    div()
+                        .absolute()
+                        .left(px((rect.origin.x - viewport.origin.x) as f32))
+                        .top(px((rect.origin.y - viewport.origin.y) as f32))
+                        .w(px(rect.size.width as f32))
+                        .h(px(rect.size.height as f32))
+                        .child(terminal.clone())
+                });
         div()
             .size_full()
             .flex()

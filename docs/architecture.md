@@ -29,14 +29,21 @@ Ghostty surface parented to the zoom view at `(0, 0, logical size)`. The adapter
   minimized, modal_open)` from `calm-core/src/preview.rs`. `modal_open` is the close
   confirmation or an open context menu.
 - `Live`: hidden rendering off, native view placed as before.
-- `Preview` (zoom below 50 % or a modal up): on entry the terminal takes a snapshot, then
-  hides its native view and keeps hidden rendering on. The canvas paints the snapshot
-  scaled into the content rect with GPUI. A canvas timer repaints every
-  `PREVIEW_REFRESH_SECS` while any terminal is in preview, and the terminal retakes its
-  snapshot when the last one is that old (250 ms slack). A failed snapshot logs once and
-  the canvas draws a flat rect with the title. Old snapshots are dropped from the atlas.
+- `Preview` (zoom below 50 % or a modal up): the terminal takes a snapshot when
+  `refresh_due` says so (none yet, or the last attempt is at least `PREVIEW_REFRESH_SECS`
+  old, no slack), then hides its native view and keeps hidden rendering on. Entering
+  preview does not force a snapshot, so readbacks stay at one per period per terminal
+  however often modes flip; the last image shows until the next one is due. The canvas
+  paints the snapshot scaled into the content rect with GPUI. A canvas timer repaints
+  every `PREVIEW_REFRESH_SECS` plus 100 ms while any terminal is in preview.
+- The image is a `PreviewImage::{None, Fresh, Stale}`. A failed refresh keeps the last good
+  image as `Stale`, the chrome strip shows `preview stale`, and the error logs once per
+  terminal. The flat rect with the title shows only when no snapshot ever succeeded. The
+  image is kept through `Live` and `Hidden` and freed from the atlas on close or replace.
 - `Hidden` (minimized or off screen): native view hidden, no snapshots, no hidden rendering.
-- Only `Live` terminals get the invisible input div, so clicks on a preview reach the canvas.
+- Only `Live` terminals get the invisible input div, so clicks and scrolls on a preview
+  reach the canvas. Render decides the mode from the current scene with the same
+  `terminal_mode` helper paint uses, and paint notifies the view when a mode changes.
 - Minimized panels draw only the 200x28 chip. A left click on the chip, the chrome minimize
   button and the context menu item all emit `Effect::ToggleMinimize`.
 - The process keeps running in every mode.

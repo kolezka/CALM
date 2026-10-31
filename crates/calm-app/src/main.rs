@@ -70,6 +70,9 @@ const SMOKE_FPS_TIMEOUT: Duration = Duration::from_secs(5);
 const SMOKE_PREVIEW_TIMEOUT: Duration = Duration::from_secs(5);
 const SMOKE_PREVIEW_ZOOM: f64 = 0.4;
 const SMOKE_LIVE_ZOOM: f64 = 1.5;
+/// How long smoke counts preview snapshots, and the most it allows in that time.
+const SMOKE_SNAPSHOT_WINDOW: Duration = Duration::from_secs(3);
+const SMOKE_MAX_SNAPSHOTS: u64 = 3;
 
 /// How long the native restack may take to show after the scene order changes.
 const SMOKE_ZORDER_TIMEOUT: Duration = Duration::from_secs(2);
@@ -163,7 +166,10 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             }
         }
         // Zoom out: both terminals switch to GPUI-drawn snapshots.
-        cx.update(|cx| set_zoom(&view, SMOKE_PREVIEW_ZOOM, cx));
+        cx.update(|cx| {
+            view.update(cx, |view, _| view.preview_input_targets = 0);
+            set_zoom(&view, SMOKE_PREVIEW_ZOOM, cx);
+        });
         let zoomed = Instant::now();
         loop {
             cx.background_executor()
@@ -181,6 +187,46 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
                 smoke_fail(&format!("no preview snapshots at zoom 0.4: {previews:?}"));
             }
+        }
+
+        // show_fps is still on, so a frame paints every tick. Readbacks must stay at
+        // one per refresh period anyway.
+        let before = cx.update(|cx| view.read(cx).snapshot_counts(cx));
+        cx.background_executor().timer(SMOKE_SNAPSHOT_WINDOW).await;
+        let (after, previews, targets) = cx.update(|cx| {
+            let view = view.read(cx);
+            (
+                view.snapshot_counts(cx),
+                view.terminal_previews(cx),
+                view.preview_input_targets,
+            )
+        });
+        if !previews.iter().all(|(mode, _)| *mode == PanelMode::Preview) {
+            smoke_fail(&format!(
+                "left preview while counting snapshots: {previews:?}"
+            ));
+        }
+        let taken: Vec<u64> = after
+            .iter()
+            .zip(&before)
+            .map(|(after, before)| after - before)
+            .collect();
+        let line = format!(
+            "preview_snapshots_in_3s=[{}]",
+            taken
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        println!("smoke: {line}");
+        if taken.len() != 2 || taken.iter().any(|count| *count > SMOKE_MAX_SNAPSHOTS) {
+            smoke_fail(&format!("too many preview snapshots: {line}"));
+        }
+        // Input divs over a preview would steal its scroll and keys from the canvas.
+        println!("smoke: preview_input_targets={targets}");
+        if targets != 0 {
+            smoke_fail(&format!("{targets} terminal input divs over previews"));
         }
 
         // Zoom back in: both return to live native views.
