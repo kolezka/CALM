@@ -1,0 +1,16 @@
+# Scope of the graphify graph. gitignore syntax; .gitignore also applies.
+# Decided 2026-10-31: crates, docs, .ai, plugins, SDK, template, scripts, CI all in.
+
+# Spec and task plan are process history, not system knowledge.
+docs/superpowers/
+
+# Lock files and templates carry no concepts.
+Cargo.lock
+bun.lock
+scripts/Info.plist.template
+
+# Graph outputs and scratch.
+graphify-out/
+.codegraph/
+.superpowers/
+.worktrees/
