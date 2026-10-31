@@ -1,6 +1,7 @@
 # Canvas persistence plan
 
-Status: plan, not implemented. Written 2026-10-31 against `origin/main` at `024ce4c`.
+Status: plan, not implemented. Written 2026-10-31 against `origin/main` at `024ce4c`. The
+user answered the open questions on 2026-10-31; the answers are folded in below.
 
 ## Goal
 
@@ -20,6 +21,9 @@ reverses that sentence. PR 1 below therefore lands a `decisions.md` entry (rever
 reason and cost) and amends that line of the spec to "a fresh launch restores the last
 session's panels with fresh processes, unless restore is off". The decision "processes need
 not survive app quit" stays as it is: only the arrangement is restored.
+
+The user approved this amendment on 2026-10-31, with restore on by default (resolved question
+1), so PR 1 records an approved change, not a proposal.
 
 ## What exists today
 
@@ -229,24 +233,54 @@ keep loading and no settings version bump is needed. `Settings::validate` checks
 | `session.autosave` | bool | `true` |
 | `session.autosave_debounce_ms` | 250 to 10000 | 1000 |
 | `session.backup_count` | 0 to 20 | 3 |
-| `session.browser_query` | `keep`, `strip_sensitive`, `strip_all` | `strip_sensitive` |
+| `session.browser_query` | `strip_all`, `keep` | `strip_all` |
 
 The Settings window gets a Session section with these controls (data in `settings_form`).
 
-Menus, a new top-level Layouts menu (GPUI menu, items fire actions):
+Menus: a standard macOS File menu, placed right after the app menu and before View (GPUI
+menu, items fire actions). It replaces the Layouts menu an earlier draft planned.
 
-- Save Layout As... : native NSAlert with a text field for the name, validated against the
-  name rule; an existing name asks before replacing.
-- Open Layout > one item per file in `layouts/`. Opening replaces the canvas. If live
-  terminals or browsers would close, one native confirmation lists how many, and only an
-  explicit confirm closes them (the close rule). Cancel leaves the canvas as it was. After an
-  open, autosave keeps writing `session.json`; the named file changes only on Save.
-- Save Layout (`cmd-s`): saves to the layout last opened or saved this launch, else acts as
-  Save As. Flashes `Saved <name>` in the pill (Task 13).
-- Delete Layout > one item per file, with a confirmation. Deleting moves the file to
-  `layouts/.trash/<name>-<unix>.json` instead of unlinking it, so it can be undone by hand.
-- Restore Previous Session > lists `session.json.1` to `.n` with their `saved_at`. Same
-  replace and confirm rules as Open.
+| Item | Key | Behavior |
+| --- | --- | --- |
+| New Canvas | `cmd-n` | Replaces the canvas with an empty one and forgets the current layout name. |
+| Open Layout... | `cmd-o` | Native NSOpenPanel, starting in `layouts/`, `.json` only. Replaces the canvas. |
+| Open Recent | none | Submenu of the last 10 layouts opened or saved, plus Clear Menu. Replaces the canvas. |
+| Save Layout | `cmd-s` | Saves to the current named layout, else acts as Save Layout As. |
+| Save Layout As... | `cmd-shift-s` | Native NSAlert with a name field. |
+| Restore Previous Session | none | Submenu of `session.json.1` to `.n` with their `saved_at`. Replaces the canvas. |
+| Reveal Layouts in Finder | none | Opens `layouts/` in Finder, creating it (0700) if missing. |
+
+Rules for these items:
+
+- **Replace, with one confirmation (resolved question 2).** Every item that replaces the
+  canvas (New Canvas, Open Layout, Open Recent, Restore Previous Session) asks once, with a
+  native alert, when live terminals exist or the canvas has changes not saved to a named
+  layout (scene revision differs from the revision at the last named open or save; autosave
+  to `session.json` does not count, and an empty canvas never asks). The alert lists how many
+  live terminals would close. Only an explicit confirm closes them (the close rule); Cancel
+  leaves the canvas as it was. Open never merges panels into the current canvas. The lead
+  brief named only live terminals for New Canvas; one shared rule for all four is simpler and
+  asks in a superset of those cases.
+- **Open Layout uses NSOpenPanel, not a submenu.** It is the standard macOS Open... and Open
+  Recent already gives one-click access, so a second submenu of the same files would be a
+  duplicate. A file picked outside `layouts/` loads with the same strict reader; Save Layout
+  then acts as Save Layout As, so CALM never writes outside `layouts/` by name.
+- **Save Layout As** validates the name against the name rule; an existing name asks before
+  replacing. Save flashes `Saved <name>` in the pill (Task 13).
+- **Open Recent** lives in `$CALM_HOME/recent-layouts.json` (paths only, 0600). A missing file
+  is dropped from the list when the menu is built.
+- After any open, autosave keeps writing `session.json`; the named file changes only on Save.
+- No Delete item: Reveal Layouts in Finder covers it, and Finder has its own Trash and undo.
+  `layouts.delete` in the plugin API still moves to `layouts/.trash/`.
+
+Key bindings checked on `origin/main` (`rg 'KeyBinding::new\('` over `crates/`): the existing
+bindings are `cmd-shift-f`, `cmd-q`, `cmd-,`, `cmd-=`, `cmd--`, `cmd-0`, `cmd-shift-h`,
+`cmd-shift-0`, `cmd-ctrl-f`, and the unmodified `t`, `b`, `escape`, `enter`. `cmd-n`, `cmd-o`,
+`cmd-s` and `cmd-shift-s` are free, so there is no conflict. One thing to check in PR 7: a
+focused terminal sends every key to Ghostty and stops propagation (`terminal/adapter.rs`
+`key_down`). The new bindings are global like `cmd-q` and `cmd-,`, and the menu key
+equivalents should fire before the view sees the key, but that is unverified with a terminal
+focused.
 
 CLI:
 
@@ -276,16 +310,15 @@ closing a live terminal. Events: `layoutSaved`, `layoutOpened`.
   are documented in `docs/plugins.md` and the new `docs/sessions.md`: plugin panel settings
   (a plugin could put a secret there; plugin authors must use `calm.storage` or the keychain
   for that, never panel settings), and browser urls.
-- Browser urls. Query strings and fragments can carry tokens (magic links, OAuth `code` and
-  `state`, presigned `X-Amz-Signature`). Decision: `session.browser_query` defaults to
-  `strip_sensitive`, which removes query parameters whose name matches a fixed, tested list
-  (`token`, `access_token`, `id_token`, `refresh_token`, `code`, `state`, `key`, `api_key`,
-  `apikey`, `secret`, `password`, `sig`, `signature`, `session`, `sessionid`, `auth`, any
-  `x-amz-*`, `x-goog-*`) case-insensitively, and drops a fragment that contains
-  `access_token=` or `id_token=`. `strip_all` drops every query and fragment. `keep` saves as
-  is. The list is best effort; the docs say so, and say that `strip_all` is the safe choice.
-  Rejected: always stripping all queries, which breaks restoring search results and most
-  docs sites for a risk the user can opt out of.
+- Browser urls (resolved question 3). Query strings and fragments can carry tokens (magic
+  links, OAuth `code` and `state`, presigned `X-Amz-Signature`), so saving urls verbatim would
+  break the "no credentials in layouts" rule. The user asked for the lowest effort; the
+  lowest-effort choice that keeps that rule is to drop the whole query string and fragment.
+  Decision: `session.browser_query` defaults to `strip_all`, one function with no name list
+  to maintain. `keep` saves the url as is, for users who opt in; the docs say that a kept url
+  can carry a token into the file. Cost: search results and pages that keep state in the
+  query or fragment reopen without it. Rejected: a `strip_sensitive` name list, which is best
+  effort, needs upkeep, and still misses tokens under unlisted names.
 - Urls longer than 8 KiB (large `data:` pages) are saved as `about:blank` with the title kept.
 - Terminal `command` is saved because the user or a plugin chose it at spawn. The docs warn
   not to pass secrets in a spawn command; they would be in the file.
@@ -314,8 +347,12 @@ calm-core, all pure, with temp dirs:
 - Atomic write: temp file gone after success and after a forced rename failure; mode 0600;
   backup rotation for counts 0, 1 and 3 across two simulated launches.
 - `AutosaveClock`: quiet period, max delay, no save without a revision change.
-- Url scrubbing: a table of urls in and out for each mode, including mixed case names, a
-  presigned S3 url and a fragment token.
+- Url scrubbing: a table of urls in and out for both modes: no query, query only, fragment
+  only, both, a presigned S3 url, a fragment token, `about:blank` and a `data:` url. In
+  `strip_all` the scheme, host, port and path stay unchanged.
+- File menu logic in core: the replace confirmation predicate (live terminals, unsaved
+  changes, empty canvas never asks), the Open Recent list (cap 10, dedupe, missing files
+  dropped), and "Save acts as Save As" for no name or a file outside `layouts/`.
 - Each regression or rule test is checked to fail when the rule is removed (one mutation per
   rule), per the conventions.
 
@@ -336,7 +373,8 @@ byte corrupted, so the same fixture is the positive control. The terminal's shel
 which the smoke checks by its frame count starting at zero.
 
 Manual GUI pass (the user's): quit with cmd-q and relaunch, kill the process with `kill -9`
-during a drag and relaunch, Layouts menu actions, the ask dialog.
+during a drag and relaunch, every File menu item and its shortcut (also with a terminal
+focused), the ask dialog.
 
 ## Tasks
 
@@ -344,8 +382,9 @@ Small PRs, in order. Each runs `cargo test -p <crate>` while iterating and `gmak
 the smoke before its push.
 
 1. **docs: session restore decision.** Files: `.ai/decisions.md`, the spec line, `.ai/status.md`.
-   Accept: the reversal entry with reason and cost, the spec sentence amended, and the open
-   questions below answered.
+   Accept: the reversal entry with reason and cost, marked approved by the user on
+   2026-10-31; the spec sentence amended; the three resolved answers below recorded in
+   `decisions.md` (restore on by default, Open replaces, urls saved with `strip_all`).
 2. **feat(core): layout v2 with migration and unsupported kinds.** Files:
    `calm-core/src/layout.rs`, `scene.rs` (`overrides`, `plugin_version`, `page_zoom`,
    `Unsupported`), fixtures under `calm-core/tests/fixtures/`. Tests: round trip per kind,
@@ -370,13 +409,17 @@ the smoke before its push.
    placeholder and comes back after install and relaunch. Depends on PR #12 only for
    rebasing `canvas_view.rs`.
 6. **feat(core,app): browser url scrubbing.** Files: `calm-core/src/browser_url.rs`
-   (`scrub_for_save`), the save path. Tests: the url table. Accept: default mode strips the
-   listed names; docs page written (`docs/sessions.md`).
-7. **feat(app): Layouts menu and Settings controls.** Files: a new `layouts_menu.rs`,
-   `calm-native` (NSAlert with text field, confirmation alert), `settings_menu.rs`. Tests:
-   name validation and the "would close N live panels" count in core. Accept: Save As, Open,
-   Save, Delete to `.trash`, Restore Previous Session, `ask` on launch; manual pass by the
-   user.
+   (`scrub_for_save`, two modes: `strip_all` drops query and fragment, `keep` returns the
+   input), the save path. Tests: the url table. Accept: the default `strip_all` saves no
+   query or fragment; `keep` round trips; docs page written (`docs/sessions.md`).
+7. **feat(app): File menu and Settings controls.** Files: a new `file_menu.rs` (items and
+   `cmd-n`, `cmd-o`, `cmd-s`, `cmd-shift-s` bindings), `settings_menu.rs` (`menus()` inserts
+   File after the app menu), `calm-native` (NSOpenPanel, NSAlert with text field,
+   confirmation alert, reveal in Finder), `calm-core` (replace predicate, recent list).
+   Tests: name validation, the replace predicate, the recent list. Accept: New Canvas, Open
+   Layout..., Open Recent, Save Layout, Save Layout As..., Restore Previous Session, Reveal
+   Layouts in Finder and `ask` on launch work; the shortcuts fire with a terminal focused (or
+   the gap is written in `.ai/status.md`); manual pass by the user.
 8. **feat(plugins): `layouts.*` and `session.saveNow`.** Files: the plugin API v2 design
    (amendment first), `calm-plugins` bridge and request parsing, `calm.d.ts`, `docs/plugins.md`,
    the external socket allowlist. Depends on API v2 phases 1, 2, 4 and 5 (`layouts.open`
@@ -396,13 +439,14 @@ the smoke before its push.
 Out of scope: window size, position and fullscreen state; per-panel browser data stores;
 terminal scrollback; runtime plugin re-discovery.
 
-## Open questions for the user
+## Resolved 2026-10-31
 
-1. Restoring at launch reverses the spec's "a fresh launch starts with an empty canvas". Is
-   the default `restore_on_launch = on` right, or do you want `ask` as the default?
-2. Opening a named layout replaces the canvas and, after one confirmation, closes the live
-   terminals. Is replace right, or should Open add the layout's panels next to the current
-   ones?
-3. Browser urls: is the default `strip_sensitive` (a name list, best effort) acceptable, or do
-   you want `strip_all` by default and accept that search and docs pages reopen without their
-   query?
+1. Restore at launch: on by default. The user's goal is "when I start the canvas the same
+   plugins and elements load", so `session.restore_on_launch` defaults to `on` and the spec
+   amendment is approved. The user also asked for a menu bar File menu to save and load
+   layouts; it replaces the planned Layouts menu (see Customization).
+2. Opening a named layout replaces the canvas, after one confirmation when live terminals or
+   unsaved changes exist. It never merges.
+3. Browser urls: the user asked for the lowest effort. Keeping urls verbatim would break the
+   "no credentials in layouts" rule, so the default is `strip_all` (drop query and fragment),
+   with `keep` as an opt-in. `strip_sensitive` and its name list are dropped.
