@@ -1,7 +1,7 @@
 # Status
 
-Last updated: 2026-10-31. `main` at the repo-intel config commit after the `.ai/` folder
-(0236d0c). Facts are verified unless marked otherwise.
+Last updated: 2026-10-31. `main` with PRs #1 (recenter), #2 (panel menu actions), #3
+(panel chrome) and #4 (bottom bar) merged. Facts are verified unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -22,6 +22,32 @@ Last updated: 2026-10-31. `main` at the repo-intel config commit after the `.ai/
   files and the plist template excluded). 55 code files, 16 docs, 1247 nodes, 2472 edges.
   `AGENTS.md` carries the routing block, imported from `CLAUDE.md`. A git post-commit hook
   rebuilds it in the background.
+- Camera jumps (PR #1): `cmd-shift-h` centers the world origin at the current zoom,
+  `cmd-shift-0` fits all panels (32 px margin, zoom clamped, empty canvas centers the
+  origin), both in a View menu. One `Camera::fit` serves fit all and the panel Zoom to Fit.
+- Panel context menu (PR #2) on the title strip or a minimized chip: Minimize or Restore, Zoom to
+  Fit (hidden while minimized), Bring to Front, Send to Back, Duplicate (terminals only, a
+  new terminal of the same size 32 units down and right, fresh process), Delete.
+- Delete uses the normal close path: a live terminal shows the close confirmation unless
+  `confirm_close` is off in settings.
+- Right click on a live Ghostty view goes to Ghostty, not to CALM, so the menu opens only
+  from the title strip and the chip. Right click on content in preview mode does nothing.
+- Rename is not offered: it needs a native text input, which does not exist yet.
+- Manual GUI pass of each panel menu action is pending.
+- Panel chrome (PR #3). Geometry lives in `calm-core::chrome` (`title_bar_layout`,
+  `chrome_hit`, `hover_target`, `details_visible`, icon and button strokes), which paint
+  and hit testing share. `TitleBarLayout::middle` is the free area between the kind icon
+  and the buttons, meant for a future address field.
+- Look: 28 unit title bar, 8 unit rounded top corners, 1 px ring and soft drop shadow
+  outside the panel rect, accent ring and brighter bar on focus, vector icon per kind,
+  round minimize and close buttons that show on hover (amber and red when pointed at),
+  red tinted bar during "Close? enter / esc". Icon, title and buttons hide below 12 px of
+  bar height on screen. Colors in `calm-app/src/theme.rs`.
+- Unverified: the look itself. Only smoke ran; a manual GUI pass is the user's.
+- Bottom bar (PR #4): the top status strip is removed; the title bar is transparent with a
+  hidden title; zoom, FPS and the save flash show in a native translucent pill at the
+  bottom center (`calm_native::StatusBar`, rect from `calm_core::status_bar`). Smoke
+  checks the bar is visible and above both terminals after a restack.
 
 ## Verified on hardware
 
@@ -44,11 +70,10 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 - Manual GUI pass: mouse selection at zoom 1.0 and 1.7, cmd-v paste, Polish letters through
   the input method, panel resize reflow, Enter to confirm close, pinch feel, `htop`.
-- Camera jumps on branch `feat/recenter` (not merged): `cmd-shift-h` centers the world
-  origin at the current zoom, `cmd-shift-0` fits all panels (32 px margin, zoom clamped,
-  empty canvas centers the origin), both in a new View menu. Math is unit tested in
-  `calm-core`; key delivery with a terminal focused, the `cmd-shift-0` match and the menu
-  shortcuts are untested in the GUI.
+- Camera jumps: math is unit tested in `calm-core`; key delivery with a terminal focused,
+  the `cmd-shift-0` match and the View menu shortcuts are untested in the GUI.
+- Bottom status bar look: blur over terminals, rounded corners, light and dark mode,
+  traffic lights over the canvas, window drag from the top strip.
 - Performance with 20 terminals.
 - A real Release run on the runner (dry run not yet triggered) and the hosted macOS CI
   steps.
@@ -57,7 +82,13 @@ CI run on `main` green (linux-arch success, macos skipped).
 
 - `docs/dev-setup.md` lists `--layout work` and `--bench 20` as run commands; neither flag
   exists yet.
+- Smoke fails on `main` (7d53cbb and later) under heavy load (load average 17 to 40) with
+  only `preview_snapshots_in_3s=[0,0]`; every other smoke line passes. Cause unconfirmed.
 - Escape on the close confirmation does not trigger a redraw until the next event.
+- Panel bottom corners are square because the native view is square. Rounding them needs a
+  corner radius on the clip view layer in `calm-native`.
+- Chrome hover is tracked from GPUI mouse moves only. Over a live native view GPUI may get
+  no moves, so the buttons can stay visible until the pointer crosses GPUI area again.
 - A transitive `block 0.1.6` future-incompatibility warning from a dependency.
 - repo-intel 0.1.8 prints `tmp: nieustawiona zmienna` on its error path (for example after
   an interrupted build). Upstream bug; harmless when the build succeeds.
