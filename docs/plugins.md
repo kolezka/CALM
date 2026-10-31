@@ -221,8 +221,10 @@ backend or a background page yet.
   CALM does not start it yet.
 - `backend.start` is `on-demand` (default) or `at-launch`. `backend.restart` is `on-failure`
   (default) or `never`. These words may still change before backends ship.
-- `engines.bun` is a semver range such as `>=1.2`, `^1.2.3` or `>=1.2 <2`. Only its syntax is
-  checked for now.
+- `engines.bun` is an npm-style semver range such as `>=1.2`, `^1.2.3`, `>=1.2 <2`,
+  `1.1 || ^1.2` or `1.1.0 - 1.2.0`. Prerelease and build parts are allowed
+  (`^1.2.3-rc-1`, `^1.2.3+build.4`). An invalid range is an error. Only the syntax is
+  checked for now; no bun is looked up.
 - `backend` and `engines` without `main` are errors.
 - `background` is `true` or `false`. Parsed, not served yet.
 - A TUI app takes `apiVersion` and `capabilities`, and refuses `main`, `backend`, `engines`
@@ -429,7 +431,8 @@ try {
 }
 ```
 
-The app serves four requests so far. Check [Host support](#host-support) before you rely on one.
+The app serves 9 of the 17 methods so far. Check [Host support](#host-support) or
+`calm.has` before you rely on one.
 
 ### Settings
 
@@ -548,9 +551,10 @@ code `not_implemented`, so no call hangs. An unknown method rejects with code
 ### Errors
 
 A rejected call's `Error` has a `code`. The codes below are the whole list for plugin API v2.
-This host produces `unknown_method`, `not_implemented`, `invalid_params`, `too_large`,
-`storage_corrupt`, the four `gh_*` codes, `timeout` and `host_error` today; the rest belong to
-methods that are not served yet.
+This host produces `unknown_method`, `not_implemented`, `invalid_params`, `wrong_kind`
+(`settings.*` or `storage.*` from a panel that is not a plugin), `too_large`,
+`storage_corrupt`, the four `gh_*` codes, `timeout` and `host_error` today; the rest belong
+to methods that are not served yet.
 
 | `code`             | When                                                                |
 | ------------------ | ------------------------------------------------------------------- |
@@ -672,16 +676,17 @@ responses. Logs name only where it came from.
 `_ . / ? = & % -`, and may not start with `-`. Only GET requests are possible, and results are
 not paginated. `gh` is killed after 30 s, and a response over 8 MiB is refused.
 
-A failed call rejects with one of these messages:
+A failed call rejects with one of these codes and messages. Match on `code`; the message
+text may change.
 
-| Message starts with                      | Meaning                                                      |
-| ---------------------------------------- | ------------------------------------------------------------ |
-| `gh is not installed`                    | No `gh` on the host. Install it from https://cli.github.com. |
-| `gh is not logged in, run gh auth login` | `gh` has no credentials. Run `gh auth login`.                |
-| `gh api failed:`                         | GitHub or `gh` refused the call, e.g. 404 or no access.      |
-| `invalid gh api path`                    | `path` broke the rules above. `gh` was not run.              |
-| `gh api timed out`                       | `gh` ran longer than 30 s and was stopped.                   |
-| `gh api response is over`                | The response was larger than 8 MiB.                          |
+| `code`             | Message starts with                      | Meaning                                                      |
+| ------------------ | ---------------------------------------- | ------------------------------------------------------------ |
+| `gh_not_installed` | `gh is not installed`                    | No `gh` on the host. Install it from https://cli.github.com. |
+| `gh_not_logged_in` | `gh is not logged in, run gh auth login` | `gh` has no credentials. Run `gh auth login`.                |
+| `gh_failed`        | `gh api failed:`                         | GitHub or `gh` refused the call, e.g. 404 or no access.      |
+| `gh_invalid_path`  | `invalid gh api path`                    | `path` broke the rules above. `gh` was not run.              |
+| `timeout`          | `gh api timed out`                       | `gh` ran longer than 30 s and was stopped.                   |
+| `too_large`        | `gh api response is over`                | The response was larger than 8 MiB.                          |
 
 An HTTP 401 from GitHub also counts as not logged in. A rate limit shows as
 `gh api failed: ... API rate limit exceeded ...`.

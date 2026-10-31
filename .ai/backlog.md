@@ -1,7 +1,7 @@
 # Backlog
 
 Agreed follow-ups that nobody is working on yet. Checked against `origin/main` at
-`3287b21` and the open pull requests on 2026-10-31. When an item gets an owner or a branch,
+`7de2c55` (PRs #1 to #37 merged) on 2026-10-31. When an item gets an owner or a branch,
 move it to `status.md` under "In progress" and delete it here.
 
 ## Open items
@@ -22,11 +22,10 @@ CALM has no license file, so the code is not formally open. Add a `LICENSE` file
 Let the user rename a panel, change its icon and set its accent color from the panel
 right-click menu, stored on the panel. Today only settings and manifests choose these.
 
-- State: not built (`status.md`, "Not wired yet"). Open PR #31 (layout v2) adds the stored
-  `overrides` field (`title`, `icon`, `accent_color`) but does not apply it in the chrome.
+- State: storage done in PR #31 (layout v2 `overrides`: `title`, `icon`, `accent_color`).
+  Not applied in the chrome and no menu items (`status.md`, "Not wired yet").
 - Blocker: needs a native text input (an `NSAlert` with a text field) and agreed ownership
   with the plugin API v2 lane, whose spec has `panels.setAppearance` and `panels.setTitle`.
-  Depends on #31 for storage.
 - Origin: Task 12 of `docs/superpowers/plans/2026-10-31-canvas-persistence.md`. Deferred by
   PR #21 (TUI customization) and PR #24 (terminal profiles).
 
@@ -102,6 +101,49 @@ manual test bed. Ideas: Scratchpad (storage, settings, menus), Repo Pulse (`gith
   `process.exec`, `theme.get`, part of `panel.*`), so the Inspector would mostly show
   rejections.
 - Origin: example plugins brief in the prototype session.
+
+### 8. Show plugin capabilities to the user
+
+Manifests declare `capabilities` (PR #35), and the docs and decisions say the list is
+shown at install and in a plugin info view. Nothing shows it today: unknown words only
+warn on stderr and in the status pill count.
+
+- State: not started. No install flow and no plugin info view exist.
+- Blocker: needs a place to show it (an info item in the Add menu or the panel menu, or a
+  Settings section).
+- Origin: review of PR #35.
+
+### 9. Fill `plugin_version` when panels are created
+
+Layout v2 (PR #31) has `plugin_version` on plugin and TUI kinds, but panels are created
+with `None`, so a saved layout would not say which plugin version made it.
+
+- State: not started. Owned by persistence plan Task 4 (autosave), which first writes
+  real layouts.
+- Blocker: Task 4.
+- Origin: review of PR #31.
+
+### 10. Remaining plugin API v2 phases
+
+Done: phase 1 (PR #35) and the pure phase 6 `Coalescer` (PR #34, not wired). Partly done
+outside the phase plan: storage, `github.api` and `openExternal` from phase 7 (PR #23),
+`contributes.menus` from phase 8 (PR #28). Open: 2 (request parsing), 3 (read-only host),
+4 (control), 5 (close), 6 wiring (subscribe, host timer), the rest of 7 (bus,
+`process.exec`), the rest of 8 (commands, key bindings, `calm.menus.register`), 9 (SDK,
+docs, examples), 10 (Ghostty shim patch), 11 (external control channel), 12 (native
+browser API), 13 (plugin RPC), 14 (plugin backend), 15 (background pages), 16 (layouts
+and session, waits on the persistence plan).
+
+- State: not started past the items above.
+- Blocker: none for 2 to 5; 16 waits on persistence Tasks 4 to 7.
+- Origin: `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`, "Phased
+  implementation".
+
+## Done
+
+- Smoke diagnostics for the stats flake (item 6): PR #37 splits sampler failure from the
+  pill stall. The flake itself stays open.
+- Per-panel override storage (item 2): PR #31.
 
 ## Waiting on a dependency
 
