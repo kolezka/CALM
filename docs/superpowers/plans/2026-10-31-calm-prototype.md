@@ -433,6 +433,32 @@ Added 2026-10-31 at the user's request. Runs in parallel with Task 9 in its own 
 
 ---
 
+### Task 16: CI and Release workflows (GitHub Actions)
+
+Added 2026-10-31 at the user's request. Independent of the app lanes (own files), runs in its own worktree.
+
+Reality to encode, not hide: the app itself is macOS-only today (`calm-native` is AppKit/WebKit; `calm-app` depends on it), so the Arch Linux job validates and tests the portable crates (`calm-core`, `calm-plugins`) and attempts nothing it cannot build. A Linux app artifact exists only once a Linux native backend exists; the workflow is structured so that job can be flipped to a full build later.
+
+**Files:**
+- Create: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `scripts/bump-version.sh`, `scripts/bundle-macos.sh`, `scripts/Info.plist.template`, `docs/release.md`
+- Modify: `Cargo.toml` (single source of truth for the version: `[workspace.package] version = "0.1.0"`, crates switch to `version.workspace = true`)
+
+**Interfaces:**
+- `scripts/bump-version.sh <patch|minor|major>`: reads the workspace version from `Cargo.toml`, prints the new version, rewrites `[workspace.package] version`, runs `cargo update --workspace` so `Cargo.lock` follows; exits nonzero on an unknown bump word or a non-semver current version. Self-test: `scripts/bump-version.sh --self-test` runs the three bumps against a temp copy of a fixture `Cargo.toml` and asserts the results (0.1.9 patch -> 0.1.10, 0.1.9 minor -> 0.2.0, 1.2.3 major -> 2.0.0).
+- `scripts/bundle-macos.sh <version> <out-dir>`: builds `cargo build --release -p calm-app`, assembles `CALM.app/Contents/{MacOS/calm-app, Info.plist, Resources}` from the template (bundle id `pl.raqz.calm`, `CFBundleShortVersionString` = version, `LSMinimumSystemVersion` 14.0), ad-hoc signs with `codesign --force --deep --sign -`, zips to `<out-dir>/CALM-<version>-macos-arm64.zip`, prints the zip path and its `shasum -a 256`.
+- `ci.yml` on push to any branch and on pull requests: job `linux-arch` in `container: archlinux:latest` (pacman installs `rustup base-devel`, `rustup default stable`), runs `cargo fmt --all -- --check`, `cargo test -p calm-core -p calm-plugins`, `cargo clippy -p calm-core -p calm-plugins --all-targets -- -D warnings`; job `macos` on `macos-15` (arm64): installs Zig 0.16 (download the exact tarball from ziglang.org, verify the published shasum, export `ZIG`), runs `xcrun -f metal || xcodebuild -downloadComponent MetalToolchain`, `cargo build --workspace --all-targets`, `cargo test --workspace`, clippy workspace `-D warnings`, `cargo fmt --all -- --check`, then `cargo run -p calm-app -- --smoke` as a separate step with `continue-on-error: true` (headless runners may lack a window server; its result is reported, not required) and `scripts/bundle-macos.sh` producing an artifact uploaded with `actions/upload-artifact`. Cache `~/.cargo` and `target` keyed on `Cargo.lock` and the Zig version.
+- `release.yml` with `workflow_dispatch` inputs `bump: choice [patch, minor, major]` and `dry_run: boolean (default true)`: checks out `main` (fails if the ref is not `main`), runs `scripts/bump-version.sh`, commits `chore(release): v<version>` and tags `v<version>` (only when `dry_run` is false), builds the macOS bundle, runs the Linux portable-crate tests, and (when not dry run) pushes the commit and tag and creates the GitHub release with `gh release create v<version> --generate-notes` attaching the zip and its `.sha256`; in dry run it uploads the zip as a workflow artifact and prints what it would tag. Permissions: `contents: write`. Concurrency group `release`.
+- `docs/release.md`: how to run the Release action, what it changes, where artifacts land, the Linux limitation, and the macOS-runner minute cost note for a private repo.
+
+- [ ] **Step 1: Write `scripts/bump-version.sh` with `--self-test`**; run `scripts/bump-version.sh --self-test; echo rc=$?` Expected rc=0 with the three assertions printed.
+- [ ] **Step 2: Move the version to the workspace** (`version.workspace = true` in the four crates); `cargo build --workspace; echo rc=$?` rc=0.
+- [ ] **Step 3: Write `scripts/bundle-macos.sh` and the plist template**; run it locally: `scripts/bundle-macos.sh 0.1.0 /tmp/calm-bundle; echo rc=$?` rc=0, then `codesign --verify --verbose /tmp/calm-bundle/CALM.app; echo rc=$?` rc=0 and `open /tmp/calm-bundle/CALM.app` shows the window (quit it).
+- [ ] **Step 4: Write both workflows**; `actionlint .github/workflows/*.yml; echo rc=$?` rc=0.
+- [ ] **Step 5: Push the branch and watch CI**: `git push -u origin feat/cicd`, then `gh run watch` the triggered `ci` run to completion and record each job's conclusion; iterate on failures (one fix per push). Do NOT run the Release workflow and do NOT create tags or releases; the user triggers the first real release.
+- [ ] **Step 6: Write `docs/release.md`**, commit `ci: add CI and Release workflows with macOS bundle and version bump`.
+
+---
+
 ### Task 15: Documentation, code graph and branch finish
 
 **Files:**
