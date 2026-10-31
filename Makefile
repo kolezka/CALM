@@ -1,3 +1,7 @@
+ifeq ($(filter 4.% 5.%,$(MAKE_VERSION)),)
+$(error CALM needs GNU Make 4 or newer (found $(MAKE_VERSION)); install with `brew install make` and run `gmake` instead of `make`)
+endif
+
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 .SHELLFLAGS := -euo pipefail -c
@@ -18,6 +22,7 @@ help: ## Show the available targets.
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  %-14s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 setup-check: ## Check the local build prerequisites.
+	@printf 'GNU Make %s\n' "$(MAKE_VERSION)"
 	@failures=0; \
 	if rust_version=$$(rustc --version 2>/dev/null); then \
 		printf '%s\n' "$$rust_version"; \

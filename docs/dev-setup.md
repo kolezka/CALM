@@ -10,6 +10,7 @@ Target machine: an arm64 Mac on macOS 14 or newer. Other platforms are not suppo
 - Xcode Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain` (needed by the GPUI build)
 - `gh` logged in (`gh auth login`) for the GitHub pull-request plugin
 - `bun` for building TSX plugins (`curl -fsSL https://bun.sh/install | bash`)
+- GNU Make 4 or newer: `brew install make` (Homebrew provides `gmake`)
 
 `.cargo/config.toml` points `ZIG` at `/opt/homebrew/opt/zig@0.16/bin/zig`. If your Zig lives
 elsewhere, set `ZIG=/path/to/zig` in the environment; it wins over the config file.
@@ -38,11 +39,11 @@ cargo fmt --all -- --check
 
 ## Make targets
 
-Run `make` or `make help` to list targets. `make setup-check` prints prerequisite versions and checks the local toolchain.
+Run `gmake help` to list targets. `gmake setup-check` prints prerequisite versions and checks the local toolchain.
 
-- `make build`, `make test`, `make lint`, and `make fmt` build, test, lint, and format the Rust workspace.
-- `make smoke` runs the GUI smoke gate; `make run ARGS=--fullscreen` launches the app; `make bench N=20 SECONDS=30 ZOOM=1.0` runs a benchmark.
-- `make bundle VERSION=0.1.0 OUT=dist` builds a macOS bundle.
-- `make plugins` installs and builds each plugin package; `make plugins-check` type-checks each package.
-- `make ci` runs lint, tests, smoke, and plugin checks in order; `make graph` refreshes the repo-intel graphs.
-- `make clean` removes Rust and plugin build outputs.
+- `gmake build`, `gmake test`, `gmake lint`, and `gmake fmt` build, test, lint, and format the Rust workspace.
+- `gmake smoke` runs the GUI smoke gate; `gmake run ARGS=--fullscreen` launches the app; `gmake bench N=20 SECONDS=30 ZOOM=1.0` runs a benchmark.
+- `gmake bundle VERSION=0.1.0 OUT=dist` builds a macOS bundle.
+- `gmake plugins` installs and builds each plugin package; `gmake plugins-check` type-checks each package.
+- `gmake ci` runs lint, tests, smoke, and plugin checks in order; `gmake graph` refreshes the repo-intel graphs.
+- `gmake clean` removes Rust and plugin build outputs.
