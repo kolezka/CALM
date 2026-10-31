@@ -101,3 +101,50 @@ one means a new entry, not an edit.
   clean, and only targets the release bound to `origin`.
 - **Fork pull requests never run on the self-hosted runner.** It has Docker socket access.
   Every self-hosted job carries the same-repo guard.
+
+## Plugin API v2 (2026-10-31)
+
+Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not implemented yet.
+
+- **Plugin panels are free-form HTML/TSX surfaces with native browser, terminal and
+  plugin-to-plugin APIs.** The user asked for full customization. Cost: plugins get much
+  more reach, all of it behind declared capabilities.
+- **Reversed: script injection into browser panels is now allowed** for plugins with
+  `browser.script`, and cookies and site data for `browser.data`. It replaces the draft
+  line "no script injection into browser panels". Browser panels still never get the
+  `calm` bridge; plugin scripts run in a separate content world. Cost: such a plugin can
+  act as the user on every site open in a browser panel. That fits trusted plugins and is
+  documented next to the capability.
+- **Capabilities are enforced: undeclared calls are rejected** with `capability_missing`.
+  The manifest list is only useful if it is true. It is a declaration, not a sandbox.
+  Manifests without `apiVersion` get the implicit v1 set. Cost: author friction.
+- **External control socket approved, with PR #9's allowlist.** Default is read-only plus
+  `panel.setStatus` and `events.*`. Spawning with a command, `terminals.write` and
+  `process.exec` are one unit, refused by default and enabled only together, because
+  refusing one while allowing another is no limit. `github.api` stays plugin-only. Build
+  after PRs #5 and #6 merge. Cost: any process running as the user that can read the
+  token file can drive CALM.
+- **Background pages are opt-in hidden pages** (`"background": true`), one WKWebView each.
+  They serve commands, events and RPC with no panel open. Cost: one web content process
+  per plugin that opts in.
+- **Ghostty shim patch is a planned phase.** gpui-libghostty 0.3.1 drops `SET_TITLE`,
+  `PWD` and other actions and does not expose `read_text`, `size`, `foreground_pid` or
+  `binding_action`. A CALM-owned fork through `[patch.crates-io]` adds them. Cost: upkeep
+  on every upstream bump.
+- **Plugins may use the full Node and Bun API, unrestricted.** The user: "what someone
+  installs and uses is their business". A plugin may declare `main`, which CALM runs as a
+  bun child process with the same `calm.*` host API, talking to the plugin's pages and
+  serving `exports`. Backends cover most headless needs, so background pages move to the
+  last phase. Cost: an installed plugin has the same power as any program the user runs;
+  install stays explicit.
+- **Reversed: capabilities are declarative only, never enforced.** This replaces
+  "capabilities are enforced" above. The manifest list is shown at install and in a plugin
+  info view; no call is rejected for an undeclared capability, and `capability_missing` is
+  gone. Reason: a plugin with a backend bypasses any bridge gate, so the gate only slowed
+  honest plugins. Cost: the list can drift from the code; unknown words still warn.
+- **Still holds after the reversal:** the external socket allowlist (it governs outside
+  processes), no `calm` bridge in browser panels, CALM never hands its own secrets to
+  plugins, and the API never closes a live terminal without the user's confirmation (a
+  guard for the user's work against plugin bugs; a backend could still kill the process).
+- **Bun runtime source: pending the user.** Recommended: bun on the user's system with a
+  fixed lookup order and a loud failure, not a bundled copy.
