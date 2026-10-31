@@ -224,6 +224,29 @@ Added 2026-10-31 at the user's request. Runs after Task 8 merges, because it tou
 
 ---
 
+### Task 6c: Right-click context menu replaces the element toolbar (`calm-core`, `calm-native`, `calm-app`)
+
+Added 2026-10-31 at the user's request. Runs after Task 8 merges (same app files as 6b; implement 6b and 6c in one dispatch).
+
+**Files:**
+- Create: `crates/calm-core/src/menu.rs`, `crates/calm-native/src/menu.rs`
+- Modify: `crates/calm-core/src/interaction.rs`, `crates/calm-app/src/canvas_view.rs`, `crates/calm-app/src/toolbar.rs`, `crates/calm-native/examples/native_smoke.rs`
+
+**Interfaces:**
+- Produces (`calm-core/menu.rs`, pure, tested): `MenuItem::{ Action { id: String, label: String }, Submenu { label: String, items: Vec<MenuItem> }, Separator }`; `fn canvas_menu(plugins: &[(String, String)]) -> Vec<MenuItem>` = `Submenu "Add"` with `Action { id: "add.terminal", label: "Terminal" }`, `Action { id: "add.browser", label: "Browser" }`, then a `Separator` and one `Action { id: "add.plugin.<plugin_id>", label: <name> }` per plugin (no separator when there are no plugins); `fn panel_menu(minimized: bool) -> Vec<MenuItem>` = `Action "panel.minimize"` labelled `Minimize` or `Restore`, `Separator`, `Action "panel.close"` labelled `Close`; `fn menu_action(id: &str, world: Point, plugins: &[(String, String)]) -> Option<MenuCommand>` mapping ids to `MenuCommand::{ AddPanel { kind: PanelKind, rect: Rect }, Minimize, Close }`, where the new rect's origin is the right-click world point and the size is `DEFAULT_TERMINAL_SIZE = 640x400`, `DEFAULT_BROWSER_SIZE = 800x600`, or the plugin's default size passed in by the caller (extend the signature with `plugin_default_sizes: &[(String, Size)]` if simpler).
+- Produces (`calm-native/menu.rs`): `fn show_context_menu(items: &[MenuItem], screen_point: Point, host_view: &NativeView /* the GPUI window content view */) -> Option<String>` using `NSMenu` and `popUpMenuPositioningItem:atLocation:inView:`; nested `Submenu` items become `NSMenu` submenus; returns the chosen action id or `None` when dismissed. Native menus render above native views, which is why the menu is not GPUI-painted.
+- Interaction (`calm-core/interaction.rs`): right mouse button (`Button::Right`) down on empty canvas emits `Effect::ShowCanvasMenu { screen, world }`; right down on a panel's chrome emits `Effect::ShowPanelMenu { id, screen }`; right down on a panel's content rect emits nothing (the content owns its right clicks). The app runs `show_context_menu`, maps the id with `menu_action`, and applies: `AddPanel` creates the panel at the click point with the default size and focuses it (no drag needed); `Minimize` toggles; `Close` goes through `request_close`.
+- Toolbar: remove the element buttons (`Terminal`, `Browser`, plugin buttons); keep a slim status strip with the zoom percentage, the `Saved <path>` flash and the FPS readout from Task 6b. Keyboard draw tools (`t`, `b`, `escape`) stay as a secondary path.
+
+- [ ] **Step 1: Write failing tests** (`calm-core`): `canvas_menu_lists_add_submenu_with_terminal_browser_and_plugins`, `canvas_menu_without_plugins_has_no_trailing_separator`, `menu_action_add_terminal_places_default_rect_at_click`, `menu_action_add_plugin_uses_plugin_default_size`, `panel_menu_labels_restore_when_minimized`, `right_click_on_empty_canvas_emits_canvas_menu`, `right_click_on_chrome_emits_panel_menu`, `right_click_on_content_emits_nothing`.
+- [ ] **Step 2: Run** `cargo test -p calm-core` Expected: FAIL. **Step 3: Implement.** **Step 4: Run** Expected: PASS.
+- [ ] **Step 5: Implement `calm-native/menu.rs`** and extend `native_smoke` with a non-interactive check that builds the `NSMenu` tree from a sample spec and prints `native_smoke: menu items=<n> submenus=<m>` (do not pop it up in the smoke).
+- [ ] **Step 6: Wire the app**, remove the element toolbar buttons, keep the status strip.
+- [ ] **Step 7: Verify** `cargo run -p calm-app -- --smoke; echo rc=$?`, `cargo run -p calm-native --example native_smoke; echo rc=$?`, clippy and fmt once each. Manual: right-click empty canvas, Add > Terminal creates a shell at the click point; Add > Browser; Add > Hello World once plugins are wired; right-click a chrome strip shows Minimize/Close; right-click inside a terminal does not open the CALM menu.
+- [ ] **Step 8: Commit** `feat(app): right-click context menu with Add submenu replaces the element toolbar`
+
+---
+
 ### Task 7: Native child host (`calm-native`)
 
 **Files:**
