@@ -131,6 +131,17 @@ research doc and grid styles. Facts are verified unless marked otherwise.
   cross frame draws more than `mark_primitive_bound` grid primitives.
 - Unverified: manual look of dots, crosses and the major grid while zooming.
 
+## On `feat/brand-pixelart` (not merged)
+
+- `assets/brand/build.py` generates CALM pixel-grid wordmarks, a README banner, hand-tuned 16
+  and 32 px icons, a 1024 px master and a full iconset; `iconutil` builds `CALM.icns`.
+- The bundle script copies the icon to `Contents/Resources` and the plist names it with
+  `CFBundleIconFile`. A release bundle built in a temp directory was signed and verified,
+  and contains the same icon bytes as the source. `cargo run -p calm-app -- --smoke`
+  exited 0 with `preview_snapshots_in_3s=[1,1]`.
+- The 16 px mark reads as a C without a prompt; the 32 px mark shows panel tiles and `>_`.
+  Visual judgment of the logo and icon by the user is pending.
+
 ## On `fix/panel-resize` (PR open, not merged)
 
 - Fixed: browser panels could not be resized. The 12 unit grab band sat inside the
