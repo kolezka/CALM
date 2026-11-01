@@ -2168,7 +2168,10 @@ fn smoke_session_edges(
     window: AnyWindowHandle,
     cx: &mut gpui::AsyncApp,
 ) {
-    let fixed = match tempfile::Builder::new().prefix("calm-smoke-fixed-").tempdir() {
+    let fixed = match tempfile::Builder::new()
+        .prefix("calm-smoke-fixed-")
+        .tempdir()
+    {
         Ok(dir) => dir,
         Err(err) => smoke_fail(&format!("session edges: temp dir: {err}")),
     };
@@ -2177,10 +2180,7 @@ fn smoke_session_edges(
     let old_cwd = view.update(cx, |view, _| {
         view.scene = calm_core::scene::Scene::default();
         let cwd = &mut view.settings.settings.terminal.defaults.cwd;
-        std::mem::replace(
-            cwd,
-            Some(fixed.path().display().to_string()),
-        )
+        cwd.replace(fixed.path().display().to_string())
     });
     let fixture = [
         PanelKind::Terminal {

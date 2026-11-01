@@ -581,10 +581,16 @@ mod tests {
             ..SessionSettings::default()
         };
         // Toggle off then on, and a reset to defaults: both flip the setting on.
-        assert_eq!(autosave_change(gate, false, &off, &on), AutosaveChange::Keep);
+        assert_eq!(
+            autosave_change(gate, false, &off, &on),
+            AutosaveChange::Keep
+        );
         // Positive control: a readable session lets the same toggle start the writer.
         let gate = AutosaveStart::On.launch_gate(true);
-        assert_eq!(autosave_change(gate, false, &off, &on), AutosaveChange::Start);
+        assert_eq!(
+            autosave_change(gate, false, &off, &on),
+            AutosaveChange::Start
+        );
         assert!(!AutosaveStart::On.launch_gate(false));
     }
 
