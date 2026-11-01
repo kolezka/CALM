@@ -1,7 +1,7 @@
 # Backlog
 
 Agreed follow-ups that nobody is working on yet. Checked against `origin/main` at
-`7de2c55` (PRs #1 to #37 merged) on 2026-10-31. When an item gets an owner or a branch,
+`1f39de2` (PRs #1 to #39 merged) on 2026-11-01. Items from open PRs say so. When an item gets an owner or a branch,
 move it to `status.md` under "In progress" and delete it here.
 
 ## Open items
@@ -81,11 +81,16 @@ Seen several times on 2026-10-31:
   `--% CPU` while the sampler has a reading), and "only 1 frames with show_stats on". Both
   look like paint stalling after the stats toggle, likely the same occlusion cause.
 
-- State: cause unconfirmed. Load was suspected. Occlusion is likely for the first two. The
-  z-order one may be a real ordering bug.
-- Fix direction: make smoke independent of window visibility, or bring the window to the
-  front before the checks. Add a deterministic z-order check that reorders panels and
-  compares native order with scene order right after placement.
+- State: root cause found on 2026-11-01. An occluded window reports
+  `window_visible=Some(false)` and GPUI stops painting, so every paint-driven step stalls:
+  previews, FPS frames, the stats pill and the native restack. Load was ruled out (`main`
+  failed at load 17). Open PR #40 makes the native restack independent of paint and adds a
+  deterministic reorder check to the smoke. The preview and stats stalls remain.
+- Fix direction for the rest: make the preview and stats checks independent of paint, or
+  keep the window visible during the smoke. Until then treat them as known flakes
+  (`.ai/conventions.md`, "Smoke flakes").
+- Unconfirmed: a TUI "second exit not reported after restart" failure, seen on branches,
+  0 of 1 runs on `main`.
 - Origin: smoke runs during the prototype merges (`status.md`, "Known small issues").
 
 ### 7. Example plugins that use the SDK widely
@@ -96,7 +101,8 @@ manual test bed. Ideas: Scratchpad (storage, settings, menus), Repo Pulse (`gith
 
 - State: stopped at the user's request. Worktree `.worktrees/example-plugins`, branch
   `feat/example-plugins`, holds one unmerged commit (`4985f5f`, adds the TUI panel kind and
-  a null storage miss to `calm.d.ts` and `docs/plugins.md`). No plugin code.
+  a null storage miss to `calm.d.ts` and `docs/plugins.md`). No plugin code. That commit
+  is worth landing on its own, as a small types fix.
 - Blocker: 8 of the 17 bridge methods still reject with `not implemented` (`canvas.*`,
   `process.exec`, `theme.get`, part of `panel.*`), so the Inspector would mostly show
   rejections.
@@ -113,15 +119,14 @@ warn on stderr and in the status pill count.
   Settings section).
 - Origin: review of PR #35.
 
-### 9. Fill `plugin_version` when panels are created
+### 9. Capture the `plugin_version` call-site mutation RED
 
-Layout v2 (PR #31) has `plugin_version` on plugin and TUI kinds, but panels are created
-with `None`, so a saved layout would not say which plugin version made it.
+PR #39 fills `plugin_version` on new and duplicated plugin and TUI panels, but the RED run
+that removes only the call site and fails the test was never captured.
 
-- State: not started. Owned by persistence plan Task 4 (autosave), which first writes
-  real layouts.
-- Blocker: Task 4.
-- Origin: review of PR #31.
+- State: not started.
+- Blocker: none known.
+- Origin: review of PR #39.
 
 ### 10. Remaining plugin API v2 phases
 
@@ -137,9 +142,67 @@ and session, waits on the persistence plan).
 - State: not started past the items above.
 - Blocker: none for 2 to 5; 16 waits on persistence Tasks 4 to 7.
 - Origin: `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`, "Phased
-  implementation".
+  implementation". Worker briefs for phase 2 onward:
+  `docs/superpowers/plans/2026-11-01-plugin-api-v2-worker-briefs.md`.
+
+### 11. Restored title hides a plugin's "(not built)"
+
+With PR #41, a restored plugin panel keeps its saved title until the panel sets its own.
+A plugin that fails to load never sets one, so its saved title hides the `(not built)`
+title.
+
+- State: not started. Exists only once #41 merges.
+- Blocker: #41.
+- Origin: side effect of the PR #41 review fix for restored titles.
+
+### 12. Terminal settings changes overwrite restored titles
+
+`terminal_settings_changed` re-renders every plain terminal title from the template, which
+replaces a title restored by PR #41.
+
+- State: not fixed in #41.
+- Blocker: #41.
+- Origin: PR #41.
+
+### 13. Smoke coverage for the click restack on browser panels
+
+`BrowserEvent::Clicked` brings the panel to the front and restacks, but no smoke step
+covers it.
+
+- State: not started. Low priority.
+- Blocker: #40.
+- Origin: review of PR #40.
+
+### 14. Verify the quit save on a real quit
+
+Whether `on_app_quit` fires on cmd-q and on every quit path is unverified; the smoke calls
+the quit save directly.
+
+- State: not verified. Needs a manual quit and relaunch with autosave on (#41).
+- Blocker: #41 for a meaningful check.
+- Origin: persistence plan Task 4 acceptance, PR #39.
+
+### 15. Restore dialog for `restore_on_launch` `ask`
+
+With PR #41, `ask` restores like `on` and says so in the status pill and on stderr. The
+`NSAlert` that asks is persistence plan Task 7.
+
+- State: not started.
+- Blocker: #41, then Task 7.
+- Origin: PR #41.
+
+### 16. Docs drift after #41
+
+`README.md` and `CLAUDE.md` on `main` say the session settings have no effect and a launch
+starts empty. #41 already updates those lines; check them again after it merges, and after
+any rebase that drops them.
+
+- State: waiting on #41.
+- Origin: lead handoff, 2026-11-01.
 
 ## Done
+
+- `plugin_version` filled on new and duplicated plugin and TUI panels (old item 9): PR #39.
 
 - Smoke diagnostics for the stats flake (item 6): PR #37 splits sampler failure from the
   pill stall. The flake itself stays open.
