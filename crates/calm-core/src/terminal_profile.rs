@@ -84,6 +84,130 @@ pub const PALETTE_PRESETS: [PalettePreset; 3] = [
     },
 ];
 
+/// What a terminal's colors fall back to when nothing sets a palette.
+pub fn ghostty_default_colors() -> TerminalColors {
+    PALETTE_PRESETS
+        .iter()
+        .find(|preset| preset.id == "ghostty-default")
+        .map(|preset| preset.colors)
+        .expect("PALETTE_PRESETS has ghostty-default")
+}
+
+/// One terminal color: background, foreground or palette entry 0 to 15.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorSlot {
+    Background,
+    Foreground,
+    Palette(usize),
+}
+
+/// A panel's own terminal colors. Each color is set or inherited on its own. A full
+/// palette, as older session files hold, reads as every color set.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PanelTerminalColors {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreground: Option<String>,
+    /// Entry `i` is color `i`. `null` or a missing tail entry is inherited.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub palette: Vec<Option<String>>,
+    /// Any other key. Kept only to reject it by name.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, Value>,
+}
+
+impl PanelTerminalColors {
+    /// Every color set.
+    pub fn from_colors(colors: &TerminalColors) -> Self {
+        PanelTerminalColors {
+            background: Some(hex(colors.background)),
+            foreground: Some(hex(colors.foreground)),
+            palette: colors.palette.iter().map(|c| Some(hex(*c))).collect(),
+            unknown: BTreeMap::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.background.is_none()
+            && self.foreground.is_none()
+            && self.palette.iter().all(Option::is_none)
+            && self.unknown.is_empty()
+    }
+
+    /// The stored text for `slot`, valid or not.
+    pub fn text(&self, slot: ColorSlot) -> Option<&str> {
+        match slot {
+            ColorSlot::Background => self.background.as_deref(),
+            ColorSlot::Foreground => self.foreground.as_deref(),
+            ColorSlot::Palette(index) => self.palette.get(index)?.as_deref(),
+        }
+    }
+
+    /// Sets or clears one color. Other colors are untouched.
+    pub fn set(&mut self, slot: ColorSlot, value: Option<u32>) {
+        let text = value.map(hex);
+        match slot {
+            ColorSlot::Background => self.background = text,
+            ColorSlot::Foreground => self.foreground = text,
+            ColorSlot::Palette(index) => {
+                if self.palette.len() <= index {
+                    self.palette.resize(index + 1, None);
+                }
+                self.palette[index] = text;
+                while self.palette.last().is_some_and(Option::is_none) {
+                    self.palette.pop();
+                }
+            }
+        }
+    }
+
+    /// `base` with every valid set color replaced. `None` when no color is valid.
+    /// Loading does not validate, so a bad entry keeps the base color.
+    pub fn over(&self, base: &TerminalColors) -> Option<TerminalColors> {
+        let mut colors = *base;
+        let mut any = false;
+        let mut put = |text: Option<&str>, target: &mut u32| {
+            if let Some(value) = text.and_then(opaque_color) {
+                *target = value;
+                any = true;
+            }
+        };
+        put(self.background.as_deref(), &mut colors.background);
+        put(self.foreground.as_deref(), &mut colors.foreground);
+        for (index, target) in colors.palette.iter_mut().enumerate() {
+            put(self.text(ColorSlot::Palette(index)), target);
+        }
+        any.then_some(colors)
+    }
+
+    /// The first bad color or key, named under `path`.
+    pub fn validate(&self, path: &str) -> Result<(), String> {
+        if let Some(key) = self.unknown.keys().next() {
+            return Err(format!("unknown field \"{path}.{key}\""));
+        }
+        if self.palette.len() > 16 {
+            return Err(format!(
+                "\"{path}.palette\" has {} colors, expected at most 16",
+                self.palette.len()
+            ));
+        }
+        let check = |name: String, text: Option<&str>| match text {
+            Some(text) if opaque_color(text).is_none() => {
+                Err(format!("\"{path}.{name}\" is {text:?}, expected #rrggbb"))
+            }
+            _ => Ok(()),
+        };
+        check("background".into(), self.background.as_deref())?;
+        check("foreground".into(), self.foreground.as_deref())?;
+        for (index, text) in self.palette.iter().enumerate() {
+            check(format!("palette[{index}]"), text.as_deref())?;
+        }
+        Ok(())
+    }
+}
+
 /// `terminal_colors` as written in the file. Fields are optional here only so a missing
 /// one gets an error that names it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -555,13 +679,13 @@ impl TerminalSettings {
             });
         }
         resolved.overrides = lay_overrides(resolved.overrides, overrides);
-        // Loading does not validate overrides, so a bad palette keeps the resolved one.
-        if let Some(colors) = overrides
-            .terminal_colors
-            .as_ref()
-            .and_then(|colors| colors.parse("overrides.terminal_colors").ok())
-        {
-            resolved.colors = Some(colors);
+        // Each set color replaces its inherited one; with nothing inherited the rest
+        // comes from Ghostty Default, since a live theme needs every color.
+        if let Some(own) = &overrides.terminal_colors {
+            let base = resolved.colors.unwrap_or_else(ghostty_default_colors);
+            if let Some(colors) = own.over(&base) {
+                resolved.colors = Some(colors);
+            }
         }
         resolved
     }

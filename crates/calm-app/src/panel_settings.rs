@@ -71,7 +71,10 @@ impl CanvasView {
         else {
             return;
         };
-        let effective = panel_effective(panel, &self.settings.settings);
+        let mut effective = panel_effective(panel, &self.settings.settings);
+        effective.live_theme = self
+            .terminal_meta(id)
+            .is_some_and(|meta| meta.applied_colors.is_some());
         settings_window.set_title(&window_title(&effective.title));
         settings_window.set_form(&panel_form(panel, &effective));
     }
@@ -98,7 +101,7 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(panel) = self.scene.get(id) else {
+        if self.scene.get(id).is_none() {
             // A change queued just before the panel closed. Nothing to apply it to.
             if self.gone_panel_changes.insert(id) {
                 eprintln!(
@@ -107,9 +110,8 @@ impl CanvasView {
                 );
             }
             return;
-        };
-        let inherited = panel_effective(panel, &self.settings.settings).colors;
-        match apply_panel_field(&mut self.scene, id, field, value, inherited.as_ref()) {
+        }
+        match apply_panel_field(&mut self.scene, id, field, value) {
             Ok(FormOutcome::Changed { rebuild }) => {
                 self.apply_panel_overrides(id, cx);
                 if let (Some(settings_window), Some(panel)) =

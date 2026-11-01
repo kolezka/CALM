@@ -1535,7 +1535,7 @@ fn smoke_panel_overrides(
     cx: &mut gpui::AsyncApp,
 ) {
     use calm_core::scene::{chrome_height, content_rect, set_borderless};
-    use calm_core::terminal_profile::{PALETTE_PRESETS, TerminalColorsSetting};
+    use calm_core::terminal_profile::{PALETTE_PRESETS, PanelTerminalColors};
     const TITLE: &str = "smoke {n} literal";
     const ACCENT: u32 = 0x12ab34ff;
     let palette = PALETTE_PRESETS[1].colors;
@@ -1552,8 +1552,7 @@ fn smoke_panel_overrides(
             if let Some(panel) = view.scene.get_mut(id) {
                 panel.overrides.title = Some(TITLE.to_string());
                 panel.overrides.accent_color = Some("#12ab34".to_string());
-                panel.overrides.terminal_colors =
-                    Some(TerminalColorsSetting::from_colors(&palette));
+                panel.overrides.terminal_colors = Some(PanelTerminalColors::from_colors(&palette));
                 set_borderless(panel, true);
             }
             view.apply_panel_overrides(id, cx);

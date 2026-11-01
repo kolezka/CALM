@@ -8,7 +8,7 @@ use crate::chrome::{BUILTIN_ICON_PREFIX, PanelIcon};
 use crate::geometry::{Point, Rect, Size};
 use crate::resize::ResizePolicy;
 use crate::terminal_profile::{
-    MAX_TITLE_CHARS, TerminalColorsSetting, check_color, check_icon, check_text,
+    MAX_TITLE_CHARS, PanelTerminalColors, check_color, check_icon, check_text,
 };
 
 pub const MIN_PANEL_SIZE: Size = Size::new(120.0, 80.0);
@@ -214,9 +214,9 @@ pub struct PanelOverrides {
     /// "#rrggbb" or "#rrggbbaa".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title_color: Option<String>,
-    /// Terminals only.
+    /// Terminals only. Each color is set or inherited on its own.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub terminal_colors: Option<TerminalColorsSetting>,
+    pub terminal_colors: Option<PanelTerminalColors>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub borderless: Option<bool>,
 }
@@ -252,7 +252,7 @@ impl PanelOverrides {
                     "\"overrides.terminal_colors\" applies only to terminal panels".to_string(),
                 );
             }
-            colors.parse("overrides.terminal_colors")?;
+            colors.validate("overrides.terminal_colors")?;
         }
         Ok(())
     }
@@ -834,13 +834,41 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_a_malformed_single_terminal_color() {
+        use crate::terminal_profile::{ColorSlot, PanelTerminalColors};
+        let mut colors = PanelTerminalColors::default();
+        colors.set(ColorSlot::Palette(5), Some(0x123456));
+        let good = PanelOverrides {
+            terminal_colors: Some(colors.clone()),
+            ..PanelOverrides::default()
+        };
+        assert_eq!(good.validate(&terminal()), Ok(()));
+        colors.palette[5] = Some("#12345".into());
+        let bad = PanelOverrides {
+            terminal_colors: Some(colors),
+            ..PanelOverrides::default()
+        };
+        let error = bad.validate(&terminal()).unwrap_err();
+        assert!(error.contains("palette[5]"), "{error}");
+        let bad_background = PanelOverrides {
+            terminal_colors: Some(PanelTerminalColors {
+                background: Some("red".into()),
+                ..PanelTerminalColors::default()
+            }),
+            ..PanelOverrides::default()
+        };
+        let error = bad_background.validate(&terminal()).unwrap_err();
+        assert!(error.contains("background"), "{error}");
+    }
+
+    #[test]
     fn validate_rejects_terminal_fields_on_a_browser() {
         let browser = PanelKind::Browser {
             url: "https://example.com".into(),
             page_zoom: None,
         };
         let colors = PanelOverrides {
-            terminal_colors: Some(crate::terminal_profile::TerminalColorsSetting::from_colors(
+            terminal_colors: Some(crate::terminal_profile::PanelTerminalColors::from_colors(
                 &crate::terminal_profile::PALETTE_PRESETS[0].colors,
             )),
             ..PanelOverrides::default()

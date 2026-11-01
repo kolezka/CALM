@@ -1852,7 +1852,7 @@ mod tests {
             accent_color: Some("#ff8800".into()),
             title_bar_color: Some("#101010cc".into()),
             title_color: Some("#eeeeee".into()),
-            terminal_colors: Some(crate::terminal_profile::TerminalColorsSetting::from_colors(
+            terminal_colors: Some(crate::terminal_profile::PanelTerminalColors::from_colors(
                 &crate::terminal_profile::PALETTE_PRESETS[0].colors,
             )),
             borderless: Some(true),
@@ -1867,6 +1867,47 @@ mod tests {
         .unwrap();
         let loaded = load_layout_from(dir.path(), "styled").unwrap();
         assert_eq!(loaded.panels[0].overrides, overrides);
+    }
+
+    #[test]
+    fn full_palette_override_loads_as_every_color_set() {
+        use crate::terminal_profile::{ColorSlot, PALETTE_PRESETS, TerminalColorsSetting};
+        let colors = PALETTE_PRESETS[0].colors;
+        // The shape files had before colors were set one by one.
+        let old = serde_json::to_string(&TerminalColorsSetting::from_colors(&colors)).unwrap();
+        let text = v2_json_with_kinds(&[r#"{"type": "terminal", "command": null, "cwd": null}"#])
+            .replacen(
+                r#""minimized": false"#,
+                &format!(r#""minimized": false, "overrides": {{"terminal_colors": {old}}}"#),
+                1,
+            );
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("full.json"), &text).unwrap();
+        let loaded = load_layout_from(dir.path(), "full").unwrap();
+        let own = loaded.panels[0].overrides.terminal_colors.clone().unwrap();
+        let mut slots = vec![ColorSlot::Background, ColorSlot::Foreground];
+        slots.extend((0..16).map(ColorSlot::Palette));
+        for slot in slots {
+            assert!(own.text(slot).is_some(), "{slot:?} not set");
+        }
+        assert_eq!(own.over(&PALETTE_PRESETS[1].colors), Some(colors));
+    }
+
+    #[test]
+    fn partial_terminal_colors_round_trip() {
+        use crate::terminal_profile::{ColorSlot, PanelTerminalColors};
+        let mut own = PanelTerminalColors::default();
+        own.set(ColorSlot::Palette(3), Some(0xabcdef));
+        own.set(ColorSlot::Foreground, Some(0x010203));
+        let json = serde_json::to_value(&own).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"foreground": "#010203", "palette": [null, null, null, "#abcdef"]})
+        );
+        let back: PanelTerminalColors = serde_json::from_value(json).unwrap();
+        assert_eq!(back, own);
+        assert_eq!(back.text(ColorSlot::Background), None);
+        assert_eq!(back.text(ColorSlot::Palette(4)), None);
     }
 
     #[test]

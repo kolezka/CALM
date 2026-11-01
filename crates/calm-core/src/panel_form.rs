@@ -3,14 +3,15 @@
 
 use crate::background::Rgb;
 use crate::chrome::{BUILTIN_ICON_PREFIX, ChromeOverrides, PanelIcon, lay_overrides};
-use crate::scene::{Panel, PanelId, PanelKind, Scene, set_borderless};
+use crate::scene::{Panel, PanelId, PanelKind, PanelOverrides, Scene, set_borderless};
 use crate::settings::Settings;
 use crate::settings_form::{
     CHROME_SEED, Control, Field, FieldState, FieldValue, FormCommand, FormOutcome, Section, button,
     checkbox, choice, color, field, note, rgb_of, section,
 };
+pub use crate::terminal_profile::ghostty_default_colors;
 use crate::terminal_profile::{
-    PALETTE_PRESETS, TerminalColors, TerminalColorsSetting, TerminalIcon, hex,
+    ColorSlot, PALETTE_PRESETS, PanelTerminalColors, TerminalColors, TerminalIcon, hex,
 };
 
 /// What the panel shows now, inherited and set fields alike.
@@ -22,15 +23,8 @@ pub struct PanelEffective {
     pub colors: Option<TerminalColors>,
     /// A terminal with no colors of its own: Ghostty's config colors it.
     pub live_colors_note: bool,
-}
-
-/// What a terminal's color wells start from when nothing sets a palette.
-pub fn ghostty_default_colors() -> TerminalColors {
-    PALETTE_PRESETS
-        .iter()
-        .find(|preset| preset.id == "ghostty-default")
-        .map(|preset| preset.colors)
-        .expect("PALETTE_PRESETS has ghostty-default")
+    /// The running terminal already shows a theme CALM applied. Set by the app.
+    pub live_theme: bool,
 }
 
 pub fn panel_effective(panel: &Panel, settings: &Settings) -> PanelEffective {
@@ -57,6 +51,7 @@ pub fn panel_effective(panel: &Panel, settings: &Settings) -> PanelEffective {
                 chrome: resolved.overrides,
                 live_colors_note: resolved.colors.is_none(),
                 colors: resolved.colors,
+                live_theme: false,
             }
         }
         _ => PanelEffective {
@@ -65,6 +60,7 @@ pub fn panel_effective(panel: &Panel, settings: &Settings) -> PanelEffective {
             chrome: lay_overrides(ChromeOverrides::default(), overrides),
             colors: None,
             live_colors_note: false,
+            live_theme: false,
         },
     }
 }
@@ -170,47 +166,46 @@ pub fn panel_form(panel: &Panel, effective: &PanelEffective) -> Vec<Section> {
             ],
         ));
 
-        let set = overrides.terminal_colors.is_some();
+        let own = overrides.terminal_colors.as_ref();
+        let set = |slot: ColorSlot| own.is_some_and(|own| own.text(slot).is_some());
         let mut colors = Vec::new();
-        // With no palette set anywhere, show the seed a one-well edit keeps.
+        // With no palette set anywhere, show the seed the live theme fills in.
         let shown = effective.colors.unwrap_or_else(ghostty_default_colors);
-        {
-            let effective_colors = &shown;
+        colors.push(with_state(
+            color(
+                "panel.colors.background",
+                "Background",
+                Rgb(shown.background),
+            ),
+            set(ColorSlot::Background),
+        ));
+        colors.push(with_state(
+            color(
+                "panel.colors.foreground",
+                "Foreground",
+                Rgb(shown.foreground),
+            ),
+            set(ColorSlot::Foreground),
+        ));
+        for (index, value) in shown.palette.iter().enumerate() {
             colors.push(with_state(
                 color(
-                    "panel.colors.background",
-                    "Background",
-                    Rgb(effective_colors.background),
+                    &format!("panel.colors.{index}"),
+                    &format!("Color {index}"),
+                    Rgb(*value),
                 ),
-                set,
+                set(ColorSlot::Palette(index)),
             ));
-            colors.push(with_state(
-                color(
-                    "panel.colors.foreground",
-                    "Foreground",
-                    Rgb(effective_colors.foreground),
-                ),
-                set,
-            ));
-            for (index, value) in effective_colors.palette.iter().enumerate() {
-                colors.push(with_state(
-                    color(
-                        &format!("panel.colors.{index}"),
-                        &format!("Color {index}"),
-                        Rgb(*value),
-                    ),
-                    set,
-                ));
-            }
         }
         if effective.live_colors_note {
-            colors.push(note(
-                "panel.colors.note",
-                "",
+            // libghostty cannot drop a theme it was given, only take a new one.
+            let text = if effective.live_theme {
+                "This terminal keeps its current colors. The change applies to new terminals."
+            } else {
                 "Colors come from your Ghostty config. Load a theme to give this terminal its \
                  own."
-                    .to_string(),
-            ));
+            };
+            colors.push(note("panel.colors.note", "", text.to_string()));
         }
         for (index, preset) in PALETTE_PRESETS.iter().enumerate() {
             colors.push(button(
@@ -233,21 +228,19 @@ fn text(id: &str, label: &str, value: String, placeholder: String) -> Field {
     field(id, label, Control::Text { value, placeholder })
 }
 
-/// Applies one control change to panel `id`. `inherited_colors` is the palette the panel
-/// would have with no `terminal_colors` override, the base for editing one color of it.
-/// An edit that fails validation changes nothing.
+/// Applies one control change to panel `id`. An edit that fails validation changes
+/// nothing.
 pub fn apply_panel_field(
     scene: &mut Scene,
     id: PanelId,
     field: &str,
     value: FieldValue,
-    inherited_colors: Option<&TerminalColors>,
 ) -> Result<FormOutcome, String> {
     let mut panel = scene
         .get(id)
         .ok_or_else(|| format!("no panel {id:?} for field {field:?}"))?
         .clone();
-    let outcome = edit(&mut panel, field, value, inherited_colors)?;
+    let outcome = edit(&mut panel, field, value)?;
     if let FormOutcome::Command(_) = outcome {
         return Ok(outcome);
     }
@@ -273,12 +266,7 @@ fn flipped(before: bool, after: bool) -> FormOutcome {
     }
 }
 
-fn edit(
-    panel: &mut Panel,
-    field: &str,
-    value: FieldValue,
-    inherited_colors: Option<&TerminalColors>,
-) -> Result<FormOutcome, String> {
+fn edit(panel: &mut Panel, field: &str, value: FieldValue) -> Result<FormOutcome, String> {
     let rebuilt = FormOutcome::Changed { rebuild: true };
     let wrong = || format!("panel field {field:?} got {value:?}");
     let is_terminal = matches!(panel.kind, PanelKind::Terminal { .. });
@@ -301,14 +289,15 @@ fn edit(
         if value != FieldValue::Pressed {
             return Err(wrong());
         }
-        overrides.terminal_colors = Some(TerminalColorsSetting::from_colors(&preset.colors));
+        overrides.terminal_colors = Some(PanelTerminalColors::from_colors(&preset.colors));
         return Ok(rebuilt);
     }
     if let Some(part) = field.strip_prefix("panel.colors.") {
         terminal_only()?;
         let slot = match part {
-            "background" | "foreground" => None,
-            index => Some(
+            "background" => ColorSlot::Background,
+            "foreground" => ColorSlot::Foreground,
+            index => ColorSlot::Palette(
                 index
                     .parse::<usize>()
                     .ok()
@@ -316,31 +305,22 @@ fn edit(
                     .ok_or_else(|| format!("unknown panel field {field:?}"))?,
             ),
         };
-        let was_set = overrides.terminal_colors.is_some();
-        return match value {
-            FieldValue::Reset => {
-                overrides.terminal_colors = None;
-                Ok(flipped(was_set, false))
-            }
-            FieldValue::Color(rgb) => {
-                let own = overrides
-                    .terminal_colors
-                    .as_ref()
-                    .and_then(|colors| colors.parse("overrides.terminal_colors").ok());
-                let mut colors = own
-                    .or(inherited_colors.copied())
-                    .unwrap_or_else(ghostty_default_colors);
-                match (part, slot) {
-                    ("background", _) => colors.background = rgb.0,
-                    ("foreground", _) => colors.foreground = rgb.0,
-                    (_, Some(index)) => colors.palette[index] = rgb.0,
-                    _ => return Err(format!("unknown panel field {field:?}")),
-                }
-                overrides.terminal_colors = Some(TerminalColorsSetting::from_colors(&colors));
-                Ok(flipped(was_set, true))
-            }
-            _ => Err(wrong()),
+        let is_set = |overrides: &PanelOverrides| {
+            overrides
+                .terminal_colors
+                .as_ref()
+                .is_some_and(|own| own.text(slot).is_some())
         };
+        let was_set = is_set(overrides);
+        let value = match value {
+            FieldValue::Color(rgb) => Some(rgb.0),
+            FieldValue::Reset => None,
+            _ => return Err(wrong()),
+        };
+        let mut own = overrides.terminal_colors.take().unwrap_or_default();
+        own.set(slot, value);
+        overrides.terminal_colors = (!own.is_empty()).then_some(own);
+        return Ok(flipped(was_set, is_set(overrides)));
     }
 
     match (field, value.clone()) {
@@ -425,6 +405,7 @@ mod tests {
     use super::*;
     use crate::geometry::Rect;
     use crate::scene::content_rect;
+    use crate::terminal_profile::TerminalColorsSetting;
 
     fn terminal() -> PanelKind {
         PanelKind::Terminal {
@@ -469,20 +450,15 @@ mod tests {
             .unwrap_or_else(|| panic!("no field {id}"))
     }
 
-    /// Applies with the inherited palette the current form would pass.
+    /// `settings` is unused by the edit; it keeps the call sites reading as the app's.
     fn apply(
         scene: &mut Scene,
         id: PanelId,
-        settings: &Settings,
+        _settings: &Settings,
         field: &str,
         value: FieldValue,
     ) -> Result<FormOutcome, String> {
-        let inherited = {
-            let mut bare = scene.get(id).unwrap().clone();
-            bare.overrides.terminal_colors = None;
-            panel_effective(&bare, settings).colors
-        };
-        apply_panel_field(scene, id, field, value, inherited.as_ref())
+        apply_panel_field(scene, id, field, value)
     }
 
     fn with_global_colors() -> Settings {
@@ -813,15 +789,153 @@ mod tests {
             id,
             "panel.colors.3",
             FieldValue::Color(Rgb(0xabcdef)),
-            None,
         )
         .unwrap();
-        let stored = scene.get(id).unwrap().overrides.terminal_colors.clone();
-        let colors = stored.unwrap().parse("test").unwrap();
+        // Only the edited color is stored; the seed is for display and the live theme.
+        let stored = scene
+            .get(id)
+            .unwrap()
+            .overrides
+            .terminal_colors
+            .clone()
+            .unwrap();
+        let mut only = PanelTerminalColors::default();
+        only.set(ColorSlot::Palette(3), Some(0xabcdef));
+        assert_eq!(stored, only);
+        let (_, effective) = form(&scene, id, &Settings::default());
         let mut expected = ghostty;
         expected.palette[3] = 0xabcdef;
         assert_ne!(ghostty.palette[3], 0xabcdef);
-        assert_eq!(colors, expected);
+        assert_eq!(effective.colors, Some(expected));
+    }
+
+    fn color_well_states(sections: &[Section]) -> Vec<(String, FieldState)> {
+        sections
+            .iter()
+            .flat_map(|section| &section.fields)
+            .filter(|field| {
+                field.id.starts_with("panel.colors.") && field.id != "panel.colors.note"
+            })
+            .map(|field| (field.id.clone(), field.state))
+            .collect()
+    }
+
+    #[test]
+    fn one_well_edit_marks_only_that_well_set() {
+        let settings = with_global_colors();
+        let (mut scene, id) = scene_with(terminal());
+        apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.colors.5",
+            FieldValue::Color(Rgb(0x123456)),
+        )
+        .unwrap();
+        let (sections, _) = form(&scene, id, &settings);
+        let states = color_well_states(&sections);
+        assert_eq!(states.len(), 18);
+        for (field, state) in states {
+            let expected = if field == "panel.colors.5" {
+                FieldState::Set
+            } else {
+                FieldState::Inherited
+            };
+            assert_eq!(state, expected, "{field}");
+        }
+    }
+
+    #[test]
+    fn a_global_change_reaches_colors_the_panel_did_not_set() {
+        let mut settings = with_global_colors();
+        let (mut scene, id) = scene_with(terminal());
+        apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.colors.5",
+            FieldValue::Color(Rgb(0x123456)),
+        )
+        .unwrap();
+        let global = PALETTE_PRESETS[2].colors;
+        settings.terminal.defaults.terminal_colors =
+            Some(TerminalColorsSetting::from_colors(&global));
+        let (_, effective) = form(&scene, id, &settings);
+        let mut expected = global;
+        expected.palette[5] = 0x123456;
+        assert_eq!(effective.colors, Some(expected));
+    }
+
+    #[test]
+    fn reset_of_one_well_keeps_another_edited_well() {
+        let settings = with_global_colors();
+        let (mut scene, id) = scene_with(terminal());
+        for (field, rgb) in [
+            ("panel.colors.5", 0x123456),
+            ("panel.colors.background", 0x0a0b0c),
+        ] {
+            apply(
+                &mut scene,
+                id,
+                &settings,
+                field,
+                FieldValue::Color(Rgb(rgb)),
+            )
+            .unwrap();
+        }
+        apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.colors.5",
+            FieldValue::Reset,
+        )
+        .unwrap();
+        let (sections, effective) = form(&scene, id, &settings);
+        assert_eq!(
+            find(&sections, "panel.colors.background").state,
+            FieldState::Set
+        );
+        assert_eq!(
+            find(&sections, "panel.colors.5").state,
+            FieldState::Inherited
+        );
+        let mut expected = PALETTE_PRESETS[1].colors;
+        expected.background = 0x0a0b0c;
+        assert_eq!(effective.colors, Some(expected));
+        // The last set well reset leaves no palette of the panel's own.
+        apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.colors.background",
+            FieldValue::Reset,
+        )
+        .unwrap();
+        assert_eq!(scene.get(id).unwrap().overrides.terminal_colors, None);
+    }
+
+    #[test]
+    fn live_theme_note_says_the_change_applies_to_new_terminals() {
+        let (scene, id) = scene_with(terminal());
+        let panel = scene.get(id).unwrap();
+        let mut effective = panel_effective(panel, &Settings::default());
+        let note = |effective: &PanelEffective| match &find(
+            &panel_form(panel, effective),
+            "panel.colors.note",
+        )
+        .control
+        {
+            Control::Note(text) => text.clone(),
+            other => panic!("note is {other:?}"),
+        };
+        assert!(note(&effective).contains("Ghostty config"));
+        effective.live_theme = true;
+        assert!(
+            note(&effective).contains("new terminals"),
+            "{}",
+            note(&effective)
+        );
     }
 
     #[test]
@@ -851,12 +965,27 @@ mod tests {
         assert_eq!(effective.colors, Some(PALETTE_PRESETS[2].colors));
         assert!(!effective.live_colors_note);
 
+        // One reset drops only that color: it falls back to the Ghostty Default seed.
         apply(
             &mut scene,
             id,
             &settings,
             "panel.colors.background",
             FieldValue::Reset,
+        )
+        .unwrap();
+        let (_, effective) = form(&scene, id, &settings);
+        let mut expected = PALETTE_PRESETS[2].colors;
+        expected.background = ghostty_default_colors().background;
+        assert_eq!(effective.colors, Some(expected));
+        assert!(!effective.live_colors_note);
+
+        apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.reset_all",
+            FieldValue::Pressed,
         )
         .unwrap();
         let (sections, effective) = form(&scene, id, &settings);
@@ -931,7 +1060,6 @@ mod tests {
             PanelId(999),
             "panel.title",
             FieldValue::Text("x".into()),
-            None,
         );
         assert!(result.is_err());
     }
