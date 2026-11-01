@@ -145,17 +145,20 @@ impl Scene {
         }
     }
 
-    /// Panels get fresh ids and keep their order. Rects below `MIN_PANEL_SIZE`
-    /// are enlarged, the same rule `Scene::add` applies.
+    /// Panels get fresh ids and keep their order. Rects below the minimum are
+    /// enlarged, the same rule `Scene::add_with_overrides` applies.
     pub fn from_layout(layout: LayoutFile) -> Scene {
         let mut scene = Scene::default();
         scene.camera = layout.camera;
         for layout_panel in layout.panels {
-            let id = scene.add(layout_panel.kind, layout_panel.rect);
+            let id = scene.add_with_overrides(
+                layout_panel.kind,
+                layout_panel.rect,
+                layout_panel.overrides,
+            );
             if let Some(panel) = scene.get_mut(id) {
                 panel.title = layout_panel.title;
                 panel.minimized = layout_panel.minimized;
-                panel.overrides = layout_panel.overrides;
             }
         }
         scene
@@ -542,6 +545,26 @@ mod tests {
     use crate::geometry::{Point, Rect};
     use crate::scene::{PanelKind, Scene};
     use std::path::PathBuf;
+
+    #[test]
+    fn layout_roundtrip_keeps_small_borderless_size() {
+        use crate::scene::{MIN_PANEL_SIZE, content_rect, set_borderless};
+        let mut scene = Scene::default();
+        let id = scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+            },
+            Rect::new(0.0, 0.0, MIN_PANEL_SIZE.width, MIN_PANEL_SIZE.height),
+        );
+        set_borderless(scene.get_mut(id).unwrap(), true);
+        let restored = Scene::from_layout(scene.to_layout());
+        let before = scene.get(id).unwrap();
+        let after = &restored.panels[0];
+        assert_eq!(after.rect, before.rect);
+        assert_eq!(content_rect(after), content_rect(before));
+    }
 
     fn sample_scene() -> Scene {
         let mut scene = Scene::default();

@@ -392,12 +392,13 @@ impl CanvasView {
     ) -> Vec<String> {
         let mut notices = Vec::new();
         for saved in layout.panels {
-            let id = self.scene.add(saved.kind.clone(), saved.rect);
+            let id = self
+                .scene
+                .add_with_overrides(saved.kind.clone(), saved.rect, saved.overrides);
             let saved_title = saved.title.clone();
             if let Some(panel) = self.scene.get_mut(id) {
                 panel.title = saved.title;
                 panel.minimized = saved.minimized;
-                panel.overrides = saved.overrides;
             }
             self.cache_override_icon(id);
             let reason = placeholder_reason(

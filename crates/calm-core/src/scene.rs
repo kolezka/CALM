@@ -378,14 +378,30 @@ impl Scene {
 
     /// Adds a panel on top. Ids are never reused, even after a remove.
     pub fn add(&mut self, kind: PanelKind, rect: Rect) -> PanelId {
+        self.add_with_overrides(kind, rect, PanelOverrides::default())
+    }
+
+    /// `add` with saved overrides installed, for restore and duplicate. A borderless
+    /// panel has no chrome strip, so its height minimum is the content minimum.
+    pub fn add_with_overrides(
+        &mut self,
+        kind: PanelKind,
+        rect: Rect,
+        overrides: PanelOverrides,
+    ) -> PanelId {
         self.bump();
         let id = PanelId(self.next_id);
         self.next_id += 1;
+        let min_height = if overrides.borderless == Some(true) {
+            MIN_PANEL_SIZE.height - CHROME_HEIGHT
+        } else {
+            MIN_PANEL_SIZE.height
+        };
         let rect = Rect {
             origin: rect.origin,
             size: Size::new(
                 rect.size.width.max(MIN_PANEL_SIZE.width),
-                rect.size.height.max(MIN_PANEL_SIZE.height),
+                rect.size.height.max(min_height),
             ),
         };
         let title = kind.default_title();
@@ -396,7 +412,7 @@ impl Scene {
             rect,
             title,
             minimized: false,
-            overrides: PanelOverrides::default(),
+            overrides,
             resize,
         });
         id
@@ -470,14 +486,7 @@ impl Scene {
             size: source.rect.size,
         };
         let overrides = source.overrides.clone();
-        let copy = self.add(kind, rect);
-        if let Some(panel) = self.get_mut(copy) {
-            if overrides.borderless == Some(true) {
-                panel.rect.size = rect.size;
-            }
-            panel.overrides = overrides;
-        }
-        Some(copy)
+        Some(self.add_with_overrides(kind, rect, overrides))
     }
 
     /// Topmost panel under `world`. A minimized panel only hits its chip.
@@ -950,6 +959,29 @@ mod tests {
             PanelKind::Terminal { profile: Some(id), .. } if id == "neon"
         ));
         assert_eq!(panel.rect.size, Size::new(300.0, 200.0));
+    }
+
+    #[test]
+    fn add_with_overrides_keeps_a_small_borderless_size_and_clamps_the_rest() {
+        let borderless = PanelOverrides {
+            borderless: Some(true),
+            ..PanelOverrides::default()
+        };
+        let content_min = MIN_PANEL_SIZE.height - CHROME_HEIGHT;
+        let mut scene = Scene::default();
+        let small = Rect::new(0.0, 0.0, MIN_PANEL_SIZE.width, content_min);
+        let id = scene.add_with_overrides(terminal(), small, borderless.clone());
+        let panel = scene.get(id).unwrap();
+        assert_eq!(panel.rect, small);
+        assert_eq!(panel.overrides, borderless);
+        // Undersized files are still clamped, borderless to the content minimum.
+        let id = scene.add_with_overrides(terminal(), Rect::new(0.0, 0.0, 10.0, 10.0), borderless);
+        assert_eq!(
+            scene.get(id).unwrap().rect.size,
+            Size::new(MIN_PANEL_SIZE.width, content_min)
+        );
+        let id = scene.add_with_overrides(terminal(), small, PanelOverrides::default());
+        assert_eq!(scene.get(id).unwrap().rect.size, MIN_PANEL_SIZE);
     }
 
     #[test]
