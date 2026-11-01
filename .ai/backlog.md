@@ -1,7 +1,7 @@
 # Backlog
 
 Agreed follow-ups with remaining unassigned work. Checked against `origin/main` at
-`1f39de2` (PRs #1 to #39 merged) on 2026-11-01. Items from open PRs say so. Move an item
+`188d7a5` (PRs #1 to #41 merged) on 2026-11-01. Items from open PRs say so. Move an item
 to `status.md` under "In progress" once all of its remaining work has an owner or branch.
 
 ## Open items
@@ -73,8 +73,7 @@ Seen several times on 2026-10-31:
 - Native z-order mismatch: `zorder=[1, 2] scene=[2, 1]` and
   `zorder=[1,2,3] scene=[2,3,1]`. Traced to restacking only during paint: an occluded
   window can stop painting while scene changes and new native panels arrive. The
-  `fix/native-zorder-desync` branch restacks on scene changes and native creation; pending
-  merge. Its smoke checks both reorder directions immediately, without waiting for paint.
+  fix (#40, merged) restacks on scene changes and native creation. Its smoke checks both reorder directions immediately, without waiting for paint.
 - Twice, native z-order not matching the scene: `zorder=[1, 2] scene=[2, 1]` and
   `zorder=[1,2,3] scene=[2,3,1]`.
 - On `feat/session-autosave`, with the autosave smoke step run right after the app icon
@@ -153,12 +152,12 @@ and session, waits on the persistence plan).
 
 ### 11. Restored title hides a plugin's "(not built)"
 
-With PR #41, a restored plugin panel keeps its saved title until the panel sets its own.
+Since PR #41, a restored plugin panel keeps its saved title until the panel sets its own.
 A plugin that fails to load never sets one, so its saved title hides the `(not built)`
 title.
 
-- State: not started. Exists only once #41 merges.
-- Blocker: #41.
+- State: not started. On `main` since #41.
+- Blocker: none known.
 - Origin: side effect of the PR #41 review fix for restored titles.
 
 ### 12. Terminal settings changes overwrite restored titles
@@ -166,8 +165,8 @@ title.
 `terminal_settings_changed` re-renders every plain terminal title from the template, which
 replaces a title restored by PR #41.
 
-- State: not fixed in #41.
-- Blocker: #41.
+- State: not started. On `main` since #41.
+- Blocker: none known.
 - Origin: PR #41.
 
 ### 13. Smoke coverage for the click restack on browser panels
@@ -176,7 +175,7 @@ replaces a title restored by PR #41.
 covers it.
 
 - State: not started. Low priority.
-- Blocker: #40.
+- Blocker: none known (#40 merged).
 - Origin: review of PR #40.
 
 ### 14. Verify the quit save on a real quit
@@ -184,26 +183,26 @@ covers it.
 Whether `on_app_quit` fires on cmd-q and on every quit path is unverified; the smoke calls
 the quit save directly.
 
-- State: not verified. Needs a manual quit and relaunch with autosave on (#41).
-- Blocker: #41 for a meaningful check.
+- State: not verified. Needs a manual quit and relaunch; autosave is on since #41.
+- Blocker: none known. A manual GUI pass by the user.
 - Origin: persistence plan Task 4 acceptance, PR #39.
 
 ### 15. Restore dialog for `restore_on_launch` `ask`
 
-With PR #41, `ask` restores like `on` and says so in the status pill and on stderr. The
+Since PR #41, `ask` restores like `on` and says so in the status pill and on stderr. The
 `NSAlert` that asks is persistence plan Task 7.
 
 - State: not started.
-- Blocker: #41, then Task 7.
+- Blocker: persistence plan Task 7.
 - Origin: PR #41.
 
 ### 16. Docs drift after #41
 
-`README.md` and `CLAUDE.md` on `main` say the session settings have no effect and a launch
-starts empty. #41 already updates those lines; check them again after it merges, and after
-any rebase that drops them.
+`README.md` and `CLAUDE.md` were fixed by #41. `.ai/system.md` (Product section) and
+`docs/architecture.md` (end) still say a launch starts an empty canvas and that autosave
+and restore are not active.
 
-- State: waiting on #41.
+- State: not started.
 - Origin: lead handoff, 2026-11-01.
 
 ## Done

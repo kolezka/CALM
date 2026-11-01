@@ -39,9 +39,9 @@ How work on CALM is done. `CLAUDE.md` repeats the ones that are easiest to break
 When the smoke window is occluded, AppKit reports `window_visible=Some(false)` and GPUI
 stops painting. Everything driven by paint then stalls: preview refresh
 (`preview_snapshots_in_3s=[0,0]`), FPS frames ("only N frames with show_stats on"), the
-stats pill ("sampler has CPU but the status bar does not show it") and, until #40 lands,
-the native restack (a `zorder` vs scene mismatch). Machine load was ruled out: `main` failed
-at load 17 too.
+stats pill ("sampler has CPU but the status bar does not show it"). The native restack
+stalled too until #40 made it independent of paint, so a `zorder` vs scene mismatch is now
+a real failure. Machine load was ruled out: `main` failed at load 17 too.
 
 - Treat those lines as known flakes. Any other smoke failure is real.
 - A run that hit a flake did not pass. Do not report it as rc=0.

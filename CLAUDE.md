@@ -59,7 +59,7 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 - Build and check after every merge, even a clean one. Text merges hide semantic conflicts.
 - Known smoke flakes come from paint stalls in an occluded window (`window_visible=Some(false)`):
   `preview_snapshots_in_3s=[0,0]`, "only N frames with show_stats on", the stats pill stuck
-  at `--% CPU`, and a z-order mismatch until #40 lands. A run with a flake is not a pass.
+  at `--% CPU`. A z-order mismatch is no longer a flake since #40. A run with a flake is not a pass.
   Run a control on `origin/main` before blaming a branch.
 - Plugin tests that need bun fail unless bun is installed; `CALM_SKIP_BUN_TESTS=1` skips them.
 - Not wired yet: `--bench`, layout save (`--layout` only opens), the `ask` restore dialog, the event

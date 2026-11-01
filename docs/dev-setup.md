@@ -71,8 +71,8 @@ and examples, and an example once stayed broken on `main` because of that.
 - Use a throwaway home: `CALM_HOME=$(mktemp -d) cargo run -p calm-app -- --smoke; echo rc=$?`.
 - Known flakes, all from that paint stall: `window_visible=Some(false)`,
   `preview_snapshots_in_3s=[0,0]`, "only N frames with show_stats on", "sampler has CPU but
-  the status bar does not show it", and a `zorder` vs scene mismatch (fixed by #40 once it
-  lands). Any other failure is real. Rerun the same smoke on `main` before blaming a branch.
+  the status bar does not show it". Any other failure is real, including a `zorder` vs
+  scene mismatch, which #40 fixed. Rerun the same smoke on `main` before blaming a branch.
 - If a test fails to compile with missing symbols, the build used a stale crate. Run
   `cargo clean -p calm-core -p calm-plugins -p calm-native -p calm-app` and build again.
 

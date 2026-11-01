@@ -1,8 +1,8 @@
 # Status
 
-Last updated: 2026-11-01, against `origin/main` at `1f39de2` (PRs #1 to #39 merged; #11
-merged into a branch, see #20). This file describes `main`, not branches, except "Open PRs".
-Facts are verified against the code unless marked otherwise.
+Last updated: 2026-11-01, against `origin/main` at `188d7a5` (PRs #1 to #41 merged; #11
+merged into a branch, see #20). This file describes `main`, not branches. Facts are
+verified against the code unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -155,32 +155,36 @@ Pull requests:
   step waits up to 5 s for two samples and a CPU reading, then up to 2 s for the pill. It
   does not fix the flake; it says which side failed (see "Known small issues").
 - #38 Docs and `.ai` refresh after #22 to #37.
-- #39 Autosave (persistence plan Task 4), built behind an off gate. See "Not wired yet".
+- #39 Autosave (persistence plan Task 4), built behind an off gate that #41 turned on.
   Review fixes: session settings apply live from the Settings form, duplicates carry the
   installed `plugin_version`, read-only bridge calls no longer dirty the scene, and a quit
   saves when the last change was not yet ticked.
-
-## Open PRs
-
-Checked on GitHub on 2026-11-01. Neither is merged; the user has not given the go-ahead.
-
-- #40 `fix/native-zorder-desync`, head `36f38c0`. Root cause of the z-order flake: the
-  native restack ran only in paint, and an occluded window does not paint. The fix
-  restacks at scene and native mutation boundaries and keeps the paint-time sync. Smoke
-  asserts native order right after send to back, bring to front, plugin reorder and a TUI
-  restart. Opus review: no defects. The preview and stats paint stalls stay open.
-  A merge with `main` (`1f39de2`) is resolved but not committed in `.worktrees/zorder-debug`:
-  `launch_tui` keeps #39's `scene.set_title`, and one `native_order.clear()` runs before
-  `spawn_terminal`. `.ai/backlog.md` and `canvas_view.rs` hold no conflict markers but are
-  still unstaged (`UU`). Build, check and `cargo test -p calm-app` passed on that tree, per
-  the lead. The user denied the commit, push and merge step; `git merge --abort` there
-  restores `36f38c0`.
-- #41 `feat/session-restore`, head `d290774`. Persistence plan Task 5: restore at launch,
-  placeholders for a missing plugin, TUI app or unknown kind, `--layout NAME` and
-  `--no-restore`. It sets `APP_AUTOSAVE_ACTIVE` to `true`, so merging it starts writing the
-  user's real `~/.config/calm/session.json`. Review fixes are in (see `.ai/backlog.md` for
-  what stays open). Best merged after #40: restore should call #40's restack, which is not
-  done yet. #41 also updates `CLAUDE.md`, `README.md` and this file for the new behavior.
+- #40 Native z-order without paint. Root cause of the z-order flake: the native restack ran
+  only in paint, and an occluded window does not paint. The app now restacks at scene and
+  native mutation boundaries and keeps the paint-time sync. Smoke asserts native order right
+  after send to back, bring to front, plugin reorder and a TUI restart. The preview and
+  stats paint stalls stay open (`.ai/backlog.md` item 6).
+- #41 Restore at launch (persistence plan Task 5), autosave on (`APP_AUTOSAVE_ACTIVE` is
+  `true`, so the real `~/.config/calm/session.json` is written). `calm_core::restore`
+  decides the launch (`pick_source`: `--layout NAME`, then `--no-restore`, then
+  `session.restore_on_launch`; `plan_restore`, `after_quarantine`, `placeholder_reason`,
+  `restored_cwd`, `version_note`). A missing session starts empty; a malformed or
+  unsupported one moves to `session.json.invalid-<n>` with a path-only notice and autosave
+  stays on; an unreadable one turns autosave off for the launch; a missing named layout
+  starts empty with the name kept; a malformed one exits 2 and is not moved.
+  `CanvasView::apply_restore_plan` builds panels back to front through the normal open
+  paths, then the camera, restacks native views, then starts autosave on the result (the
+  empty start guard). A missing plugin, TUI app or unknown kind is a GPUI-only placeholder
+  with a Delete-only menu that keeps its saved kind. `ask` has no dialog: it restores like
+  `on` with a notice. Review fixes: an autosave-off restore closes the gate for the whole
+  launch (`AutosaveStart::launch_gate`), so a Settings toggle cannot start the writer;
+  restored panels keep their saved title until the panel sets one; a gone cwd starts in
+  home with a chrome note "cwd missing, started in ~" that is never saved; an invalid saved
+  browser url opens `about:blank` (`browser_url::restored_url`). Missing-plugin settings
+  round trip as a JSON value, not byte for byte; unknown kinds are byte for byte. Smoke
+  lines `session saved=4 restored=4 ...`, `session malformed moved=session.json.invalid-0
+  started_empty=true` and `session edges titles=saved cwd=home`; the session step also
+  checks native order against scene order after a restore.
 
 ## Persistence plan progress
 
@@ -191,8 +195,8 @@ Checked on GitHub on 2026-11-01. Neither is merged; the user has not given the g
 | 1 Session restore decision | Done, #30 |
 | 2 Layout v2 | Done, #31 |
 | 3 Durable writes, session paths, backups | Done, #36, with the url scrub, the 8 KiB guard and the title scrub |
-| 4 Autosave | Done behind an off gate, #39 |
-| 5 Restore at launch | Open PR #41 |
+| 4 Autosave | Done, #39; active since #41 |
+| 5 Restore at launch | Done, #41 |
 | 6 Browser url scrubbing | Mostly done in #36; `docs/sessions.md` and leftovers remain |
 | 7 File menu and Settings controls | Not started |
 | 8 `layouts.*` and `session.saveNow` | Is plugin API v2 phase 16, not started |
@@ -222,32 +226,7 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
-- `fix/native-zorder-desync`: native stacking was only synchronized during GPUI paint, which
-  can stop when a window is occluded. The branch syncs after scene and native-view changes
-  and checks both reorder directions in smoke without waiting for a paint. Other paint-based
-  smoke flakes remain open in `.ai/backlog.md` item 6.
 - No PR yet: a Linux port plan.
-- `feat/session-restore` (persistence plan Task 5): restore at launch and autosave on.
-  `calm_core::restore` decides the launch (`pick_source`: `--layout NAME`, then
-  `--no-restore`, then `session.restore_on_launch`; `plan_restore`, `after_quarantine`,
-  `placeholder_reason`, `restored_cwd`, `version_note`). A missing session starts empty; a
-  malformed or unsupported one moves to `session.json.invalid-<n>` with a path-only notice
-  and autosave stays on; an unreadable one turns autosave off for the launch; a missing
-  named layout starts empty with the name kept; a malformed one exits 2 and is not moved.
-  `CanvasView::apply_restore_plan` builds panels back to front through the normal open
-  paths, then the camera, then starts autosave on the result (the empty start guard). A
-  missing plugin, TUI app or unknown kind is a GPUI-only placeholder with a Delete-only
-  menu that keeps its saved kind. `APP_AUTOSAVE_ACTIVE` is `true`. `ask` has no dialog: it
-  restores like `on` with a notice. Smoke lines `session saved=4 restored=4 ...` and
-  `session malformed moved=session.json.invalid-0 started_empty=true`. Review fixes: an
-  autosave-off restore closes the gate for the whole launch (`AutosaveStart::launch_gate`),
-  so a Settings toggle cannot start the writer; restored panels keep their saved title
-  until the panel sets one; a gone cwd starts in home with a chrome note "cwd missing,
-  started in ~" that is never saved; an invalid saved browser url opens `about:blank`
-  (`browser_url::restored_url`). Smoke line `session edges titles=saved cwd=home`.
-  Missing-plugin settings round trip as a JSON value, not byte for byte; unknown kinds
-  are byte for byte. Unverified: the manual quit and relaunch, the browser fallback in a
-  live view (unit tested only), and a native restack after restore before #40 lands.
 
 ## Not wired yet
 
@@ -262,33 +241,28 @@ Open questions: `.ai/open-questions.md`.
   background pages, no `calm.menus.register`, no capability display.
 - Clicking inside a plugin page does not focus or raise its panel; AppKit routes the click
   to the WKWebView.
-- Layouts and session: session restore is not built, and autosave is built but not active
-  (below), so a launch still starts an empty canvas. The `session` settings and the Settings
-  window's Session section apply live to autosave, which only the smoke runs. Persistence
-  plan Tasks 5 to 7 (restore and the steps after it) are pending, then the later tasks.
-  Layout save and load and `--layout` are not built. Plugin settings are not saved anywhere.
+- Layouts and session: restore at launch and autosave are active (#41). Not built: layout
+  save (`--layout NAME` only opens), the File menu, the `ask` restore dialog (persistence
+  plan Task 7) and the later persistence tasks.
 - Layout v2 limits: the resize policy is not saved, overrides are stored but not applied
   in the chrome, `page_zoom` is stored but not applied, an unsupported panel draws chrome
   only, and the terminal cwd is the spawn cwd. Lowering `backup_count` leaves older backups
   above the new count in place.
-- Autosave (persistence plan Task 4, #39, on `main`): built but not active. `calm_core::autosave` holds `AutosaveClock` (quiet `session.debounce_ms`, max
+- Autosave details (persistence plan Task 4, #39; active since #41). `calm_core::autosave` holds `AutosaveClock` (quiet `session.debounce_ms`, max
   dirty age 10 s), `SaveQueue` (one write in flight, the latest snapshot waiting) and
   `OrderedWriter` (a write older than the file on disk is skipped, so a late background
   write never replaces the quit write). `Scene` has a revision: every `Scene` mutator and
   every `get_mut` bump it, and `sync_revision` counts direct camera writes. `CanvasView`
   ticks it on each render and on a timer, writes on the background executor, shows a failed
   write in the status pill and on stderr, and retries on the next change. A launch read
-  that fails (I/O or malformed) turns autosave off for that launch. `APP_AUTOSAVE_ACTIVE`
-  stays `false` until Task 5 adds restore, because a first change on the empty start canvas
-  would otherwise replace the last session. Only the smoke runs autosave, in its temp dir.
-  Settings changes are reconciled by `autosave_change`: `session.autosave` off stops the
+  that fails (I/O or malformed) turns autosave off for that launch. Settings changes are reconciled by `autosave_change`: `session.autosave` off stops the
   timer and the quit write, on starts again through the gate, and `debounce_ms`,
   `backup_count` (at the next rotation) and `browser_query` apply to the running save.
   Plugin bridge calls take `get_mut` only for `panel.setTitle` and `settings.set`, so
   read-only calls do not cause writes. New and duplicated plugin and TUI panels carry the
   installed manifest `plugin_version`. Unverified: whether `on_app_quit` fires on cmd-q and
   on every quit path (the smoke calls the quit save directly, not through a real quit), and
-  the manual "drag writes `session.json` about 1 s later" check, which needs the gate on.
+  the manual "drag writes `session.json` about 1 s later" check.
 - `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
@@ -330,7 +304,9 @@ Open questions: `.ai/open-questions.md`.
   `calm.has("panel.setTitle")` is `true` and `calm.panel.close().catch(e => e.code)` gives
   `"not_implemented"`; the gh logged-out message still shows.
 - GitHub PRs plugin with a real `gh` login and with a `.env` token (#23).
-- Session settings section in the Settings window (#36), by eye only: it has no effect yet.
+- Session settings section in the Settings window (#36), by eye.
+- Session restore (#41): a manual quit and relaunch, and the `about:blank` fallback for a bad
+  saved url in a live view (unit tested only).
 - Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
@@ -344,7 +320,7 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
 ## Known small issues
 
 - Smoke flakes. Root cause found on 2026-11-01: an occluded window does not paint, so
-  every paint-driven step stalls (`.ai/conventions.md`, "Smoke flakes"). #40 (open) fixes
+  every paint-driven step stalls (`.ai/conventions.md`, "Smoke flakes"). #40 (merged) fixed
   the z-order case; the preview and stats cases remain. The notes from 2026-10-31 follow:
   - `preview_snapshots_in_3s=[0,0]`, on `main` and branches, more often under heavy load.
   - `window_visible=Some(false)`: the window was occluded, and GPUI stops painting an
@@ -371,5 +347,4 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
 4. The manual GUI passes listed above.
 5. Say go for the remaining plan tasks (10, 11, 12 app wiring, 13, 14) and persistence plan
    Tasks 6 onward.
-6. Decide on merging #40 and #41, and answer the plugin API v2 questions
-   (`.ai/open-questions.md`).
+6. Answer the plugin API v2 questions (`.ai/open-questions.md`).

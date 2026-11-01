@@ -12,7 +12,3 @@ Spec: `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`, "Open points 
 - Q3. Restart words: backends say `on-failure`/`never`, TUI apps say `prompt`/`on-exit`/`never`. Keep apart or align? Open until phase 14.
 - Q4. Move phase 11 (external control channel) earlier? The Claude Code mods integration waits on it.
 - Q5. Go for the CALM-owned Ghostty fork (phase 10, `[patch.crates-io]`)? No worker touches `Cargo.toml` for it without the user's go.
-
-## Merges
-
-- Merge #40 (native restack without paint), then #41 (session restore, turns autosave on and writes the real `~/.config/calm/session.json`)? Details in `status.md`, "Open PRs".
