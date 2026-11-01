@@ -1885,6 +1885,59 @@ async fn smoke_settings_dispatch(
         window.update(cx, |_, window, _| window.activate_window())
     });
     activated.unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+    smoke_settings_from_canvas_menu(view, window, cx).await;
+}
+
+/// Picks "Settings…" in the canvas context menu the way a click does and waits for the
+/// Settings window to show.
+async fn smoke_settings_from_canvas_menu(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let listed = cx.update(|cx| {
+        menu_ids(view.read(cx).canvas_menu()).contains(&calm_core::menu::OPEN_SETTINGS.to_string())
+    });
+    let picked = cx.update(|cx| {
+        window.update(cx, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                let world = Point::new(0.0, 0.0);
+                view.apply_menu_choice(
+                    calm_core::menu::OPEN_SETTINGS,
+                    canvas_view::MenuTarget::Canvas { world },
+                    window,
+                    cx,
+                );
+            })
+        })
+    });
+    picked.unwrap_or_else(|err| smoke_fail(&format!("settings menu item: {err:#}")));
+    let started = Instant::now();
+    let visible = loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let visible = cx.update(|cx| {
+            view.read(cx)
+                .settings_window
+                .as_ref()
+                .is_some_and(|w| w.is_visible())
+        });
+        if visible || started.elapsed() > Duration::from_secs(2) {
+            break visible;
+        }
+    };
+    println!("smoke: settings_menu_item listed={listed} visible={visible}");
+    if !(listed && visible) {
+        smoke_fail("the canvas menu Settings item did not show Settings");
+    }
+    let restored = cx.update(|cx| {
+        if let Some(settings_window) = &view.read(cx).settings_window {
+            settings_window.hide();
+        }
+        window.update(cx, |_, window, _| window.activate_window())
+    });
+    restored.unwrap_or_else(|err| smoke_fail(&format!("settings menu item: {err:#}")));
 }
 
 /// Sets a gradient background and the grid through the settings path, reads the file back,

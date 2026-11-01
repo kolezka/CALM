@@ -204,6 +204,33 @@ and restore are not active.
 - State: not started.
 - Origin: lead handoff, 2026-11-01.
 
+### 17. A covered terminal can take focus from a click
+
+A press on the part of a terminal that a panel in front covers is ignored by the terminal
+(`PointerGate` in `calm_core::occlusion`), but the terminal's input div also has
+`.track_focus`, and GPUI's automatic focus-on-press listener still runs. A click on the
+title bar of a front panel over a rear terminal can give that terminal keyboard focus.
+
+- State: not started. Read-verified by a cross-family review of PR #54; not reproduced in
+  the app. Present on `main` before #54.
+- Fix idea: drop `.track_focus` from the terminal input div and focus only from the
+  accepted press in `mouse_down`, or check visibility before focusing.
+- Origin: GPT review of PR #54, 2026-11-01.
+
+### 18. A drag that leaves a terminal never gets its release
+
+Terminal mouse motion and release come from per-element GPUI listeners, which run only
+while the terminal's hitbox is hovered. Press inside a terminal, drag past its edge and
+release: Ghostty gets neither the last motion nor the release, so a selection or a
+mouse-reporting program can be left mid-drag. `PointerGate` clears the press on the next
+move with no button held, but cannot send the missing release.
+
+- State: not started. Read-verified by a cross-family review of PR #54; not reproduced in
+  the app. Present on `main` before #54.
+- Fix idea: a window-level mouse listener (or pointer capture) for the terminal that took
+  the press, until its release.
+- Origin: GPT review of PR #54, 2026-11-01.
+
 ## Done
 
 - `plugin_version` filled on new and duplicated plugin and TUI panels (old item 9): PR #39.

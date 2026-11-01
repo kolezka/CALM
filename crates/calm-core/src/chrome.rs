@@ -8,6 +8,8 @@ use crate::scene::{
 
 /// Height of the title bar. Same as the strip `content_rect` leaves above the content.
 pub const TITLE_BAR_HEIGHT: f64 = CHROME_HEIGHT;
+/// Width of the ring outside a panel's rect, in screen pixels at any zoom.
+pub const RING_PX: f64 = 1.0;
 /// Radius of the title bar's top corners and of a minimized chip.
 pub const CORNER_RADIUS: f64 = 8.0;
 /// Side of each square button hit target.

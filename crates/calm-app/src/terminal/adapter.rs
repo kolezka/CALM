@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use calm_core::geometry::Point;
+use calm_core::occlusion::{PointerGate, region_contains};
 use calm_core::preview::{PanelMode, PreviewImage, refresh_due};
 use calm_core::viewport::{NativePlacement, unzoom_mouse_position};
 use calm_native::NativeChild;
@@ -37,6 +38,8 @@ pub struct TerminalPanel {
     theme: TerminalThemeState,
     focus: FocusHandle,
     placement: Option<NativePlacement>,
+    /// Presses this terminal took, so motion and releases over a covered part follow them.
+    pointer: PointerGate,
     tick_task: Option<Task<()>>,
     visible: bool,
     window_focused: bool,
@@ -95,6 +98,7 @@ impl TerminalPanel {
                 theme,
                 focus,
                 placement: None,
+                pointer: PointerGate::default(),
                 tick_task: None,
                 visible: true,
                 window_focused: false,
@@ -214,7 +218,7 @@ impl TerminalPanel {
 
     /// Where the canvas put the terminal this frame, in window points. `None` hides it.
     fn set_placement(&mut self, placement: Option<NativePlacement>, window: &Window) {
-        self.placement = placement;
+        self.placement = placement.clone();
         let Some(placement) = placement else {
             self.set_visible(false);
             return;
@@ -329,19 +333,37 @@ impl TerminalPanel {
     }
 
     fn mouse_position(&mut self, position: gpui::Point<Pixels>, input_modifiers: gpui::Modifiers) {
-        let Some(placement) = self.placement else {
+        let Some(placement) = &self.placement else {
             return;
         };
         let screen = Point::new(
             f64::from(f32::from(position.x)),
             f64::from(f32::from(position.y)),
         );
-        let local = unzoom_mouse_position(screen, &placement);
+        let local = unzoom_mouse_position(screen, placement);
         self.surface
             .mouse_position(local.x, local.y, modifiers(input_modifiers));
     }
 
+    /// Whether `position` is on a visible part of the terminal. A part under a panel in
+    /// front belongs to that panel, so presses and scrolls there go on to the canvas.
+    fn takes_pointer(&self, position: gpui::Point<Pixels>) -> bool {
+        self.placement.as_ref().is_some_and(|placement| {
+            region_contains(
+                &placement.visible,
+                Point::new(
+                    f64::from(f32::from(position.x)),
+                    f64::from(f32::from(position.y)),
+                ),
+            )
+        })
+    }
+
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let visible = self.takes_pointer(event.position);
+        if !self.pointer.press(button_index(event.button), visible) {
+            return;
+        }
         self.focus.focus(window, cx);
         self.sync_focus(window);
         self.mouse_position(event.position, event.modifiers);
@@ -352,7 +374,12 @@ impl TerminalPanel {
         );
     }
 
+    /// GPUI sends the release to every hovered terminal; only the one that took the press
+    /// passes it on, so Ghostty never sees a release without its press.
     fn mouse_up(&mut self, event: &MouseUpEvent) {
+        if !self.pointer.release(button_index(event.button)) {
+            return;
+        }
         self.mouse_position(event.position, event.modifiers);
         self.surface.mouse_button(
             MouseState::Release,
@@ -361,9 +388,20 @@ impl TerminalPanel {
         );
     }
 
+    /// Motion over a covered part belongs to the panel in front, unless a drag started here.
+    fn mouse_move(&mut self, event: &MouseMoveEvent) {
+        let visible = self.takes_pointer(event.position);
+        if self.pointer.motion(visible, event.pressed_button.is_some()) {
+            self.mouse_position(event.position, event.modifiers);
+        }
+    }
+
     fn scroll(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
         // Modified scrolls zoom the canvas, so they pass through.
         if event.modifiers.platform || event.modifiers.control {
+            return;
+        }
+        if !self.takes_pointer(event.position) {
             return;
         }
         self.mouse_position(event.position, event.modifiers);
@@ -391,9 +429,9 @@ impl Render for TerminalPanel {
             .size_full()
             .on_key_down(cx.listener(|terminal, event, _, cx| terminal.key_down(event, cx)))
             .on_key_up(cx.listener(|terminal, event, _, cx| terminal.key_up(event, cx)))
-            .on_mouse_move(cx.listener(|terminal, event: &MouseMoveEvent, _, _| {
-                terminal.mouse_position(event.position, event.modifiers);
-            }));
+            .on_mouse_move(
+                cx.listener(|terminal, event: &MouseMoveEvent, _, _| terminal.mouse_move(event)),
+            );
         for button in [
             gpui::MouseButton::Left,
             gpui::MouseButton::Middle,
@@ -412,6 +450,17 @@ impl Render for TerminalPanel {
                 );
         }
         element.on_scroll_wheel(cx.listener(|terminal, event, _, cx| terminal.scroll(event, cx)))
+    }
+}
+
+/// A stable index per button for `PointerGate`.
+fn button_index(button: gpui::MouseButton) -> u8 {
+    match button {
+        gpui::MouseButton::Left => 0,
+        gpui::MouseButton::Right => 1,
+        gpui::MouseButton::Middle => 2,
+        gpui::MouseButton::Navigate(gpui::NavigationDirection::Back) => 3,
+        gpui::MouseButton::Navigate(gpui::NavigationDirection::Forward) => 4,
     }
 }
 

@@ -72,7 +72,7 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 
 ## In the app
 
-`t` then drag draws a terminal, `b` then drag a browser. Right-click opens Add and panel
+`t` then drag draws a terminal, `b` then drag a browser. Right-click opens Add, Settings and panel
 actions, plus plugin menu items. Space+drag or
 middle-drag pans. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom. `cmd-shift-h`
 centers the world origin, `cmd-shift-0` fits all panels (both also in the View menu).

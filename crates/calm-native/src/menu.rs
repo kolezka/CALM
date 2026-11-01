@@ -161,6 +161,9 @@ fn build_menu(
                 ns_item.setEnabled(false);
                 ns_item
             }
+            MenuItem::Header { label } => {
+                NSMenuItem::sectionHeaderWithTitle(&NSString::from_str(label), mtm)
+            }
             MenuItem::Submenu { label, items } => {
                 let submenu = build_menu(mtm, label, items, target, ids);
                 // SAFETY: a menu item with no action and an empty key equivalent.

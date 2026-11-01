@@ -2,7 +2,9 @@
 
 ## CI (`.github/workflows/ci.yml`)
 
-Runs on every push to any branch and on pull requests. Two jobs, one of them opt-in:
+Runs on pushes to `main`, on pull requests, and by hand (`workflow_dispatch`, e.g.
+`gh workflow run ci --ref <branch>` for a branch without a PR). Pushes to other branches do not
+trigger it, so each PR commit runs once. Two jobs, one of them opt-in:
 
 - `linux-arch` (`archlinux:latest` on the self-hosted runner, via `scripts/ci-arch.sh`): `cargo fmt --check`,
   then tests and clippy for `calm-core` and `calm-plugins` only.
@@ -154,6 +156,6 @@ To bump locally without a release: `scripts/bump-version.sh patch`. Its self-tes
 The repository is private, so Actions minutes come from the account's monthly allowance, and
 macOS runner minutes are billed at a multiple of Linux minutes (10x under GitHub's published
 multipliers when this was written; check the current billing docs). With `CALM_MACOS_HOSTED`
-set, the `macos` CI job runs on every push to every branch, and a cold-cache build takes roughly
-15 to 25 minutes. If the allowance runs short, unset the variable or restrict the job to `main`
-and pull requests. The self-hosted Linux jobs use no hosted minutes.
+set, the `macos` CI job runs on every push to `main` and every pull request commit, and a
+cold-cache build takes roughly 15 to 25 minutes. If the allowance runs short, unset the variable.
+The self-hosted Linux jobs use no hosted minutes.
