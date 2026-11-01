@@ -1,4 +1,4 @@
-![CALM pixel-art logo and infinite canvas tagline](assets/brand/banner.png)
+![CALM pixel-art logo and infinite canvas tagline](assets/brand/banner-animated.gif)
 
 # CALM
 

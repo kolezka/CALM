@@ -62,12 +62,16 @@ def letter_shapes():
 
 
 def grid_dots():
-    """Same dot grid as logo.svg, each dot gets a delayed pulse."""
+    """Same dot grid as logo.svg, each dot gets a delayed pulse.
+
+    Every animation period divides 12 s, the loop length the README GIF is
+    rendered from. Without a common period the GIF jumps at the wrap.
+    """
     dots = []
     columns = list(range(8, WIDTH, 24))
     for column, gx in enumerate(columns):
         for row, gy in enumerate(range(8, HEIGHT, 24)):
-            delay = round((column * 0.16 + row * 0.28) % 4.2, 2)
+            delay = round((column * 0.16 + row * 0.28) % 4.0, 2)
             dots.append(
                 rect(gx, gy, 2, 2, brand.GRID, f' class="dot" style="animation-delay:-{delay}s"')
             )
@@ -99,10 +103,10 @@ def brackets():
     thickness = 2
     inset = 10
     corners = [
-        (inset, inset, brand.CYAN, "-1s", "9s"),
-        (WIDTH - inset - arms, inset, brand.MAGENTA, "-4s", "11s"),
-        (inset, HEIGHT - inset - thickness, brand.MAGENTA, "-7s", "13s"),
-        (WIDTH - inset - arms, HEIGHT - inset - thickness, brand.CYAN, "-3s", "8s"),
+        (inset, inset, brand.CYAN, "-1s", "12s"),
+        (WIDTH - inset - arms, inset, brand.MAGENTA, "-4s", "6s"),
+        (inset, HEIGHT - inset - thickness, brand.MAGENTA, "-7s", "4s"),
+        (WIDTH - inset - arms, HEIGHT - inset - thickness, brand.CYAN, "-3s", "3s"),
     ]
     shapes = []
     for x, y, color, delay, duration in corners:
@@ -140,14 +144,14 @@ def pixel_rain():
     shapes = []
     streams = [
         (22, 0, 6, brand.CYAN),
-        (46, -3.2, 9, brand.GLOW),
-        (86, -6.1, 7, brand.CYAN),
-        (128, -1.4, 11, brand.GLOW),
-        (170, -8.3, 8, brand.CYAN),
-        (214, -4.6, 10, brand.MAGENTA),
-        (252, -7.4, 7, brand.CYAN),
-        (300, -2.1, 9, brand.GLOW),
-        (334, -5.7, 6, brand.MAGENTA),
+        (46, -3, 4, brand.GLOW),
+        (86, -6, 12, brand.CYAN),
+        (128, -1, 6, brand.GLOW),
+        (170, -8, 8, brand.CYAN),
+        (214, -4, 12, brand.MAGENTA),
+        (252, -7, 6, brand.CYAN),
+        (300, -2, 4, brand.GLOW),
+        (334, -5, 12, brand.MAGENTA),
     ]
     for x, delay, duration, color in streams:
         trail = []
@@ -177,13 +181,13 @@ def cursor_block():
 def debris():
     """Loose pixels that flare and die at irregular spots."""
     spots = [
-        (14, 26, -.4, 5.5, brand.CYAN),
-        (96, 118, -2.6, 7.1, brand.MAGENTA),
-        (190, 12, -5.1, 6.3, brand.CYAN),
-        (246, 121, -3.4, 8.2, brand.GLOW),
-        (310, 16, -6.8, 5.9, brand.MAGENTA),
-        (336, 96, -1.2, 7.7, brand.CYAN),
-        (62, 100, -4.9, 6.6, brand.GLOW),
+        (14, 26, -.4, 6, brand.CYAN),
+        (96, 118, -2.6, 4, brand.MAGENTA),
+        (190, 12, -5.1, 12, brand.CYAN),
+        (246, 121, -3.4, 6, brand.GLOW),
+        (310, 16, -6.8, 4, brand.MAGENTA),
+        (336, 96, -1.2, 12, brand.CYAN),
+        (62, 100, -4.9, 6, brand.GLOW),
     ]
     shapes = []
     for x, y, delay, duration, color in spots:
@@ -203,16 +207,17 @@ def debris():
 
 def css():
     return """
-.dot { opacity: .22; animation: dotWave 7s ease-in-out infinite; }
-.bracket { opacity: .3; animation: blink 9s steps(1, end) infinite; }
+/* Every period divides 12 s so the README GIF can loop without a jump. */
+.dot { opacity: .22; animation: dotWave 6s ease-in-out infinite; }
+.bracket { opacity: .3; animation: blink 12s steps(1, end) infinite; }
 .tape { animation: tape 2.4s linear infinite; }
-.tick { animation: tick 4.5s linear infinite; }
-.scan { opacity: .07; animation: scanDown 9s steps(66, end) infinite; }
-.haze-left { animation: fog 13s ease-in-out infinite; }
-.haze-right { animation: fog 17s ease-in-out infinite; animation-delay: -6s; }
+.tick { animation: tick 4s linear infinite; }
+.scan { opacity: .07; animation: scanDown 12s steps(66, end) infinite; }
+.haze-left { animation: fog 12s ease-in-out infinite; }
+.haze-right { animation: fog 6s ease-in-out infinite; animation-delay: -3s; }
 .debris { animation: flare 6s steps(1, end) infinite; opacity: 0; }
 .cursor-bar { animation: cursorFlicker 1.2s steps(1, end) infinite; }
-.cursor-bar.slow { animation-duration: 2.7s; animation-delay: -.5s; }
+.cursor-bar.slow { animation-duration: 3s; animation-delay: -.5s; }
 .rain {
   animation: rain var(--rain-duration, 8s) linear infinite;
   animation-delay: var(--rain-delay, 0s);
