@@ -249,14 +249,17 @@ Open questions: `.ai/open-questions.md`.
 ## In progress (not on `main`)
 
 - No PR yet: a Linux port plan.
-- `fix/native-occlusion`, no PR yet: a back panel's native view (Ghostty, WKWebView, the
+- `fix/native-occlusion`, PR #54: a back panel's native view (Ghostty, WKWebView, the
   browser's address bar, a plugin page) no longer covers the title bar and ring of a panel
   in front of it. `calm_core::occlusion` computes the visible part of each native container
-  (the container minus every panel above it, ring included, chip when minimized);
+  (the container minus every panel above it, ring included, chip when minimized, and the
+  divider of every join painted above it);
   `terminal_placement` fills `NativePlacement::visible`, and `NativeChild::apply` masks the
   clip view's layer to it and makes `hitTest:` return nil outside it. A fully covered view
   is hidden; its process keeps running. Terminal presses and scrolls outside the visible
-  part go on to the canvas. A restack without a paint keeps the old mask until the next
+  part go on to the canvas; motion there and releases reach the terminal only during a
+  press it took (`PointerGate`). Rounded corners of a front panel leave a small square
+  notch of the rear view (known limitation). A restack without a paint keeps the old mask until the next
   paint. `native_smoke` checks the mask piece, hit testing and full cover in AppKit; the
   look over real Ghostty and WKWebView content is unverified (manual pass owed).
 

@@ -15,7 +15,7 @@ use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
     Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool, ZoomStep,
 };
-use calm_core::join::{Axis, JoinLayout, JoinedEdges, Side};
+use calm_core::join::{Axis, Join, JoinLayout, JoinedEdges, Side};
 use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::occlusion::native_visible_region;
@@ -1802,6 +1802,7 @@ impl CanvasView {
         modal_open: bool,
         window: &Window,
     ) -> Vec<(PanelId, TerminalContent)> {
+        let joins = JoinLayout::compute(&self.scene.panels).joins;
         let mut contents = Vec::new();
         for (id, browser) in &mut self.browsers {
             let Some(panel) = self.scene.get(*id) else {
@@ -1814,7 +1815,7 @@ impl CanvasView {
                 modal_open,
                 self.settings.settings.panels.preview_below_zoom,
             );
-            let placement = terminal_placement(panel, &self.scene, viewport);
+            let placement = terminal_placement(panel, &self.scene, &joins, viewport);
             browser.apply_mode(mode, placement, window);
             match browser.mode() {
                 PanelMode::Live => contents.push((*id, TerminalContent::Live)),
@@ -2189,8 +2190,14 @@ fn terminal_mode(
 
 /// A panel's native placement in window points, or `None` when minimized or off screen.
 /// `viewport` is the canvas area in window points. `visible` leaves out every panel in
-/// front, since native views draw over all GPUI chrome.
-fn terminal_placement(panel: &Panel, scene: &Scene, viewport: Rect) -> Option<NativePlacement> {
+/// front and every join divider painted above it, since native views draw over all GPUI
+/// chrome.
+fn terminal_placement(
+    panel: &Panel,
+    scene: &Scene,
+    joins: &[Join],
+    viewport: Rect,
+) -> Option<NativePlacement> {
     if panel.minimized {
         return None;
     }
@@ -2199,7 +2206,7 @@ fn terminal_placement(panel: &Panel, scene: &Scene, viewport: Rect) -> Option<Na
     placement.container.origin.x += viewport.origin.x;
     placement.container.origin.y += viewport.origin.y;
     placement.visible =
-        native_visible_region(scene, panel.id, placement.container, viewport.origin);
+        native_visible_region(scene, joins, panel.id, placement.container, viewport.origin);
     Some(placement)
 }
 
@@ -2359,7 +2366,7 @@ impl PaintSnapshot {
                 (
                     panel.id,
                     mode,
-                    terminal_placement(panel, &self.scene, viewport),
+                    terminal_placement(panel, &self.scene, &self.joins.joins, viewport),
                 )
             })
             .collect()
@@ -2386,7 +2393,7 @@ impl PaintSnapshot {
                 self.modal_open,
                 self.settings.panels.preview_below_zoom,
             );
-            let placement = terminal_placement(panel, &self.scene, viewport);
+            let placement = terminal_placement(panel, &self.scene, &self.joins.joins, viewport);
             let content = terminal.update(cx, |terminal, _| {
                 changed |= terminal.mode() != mode;
                 terminal.apply_mode(mode, placement, window);
@@ -2969,7 +2976,9 @@ impl Render for CanvasView {
                             snapshot.settings.panels.preview_below_zoom,
                         ) == PanelMode::Live
                     })
-                    .and_then(|panel| terminal_placement(panel, &self.scene, viewport))
+                    .and_then(|panel| {
+                        terminal_placement(panel, &self.scene, &snapshot.joins.joins, viewport)
+                    })
             })
             .collect();
         snapshot.input_targets = self

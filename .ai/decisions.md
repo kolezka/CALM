@@ -630,5 +630,18 @@ These shipped with #41, next to "Restore at launch" above.
   mask when nothing covers it; hidden when everything does. Rejected: drawing chrome as
   native views (a second chrome implementation and a native view per panel), and hiding
   overlapped panels (a partly covered terminal would vanish). Cost if wrong: a mask layer
-  per overlapped panel per paint while it moves, and joined sides ignore the gap reach of
-  the ring (the gap lies outside both panels' native content, so nothing shows).
+  per overlapped panel per paint while it moves.
+- **A join divider is an occluder.** Paint fills the whole gap of a join right after the
+  later of its two panels, and the 1 px rings do not close a gap wider than 2 px on screen
+  (a 1 unit gap at zoom 4 left a 2 px strip of a rear native view over the divider). So the
+  screen rect of `join.divider` occludes every panel behind either joined panel. A panel's
+  own dividers lie outside its content, so they never cut into it. The thin title bar seam
+  of a near-zero gap is not added: it sits inside the two panels' own occluders.
+- **Rounded corners stay a known limitation.** Occluders are rectangles, so at a front
+  panel's rounded corner a rear native view is cut square and covers the small notch of
+  canvas the rounding leaves. Exact cutouts would need a curved mask path per corner.
+- **Pointer input follows the mask.** A partly covered terminal takes a press only on its
+  visible part. Motion and the release follow a press it took, so a drag that starts inside
+  keeps tracking over the panel in front, and Ghostty never gets a release without its
+  press (`calm_core::occlusion::PointerGate`). A move event with no button held drops any
+  remembered press, since GPUI only sends a release to hovered views.

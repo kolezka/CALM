@@ -5,6 +5,7 @@
 use crate::camera::Camera;
 use crate::chrome::RING_PX;
 use crate::geometry::{Point, Rect};
+use crate::join::Join;
 use crate::scene::{PanelId, Scene, chip_rect};
 
 /// The screen rect a panel covers: its body (or chip when minimized) plus the ring around
@@ -84,9 +85,12 @@ pub fn visible_region(container: Rect, occluders: impl IntoIterator<Item = Rect>
 
 /// The visible part of panel `id`'s native container, in the same screen space as
 /// `container`. `offset` is added to each occluder, for a container already moved into
-/// window points. Only panels after `id` in `scene.panels` (in front of it) occlude.
+/// window points. Panels after `id` in `scene.panels` (in front of it) occlude, and so does
+/// the divider of every join in `joins` painted after `id`: paint puts a divider on right
+/// after the later of its two panels, and it fills the gap the panels' rings leave open.
 pub fn native_visible_region(
     scene: &Scene,
+    joins: &[Join],
     id: PanelId,
     container: Rect,
     offset: Point,
@@ -94,8 +98,19 @@ pub fn native_visible_region(
     let Some(index) = scene.panels.iter().position(|panel| panel.id == id) else {
         return vec![container];
     };
-    let occluders = scene.panels[index + 1..].iter().map(|panel| {
-        let mut rect = occluder_rect(panel, &scene.camera);
+    let in_front = |other: PanelId| {
+        scene.panels[index + 1..]
+            .iter()
+            .any(|panel| panel.id == other)
+    };
+    let panels = scene.panels[index + 1..]
+        .iter()
+        .map(|panel| occluder_rect(panel, &scene.camera));
+    let dividers = joins
+        .iter()
+        .filter(|join| in_front(join.first) || in_front(join.second))
+        .map(|join| scene.camera.world_rect_to_screen(join.divider));
+    let occluders = panels.chain(dividers).map(|mut rect| {
         rect.origin.x += offset.x;
         rect.origin.y += offset.y;
         rect
@@ -106,6 +121,46 @@ pub fn native_visible_region(
 /// Whether `point` is inside any of `pieces` (half-open, as `Rect::contains`).
 pub fn region_contains(pieces: &[Rect], point: Point) -> bool {
     pieces.iter().any(|piece| piece.contains(point))
+}
+
+/// Which pointer events a partly covered native view takes. A press lands only on a visible
+/// part; the rest belongs to the panel in front. Motion and the matching release follow a
+/// press the view took, so a drag that starts inside keeps tracking over a covered part.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PointerGate {
+    /// One bit per button index the view took a press for.
+    pressed: u32,
+}
+
+impl PointerGate {
+    /// Whether to deliver a press of `button` at a point that is or is not `visible`. A
+    /// delivered press is remembered until its release.
+    pub fn press(&mut self, button: u8, visible: bool) -> bool {
+        if visible {
+            self.pressed |= Self::bit(button);
+        }
+        visible
+    }
+
+    /// Whether to deliver a release of `button`: only when the view took its press.
+    pub fn release(&mut self, button: u8) -> bool {
+        let taken = self.pressed & Self::bit(button) != 0;
+        self.pressed &= !Self::bit(button);
+        taken
+    }
+
+    /// Whether to deliver motion. `any_held` is whether the platform reports a button down;
+    /// when none is, any remembered press is dropped, since its release went elsewhere.
+    pub fn motion(&mut self, visible: bool, any_held: bool) -> bool {
+        if !any_held {
+            self.pressed = 0;
+        }
+        visible || self.pressed != 0
+    }
+
+    fn bit(button: u8) -> u32 {
+        1 << (button % 32)
+    }
 }
 
 #[cfg(test)]
@@ -243,7 +298,7 @@ mod tests {
     fn panel_above_occludes_with_its_ring() {
         let (scene, back, _) = scene_with_two();
         let container = Rect::new(0.0, 28.0, 400.0, 272.0);
-        let pieces = native_visible_region(&scene, back, container, Point::new(0.0, 0.0));
+        let pieces = native_visible_region(&scene, &[], back, container, Point::new(0.0, 0.0));
         let front_screen = Rect::new(199.0, 99.0, 402.0, 302.0);
         assert_disjoint_inside(&pieces, container);
         assert_exact(&pieces, container, &[front_screen]);
@@ -257,7 +312,7 @@ mod tests {
         let (scene, _, front) = scene_with_two();
         let container = Rect::new(200.0, 128.0, 400.0, 272.0);
         assert_eq!(
-            native_visible_region(&scene, front, container, Point::new(0.0, 0.0)),
+            native_visible_region(&scene, &[], front, container, Point::new(0.0, 0.0)),
             vec![container]
         );
     }
@@ -267,7 +322,7 @@ mod tests {
         let (scene, back, _) = scene_with_two();
         let offset = Point::new(10.0, 36.0);
         let container = Rect::new(10.0, 64.0, 400.0, 272.0);
-        let pieces = native_visible_region(&scene, back, container, offset);
+        let pieces = native_visible_region(&scene, &[], back, container, offset);
         let front_window = Rect::new(209.0, 135.0, 402.0, 302.0);
         assert_exact(&pieces, container, &[front_window]);
     }
@@ -277,7 +332,7 @@ mod tests {
         let (mut scene, back, _) = scene_with_two();
         scene.camera.zoom = 2.0;
         let container = Rect::new(0.0, 56.0, 800.0, 544.0);
-        let pieces = native_visible_region(&scene, back, container, Point::new(0.0, 0.0));
+        let pieces = native_visible_region(&scene, &[], back, container, Point::new(0.0, 0.0));
         // Ring stays 1 screen pixel at any zoom.
         assert_exact(&pieces, container, &[Rect::new(399.0, 199.0, 802.0, 602.0)]);
     }
@@ -287,7 +342,7 @@ mod tests {
         let (mut scene, back, front) = scene_with_two();
         scene.get_mut(front).unwrap().minimized = true;
         let container = Rect::new(0.0, 28.0, 400.0, 272.0);
-        let pieces = native_visible_region(&scene, back, container, Point::new(0.0, 0.0));
+        let pieces = native_visible_region(&scene, &[], back, container, Point::new(0.0, 0.0));
         let chip = Rect::new(
             199.0,
             99.0,
@@ -299,11 +354,148 @@ mod tests {
         assert!(region_contains(&pieces, Point::new(300.0, 250.0)));
     }
 
+    /// A rear panel with a joined pair in front, 1 world unit apart, at zoom 4. Returns the
+    /// scene, the joins, the rear id and the rear container on screen.
+    fn rear_behind_joined_pair() -> (Scene, Vec<Join>, PanelId, Rect) {
+        let mut scene = Scene::default();
+        let rear = scene.add(terminal(), Rect::new(0.0, 0.0, 1000.0, 600.0));
+        scene.add(terminal(), Rect::new(100.0, 100.0, 200.0, 200.0));
+        scene.add(terminal(), Rect::new(301.0, 100.0, 200.0, 200.0));
+        scene.camera.zoom = 4.0;
+        let joins = crate::join::JoinLayout::compute(&scene.panels).joins;
+        assert_eq!(joins.len(), 1);
+        let container = scene
+            .camera
+            .world_rect_to_screen(crate::scene::content_rect(scene.get(rear).unwrap()));
+        (scene, joins, rear, container)
+    }
+
+    #[test]
+    fn divider_of_a_joined_pair_in_front_occludes() {
+        let (scene, joins, rear, container) = rear_behind_joined_pair();
+        let pieces = native_visible_region(&scene, &joins, rear, container, Point::new(0.0, 0.0));
+        // The gap is 1200..1204 on screen; the rings cover 1200..1201 and 1203..1204.
+        let gap_center = Point::new(1202.0, 800.0);
+        assert!(!region_contains(&pieces, gap_center), "gap center exposed");
+        let occluders = [
+            Rect::new(399.0, 399.0, 802.0, 802.0),
+            Rect::new(1203.0, 399.0, 802.0, 802.0),
+            Rect::new(1200.0, 400.0, 4.0, 800.0),
+        ];
+        assert_disjoint_inside(&pieces, container);
+        assert_exact(&pieces, container, &occluders);
+    }
+
+    #[test]
+    fn divider_offset_moves_with_the_panels() {
+        let (scene, joins, rear, mut container) = rear_behind_joined_pair();
+        let offset = Point::new(10.0, 36.0);
+        container.origin.x += offset.x;
+        container.origin.y += offset.y;
+        let pieces = native_visible_region(&scene, &joins, rear, container, offset);
+        assert!(!region_contains(&pieces, Point::new(1212.0, 836.0)));
+    }
+
+    #[test]
+    fn join_behind_the_target_does_not_occlude() {
+        let mut scene = Scene::default();
+        scene.add(terminal(), Rect::new(100.0, 100.0, 200.0, 200.0));
+        scene.add(terminal(), Rect::new(301.0, 100.0, 200.0, 200.0));
+        // In front of both, covering their gap.
+        let target = scene.add(terminal(), Rect::new(250.0, 50.0, 200.0, 300.0));
+        scene.camera.zoom = 4.0;
+        let joins = crate::join::JoinLayout::compute(&scene.panels).joins;
+        assert_eq!(joins.len(), 1);
+        let container = scene
+            .camera
+            .world_rect_to_screen(crate::scene::content_rect(scene.get(target).unwrap()));
+        assert_eq!(
+            native_visible_region(&scene, &joins, target, container, Point::new(0.0, 0.0)),
+            vec![container]
+        );
+    }
+
+    #[test]
+    fn own_join_does_not_cut_into_own_content() {
+        let mut scene = Scene::default();
+        let left = scene.add(terminal(), Rect::new(0.0, 0.0, 300.0, 200.0));
+        let right = scene.add(terminal(), Rect::new(301.0, 0.0, 300.0, 200.0));
+        let below = scene.add(terminal(), Rect::new(0.0, 201.0, 300.0, 200.0));
+        scene.camera.zoom = 4.0;
+        let joins = crate::join::JoinLayout::compute(&scene.panels).joins;
+        assert_eq!(joins.len(), 2);
+        let content = |id| {
+            scene
+                .camera
+                .world_rect_to_screen(crate::scene::content_rect(scene.get(id).unwrap()))
+        };
+        // Both of the left panel's dividers are painted above it, yet sit outside it.
+        for id in [left, right, below] {
+            let container = content(id);
+            assert_eq!(
+                native_visible_region(&scene, &joins, id, container, Point::new(0.0, 0.0)),
+                vec![container],
+                "panel {id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gate_drops_presses_on_a_covered_part() {
+        let mut gate = PointerGate::default();
+        assert!(!gate.press(0, false));
+        // Motion over the panel in front, with the button still down, stays out.
+        assert!(!gate.motion(false, true));
+        // So does the release of the press the view never took.
+        assert!(!gate.release(0));
+    }
+
+    #[test]
+    fn gate_keeps_a_drag_that_started_inside() {
+        let mut gate = PointerGate::default();
+        assert!(gate.press(0, true));
+        assert!(
+            gate.motion(false, true),
+            "drag over a covered part keeps tracking"
+        );
+        assert!(gate.release(0), "release outside ends the drag");
+        assert!(!gate.motion(false, false));
+        assert!(!gate.release(0), "a second release is not delivered");
+    }
+
+    #[test]
+    fn gate_tracks_buttons_separately() {
+        let mut gate = PointerGate::default();
+        assert!(gate.press(0, true));
+        assert!(!gate.press(2, false));
+        assert!(!gate.release(2));
+        assert!(gate.motion(false, true));
+        assert!(gate.release(0));
+        assert!(!gate.motion(false, true));
+    }
+
+    #[test]
+    fn gate_passes_motion_over_a_visible_part() {
+        let mut gate = PointerGate::default();
+        assert!(gate.motion(true, false));
+        assert!(gate.motion(true, true));
+    }
+
+    #[test]
+    fn gate_forgets_a_press_whose_release_went_elsewhere() {
+        let mut gate = PointerGate::default();
+        assert!(gate.press(0, true));
+        // The button came up outside the view; the next motion reports nothing held.
+        assert!(!gate.motion(false, false));
+        assert!(!gate.motion(false, true));
+        assert!(!gate.release(0));
+    }
+
     #[test]
     fn unknown_panel_is_unmasked() {
         let (scene, _, _) = scene_with_two();
         assert_eq!(
-            native_visible_region(&scene, PanelId(999), CONTAINER, Point::new(0.0, 0.0)),
+            native_visible_region(&scene, &[], PanelId(999), CONTAINER, Point::new(0.0, 0.0)),
             vec![CONTAINER]
         );
     }
