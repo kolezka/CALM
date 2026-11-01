@@ -56,9 +56,8 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 - Plugin tests that need bun fail unless bun is installed; `CALM_SKIP_BUN_TESTS=1` skips them.
 - Not wired yet: `--bench`, `--layout`, layout save and load, session autosave and restore
   (the storage primitives and `session` settings exist, nothing calls them), the event
-  coalescer, and part of the plugin bridge (`log`, `panel.setTitle`, `settings.*`,
-  `storage.*`, `github.api` and `openExternal` answer; the rest reject with code
-  `not_implemented`). The Makefile `bench` target exists; the flag does not. Do not
+  coalescer, and plugin events other than `command` (all 17 bridge methods answer; the v2
+  namespaces are design only). The Makefile `bench` target exists; the flag does not. Do not
   document them as working. Browser, plugin and TUI app panels and plugin menu items are
   wired.
 - Benchmarks go to `docs/benchmarks.md` with hardware and method. Never quote a number

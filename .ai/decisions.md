@@ -521,3 +521,36 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   CPU reading" from "pill does not show it", without weakening the check. Reason: the old
   step already polled for 5 s, so it was not an early read. Cost: the flake remains until
   the paint stall is understood.
+
+## Bridge control (2026-11-01, `feat/plugin-bridge-control`)
+
+- **Window work leaves `dispatch` as `HostEffect`s.** `dispatch` stays pure over a
+  `HostContext` and the canvas applies `Open`, `Focus` and `Close` with the window. The
+  bridge task runs through `spawn_in`, so effects apply in the same turn instead of a
+  queued `Effect::CreatePanel` at the next render (the spec's fallback). Cost:
+  `CanvasView::new` takes the window.
+- **A bridge close is a request, never a removal.** `HostEffect::Close` maps only to
+  `Effect::ClosePanelRequested`; a test fails if it maps to `ClosePanel`. In v1 only
+  `panel.close` on the calling plugin panel exists, which has no process and closes at
+  once, as the spec says. The live terminal confirmation with a pending reply and `busy` is
+  `panels.close(id)`, phase 5, not built. Cost if wrong: none today; phase 5 still owes the
+  pending reply.
+- **`panel.minimize` sets, it does not toggle.** A second call changes nothing. Reason: a
+  plugin that calls it twice must not restore itself.
+- **`canvas.createPanel` defaults `focus` to true,** as the Add menu does. The spec gives
+  the field and no default. Cost: a plugin that opens many panels must pass `false`.
+- **`canvas.createPanel` without `rect` opens at the viewport center at the kind's default
+  size, unsnapped.** Spec text for "neither `rect` nor `near`". A locked plugin with a
+  `rect` of another size rejects `invalid_params` instead of silently taking its manifest
+  size. v2-only spec fields reject `unavailable`, unknown ones `invalid_params`.
+- **`canvas.listPanels` returns the v1 fields plus the scene-only v2 fields** (`z`,
+  `focused`, `pluginId`, `url`, `resize`). `mode`, `joined`, `appearance`, `createdBy` and
+  `tui` need host state this change does not collect. An `Unsupported` panel lists with
+  kind `"unsupported"`, a word the spec does not have. Cost: the d.ts kind union grew.
+- **`process.exec` has no shell and its own process group.** A timeout kills the group with
+  `/bin/kill -KILL -<pgid>`, so a grandchild cannot outlive it and no unsafe code is needed
+  in `calm-app`. Waiting on the pipes shares the same deadline, so a background grandchild
+  holding stdout ends as `timeout`, not a hang. Limits: 30 s default and 4 MiB per stream
+  (spec), 1 to 600000 ms (`EXEC_MAX_TIMEOUT_MS`, chosen here). A signal reports
+  `128 + n`. Output is UTF-8 lossy. The child gets CALM's environment and stdin is empty.
+  Cost: a bare name resolves in CALM's short Dock `PATH`; docs say to use `/bin/sh -lc`.

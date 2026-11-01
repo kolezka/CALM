@@ -107,22 +107,48 @@ export interface CalmHostInfo {
   methods: string[];
 }
 
-export type PanelKind = "terminal" | "browser" | "plugin";
+/** `"unsupported"` is a panel from a layout written by a newer CALM; it draws chrome only. */
+export type PanelKind = "terminal" | "browser" | "plugin" | "tui" | "unsupported";
 
+/**
+ * Where a new panel goes: `rect` places it exactly, in world units with the title bar.
+ * Without `rect` it opens at the viewport center at the kind's default size (terminal from
+ * settings, browser 800x600, plugin and TUI app from the manifest). The size is held within
+ * the panel's resize limits; a non-resizable plugin rejects any other size.
+ * `focus` defaults to `true`. The v2 fields `near`, `side`, `size`, `gap`, `title`, `args`,
+ * `env` and `appearance` reject with `unavailable`; unknown fields reject with `invalid_params`.
+ */
 export type PanelSpec =
-  | { kind: "terminal"; command?: string; cwd?: string; rect?: Rect }
-  | { kind: "browser"; url: string; rect?: Rect }
-  | { kind: "plugin"; pluginId: string; settings?: Record<string, unknown>; rect?: Rect };
+  | { kind: "terminal"; command?: string; cwd?: string; rect?: Rect; focus?: boolean }
+  | { kind: "browser"; url: string; rect?: Rect; focus?: boolean }
+  | { kind: "plugin"; pluginId: string; settings?: Record<string, unknown>; rect?: Rect; focus?: boolean }
+  | { kind: "tui"; pluginId: string; rect?: Rect; focus?: boolean };
+
+/** The resize limits of a panel, title bar included. */
+export interface ResizeInfo {
+  resizable: boolean;
+  minSize: Size;
+  maxSize: Size | null;
+}
 
 export interface PanelInfo {
   id: PanelId;
   kind: PanelKind;
   title: string;
+  /** World units, title bar included. */
   rect: Rect;
   minimized: boolean;
+  /** Stacking position, 0 is backmost. */
+  z: number;
+  focused: boolean;
+  /** Kind "plugin" or "tui". */
+  pluginId?: string;
+  /** Kind "browser": the committed URL. */
+  url?: string;
+  resize: ResizeInfo;
 }
 
-/** Panel size in canvas points and the current camera zoom. */
+/** Panel size in canvas points, title bar included, and the current camera zoom. */
 export interface PanelBounds {
   width: number;
   height: number;
@@ -130,12 +156,16 @@ export interface PanelBounds {
 }
 
 export interface ExecOptions {
+  /** Absolute path to an existing directory. Default: CALM's working directory. */
   cwd?: string;
+  /** 1 to 600000. Default 30000. Past it the process group is killed and the call rejects with `timeout`. */
   timeoutMs?: number;
 }
 
 export interface ExecResult {
+  /** The exit code, or 128 plus the signal number when a signal ended the process. */
   code: number;
+  /** Decoded as UTF-8; invalid bytes become U+FFFD. Over 4 MiB rejects with `too_large`. */
   stdout: string;
   stderr: string;
 }
@@ -197,18 +227,27 @@ export interface CalmStorage {
 export interface CalmPanel {
   setTitle(title: string): Promise<void>;
   getBounds(): Promise<PanelBounds>;
+  /** The page keeps running while minimized. */
   minimize(): Promise<void>;
-  /** Goes through the normal close path, including its confirmation. */
+  /** Goes through the normal close path. A plugin panel has no process, so it closes at once. */
   close(): Promise<void>;
 }
 
 export interface CalmCanvas {
+  /** Resolves with the new panel's id. Rejects with `not_installed` for an unknown `pluginId`. */
   createPanel(spec: PanelSpec): Promise<PanelId>;
+  /** Restores a minimized panel, raises it and gives it the keyboard. `not_found` for a bad id. */
   focusPanel(id: PanelId): Promise<void>;
+  /** Every panel on the canvas, back to front, not only this plugin's. */
   listPanels(): Promise<PanelInfo[]>;
 }
 
-/** Runs a program on the host with the user's rights. Plugins are trusted code. */
+/**
+ * Runs a program on the host with the user's rights, without a shell: `command` is the
+ * program and `args` its arguments. A bare name is looked up in CALM's PATH, which is short
+ * when CALM starts from the Dock; use an absolute path or `/bin/sh -lc` for user tools.
+ * Plugins are trusted code.
+ */
 export interface CalmProcess {
   exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
 }

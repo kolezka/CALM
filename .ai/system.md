@@ -171,8 +171,7 @@ Web plugins are folders with `calm-plugin.json` and an HTML entry, loaded in a `
 with `CALM_PRELUDE_JS` defining `window.calm`. Calls post to the `calm` handler as JSON
 strings; the host answers with `eval_js`. Before the prelude the host injects
 `window.__calmHost = { apiVersion, methods }` from `served_methods`, which `calm.has` reads.
-The app serves 9 of the 17 methods: `log`, `panel.setTitle`, `settings.get`,
-`settings.set`, `github.api`, `storage.get/set/remove` and `openExternal`. TUI plugins have
+The app serves all 17 methods. TUI plugins have
 `"kind": "tui"` and run a command in a terminal panel. Both kinds may add context menu
 items with `contributes.menus`. See `docs/plugins.md` and
 `packages/calm-plugin-sdk/calm.d.ts`. Of API v2, phase 1 (codes, `calm.has`, manifest
@@ -181,13 +180,19 @@ fields) and the phase 6 coalescer core are built; the rest is design.
 ### Error-code flow
 
 1. The page calls `calm.<method>`; the prelude posts `{ id, method, params }`.
-2. `plugin_host::route` asks `plugin_services::parse` first. A background call runs on the
-   executor and its `Result<Value, ApiError>` becomes a reply through `service_reply`. A
-   parse failure replies at once. Anything else goes to `dispatch`.
-3. `dispatch` serves the UI-thread methods. A known method it does not serve gets
-   `ApiError::not_implemented` (`not_implemented`, message `not implemented: <method>`), an
-   unknown one `unknown_method`. Other host rejects use `invalid_params`, `wrong_kind`,
-   `storage_corrupt`, `too_large`, the `gh_*` codes, `timeout` or `host_error`.
+2. `plugin_host::route` asks `plugin_services::parse` first. A background call (`gh`,
+   storage, `open`, `process.exec`) runs on the executor and its `Result<Value, ApiError>`
+   becomes a reply through `service_reply`. A parse failure replies at once. Anything else
+   goes to `dispatch`, with a `HostContext` (scene, caller, focus, viewport, base color,
+   default terminal size, installed plugins). The bridge task runs with the window
+   (`spawn_in`), so `Route::Apply` effects (`HostEffect::Open`, `Focus`, `Close`) apply at
+   once. `Close` maps to `Effect::ClosePanelRequested`, never to `ClosePanel`.
+3. `dispatch` serves the UI-thread methods and takes `get_mut` only for the ones that change
+   the scene, so reads cause no autosave. A known method it did not serve would get
+   `ApiError::not_implemented`; every one is served now. An unknown one gets
+   `unknown_method`. Other host rejects use `invalid_params`, `not_found`, `wrong_kind`,
+   `unavailable`, `not_installed`, `storage_corrupt`, `too_large`, the `gh_*` codes,
+   `timeout` or `host_error`.
 4. `BridgeResponse::Err(id, ApiError)` renders `window.__calm.resolve(id, false,
    { code, message })`. The prelude rejects with an `Error` carrying `code`; a bare string
    (v1 shape) gets `code: "host_error"`.
