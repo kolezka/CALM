@@ -8,14 +8,6 @@ const panels = [
   { title: 'BROWSER', x: 6, y: 44, w: 72, h: 42, kind: 'browser' },
 ];
 
-const keys = [
-  ['t', 'draw a terminal'],
-  ['b', 'draw a browser'],
-  ['space + drag', 'pan'],
-  ['cmd + scroll', 'zoom'],
-  ['cmd-shift-0', 'fit all panels'],
-  ['cmd-,', 'settings'],
-];
 ---
 
 <Page>
@@ -67,8 +59,7 @@ const keys = [
         plugins side by side, all of them still running while you move around.
       </p>
       <div class="hero-actions">
-        <a class="btn btn-primary" href="#start">Start building</a>
-        <a class="btn" href="https://github.com/kolezka/CALM">Source on GitHub</a>
+        <a class="btn btn-primary" href="https://github.com/kolezka/CALM">Source on GitHub</a>
       </div>
       <p class="hero-note">
         Early build. No release yet, so you clone it and build from source.
@@ -139,34 +130,6 @@ const keys = [
     </p>
   </section>
 
-  <section class="keys" aria-labelledby="keys-title">
-    <h2 id="keys-title">Keys worth knowing</h2>
-    <dl class="keylist">
-      {keys.map(([k, v]) => (
-        <div class="keyrow">
-          <dt><kbd>{k}</kbd></dt>
-          <dd>{v}</dd>
-        </div>
-      ))}
-    </dl>
-    <p class="keys-note">Or right-click anywhere for Add and panel actions.</p>
-  </section>
-
-  <section class="start" id="start" aria-labelledby="start-title">
-    <h2 id="start-title">Start building</h2>
-    <p class="start-lead">
-      Needs Rust 1.95 or newer, Zig 0.16, Xcode command line tools with the Metal
-      Toolchain, GNU Make 4, <code>gh</code> and <code>bun</code>.
-    </p>
-    <pre class="code"><code><span class="c">$</span> git clone https://github.com/kolezka/CALM.git
-<span class="c">$</span> cd CALM
-<span class="c">$</span> gmake setup-check
-<span class="c">$</span> cargo run --release -p calm-app</code></pre>
-    <p class="start-note">
-      The app is ad-hoc signed and not notarized, so on first launch right-click it and
-      pick Open.
-    </p>
-  </section>
 </main>
 
 <footer class="foot">
