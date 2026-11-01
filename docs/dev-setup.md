@@ -94,6 +94,21 @@ cargo fmt --all -- --check
 Some `calm-plugins` tests run JavaScript through bun and fail without it.
 `CALM_SKIP_BUN_TESTS=1` skips them.
 
+Before a PR also run `cargo check --workspace --tests --examples`. `cargo build` skips tests
+and examples, and an example once stayed broken on `main` because of that.
+
+### Running the smoke reliably
+
+- Keep the CALM window visible and not covered while the smoke runs. An occluded window
+  stops painting, and every paint-driven step then fails.
+- Use a throwaway home: `CALM_HOME=$(mktemp -d) cargo run -p calm-app -- --smoke; echo rc=$?`.
+- Known flakes, all from that paint stall: `window_visible=Some(false)`,
+  `preview_snapshots_in_3s=[0,0]`, "only N frames with show_stats on", "sampler has CPU but
+  the status bar does not show it". Any other failure is real, including a `zorder` vs
+  scene mismatch, which #40 fixed. Rerun the same smoke on `main` before blaming a branch.
+- If a test fails to compile with missing symbols, the build used a stale crate. Run
+  `cargo clean -p calm-core -p calm-plugins -p calm-native -p calm-app` and build again.
+
 CI, the release workflow and the macOS bundle script are described in `docs/release.md`.
 
 ## Make targets

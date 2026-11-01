@@ -17,13 +17,19 @@ use calm_core::geometry::{Point, Rect, Size};
 use calm_core::grid::{GridKind, mark_primitive_bound};
 use calm_core::interaction::{Effect, ResizeEdge};
 use calm_core::join::JOIN_SNAP_GAP;
+use calm_core::layout::{load_layout_from, move_aside};
 use calm_core::preview::PanelMode;
+use calm_core::restore::{
+    LaunchExit, LaunchFlags, RestorePlan, Source, after_quarantine, pick_source, plan_restore,
+};
 use calm_core::scene::{PanelId, PanelKind};
+use calm_core::settings::RestoreOnLaunch;
 use calm_core::snap::{SnapConfig, snap_move};
 use calm_core::tui::TuiState;
 use std::cell::Cell;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::path::Path;
 use std::sync::{Mutex, PoisonError, TryLockError};
 use std::task::Poll;
 use std::time::{Duration, Instant};
@@ -40,18 +46,54 @@ use crate::settings_menu::SettingsState;
 struct Args {
     smoke: bool,
     fullscreen: bool,
+    restore: LaunchFlags,
 }
 
 fn parse_args() -> Args {
     let mut args = Args::default();
-    for arg in std::env::args().skip(1) {
+    let mut rest = std::env::args().skip(1);
+    while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--smoke" => args.smoke = true,
             "--fullscreen" => args.fullscreen = true,
+            "--no-restore" => args.restore.no_restore = true,
+            "--layout" => match rest.next() {
+                Some(name) => args.restore.layout = Some(name),
+                None => {
+                    eprintln!("calm: --layout needs a layout name");
+                    std::process::exit(2);
+                }
+            },
             other => eprintln!("calm: ignoring unknown argument {other}"),
         }
     }
     args
+}
+
+/// Reads what the launch needs, moves a session that failed to load aside, and returns
+/// the plan. Reads only `session` and, for `--layout`, `layouts/<name>.json`.
+fn launch_plan(
+    flags: &LaunchFlags,
+    setting: RestoreOnLaunch,
+    session: &Path,
+    layouts: &Path,
+) -> Result<RestorePlan, LaunchExit> {
+    let (source, notice) = pick_source(flags, setting);
+    let dir = session.parent().unwrap_or(Path::new("."));
+    let stem = session
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("session");
+    let session_read = load_layout_from(dir, stem);
+    let layout_read = match &source {
+        Source::NamedLayout(name) => Some(load_layout_from(layouts, name)),
+        _ => None,
+    };
+    let mut plan = plan_restore(&source, notice, session_read, layout_read)?;
+    if let Some(path) = plan.quarantine.clone() {
+        after_quarantine(&mut plan, move_aside(&path));
+    }
+    Ok(plan)
 }
 
 /// A page with no network use that clicks its own link as soon as it parses, so following
@@ -646,7 +688,12 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_step(&mut run, "github_api", smoke_github_api(&view, window, cx)).await;
         smoke_step(&mut run, "plugin_menus", smoke_plugin_menus(&view, window, cx)).await;
         // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
-        smoke_step(&mut run, "session", smoke_autosave(&view, window, cx)).await;
+        smoke_step(&mut run, "session", async {
+            smoke_autosave(&view, window, cx).await;
+            smoke_session(&view, window, cx).await;
+            smoke_session_edges(&view, window, cx);
+        })
+        .await;
 
         for line in run.summary() {
             println!("{line}");
@@ -1951,13 +1998,28 @@ fn main() {
             ..Default::default()
         };
         let smoke = args.smoke;
+        // The smoke never reads or writes the real session or layouts.
+        let plan = if smoke {
+            None
+        } else {
+            let session = calm_core::layout::session_path();
+            let layouts = calm_core::layout::layouts_dir();
+            let setting = settings.settings.session.restore_on_launch;
+            match launch_plan(&args.restore, setting, &session, &layouts) {
+                Ok(plan) => Some((plan, session)),
+                Err(exit) => {
+                    eprintln!("calm: {}", exit.message);
+                    std::process::exit(exit.code);
+                }
+            }
+        };
         let builtin_plugins = settings.settings.plugins.builtin;
         let opened = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| {
                 let mut view = CanvasView::new(builtin_plugins, cx);
                 view.set_settings_state(settings);
-                if !smoke {
-                    view.start_autosave_at_launch(cx);
+                if let Some((plan, session)) = plan {
+                    view.apply_restore_plan(plan, session, window, cx);
                 }
                 if smoke && let Err(err) = add_smoke_panels(&mut view, window, cx) {
                     smoke_fail(&format!("terminal spawn: {err}"));
@@ -2242,4 +2304,455 @@ async fn smoke_autosave(
         "smoke: autosave written={written} kinds={} order=match",
         layout_kinds(&on_disk).join(",")
     );
+}
+
+/// A data page with no script, so its url stays put between save and compare.
+const SMOKE_SESSION_PAGE: &str = "data:text/html,%3Cp%3Esession%3C%2Fp%3E";
+const SMOKE_MISSING_PLUGIN: &str = "calm-smoke-not-installed";
+
+/// Closes every panel through the confirmed close path.
+fn smoke_close_all(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
+    let closed = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let ids: Vec<PanelId> = view.scene.panels.iter().map(|panel| panel.id).collect();
+            let effects = ids.into_iter().map(Effect::ClosePanel).collect();
+            view.apply_effects(effects, window, cx);
+        });
+    });
+    if let Err(err) = closed {
+        smoke_fail(&format!("session: close: {err}"));
+    }
+}
+
+/// Restores panels whose saved state no longer fits: saved titles must survive the open
+/// paths, and a gone cwd starts the shell in home even when the profile has a fixed cwd.
+/// Every problem is collected, so one run reports them all.
+fn smoke_session_edges(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let fixed = match tempfile::Builder::new()
+        .prefix("calm-smoke-fixed-")
+        .tempdir()
+    {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("session edges: temp dir: {err}")),
+    };
+    let gone = fixed.path().join("gone");
+    smoke_close_all(view, window, cx);
+    let old_cwd = view.update(cx, |view, _| {
+        view.scene = calm_core::scene::Scene::default();
+        let cwd = &mut view.settings.settings.terminal.defaults.cwd;
+        cwd.replace(fixed.path().display().to_string())
+    });
+    let fixture = [
+        PanelKind::Terminal {
+            command: None,
+            cwd: Some(gone.clone()),
+        },
+        PanelKind::Plugin {
+            plugin_id: "smoke-plugin".to_string(),
+            plugin_version: None,
+            settings: serde_json::Value::Null,
+        },
+        PanelKind::Tui {
+            plugin_id: "top-example".to_string(),
+            plugin_version: None,
+        },
+    ];
+    let mut layout = calm_core::scene::Scene::default().to_layout();
+    for (n, kind) in fixture.into_iter().enumerate() {
+        layout.panels.push(calm_core::layout::LayoutPanel {
+            kind,
+            rect: Rect::new(40.0 + 340.0 * n as f64, 40.0, 320.0, 200.0),
+            title: format!("saved title {n}"),
+            minimized: false,
+            overrides: Default::default(),
+        });
+    }
+    let plan = RestorePlan {
+        layout: Some(layout),
+        layout_name: None,
+        quarantine: None,
+        autosave: calm_core::restore::AutosaveStart::Off("smoke fixture".to_string()),
+        notices: Vec::new(),
+    };
+    let home = terminal_profiles::home_dir();
+    let checked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let gate = view.autosave_gate;
+            view.apply_restore_plan(plan, fixed.path().join("session.json"), window, cx);
+            view.autosave_gate = gate;
+            let mut problems = Vec::new();
+            for (n, panel) in view.scene.panels.iter().enumerate() {
+                let want = format!("saved title {n}");
+                if panel.title != want {
+                    problems.push(format!("title {n}: want {want:?}, got {:?}", panel.title));
+                }
+            }
+            let terminal = view.scene.panels.first().map(|panel| panel.id);
+            let cwd = terminal
+                .and_then(|id| view.terminal_meta(id))
+                .map(|meta| meta.cwd.clone());
+            if cwd.as_deref() != Some(home.as_path()) {
+                problems.push(format!("cwd: want {}, got {cwd:?}", home.display()));
+            }
+            let note = terminal.and_then(|id| view.title_note(id));
+            let saved_titles = view.scene.to_layout().panels;
+            if note.is_none() || saved_titles.iter().any(|p| p.title.contains("cwd missing")) {
+                problems.push(format!("cwd note: {note:?}, saved {saved_titles:?}"));
+            }
+            problems
+        })
+    });
+    view.update(cx, |view, _| {
+        view.settings.settings.terminal.defaults.cwd = old_cwd;
+    });
+    smoke_close_all(view, window, cx);
+    let problems = match checked {
+        Ok(problems) => problems,
+        Err(err) => smoke_fail(&format!("session edges: restore: {err}")),
+    };
+    if !problems.is_empty() {
+        smoke_fail(&format!("session edges: {}", problems.join("; ")));
+    }
+    println!("smoke: session edges titles=saved cwd=home");
+}
+
+/// Runs the launch restore path on `session` with restore on.
+fn smoke_launch(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    session: &Path,
+    cx: &mut gpui::AsyncApp,
+) {
+    let plan = match launch_plan(
+        &LaunchFlags::default(),
+        RestoreOnLaunch::On,
+        session,
+        &session.with_file_name("layouts"),
+    ) {
+        Ok(plan) => plan,
+        Err(exit) => smoke_fail(&format!("session: launch plan: {}", exit.message)),
+    };
+    let applied = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.apply_restore_plan(plan, session.to_path_buf(), window, cx);
+        });
+    });
+    if let Err(err) = applied {
+        smoke_fail(&format!("session: restore: {err}"));
+    }
+}
+
+/// Saves a four panel canvas, closes it, drops the scene and restores it from disk
+/// through the launch path; then a one byte corrupt copy is moved aside and starts empty.
+async fn smoke_session(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::layout::{LayoutFile, SessionWriter};
+    let root = SMOKE_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|dir| dir.path().join("session-restore"));
+    let Some(root) = root else {
+        smoke_fail("session: no smoke dir");
+    };
+    let cwd = match tempfile::Builder::new().prefix("calm-smoke-cwd-").tempdir() {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("session: cwd temp dir: {err}")),
+    };
+    let malformed_dir = root.join("malformed");
+    if let Err(err) = std::fs::create_dir_all(&malformed_dir) {
+        smoke_fail(&format!("session: dir: {err}"));
+    }
+    let session = root.join("session.json");
+    view.update(cx, |view, _| view.stop_autosave());
+    smoke_close_all(view, window, cx);
+
+    let settings = serde_json::json!({ "repos": ["kolezka/CALM"], "depth": { "n": 3 } });
+    let missing_settings = serde_json::json!({ "kept": [1, 2, 3] });
+    let fixture = vec![
+        PanelKind::Terminal {
+            command: None,
+            cwd: Some(cwd.path().to_path_buf()),
+        },
+        PanelKind::Browser {
+            url: SMOKE_SESSION_PAGE.to_string(),
+            page_zoom: None,
+        },
+        PanelKind::Plugin {
+            plugin_id: "smoke-plugin".to_string(),
+            plugin_version: Some("0.1.0".to_string()),
+            settings: settings.clone(),
+        },
+        PanelKind::Plugin {
+            plugin_id: SMOKE_MISSING_PLUGIN.to_string(),
+            plugin_version: Some("9.9.9".to_string()),
+            settings: missing_settings.clone(),
+        },
+    ];
+    let mut layout = calm_core::scene::Scene::default().to_layout();
+    for (n, kind) in fixture.into_iter().enumerate() {
+        layout.panels.push(calm_core::layout::LayoutPanel {
+            kind,
+            rect: Rect::new(40.0 + 340.0 * n as f64, 40.0, 320.0, 200.0),
+            title: format!("panel {n}"),
+            minimized: false,
+            overrides: Default::default(),
+        });
+    }
+    layout.camera.zoom = 0.75;
+    // Build the live canvas, then save it with the session writer autosave uses.
+    let built = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let plan = RestorePlan {
+                layout: Some(layout),
+                layout_name: None,
+                quarantine: None,
+                autosave: calm_core::restore::AutosaveStart::Off("smoke fixture".to_string()),
+                notices: Vec::new(),
+            };
+            // The fixture plan closes the launch gate; later steps run their own launches.
+            let gate = view.autosave_gate;
+            view.apply_restore_plan(plan, session.clone(), window, cx);
+            view.autosave_gate = gate;
+            let saved = view.scene.to_layout();
+            let first = view.scene.panels.first().map(|panel| panel.id);
+            let old = first
+                .and_then(|id| view.terminal(id))
+                .map(|terminal| (terminal.entity_id(), terminal.downgrade()));
+            let mut writer = SessionWriter::new(
+                session.clone(),
+                0,
+                calm_core::browser_url::BrowserQueryMode::StripAll,
+            );
+            writer.save(&saved).map(|_| (saved, old))
+        })
+    });
+    let (saved_scene, old_terminal) = match built {
+        Ok(Ok((saved, Some(old)))) => (saved, old),
+        Ok(Ok((_, None))) => smoke_fail("session: fixture terminal did not start"),
+        Ok(Err(err)) => smoke_fail(&format!("session: save: {err}")),
+        Err(err) => smoke_fail(&format!("session: fixture: {err}")),
+    };
+    let on_disk: LayoutFile = match calm_core::layout::load_layout_from(&root, "session") {
+        Ok(layout) => layout,
+        Err(err) => smoke_fail(&format!("session: saved file: {err}")),
+    };
+    let saved = on_disk.panels.len();
+    if layout_order(&on_disk) != layout_order(&saved_scene) {
+        smoke_fail("session: the file does not match the scene it saved");
+    }
+
+    // Dispose of it all, then drop the old scene.
+    smoke_close_all(view, window, cx);
+    view.update(cx, |view, _| {
+        view.scene = calm_core::scene::Scene::default()
+    });
+    let started = Instant::now();
+    while old_terminal.1.upgrade().is_some() {
+        if started.elapsed() > SMOKE_AUTOSAVE_TIMEOUT {
+            smoke_fail("session: the closed terminal was never released");
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+
+    smoke_launch(view, window, &session, cx);
+    let report = view.update(cx, |view, cx| {
+        let restored = view.scene.to_layout();
+        let kinds: Vec<String> = view
+            .scene
+            .panels
+            .iter()
+            .zip(layout_kinds(&restored))
+            .map(|(panel, kind)| match view.placeholder(panel.id) {
+                Some(_) => "placeholder".to_string(),
+                None => kind,
+            })
+            .collect();
+        let new_terminal = view
+            .scene
+            .panels
+            .first()
+            .and_then(|panel| view.terminal(panel.id))
+            .map(|terminal| terminal.entity_id());
+        let frames = view.terminal_status(cx);
+        (
+            restored,
+            kinds,
+            new_terminal,
+            frames,
+            view.native_zorder(cx),
+        )
+    });
+    view.update(cx, |view, _| view.stop_autosave());
+    let (restored, kinds, new_terminal, frames, (scene_order, native_order)) = report;
+    if scene_order != native_order {
+        smoke_fail(&format!(
+            "session: native order after restore: zorder={native_order:?} scene={scene_order:?}"
+        ));
+    }
+    let kind_json = |layout: &LayoutFile| -> Vec<String> {
+        layout
+            .panels
+            .iter()
+            .map(|panel| serde_json::to_string(&panel.kind).unwrap_or_default())
+            .collect()
+    };
+    let order =
+        layout_order(&on_disk) == layout_order(&restored) && restored.camera == on_disk.camera;
+    let plugin_settings = restored
+        .panels
+        .iter()
+        .filter_map(|panel| match &panel.kind {
+            PanelKind::Plugin { settings, .. } => Some(settings.clone()),
+            _ => None,
+        });
+    let settings_match = kind_json(&on_disk) == kind_json(&restored)
+        && plugin_settings.collect::<Vec<_>>() == vec![settings, missing_settings];
+    let Some(new_terminal) = new_terminal else {
+        smoke_fail("session: the restored terminal did not start");
+    };
+    // A new shell: a different entity, the old one released, and frames counted afresh.
+    if new_terminal == old_terminal.0 || frames.len() != 1 || !frames[0].1 {
+        smoke_fail(&format!(
+            "session: terminal not fresh: old={:?} new={new_terminal:?} status={frames:?}",
+            old_terminal.0
+        ));
+    }
+    let line = format!(
+        "smoke: session saved={saved} restored={} kinds={} order={} settings={} zorder=match",
+        restored.panels.len(),
+        kinds.join(","),
+        if order { "match" } else { "mismatch" },
+        if settings_match { "match" } else { "mismatch" },
+    );
+    println!("{line}");
+    if saved != 4
+        || restored.panels.len() != 4
+        || kinds != ["terminal", "browser", "plugin", "placeholder"]
+        || !order
+        || !settings_match
+    {
+        smoke_fail(&format!("session: {line}"));
+    }
+
+    // The same file with one byte corrupted: moved aside, empty start.
+    smoke_close_all(view, window, cx);
+    view.update(cx, |view, _| {
+        view.scene = calm_core::scene::Scene::default()
+    });
+    let bad = malformed_dir.join("session.json");
+    let mut bytes = match std::fs::read(&session) {
+        Ok(bytes) => bytes,
+        Err(err) => smoke_fail(&format!("session: copy: {err}")),
+    };
+    bytes[0] = b'#';
+    if let Err(err) = std::fs::write(&bad, &bytes) {
+        smoke_fail(&format!("session: corrupt copy: {err}"));
+    }
+    smoke_launch(view, window, &bad, cx);
+    let (empty, autosave_on) = view.update(cx, |view, _| {
+        let state = (view.scene.panels.is_empty(), view.autosave_running());
+        view.stop_autosave();
+        state
+    });
+    let moved = malformed_dir.join("session.json.invalid-0");
+    let moved_intact = std::fs::read(&moved).ok() == Some(bytes);
+    println!(
+        "smoke: session malformed moved={} started_empty={empty}",
+        moved
+            .file_name()
+            .filter(|_| moved_intact)
+            .map_or("none".into(), |name| name.to_string_lossy())
+    );
+    if !moved_intact || bad.exists() || !empty || !autosave_on {
+        smoke_fail(&format!(
+            "session: malformed moved={moved_intact} left={} empty={empty} autosave={autosave_on}",
+            bad.exists()
+        ));
+    }
+    if let Err(err) = cwd.close() {
+        eprintln!("smoke: could not remove the cwd temp dir: {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calm_core::browser_url::BrowserQueryMode;
+    use calm_core::layout::SessionWriter;
+    use calm_core::restore::AutosaveStart;
+
+    fn saved_session(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("session.json");
+        let mut scene = calm_core::scene::Scene::default();
+        scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+            },
+            Rect::new(0.0, 0.0, 300.0, 200.0),
+        );
+        SessionWriter::new(path.clone(), 0, BrowserQueryMode::StripAll)
+            .save(&scene.to_layout())
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn launch_plan_restores_a_valid_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = saved_session(dir.path());
+        let flags = LaunchFlags::default();
+        let plan = launch_plan(&flags, RestoreOnLaunch::On, &session, dir.path()).unwrap();
+        assert_eq!(plan.layout.map(|layout| layout.panels.len()), Some(1));
+        assert!(session.exists());
+    }
+
+    #[test]
+    fn launch_plan_moves_a_malformed_session_aside_and_starts_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = saved_session(dir.path());
+        let mut bytes = std::fs::read(&session).unwrap();
+        bytes[0] = b'#';
+        std::fs::write(&session, &bytes).unwrap();
+        let flags = LaunchFlags::default();
+        let plan = launch_plan(&flags, RestoreOnLaunch::On, &session, dir.path()).unwrap();
+        let moved = dir.path().join("session.json.invalid-0");
+        assert_eq!(std::fs::read(&moved).ok(), Some(bytes), "not moved aside");
+        assert!(!session.exists());
+        assert_eq!(plan.layout, None);
+        assert_eq!(plan.autosave, AutosaveStart::On);
+        assert!(
+            plan.notices
+                .iter()
+                .any(|n| n.contains("session.json.invalid-0"))
+        );
+    }
+
+    #[test]
+    fn launch_plan_exits_2_on_a_malformed_named_layout_without_moving_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let layouts = dir.path().join("layouts");
+        std::fs::create_dir(&layouts).unwrap();
+        let named = layouts.join("work.json");
+        std::fs::write(&named, b"{ not json").unwrap();
+        let flags = LaunchFlags {
+            layout: Some("work".to_string()),
+            no_restore: false,
+        };
+        let session = dir.path().join("session.json");
+        let exit = launch_plan(&flags, RestoreOnLaunch::On, &session, &layouts).unwrap_err();
+        assert_eq!(exit.code, 2);
+        assert!(named.exists());
+        assert!(!layouts.join("work.json.invalid-0").exists());
+    }
 }

@@ -30,9 +30,29 @@ How work on CALM is done. `CLAUDE.md` repeats the ones that are easiest to break
   a run look green. A new entry needs a seen message and a backlog item.
 - Capture each command's own exit code. Never read a status through a pipe to `tail` or
   `grep`.
+- Clean before a pre-merge gate: `cargo clean -p calm-core -p calm-plugins -p calm-native
+  -p calm-app`, or only the touched crates when time matters. Once `cargo test -p calm-app`
+  linked an old `calm-plugins` rlib and failed with missing symbols.
+- `cargo build --workspace` compiles neither tests nor examples.
+  `crates/calm-native/examples/native_smoke.rs` stayed broken on `main` after a signature
+  change (#17, #18) because merges were checked with build only. Run
+  `cargo check --workspace --tests --examples`.
+- Build and check after every merge, not only after a conflict. #31 changed `PanelKind`
+  after #23 and #28 added code that used it: the text merge was clean and the build broke.
 - Benchmarks are recorded with hardware and method. No number is quoted without a run.
 
 ## Smoke flakes
+
+When the smoke window is occluded, AppKit reports `window_visible=Some(false)` and GPUI
+stops painting. Everything driven by paint then stalls: preview refresh
+(`preview_snapshots_in_3s=[0,0]`), FPS frames, the stats pill. The native restack stalled
+too until #40 made it independent of paint, so a `zorder` vs scene mismatch is now a real
+failure. Machine load was ruled out: `main` failed at load 17 too.
+
+- A run that hit a flake did not pass. Do not report it as rc=0.
+- Before blaming a branch, run the same smoke on `origin/main` as a control.
+- Unconfirmed: a TUI "second exit not reported after restart" failure, seen on branches,
+  0 of 1 runs on `main`.
 
 Failures seen before (`.ai/backlog.md` item 6). `crates/calm-app/src/smoke_runner.rs`
 (`KNOWN_FLAKES`) matches failure messages against this list; keep the two in step.
@@ -55,6 +75,11 @@ live at zoom 1.5" while the window is visible.
 - Tests that depend on tools (`gh`, bun) fail loudly when the tool is missing unless an
   explicit skip variable is set (`CALM_SKIP_BUN_TESTS=1`). A green skip is not a pass.
 - Fake `gh` tests share a mutex (`FAKE_GH_LOCK`) because of a Linux ETXTBSY race.
+- A RED run must fail at the target assertion. A run that stops at an earlier step, such as
+  a flaky smoke line, proves nothing about the fix. This holds for delegated RED reports
+  too: read the failure line before accepting it.
+- macOS `printf` ignores `\x` escapes. Write control files for dash counts (en and em dash)
+  with python or octal escapes, and check the control is counted before trusting a zero.
 
 ## Code style
 
@@ -79,6 +104,60 @@ live at zoom 1.5" while the window is visible.
 - Shut down idle agents: once a teammate or subagent is done (result reported and verified,
   or failed), the lead sends a shutdown request or stops it, confirms it left the agent
   list, and starts a new session for the next task.
+- The lead dispatches all workers. Every implementation and every docs change runs in a new
+  agent session; the lead coordinates and verifies.
+- `kolezka-bootstrap:route-gpt-astra` and `kolezka-bootstrap:route-fable` refuse to spawn
+  nested workers. An orchestrator on those types can only return ordered worker briefs
+  (example: `docs/superpowers/plans/2026-11-01-plugin-api-v2-worker-briefs.md`). Plan for
+  that up front.
+- Routing seen to work: `route-opus` implements, `route-gpt-sol` reviews Claude-written
+  code, `route-opus` reviews GPT-written code. `route-gpt-terra` failed on 2026-10-31 with
+  "unknown provider for model gpt-5.6-terra".
+- Teammate messages arrive late and out of order; a report often predates the lead's last
+  instruction. Check `gh pr view <n>` and `git rev-parse` before acting on one.
+
+## Review and merging
+
+Review before merge is mandatory for every non-trivial PR. Each cross-family review so far
+found real defects:
+
+- #31: `saved_at` not stamped, `plugin_version` never filled.
+- #35: `storage.set` with `undefined` overwrote data; semver grammar gaps.
+- #36: rotation removed `session.json` before the new write; url tokens leaked through page
+  titles; backups were 0644; no 8 KiB cap; no directory fsync.
+- #39: live session settings ignored, a duplicate lost the plugin version, read-only bridge
+  calls dirtied the scene.
+- #41: autosave gate bypass after a read failure, restored titles overwritten, a missing cwd
+  not falling back to home, an invalid restored url.
+
+Fix findings in a new session, then verify again.
+
+Merge loop that worked:
+
+- One long-lived merge session. The lead sends it a PR only after verifying it, as
+  `ready: #N <sha>`, and the merge is pinned to that head.
+- Clean the touched crates, then build and check the merged tree. Docs-only PRs are not
+  built.
+- Merge order matters. PRs that touch `canvas_view.rs`, `main.rs`, `settings.rs` or
+  `.ai/status.md` conflict with each other: merge one, then prepare the rest again.
+- Stacked PRs: #11 (grid styles) was based on `feat/settings-modal` and merged into that
+  branch after #7 had already landed it on `main`, so grid styles never reached `main`
+  (re-landed as #20). Retarget to `main` first, then confirm with
+  `git merge-base --is-ancestor <merge-commit> origin/main`.
+- The auto-mode classifier blocks `gh pr merge` from agents unless the user has added an
+  allow rule. Merges need the user's current go-ahead. A denied command is reported, never
+  reshaped.
+
+## Working with this user
+
+- Writes Polish or English, tersely. Match the language of the last message.
+- Does not want repeated reminders. State a pending decision once; open ones live in
+  `.ai/open-questions.md`.
+- Customization first (in `CLAUDE.md`). Plugins are unrestricted trusted code; capabilities
+  are declarative only.
+- The Linux port stays a plan.
+- Prefers agents for all work and idle agents closed. When the user asks for a merge loop
+  "without tests or review", the lead still verifies a PR before marking it ready.
 
 ## Security rules
 

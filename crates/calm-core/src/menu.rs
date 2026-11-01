@@ -174,6 +174,11 @@ pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
     items
 }
 
+/// A restored panel that cannot run (missing plugin, unknown kind) offers Delete only.
+pub fn placeholder_menu() -> Vec<MenuItem> {
+    vec![action(PANEL_DELETE, "Delete")]
+}
+
 /// Maps a chosen id to a command. A new panel's origin is the right-click point `world`.
 /// `plugin_sizes` is (id, default size) per installed plugin; unknown plugins give `None`.
 pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> Option<MenuCommand> {
@@ -408,6 +413,13 @@ mod tests {
         assert_eq!(items[0], action("panel.minimize", "Restore"));
         assert!(!items.contains(&action("panel.zoom_to_fit", "Zoom to Fit")));
         assert_eq!(items.last(), Some(&action("panel.delete", "Delete")));
+    }
+
+    #[test]
+    fn placeholder_menu_is_delete_only() {
+        let items = placeholder_menu();
+        assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0], MenuItem::Action { id, .. } if id == PANEL_DELETE));
     }
 
     #[test]

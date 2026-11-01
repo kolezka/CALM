@@ -53,9 +53,16 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 - GUI gate: `cargo run -p calm-app -- --smoke; echo rc=$?`. A green build is not a running
   window. Smoke prints viewport, canvas, terminals, zorder, fps, settings and preview lines
   and must exit 0. Gate before every push.
+- Before any pre-merge build, check or test, `cargo clean -p` the touched crates: a stale
+  rlib once failed a test with missing symbols. Always run
+  `cargo check --workspace --tests --examples`; `cargo build` skips tests and examples.
+- Build and check after every merge, even a clean one. Text merges hide semantic conflicts.
+- Known smoke flakes come from paint stalls in an occluded window (`window_visible=Some(false)`):
+  `preview_snapshots_in_3s=[0,0]`, "only N frames with show_stats on", the stats pill stuck
+  at `--% CPU`. A z-order mismatch is no longer a flake since #40. A run with a flake is not a pass.
+  Run a control on `origin/main` before blaming a branch.
 - Plugin tests that need bun fail unless bun is installed; `CALM_SKIP_BUN_TESTS=1` skips them.
-- Not wired yet: `--bench`, `--layout`, layout save and load, session autosave and restore
-  (the storage primitives and `session` settings exist, nothing calls them), the event
+- Not wired yet: `--bench`, layout save (`--layout` only opens), the `ask` restore dialog, the event
   coalescer, and part of the plugin bridge (`log`, `panel.setTitle`, `settings.*`,
   `storage.*`, `github.api` and `openExternal` answer; the rest reject with code
   `not_implemented`). The Makefile `bench` target exists; the flag does not. Do not
@@ -74,8 +81,11 @@ centers the world origin, `cmd-shift-0` fits all panels (both also in the View m
 (`canvas.click_empty_clears_focus`). `alt` while dragging disables snapping (default
 grid 8 world units, edge snap within 8). `cmd-,` opens the native Settings window
 (background, grid, snapping, panels, terminal, session, developer). Settings persist in
-`~/.config/calm/settings.json`; `CALM_HOME` overrides the directory. The session settings
-have no effect yet: every launch starts with an empty canvas. Distant panels become previews refreshed every 2 s.
+`~/.config/calm/settings.json`; `CALM_HOME` overrides the directory. A launch restores the
+last session from `session.json` (new shells, browsers at their url, plugins with their
+settings) and autosaves it; `--no-restore` starts empty, `--layout NAME` opens
+`layouts/NAME.json`, and `session.restore_on_launch` `off` turns restore off (`ask` has no
+dialog yet and restores with a notice). Distant panels become previews refreshed every 2 s.
 
 ## Rules that are easy to break
 
@@ -94,7 +104,12 @@ have no effect yet: every launch starts with an empty canvas. Distant panels bec
 - Plugins are trusted, explicitly installed code. Do not call them sandboxed anywhere.
 - Agents never drive the GUI beyond `--smoke`. Synthetic keystrokes land in other windows.
 - Agents never run the Release workflow, tag, create releases or push `main`. Merging to
-  `main` needs the user's explicit instruction each time.
+  `main` needs the user's current go-ahead each time. A denied command is reported, never
+  reshaped to get past the gate.
+- Every non-trivial PR gets a cross-family review before merge. Each one so far found real
+  defects (`.ai/conventions.md`, "Review and merging").
+- Retarget a stacked PR to `main` before merging it, then confirm with
+  `git merge-base --is-ancestor <merge-commit> origin/main`.
 - CI runs on a self-hosted Linux runner with Docker socket access. Every self-hosted job keeps
   the same-repo guard so fork pull requests never run there. Hosted macOS CI is opt-in
   (`CALM_MACOS_HOSTED`). The macOS zip is built locally with `gmake release-upload`.
@@ -113,6 +128,11 @@ Plan execution uses superpowers subagent-driven development with Agent Teams; de
 `.ai/conventions.md`. The ledger with rulings lives at
 `.superpowers/sdd/2026-10-31-calm-prototype/progress.md` (git-ignored, main checkout).
 Work state persists in Outline under the task record `calm-canvas-design`.
+
+- Implementation and docs changes each go to a new agent session. The lead coordinates and
+  verifies.
+- `kolezka-bootstrap:route-gpt-astra` and `kolezka-bootstrap:route-fable` cannot spawn
+  workers. As orchestrators they return ordered briefs and the lead dispatches.
 
 - Shut down idle agent sessions. When a teammate or subagent has finished its task and is
   only idle (its result is reported and verified, or it failed), the lead sends it a
