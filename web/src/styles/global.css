@@ -387,7 +387,8 @@ section {
 }
 
 .features,
-.why {
+.why,
+.discover {
   padding-block: 3rem;
   border-top: 1px solid var(--grid);
 }
@@ -418,6 +419,29 @@ section {
 
 .why p {
   max-width: 68ch;
+}
+
+.discover p {
+  max-width: 52ch;
+  margin-bottom: 1.3rem;
+}
+
+/* Stand-in page behind Discover plugins. Replace the whole section when the
+   gallery exists. */
+.placeholder {
+  max-width: var(--page);
+  margin-inline: auto;
+  padding: clamp(3rem, 10vw, 7rem) var(--gutter);
+  text-align: center;
+}
+
+.placeholder h1 {
+  font-size: clamp(1.4rem, 5vw, 2.2rem);
+  margin-bottom: 0.8rem;
+}
+
+.placeholder p {
+  margin-bottom: 1.6rem;
 }
 
 /* ---------- footer ---------- */
