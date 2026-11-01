@@ -1558,10 +1558,13 @@ fn smoke_panel_overrides(
             }
             view.apply_panel_overrides(id, cx);
             let ids: Vec<PanelId> = view.scene.panels.iter().map(|panel| panel.id).collect();
+            let looks = view.paint_looks();
             let styled = ids
                 .iter()
                 .filter(|id| {
-                    let look = view.panel_look(**id);
+                    let Some(look) = looks.get(*id) else {
+                        return false;
+                    };
                     look.title.as_deref() == Some(TITLE) && look.overrides.accent == Some(ACCENT)
                 })
                 .count();

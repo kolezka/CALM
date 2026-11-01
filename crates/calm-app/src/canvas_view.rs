@@ -1369,16 +1369,12 @@ impl CanvasView {
             }
             None => (ChromeOverrides::default(), None),
         };
-        let icon = match overrides.icon.as_deref() {
-            Some(icon) if is_image_icon(icon) => self.settings_icon(std::path::Path::new(icon)),
-            Some(icon) => text_icon(icon.to_string()),
-            None => own_icon,
-        };
-        PanelLook {
-            overrides: lay_overrides(base, &overrides),
-            icon,
-            title: overrides.title,
-        }
+        override_look(overrides, base, own_icon, |path| self.settings_icon(path))
+    }
+
+    /// The looks the paint snapshot carries. Read by the smoke so it checks what paint sees.
+    pub fn paint_looks(&self) -> HashMap<PanelId, PanelLook> {
+        snapshot_looks(&self.scene, |id| self.panel_look(id))
     }
 
     /// Per TUI panel in creation order: chrome title, state, Restart offered, launches.
@@ -2234,6 +2230,37 @@ pub enum IconLook {
 
 /// A text icon, or the built-in icon `builtin:<name>` names. An unknown built-in name draws
 /// the kind icon rather than the literal text.
+/// A panel's overrides laid over its base look and own icon.
+fn override_look(
+    overrides: calm_core::scene::PanelOverrides,
+    base: ChromeOverrides,
+    own_icon: Option<IconLook>,
+    image_icon: impl Fn(&std::path::Path) -> Option<IconLook>,
+) -> PanelLook {
+    let icon = match overrides.icon.as_deref() {
+        Some(icon) if is_image_icon(icon) => image_icon(std::path::Path::new(icon)),
+        Some(icon) => text_icon(icon.to_string()),
+        None => own_icon,
+    };
+    PanelLook {
+        overrides: lay_overrides(base, &overrides),
+        icon,
+        title: overrides.title,
+    }
+}
+
+/// The looks paint reads: one entry for every panel in the scene, whatever its kind.
+fn snapshot_looks(
+    scene: &Scene,
+    look: impl Fn(PanelId) -> PanelLook,
+) -> HashMap<PanelId, PanelLook> {
+    scene
+        .panels
+        .iter()
+        .map(|panel| (panel.id, look(panel.id)))
+        .collect()
+}
+
 fn text_icon(text: String) -> Option<IconLook> {
     if text.starts_with(BUILTIN_ICON_PREFIX) {
         PanelIcon::from_override(&text).map(IconLook::Builtin)
@@ -2271,7 +2298,7 @@ struct PaintSnapshot {
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Panels with a plugin web view.
     plugin_ids: Vec<PanelId>,
-    /// Panels with custom chrome colors or icon. Others use the theme.
+    /// Resolved chrome look of every panel.
     looks: HashMap<PanelId, PanelLook>,
     /// Close confirmation or context menu up: native views must not cover it.
     modal_open: bool,
@@ -3080,11 +3107,7 @@ impl Render for CanvasView {
             hover: self.hover,
             terminals: self.terminals.clone(),
             plugin_ids: self.plugin_panels.iter().map(|(id, _)| *id).collect(),
-            looks: self
-                .tui_runs
-                .iter()
-                .map(|(id, _)| (*id, self.panel_look(*id)))
-                .collect(),
+            looks: self.paint_looks(),
             modal_open: self.input.confirming.is_some() || self.menu_open,
             input_targets: Vec::new(),
             settings: self.settings.settings.clone(),
@@ -3278,5 +3301,58 @@ mod tests {
         assert!(text_icon("builtin:nope".to_string()).is_none());
         let icon = text_icon("AB".to_string());
         assert!(matches!(icon, Some(IconLook::Text(text)) if text == "AB"));
+    }
+
+    #[test]
+    fn paint_gets_a_look_for_every_panel_kind() {
+        let mut scene = Scene::default();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let terminal = scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+            },
+            rect,
+        );
+        let browser = scene.add(
+            PanelKind::Browser {
+                url: "https://example.com".to_string(),
+                page_zoom: None,
+            },
+            rect,
+        );
+        let plugin = scene.add(
+            PanelKind::Plugin {
+                plugin_id: "hello-world".to_string(),
+                plugin_version: None,
+                settings: serde_json::Value::Null,
+            },
+            rect,
+        );
+        let tui = scene.add(
+            PanelKind::Tui {
+                plugin_id: "top-example".to_string(),
+                plugin_version: None,
+            },
+            rect,
+        );
+        if let Some(panel) = scene.get_mut(browser) {
+            panel.overrides.accent_color = Some("#12ab34".to_string());
+            panel.overrides.title = Some("docs".to_string());
+        }
+        let looks = snapshot_looks(&scene, |id| {
+            let overrides = scene
+                .get(id)
+                .map(|p| p.overrides.clone())
+                .unwrap_or_default();
+            override_look(overrides, ChromeOverrides::default(), None, |_| None)
+        });
+        for id in [terminal, browser, plugin, tui] {
+            assert!(looks.contains_key(&id), "no look for {id:?}");
+        }
+        let look = &looks[&browser];
+        assert_eq!(look.overrides.accent, Some(0x12ab34ff));
+        assert_eq!(look.title.as_deref(), Some("docs"));
     }
 }
