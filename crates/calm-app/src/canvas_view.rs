@@ -863,6 +863,11 @@ impl CanvasView {
                 let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
                 vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)]
             }
+            // The same action as `cmd-,` and the menu bar, so one handler opens Settings.
+            (Some(MenuCommand::OpenSettings), MenuTarget::Canvas { .. }) => {
+                window.dispatch_action(Box::new(crate::settings_menu::OpenSettings), cx);
+                return;
+            }
             (Some(MenuCommand::Restart), MenuTarget::Panel(id)) => {
                 self.restart_tui(id, true, window, cx);
                 vec![Effect::Redraw]

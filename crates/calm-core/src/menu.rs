@@ -17,6 +17,8 @@ pub const TERMINAL_PROFILES_LABEL: &str = "Terminal Profiles";
 pub const NATIVE_SECTION_LABEL: &str = "Native";
 /// Section header above the plugin entries in the Add menu.
 pub const PLUGINS_SECTION_LABEL: &str = "Plugins";
+/// Opens the global Settings window, as `cmd-,` does.
+pub const OPEN_SETTINGS: &str = "app.settings";
 /// Starts a TUI panel's command again after it exited.
 pub const PANEL_RESTART: &str = "panel.restart";
 pub const PANEL_MINIMIZE: &str = "panel.minimize";
@@ -58,6 +60,7 @@ pub enum MenuCommand {
     Duplicate,
     Delete,
     Restart,
+    OpenSettings,
 }
 
 fn action(id: &str, label: &str) -> MenuItem {
@@ -147,6 +150,12 @@ pub fn with_terminal_profiles(
     items
 }
 
+/// Adds "Settings…" below the Add menu, split off by a separator.
+pub fn with_settings(mut items: Vec<MenuItem>) -> Vec<MenuItem> {
+    items.extend([MenuItem::Separator, action(OPEN_SETTINGS, "Settings…")]);
+    items
+}
+
 /// The profile id a menu choice asks for, if it is a profile item.
 pub fn terminal_profile_choice(id: &str) -> Option<&str> {
     id.strip_prefix(ADD_TERMINAL_PROFILE_PREFIX)
@@ -227,6 +236,7 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
         PANEL_DUPLICATE => Some(MenuCommand::Duplicate),
         PANEL_DELETE => Some(MenuCommand::Delete),
         PANEL_RESTART => Some(MenuCommand::Restart),
+        OPEN_SETTINGS => Some(MenuCommand::OpenSettings),
         _ if id.starts_with(ADD_TUI_PREFIX) => {
             let plugin_id = &id[ADD_TUI_PREFIX.len()..];
             let (_, size) = plugin_sizes.iter().find(|(known, _)| known == plugin_id)?;
@@ -286,6 +296,21 @@ mod tests {
         assert_eq!(
             menu_action("add.terminal_profile.neon", Point::new(0.0, 0.0), &[]),
             menu_action(ADD_TERMINAL, Point::new(0.0, 0.0), &[])
+        );
+    }
+
+    #[test]
+    fn settings_sits_below_add_and_opens_settings() {
+        let base = canvas_menu(&plugins(), &[], &[]);
+        let items = with_settings(base.clone());
+        assert_eq!(&items[..base.len()], &base[..]);
+        assert_eq!(
+            &items[base.len()..],
+            &[MenuItem::Separator, action("app.settings", "Settings…")]
+        );
+        assert_eq!(
+            menu_action("app.settings", Point::new(3.0, 4.0), &[]),
+            Some(MenuCommand::OpenSettings)
         );
     }
 

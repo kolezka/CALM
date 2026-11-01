@@ -26,12 +26,12 @@ impl CanvasView {
             .collect()
     }
 
-    /// The canvas menu as the user would see it now: Add, then plugin items.
+    /// The canvas menu as the user would see it now: Add, Settings, then plugin items.
     pub fn canvas_menu(&self) -> Vec<MenuItem> {
-        let builtin = menu::with_terminal_profiles(
+        let builtin = menu::with_settings(menu::with_terminal_profiles(
             menu::canvas_menu(&self.plugins, &self.apps, &self.plugin_search_dirs),
             &self.settings.settings.terminal.profile_names(),
-        );
+        ));
         let section = plugin_menu::plugin_section(
             &self.plugin_menus(),
             MenuLocation::Canvas,
