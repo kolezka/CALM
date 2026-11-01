@@ -1,5 +1,10 @@
 ![CALM pixel-art logo and infinite canvas tagline](assets/brand/banner-animated.gif)
 
+> [!WARNING]
+> CALM is an early prototype. I am preparing the first release candidate of the alpha
+> version for the first weeks of November 2026. It will be available to install as a
+> `.dmg` image or through Homebrew.
+
 # CALM
 
 An infinite pan and zoom canvas for macOS that hosts live terminals, browsers and plugins
