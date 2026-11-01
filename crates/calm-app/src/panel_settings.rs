@@ -105,6 +105,12 @@ impl CanvasView {
         match apply_panel_field(&mut self.scene, id, field, value, inherited.as_ref()) {
             Ok(FormOutcome::Changed { rebuild }) => {
                 self.apply_panel_overrides(id, cx);
+                if let (Some(settings_window), Some(panel)) =
+                    (self.panel_settings_windows.get(&id), self.scene.get(id))
+                {
+                    let effective = panel_effective(panel, &self.settings.settings);
+                    settings_window.set_title(&window_title(&effective.title));
+                }
                 if rebuild {
                     self.refresh_panel_settings(id);
                 }

@@ -1,6 +1,7 @@
 //! Image icons chosen for one panel. The file is copied into the settings folder, so the
 //! override keeps working after the original moves, and only a relative path is stored.
 
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
@@ -37,13 +38,50 @@ pub fn import_icon(settings_dir: &Path, source: &Path) -> Result<String, String>
     let name = format!("{}.{ext}", &hash[..HASH_PREFIX_LEN]);
     let dir = settings_dir.join(PANEL_ICONS_DIR);
     let target = dir.join(&name);
-    if !target.exists() {
+    let target_exists = match std::fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!("panel icon {}: symlink refused", target.display()));
+        }
+        Ok(_) => true,
+        Err(err) if err.kind() == ErrorKind::NotFound => false,
+        Err(err) => return Err(format!("panel icon {}: {err}", target.display())),
+    };
+    if !target_exists {
         std::fs::create_dir_all(&dir)
             .map_err(|err| format!("panel icons folder {}: {err}", dir.display()))?;
         // Write aside, then rename, so a reader never sees half an icon.
         let partial = dir.join(format!(".{name}.partial"));
-        std::fs::write(&partial, &bytes)
-            .and_then(|()| std::fs::rename(&partial, &target))
+        match std::fs::symlink_metadata(&partial) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                std::fs::remove_file(&partial)
+                    .map_err(|err| format!("panel icon {}: {err}", partial.display()))?;
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "panel icon {}: not a regular file",
+                    partial.display()
+                ));
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("panel icon {}: {err}", partial.display())),
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial)
+            .map_err(|err| format!("panel icon {}: {err}", partial.display()))?;
+        file.write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|err| format!("panel icon {}: {err}", partial.display()))?;
+        match std::fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(format!("panel icon {}: symlink refused", target.display()));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("panel icon {}: {err}", target.display())),
+        }
+        std::fs::rename(&partial, &target)
             .map_err(|err| format!("panel icon {}: {err}", target.display()))?;
     }
     Ok(format!("{PANEL_ICONS_DIR}/{name}"))
@@ -104,6 +142,61 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn partial_path_symlink_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("icon.png");
+        let sentinel = dir.path().join("sentinel");
+        let bytes = b"icon bytes";
+        std::fs::write(&source, bytes).unwrap();
+        std::fs::write(&sentinel, b"unchanged").unwrap();
+        let icons = dir.path().join(PANEL_ICONS_DIR);
+        std::fs::create_dir(&icons).unwrap();
+        let hash = format!("{:x}", Sha256::digest(bytes));
+        let partial = icons.join(format!(".{}.png.partial", &hash[..HASH_PREFIX_LEN]));
+        std::os::unix::fs::symlink(&sentinel, partial).unwrap();
+
+        assert!(import_icon(dir.path(), &source).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"unchanged");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_path_symlink_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("icon.png");
+        let sentinel = dir.path().join("sentinel");
+        let bytes = b"icon bytes";
+        std::fs::write(&source, bytes).unwrap();
+        std::fs::write(&sentinel, b"unchanged").unwrap();
+        let icons = dir.path().join(PANEL_ICONS_DIR);
+        std::fs::create_dir(&icons).unwrap();
+        let hash = format!("{:x}", Sha256::digest(bytes));
+        let target = icons.join(format!("{}.png", &hash[..HASH_PREFIX_LEN]));
+        std::os::unix::fs::symlink(&sentinel, target).unwrap();
+
+        assert!(import_icon(dir.path(), &source).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"unchanged");
+    }
+
+    #[test]
+    fn stale_regular_partial_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("icon.png");
+        let bytes = b"icon bytes";
+        std::fs::write(&source, bytes).unwrap();
+        let icons = dir.path().join(PANEL_ICONS_DIR);
+        std::fs::create_dir(&icons).unwrap();
+        let hash = format!("{:x}", Sha256::digest(bytes));
+        let partial = icons.join(format!(".{}.png.partial", &hash[..HASH_PREFIX_LEN]));
+        std::fs::write(&partial, b"stale").unwrap();
+
+        let relative = import_icon(dir.path(), &source).unwrap();
+        assert_eq!(std::fs::read(dir.path().join(relative)).unwrap(), bytes);
+        assert!(!partial.exists());
     }
 
     #[test]

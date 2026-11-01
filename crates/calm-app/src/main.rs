@@ -1618,7 +1618,7 @@ async fn smoke_panel_settings(
     cx: &mut gpui::AsyncApp,
 ) {
     use calm_core::settings_form::FieldValue;
-    const TITLE: &str = "smoke panel settings";
+    const TITLE: &str = "Second";
     let title = crate::panel_settings::window_title(TITLE);
     let count = |title: &str| {
         calm_native::settings_window_count(title)
@@ -1634,6 +1634,13 @@ async fn smoke_panel_settings(
             let id = view.scene.add(kind, Rect::new(760.0, 1080.0, 300.0, 160.0));
             view.open_panel_settings(id, window, cx);
             view.open_panel_settings(id, window, cx);
+            view.panel_settings_changed(
+                id,
+                "panel.title",
+                FieldValue::Text("First".into()),
+                window,
+                cx,
+            );
             view.panel_settings_changed(
                 id,
                 "panel.title",
@@ -1677,8 +1684,9 @@ async fn smoke_panel_settings(
     });
     let after = count(&title);
     println!(
-        "smoke: panel_settings windows_open={open} after_close={after} renamed={} late_ignored={}",
+        "smoke: panel_settings windows_open={open} after_close={after} renamed={} renamed_twice={} late_ignored={}",
         renamed.as_deref() == Some(TITLE),
+        open == 1,
         matches!(late, Ok((true, 0)))
     );
     if open != 1 || mapped != 1 || after != 0 || renamed.as_deref() != Some(TITLE) {
