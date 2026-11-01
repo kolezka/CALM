@@ -7,6 +7,7 @@
 pub mod app_icon;
 pub mod browser;
 pub mod child;
+pub mod content_gesture;
 pub mod menu;
 pub mod process_stats;
 pub mod settings_window;
@@ -18,6 +19,7 @@ pub use child::{
     NativeChild, clip_frame, focus_host_view, host_view_is_first_responder, window_visible,
     zoom_bounds, zoom_frame,
 };
+pub use content_gesture::{ContentDecision, ContentEvent, ContentGestureMonitor, GestureMods};
 pub use menu::{ContextMenu, HostView, show_context_menu};
 pub use process_stats::{ProcessSample, ProcessSampler};
 pub use settings_window::{SettingsWindow, WindowLayout, choose_image_file, settings_window_count};

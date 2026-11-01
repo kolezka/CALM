@@ -5,7 +5,10 @@ use std::ptr::NonNull;
 use calm_core::geometry::{Rect, Size};
 use calm_core::viewport::NativePlacement;
 use objc2::rc::Retained;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
+use objc2::runtime::NSObjectProtocol;
+use objc2::{
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
+};
 use objc2_app_kit::{NSView, NSWindowOrderingMode};
 use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
@@ -164,6 +167,19 @@ impl ClipView {
         view.setWantsLayer(true);
         view
     }
+}
+
+/// True when `view` is a native panel's clip view or inside one.
+pub(crate) fn is_in_native_child(view: &NSView) -> bool {
+    let mut current = Some(view.retain());
+    while let Some(view) = current {
+        if view.isKindOfClass(ClipView::class()) {
+            return true;
+        }
+        // SAFETY: main thread only; superview returns a retained view or nil.
+        current = unsafe { view.superview() };
+    }
+    false
 }
 
 /// Two views per panel. `clip` sits in the window at the clipped screen rect and clips;
