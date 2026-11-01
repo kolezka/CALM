@@ -250,8 +250,6 @@ enum Phase {
     Idle,
     /// A wanted left press, possibly still held for replay.
     Left,
-    /// A wanted right press; its up is swallowed.
-    Right,
 }
 
 /// The policy free state machine behind the monitor, generic over the event so tests can
@@ -260,6 +258,7 @@ enum Phase {
 #[derive(Debug)]
 pub(crate) struct Tracker<E> {
     phase: Phase,
+    swallow_right_up: bool,
     /// The swallowed left press, until the gesture is a move or a click.
     held: Option<E>,
     /// The event being reported, until `decide`.
@@ -270,6 +269,7 @@ impl<E> Default for Tracker<E> {
     fn default() -> Self {
         Tracker {
             phase: Phase::Idle,
+            swallow_right_up: false,
             held: None,
             current: None,
         }
@@ -287,25 +287,27 @@ impl<E: Clone> Tracker<E> {
     ) -> Disposition {
         self.current = None;
         let disposition = match (&self.phase, input) {
-            (_, Input::LeftDown | Input::RightDown) => {
-                // A press always starts over, so an up that never reached the monitor
-                // cannot leave a stale gesture behind.
+            (_, Input::LeftDown) => {
+                // A new press resets a stale gesture for the same button.
                 self.phase = Phase::Idle;
                 self.held = None;
                 if !candidate() {
                     return Disposition::Pass;
                 }
-                if input == Input::LeftDown {
-                    self.phase = Phase::Left;
-                    self.held = Some(event.clone());
-                } else {
-                    self.phase = Phase::Right;
+                self.phase = Phase::Left;
+                self.held = Some(event.clone());
+                Disposition::Report
+            }
+            (_, Input::RightDown) => {
+                self.swallow_right_up = candidate();
+                if !self.swallow_right_up {
+                    return Disposition::Pass;
                 }
                 Disposition::Report
             }
             (Phase::Left, Input::LeftDragged | Input::LeftUp) => Disposition::Report,
-            (Phase::Right, Input::RightUp) => {
-                self.phase = Phase::Idle;
+            (_, Input::RightUp) if self.swallow_right_up => {
+                self.swallow_right_up = false;
                 return Disposition::Swallow;
             }
             _ => return Disposition::Pass,
@@ -379,6 +381,45 @@ mod tests {
         assert_eq!(
             tracker.input(Input::LeftDragged, "drag", || unreachable!()),
             Disposition::Pass
+        );
+    }
+
+    #[test]
+    fn right_press_during_left_gesture_keeps_the_held_click() {
+        let mut tracker = Tracker::default();
+        let mut sink = Vec::new();
+        assert_eq!(
+            tracker.input(Input::LeftDown, "down", || true),
+            Disposition::Report
+        );
+        tracker.decide(ContentDecision::Hold, &mut |e| sink.push(e));
+        assert_eq!(
+            tracker.input(Input::RightDown, "rdown", || false),
+            Disposition::Pass
+        );
+        assert_eq!(
+            tracker.input(Input::LeftUp, "up", || unreachable!()),
+            Disposition::Report
+        );
+        tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
+        assert_eq!(sink, ["down", "up"]);
+    }
+
+    #[test]
+    fn left_press_after_captured_right_still_swallows_right_up() {
+        let mut tracker = Tracker::<&str>::default();
+        assert_eq!(
+            tracker.input(Input::RightDown, "rdown", || true),
+            Disposition::Report
+        );
+        tracker.decide(ContentDecision::Hold, &mut |_| panic!("no replay"));
+        assert_eq!(
+            tracker.input(Input::LeftDown, "down", || false),
+            Disposition::Pass
+        );
+        assert_eq!(
+            tracker.input(Input::RightUp, "rup", || unreachable!()),
+            Disposition::Swallow
         );
     }
 
