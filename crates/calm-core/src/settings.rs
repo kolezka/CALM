@@ -16,6 +16,7 @@ use crate::background::{
 use crate::browser_url::BrowserQueryMode;
 use crate::geometry::Size;
 use crate::grid::GridKind;
+use crate::interaction::MoveModifier;
 use crate::layout::{move_aside, write_durable};
 use crate::menu::DEFAULT_TERMINAL_SIZE;
 use crate::preview::PREVIEW_ZOOM_THRESHOLD;
@@ -200,14 +201,26 @@ pub struct CanvasSettings {
     /// A click on empty canvas, or Escape while no native view has the keyboard, drops
     /// panel focus. Pans and zooms never do.
     pub click_empty_clears_focus: bool,
+    /// Held while dragging a panel's content to move the panel.
+    #[serde(deserialize_with = "move_modifier_field")]
+    pub move_modifier: MoveModifier,
 }
 
 impl Default for CanvasSettings {
     fn default() -> Self {
         CanvasSettings {
             click_empty_clears_focus: true,
+            move_modifier: MoveModifier::Cmd,
         }
     }
+}
+
+/// Strict like the derive, but the error names the field.
+fn move_modifier_field<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<MoveModifier, D::Error> {
+    MoveModifier::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("\"canvas.move_modifier\": {error}")))
 }
 
 /// Plugin discovery options. Read once at startup.
@@ -984,6 +997,57 @@ mod tests {
                 .contains("\"version\": 2")
         );
         assert_eq!(read_settings_from(&path).unwrap(), settings);
+    }
+
+    #[test]
+    fn unknown_move_modifier_is_a_settings_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // Positive control: every known value loads, and a file without it gets cmd.
+        for (name, value) in [
+            ("cmd", MoveModifier::Cmd),
+            ("ctrl", MoveModifier::Ctrl),
+            ("alt", MoveModifier::Alt),
+            ("cmd+ctrl", MoveModifier::CmdCtrl),
+            ("cmd+alt", MoveModifier::CmdAlt),
+            ("ctrl+alt", MoveModifier::CtrlAlt),
+        ] {
+            let text = format!(r#"{{"version": 2, "canvas": {{"move_modifier": "{name}"}}}}"#);
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(
+                read_settings_from(&path).unwrap().canvas.move_modifier,
+                value
+            );
+            let mut settings = Settings::default();
+            settings.canvas.move_modifier = value;
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["canvas"]["move_modifier"], name);
+        }
+        std::fs::write(&path, r#"{"version": 2}"#).unwrap();
+        assert_eq!(
+            read_settings_from(&path).unwrap().canvas.move_modifier,
+            MoveModifier::Cmd
+        );
+
+        for text in [
+            r#"{"version": 2, "canvas": {"move_modifier": "off"}}"#,
+            r#"{"version": 2, "canvas": {"move_modifier": "Cmd"}}"#,
+            r#"{"version": 2, "canvas": {"move_modifier": ""}}"#,
+            r#"{"version": 2, "canvas": {"move_modifier": 1}}"#,
+            r#"{"version": 2, "canvas": {"move_modifier": null}}"#,
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let error = read_settings_from(&path).unwrap_err();
+            assert!(
+                matches!(&error, SettingsError::Malformed { .. }),
+                "{text}: {error:?}"
+            );
+            assert!(
+                error.to_string().contains("canvas.move_modifier"),
+                "{text}: {error}"
+            );
+            assert!(load_settings_from(&path).is_err(), "{text}");
+        }
     }
 
     #[test]

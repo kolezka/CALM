@@ -10,6 +10,7 @@ use crate::background::{
 use crate::browser_url::BrowserQueryMode;
 use crate::chrome::parse_hex_color;
 use crate::grid::GridKind;
+use crate::interaction::MoveModifier;
 use crate::process_stats::{INTERVAL_MS_RANGE, MemoryUnit, clamp_interval_ms};
 use crate::scene::PanelId;
 use crate::settings::{
@@ -233,6 +234,18 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                 "canvas.click_empty_clears_focus",
                 "Click on empty canvas clears focus",
                 settings.canvas.click_empty_clears_focus,
+            ),
+            choice(
+                "canvas.move_modifier",
+                "Move panel by dragging content with",
+                MoveModifier::ALL
+                    .iter()
+                    .map(|value| value.label().to_string())
+                    .collect(),
+                MoveModifier::ALL
+                    .iter()
+                    .position(|value| *value == settings.canvas.move_modifier)
+                    .unwrap_or(0),
             ),
             checkbox("snap.enabled", "Snap panels", snap.enabled),
             choice("snap.grid", "Snap grid", steps, selected),
@@ -657,6 +670,11 @@ pub fn apply_field(
             settings.canvas.click_empty_clears_focus = on;
             changed
         }
+        ("canvas.move_modifier", FieldValue::Index(index)) => {
+            settings.canvas.move_modifier =
+                *MoveModifier::ALL.get(index).ok_or("bad move modifier")?;
+            changed
+        }
         ("panels.confirm_close", FieldValue::Bool(on)) => {
             settings.panels.confirm_close = on;
             changed
@@ -764,6 +782,7 @@ pub fn apply_field(
             | "grid.major_every"
             | "grid.major_opacity"
             | "canvas.click_empty_clears_focus"
+            | "canvas.move_modifier"
             | "snap.enabled"
             | "snap.grid"
             | "snap.edge"
@@ -1299,6 +1318,38 @@ mod tests {
         apply_field(&mut settings, "image.blur", FieldValue::Number(f64::NAN)).unwrap();
         assert_eq!(settings.background.image.filters.blur, 0.0);
         assert_eq!(settings.validate(), Ok(()));
+    }
+
+    #[test]
+    fn move_modifier_choice_shows_option_labels_and_applies_strictly() {
+        let mut settings = Settings::default();
+        let sections = settings_form(&settings, &FormContext::default());
+        let field = sections
+            .iter()
+            .flat_map(|s| s.fields.iter())
+            .find(|f| f.id == "canvas.move_modifier")
+            .unwrap();
+        let Control::Choice { options, selected } = &field.control else {
+            panic!("expected a choice, got {:?}", field.control);
+        };
+        assert_eq!(
+            options,
+            &[
+                "Cmd",
+                "Ctrl",
+                "Option",
+                "Cmd+Ctrl",
+                "Cmd+Option",
+                "Ctrl+Option"
+            ]
+        );
+        assert_eq!(*selected, 0);
+        let id = "canvas.move_modifier";
+        apply_field(&mut settings, id, FieldValue::Index(5)).unwrap();
+        assert_eq!(settings.canvas.move_modifier, MoveModifier::CtrlAlt);
+        assert!(apply_field(&mut settings, id, FieldValue::Index(6)).is_err());
+        assert!(apply_field(&mut settings, id, FieldValue::Bool(true)).is_err());
+        assert_eq!(settings.canvas.move_modifier, MoveModifier::CtrlAlt);
     }
 
     #[test]

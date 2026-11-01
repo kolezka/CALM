@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::geometry::{Point, Rect, Size};
 use crate::resize::resize_target;
 use crate::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, chrome_height};
@@ -25,6 +27,60 @@ pub struct Modifiers {
     pub alt: bool,
     /// Command on macOS.
     pub platform: bool,
+}
+
+/// Keys held to move a panel by dragging its content (`canvas.move_modifier`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MoveModifier {
+    #[default]
+    #[serde(rename = "cmd")]
+    Cmd,
+    #[serde(rename = "ctrl")]
+    Ctrl,
+    #[serde(rename = "alt")]
+    Alt,
+    #[serde(rename = "cmd+ctrl")]
+    CmdCtrl,
+    #[serde(rename = "cmd+alt")]
+    CmdAlt,
+    #[serde(rename = "ctrl+alt")]
+    CtrlAlt,
+}
+
+impl MoveModifier {
+    pub const ALL: [MoveModifier; 6] = [
+        MoveModifier::Cmd,
+        MoveModifier::Ctrl,
+        MoveModifier::Alt,
+        MoveModifier::CmdCtrl,
+        MoveModifier::CmdAlt,
+        MoveModifier::CtrlAlt,
+    ];
+
+    /// macOS names: alt is Option.
+    pub fn label(self) -> &'static str {
+        match self {
+            MoveModifier::Cmd => "Cmd",
+            MoveModifier::Ctrl => "Ctrl",
+            MoveModifier::Alt => "Option",
+            MoveModifier::CmdCtrl => "Cmd+Ctrl",
+            MoveModifier::CmdAlt => "Cmd+Option",
+            MoveModifier::CtrlAlt => "Ctrl+Option",
+        }
+    }
+
+    /// Shift is ignored. Command, control and alt must be exactly this set.
+    pub fn matches(self, mods: Modifiers) -> bool {
+        let (platform, control, alt) = match self {
+            MoveModifier::Cmd => (true, false, false),
+            MoveModifier::Ctrl => (false, true, false),
+            MoveModifier::Alt => (false, false, true),
+            MoveModifier::CmdCtrl => (true, true, false),
+            MoveModifier::CmdAlt => (true, false, true),
+            MoveModifier::CtrlAlt => (false, true, true),
+        };
+        mods.platform == platform && mods.control == control && mods.alt == alt
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,6 +275,34 @@ impl InputHandler {
         }
         // Content area: the native view handles the event itself.
         vec![Effect::FocusPanel(id)]
+    }
+
+    /// A move-modifier drag on content: the same state and effects as a title bar press.
+    /// Later `mouse_move` and `mouse_up` move and drop the panel.
+    pub fn begin_content_move(
+        &mut self,
+        id: PanelId,
+        screen: Point,
+        scene: &mut Scene,
+    ) -> Vec<Effect> {
+        let world = scene.camera.screen_to_world(screen);
+        let Some(panel) = scene.get(id) else {
+            return Vec::new();
+        };
+        self.state = Interaction::Dragging {
+            id,
+            grab_offset_world: Point::new(
+                world.x - panel.rect.origin.x,
+                world.y - panel.rect.origin.y,
+            ),
+        };
+        scene.bring_to_front(id);
+        vec![Effect::FocusPanel(id), Effect::Redraw]
+    }
+
+    /// A move-modifier right click on content opens the panel menu.
+    pub fn content_menu(&self, id: PanelId, screen: Point) -> Vec<Effect> {
+        vec![Effect::ShowPanelMenu { id, screen }]
     }
 
     pub fn mouse_move(&mut self, screen: Point, mods: Modifiers, scene: &mut Scene) -> Vec<Effect> {
@@ -1380,6 +1464,93 @@ mod tests {
         assert_eq!(
             scene.get(moving).unwrap().rect,
             Rect::new(201.0, 400.0, 200.0, 100.0)
+        );
+    }
+
+    #[test]
+    fn cmd_matches_with_shift_but_not_with_ctrl() {
+        let mods = |platform, control, alt, shift| Modifiers {
+            shift,
+            control,
+            alt,
+            platform,
+        };
+        assert!(MoveModifier::Cmd.matches(mods(true, false, false, false)));
+        assert!(MoveModifier::Cmd.matches(mods(true, false, false, true)));
+        assert!(!MoveModifier::Cmd.matches(mods(true, true, false, false)));
+        assert!(!MoveModifier::Cmd.matches(mods(true, false, true, false)));
+        assert!(!MoveModifier::Cmd.matches(mods(false, false, false, true)));
+        assert!(!MoveModifier::Cmd.matches(Modifiers::default()));
+        // Every value against every set of the three keys: exactly one set matches.
+        for value in MoveModifier::ALL {
+            let mut hits = Vec::new();
+            for bits in 0..8u8 {
+                let (p, c, a) = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+                for shift in [false, true] {
+                    if value.matches(mods(p, c, a, shift)) {
+                        hits.push((p, c, a, shift));
+                    }
+                }
+            }
+            assert_eq!(hits.len(), 2, "{value:?}: {hits:?}");
+            let keys = |h: (bool, bool, bool, bool)| (h.0, h.1, h.2);
+            assert_eq!(keys(hits[0]), keys(hits[1]), "{value:?}");
+        }
+        assert!(MoveModifier::CtrlAlt.matches(mods(false, true, true, false)));
+        assert!(!MoveModifier::CtrlAlt.matches(mods(true, true, true, false)));
+        assert_eq!(MoveModifier::default(), MoveModifier::Cmd);
+    }
+
+    #[test]
+    fn begin_content_move_then_mouse_move_moves_the_panel() {
+        // Snapping on: same result as a title bar drag (drag_without_alt_snaps).
+        let (mut scene, moving) = two_panels();
+        let back = scene.panels[0].id;
+        scene.bring_to_front(back);
+        let mut handler = InputHandler::default();
+        let press = Point::new(310.0, 360.0);
+        let effects = handler.begin_content_move(moving, press, &mut scene);
+        assert_eq!(effects, vec![Effect::FocusPanel(moving), Effect::Redraw]);
+        assert_eq!(scene.panels.last().unwrap().id, moving);
+        assert!(matches!(handler.state, Interaction::Dragging { id, .. } if id == moving));
+        handler.mouse_move(Point::new(215.0, 461.0), no_mods(), &mut scene);
+        assert_eq!(
+            scene.get(moving).unwrap().rect,
+            Rect::new(201.0, 400.0, 200.0, 100.0)
+        );
+        let up = handler.mouse_up(Point::new(215.0, 461.0), no_mods(), &mut scene);
+        assert_eq!(up, vec![Effect::Redraw]);
+        assert_eq!(handler.state, Interaction::Idle);
+
+        // Alt held: no snapping.
+        let (mut scene, moving) = two_panels();
+        let mut handler = InputHandler::default();
+        handler.begin_content_move(moving, press, &mut scene);
+        handler.mouse_move(Point::new(215.0, 461.0), free(), &mut scene);
+        assert_eq!(
+            scene.get(moving).unwrap().rect,
+            Rect::new(205.0, 401.0, 200.0, 100.0)
+        );
+
+        // An unknown id changes nothing.
+        let mut handler = InputHandler::default();
+        assert_eq!(
+            handler.begin_content_move(PanelId(999), press, &mut scene),
+            Vec::new()
+        );
+        assert_eq!(handler.state, Interaction::Idle);
+    }
+
+    #[test]
+    fn content_menu_shows_the_panel_menu() {
+        let handler = InputHandler::default();
+        let screen = Point::new(5.0, 6.0);
+        assert_eq!(
+            handler.content_menu(PanelId(3), screen),
+            vec![Effect::ShowPanelMenu {
+                id: PanelId(3),
+                screen
+            }]
         );
     }
 
