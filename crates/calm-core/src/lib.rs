@@ -1,5 +1,6 @@
 //! GPUI-free model for CALM: geometry, camera, scene, interaction and layouts.
 
+pub mod autosave;
 pub mod background;
 pub mod browser_url;
 pub mod camera;
@@ -15,6 +16,7 @@ pub mod plugin_menu;
 pub mod preview;
 pub mod process_stats;
 pub mod resize;
+pub mod restore;
 pub mod scene;
 pub mod settings;
 pub mod settings_form;

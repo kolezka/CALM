@@ -1,5 +1,9 @@
 //! The canvas: paints panels from the `calm-core` scene and feeds it input.
 
+use calm_core::autosave::{
+    APP_AUTOSAVE_ACTIVE, AutosaveChange, AutosaveClock, OrderedWriter, SaveQueue, WriteOutcome,
+    autosave_active, autosave_allowed_after_read, autosave_change, save_error_text,
+};
 use calm_core::camera::FIT_MARGIN;
 use calm_core::chrome::{
     CORNER_RADIUS, ChromeButton, ChromeOverrides, ChromePalette, ChromeState, PanelIcon,
@@ -12,10 +16,14 @@ use calm_core::interaction::{
     Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool, ZoomStep,
 };
 use calm_core::join::{Axis, JoinLayout, JoinedEdges, Side};
+use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
+use calm_core::restore::{
+    AutosaveStart, CWD_MISSING_NOTE, RestorePlan, placeholder_reason, restored_cwd, version_note,
+};
 use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
 use calm_core::terminal_profile::{ResolvedTerminal, TerminalIcon, display_cwd, render_title};
@@ -30,14 +38,15 @@ use gpui::{
     Edges, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, ParentElement,
     PathBuilder, PinchEvent, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
-    SharedString, Styled, Task, TextAlign, TextRun, WeakEntity, Window, actions, canvas, div, fill,
-    outline, point, px, quad, rgb, rgba, size,
+    SharedString, Styled, Subscription, Task, TextAlign, TextRun, WeakEntity, Window, actions,
+    canvas, div, fill, outline, point, px, quad, rgb, rgba, size,
 };
 
-use calm_plugins::{BridgeRequest, InstalledPlugin};
+use calm_plugins::{BridgeRequest, InstalledPlugin, PluginContent};
 use futures::StreamExt as _;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::background::{self, BackgroundRenderer, BackgroundTexture};
@@ -105,6 +114,17 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("escape", NoAction, Some(terminal::KEY_CONTEXT)),
         KeyBinding::new("enter", NoAction, Some(terminal::KEY_CONTEXT)),
     ]
+}
+
+/// Autosave state for one launch. Present only once autosave has started.
+struct Autosave {
+    started: Instant,
+    clock: AutosaveClock,
+    queue: SaveQueue<LayoutFile>,
+    /// Shared with the background writes and the quit path; it puts writes in order.
+    writer: Arc<Mutex<OrderedWriter<SessionWriter>>>,
+    timer: Option<(Duration, Task<()>)>,
+    _quit: Subscription,
 }
 
 pub struct CanvasView {
@@ -193,19 +213,41 @@ pub struct CanvasView {
     pub join_counts: (usize, usize),
     /// `run` args of the plugin menu item opening a TUI panel right now.
     pending_tui_args: Option<Vec<String>>,
+    autosave: Option<Autosave>,
+    /// Why autosave could not start this launch, shown in the status pill.
+    autosave_notice: Option<String>,
+    /// Session files written this launch.
+    pub autosave_writes: u64,
+    /// The build gate for starting autosave from settings. `APP_AUTOSAVE_ACTIVE`, except
+    /// while the smoke drives the live toggle in its own dir.
+    pub autosave_gate: bool,
+    /// Where the last autosave wrote, so turning it back on resumes the same file.
+    autosave_path: Option<PathBuf>,
+    /// Restored panels that cannot run, with the line they show. GPUI-only: no native
+    /// view, and their saved kind is kept unchanged for the next save.
+    placeholders: HashMap<PanelId, String>,
+    /// A short note drawn after a panel's title in its chrome, never saved with it.
+    title_notes: HashMap<PanelId, &'static str>,
+    /// What the launch restore reported, shown in the status pill.
+    restore_notice: Option<String>,
+    /// The named layout this canvas came from, kept for a later save.
+    pub layout_name: Option<String>,
 }
 
 impl CanvasView {
     /// `builtin_plugins` is the `plugins.builtin` setting, read once here.
-    pub fn new(builtin_plugins: bool, cx: &mut Context<Self>) -> Self {
+    pub fn new(builtin_plugins: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (discovery, plugin_search_dirs) = plugin_host::discover_installed(builtin_plugins);
         let plugin_counts = (discovery.builtin_count, discovery.user_count());
         let entries = plugin_host::menu_entries(&discovery.plugins);
         let (bridge, mut messages) = futures::channel::mpsc::unbounded::<(PanelId, String)>();
-        let bridge_task = cx.spawn(async move |this, cx| {
+        // Bridge calls open native views and move focus, so they run with the window.
+        let bridge_task = cx.spawn_in(window, async move |this, cx| {
             while let Some((id, text)) = messages.next().await {
                 if this
-                    .update(cx, |view, cx| view.plugin_message(id, &text, cx))
+                    .update_in(cx, |view, window, cx| {
+                        view.plugin_message(id, &text, window, cx)
+                    })
                     .is_err()
                 {
                     break;
@@ -264,7 +306,361 @@ impl CanvasView {
             status_bar_error: None,
             join_counts: (0, 0),
             pending_tui_args: None,
+            autosave: None,
+            autosave_notice: None,
+            autosave_writes: 0,
+            autosave_gate: APP_AUTOSAVE_ACTIVE,
+            autosave_path: None,
+            placeholders: HashMap::new(),
+            title_notes: HashMap::new(),
+            restore_notice: None,
+            layout_name: None,
         }
+    }
+
+    /// Carries out a launch plan whose quarantine is done: builds its panels, then
+    /// starts autosave to `session` on the result, so an untouched start never writes.
+    pub fn apply_restore_plan(
+        &mut self,
+        plan: RestorePlan,
+        session: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut notices = plan.notices;
+        if let Some(layout) = plan.layout {
+            notices.extend(self.restore_layout(layout, window, cx));
+        }
+        self.layout_name = plan.layout_name;
+        for notice in &notices {
+            eprintln!("calm: {notice}");
+        }
+        self.restore_notice = match notices.len() {
+            0 => None,
+            1 => notices.pop(),
+            n => Some(format!("{} (+{} more on stderr)", notices[0], n - 1)),
+        };
+        self.autosave_gate = plan.autosave.launch_gate(self.autosave_gate);
+        match plan.autosave {
+            AutosaveStart::On => {
+                if autosave_active(self.autosave_gate, self.settings.settings.session.autosave)
+                    && let Err(err) = self.start_autosave(session, cx)
+                {
+                    eprintln!("calm: {err}");
+                }
+            }
+            AutosaveStart::Off(reason) => self.autosave_notice = Some(reason),
+        }
+        window.refresh();
+        cx.notify();
+    }
+
+    fn plugin_installed(&self, plugin_id: &str, tui: bool) -> bool {
+        self.installed_plugins.iter().any(|plugin| {
+            plugin.manifest.id == plugin_id
+                && matches!(plugin.manifest.content, PluginContent::Tui(_)) == tui
+        })
+    }
+
+    /// Creates `layout`'s panels back to front with fresh ids, through the same open paths
+    /// as new panels (so current resize limits apply), then sets the camera. Returns the
+    /// notices for the pill.
+    fn restore_layout(
+        &mut self,
+        layout: LayoutFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<String> {
+        let mut notices = Vec::new();
+        for saved in layout.panels {
+            let id = self.scene.add(saved.kind.clone(), saved.rect);
+            let saved_title = saved.title.clone();
+            if let Some(panel) = self.scene.get_mut(id) {
+                panel.title = saved.title;
+                panel.minimized = saved.minimized;
+                panel.overrides = saved.overrides;
+            }
+            let reason = placeholder_reason(
+                &saved.kind,
+                |plugin_id| self.plugin_installed(plugin_id, false),
+                |plugin_id| self.plugin_installed(plugin_id, true),
+            );
+            if let Some(reason) = reason {
+                notices.push(reason.clone());
+                self.placeholders.insert(id, reason);
+                continue;
+            }
+            match &saved.kind {
+                PanelKind::Terminal { command, cwd } => {
+                    let home = terminal_profiles::home_dir();
+                    let (cwd, notice) =
+                        restored_cwd(cwd.as_deref(), std::path::Path::is_dir, &home);
+                    if notice.is_some() {
+                        self.title_notes.insert(id, CWD_MISSING_NOTE);
+                    }
+                    notices.extend(notice);
+                    let opened =
+                        self.open_plain_terminal(id, None, command.as_deref(), cwd, window, cx);
+                    if let Err(err) = opened {
+                        notices.push(format!("a restored terminal failed to start: {err}"));
+                    }
+                }
+                PanelKind::Browser { url, .. } => {
+                    let url = calm_core::browser_url::restored_url(url).unwrap_or_else(|notice| {
+                        notices.push(notice);
+                        calm_core::browser_url::RESTORE_FALLBACK_URL.to_string()
+                    });
+                    if let Err(err) = self.spawn_browser(id, &url, window, cx) {
+                        notices.push(format!("a restored browser failed to start: {err}"));
+                    }
+                }
+                kind => {
+                    if let PanelKind::Plugin {
+                        plugin_id,
+                        plugin_version,
+                        ..
+                    } = kind
+                        && let Some(note) = version_note(
+                            plugin_id,
+                            plugin_version.as_deref(),
+                            self.installed_version(plugin_id).as_deref(),
+                        )
+                    {
+                        eprintln!("calm: {note}");
+                    }
+                    self.panel_created(id, kind, window, cx);
+                }
+            }
+            // The open paths set a default title; the saved one stays until the panel sets
+            // its own. A panel that failed to open keeps its failure title.
+            if self.panel_running(id) && !saved_title.is_empty() {
+                self.scene.set_title(id, saved_title);
+            }
+        }
+        // Last, so placement runs once with the saved zoom.
+        self.scene.camera = layout.camera;
+        // Restack once all panels exist, without waiting for paint.
+        self.sync_native_order(cx);
+        notices
+    }
+
+    /// Whether `id` has a live terminal, TUI app, browser or plugin view.
+    fn panel_running(&self, id: PanelId) -> bool {
+        self.terminal(id).is_some()
+            || self.tui_run(id).is_some()
+            || self.browser(id).is_some()
+            || self.plugin_panels.iter().any(|(panel, _)| *panel == id)
+    }
+
+    /// The note drawn after `id`'s title, if it has one.
+    pub fn title_note(&self, id: PanelId) -> Option<&'static str> {
+        self.title_notes.get(&id).copied()
+    }
+
+    /// The line a placeholder panel shows, if `id` is one.
+    pub fn placeholder(&self, id: PanelId) -> Option<&str> {
+        self.placeholders.get(&id).map(String::as_str)
+    }
+
+    /// Starts writing the scene to `path`. The scene as it is now counts as saved, so an
+    /// untouched canvas never replaces the file. A file that cannot be read or parsed
+    /// turns autosave off for this launch.
+    pub fn start_autosave(&mut self, path: PathBuf, cx: &mut Context<Self>) -> Result<(), String> {
+        let dir = path.parent().map(PathBuf::from).unwrap_or_default();
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if let Err(err) = autosave_allowed_after_read(&load_layout_from(&dir, &name)) {
+            self.autosave_notice = Some(err.clone());
+            cx.notify();
+            return Err(err);
+        }
+        let session = &self.settings.settings.session;
+        let writer = SessionWriter::new(path.clone(), session.backup_count, session.browser_query);
+        let debounce = Duration::from_millis(session.debounce_ms);
+        self.autosave = Some(Autosave {
+            started: Instant::now(),
+            clock: AutosaveClock::new(debounce, self.scene.sync_revision()),
+            queue: SaveQueue::default(),
+            writer: Arc::new(Mutex::new(OrderedWriter::new(writer))),
+            timer: None,
+            _quit: cx.on_app_quit(|view, _| {
+                view.save_on_quit();
+                async {}
+            }),
+        });
+        self.autosave_notice = None;
+        self.autosave_path = Some(path);
+        Ok(())
+    }
+
+    /// Whether autosave is writing this launch.
+    pub fn autosave_running(&self) -> bool {
+        self.autosave.is_some()
+    }
+
+    /// Ends autosave without a last write. The smoke uses it before removing its dir.
+    pub fn stop_autosave(&mut self) {
+        self.autosave = None;
+    }
+
+    /// Applies a change to the session settings: off stops the timer and the quit write, on
+    /// starts through the build gate, and a running save takes the new debounce on its next
+    /// tick, the browser query mode on its next write and the backup count at rotation.
+    pub fn reconcile_autosave(
+        &mut self,
+        old: &calm_core::settings::SessionSettings,
+        cx: &mut Context<Self>,
+    ) {
+        let new = &self.settings.settings.session;
+        match autosave_change(self.autosave_gate, self.autosave.is_some(), old, new) {
+            AutosaveChange::Keep => {}
+            AutosaveChange::Stop => self.stop_autosave(),
+            AutosaveChange::Start => {
+                let path = self
+                    .autosave_path
+                    .clone()
+                    .unwrap_or_else(calm_core::layout::session_path);
+                if let Err(err) = self.start_autosave(path, cx) {
+                    eprintln!("calm: {err}");
+                }
+            }
+            AutosaveChange::Update => {
+                let debounce = Duration::from_millis(new.debounce_ms);
+                let (backup_count, browser_query) = (new.backup_count, new.browser_query);
+                if let Some(autosave) = self.autosave.as_mut() {
+                    autosave.clock.set_debounce(debounce);
+                    autosave
+                        .writer
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .inner_mut()
+                        .set_options(backup_count, browser_query);
+                }
+                self.autosave_tick(cx);
+            }
+        }
+    }
+
+    /// Checks the scene revision, starts a save when one is due and sets the timer for the
+    /// next one. Runs on every render and from its own timer.
+    pub fn autosave_tick(&mut self, cx: &mut Context<Self>) {
+        let revision = self.scene.sync_revision();
+        let Some(autosave) = self.autosave.as_mut() else {
+            return;
+        };
+        let now = autosave.started.elapsed();
+        autosave.clock.observe(revision, now);
+        if let Some(due) = autosave.clock.due(now) {
+            autosave.clock.submitted(due);
+            if let Some(job) = autosave.queue.submit(due, self.scene.to_layout()) {
+                self.spawn_autosave_write(job, cx);
+            }
+        }
+        self.schedule_autosave_timer(cx);
+    }
+
+    fn schedule_autosave_timer(&mut self, cx: &mut Context<Self>) {
+        let Some(autosave) = self.autosave.as_mut() else {
+            return;
+        };
+        let Some(deadline) = autosave.clock.next_deadline() else {
+            autosave.timer = None;
+            return;
+        };
+        if autosave
+            .timer
+            .as_ref()
+            .is_some_and(|(at, _)| *at == deadline)
+        {
+            return;
+        }
+        let delay = deadline.saturating_sub(autosave.started.elapsed());
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |view, cx| {
+                if let Some(autosave) = view.autosave.as_mut() {
+                    autosave.timer = None;
+                }
+                view.autosave_tick(cx);
+            });
+        });
+        autosave.timer = Some((deadline, task));
+    }
+
+    /// Writes one snapshot on the background executor, then acknowledges it on the UI thread.
+    fn spawn_autosave_write(
+        &mut self,
+        (generation, layout): (u64, LayoutFile),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(autosave) = self.autosave.as_ref() else {
+            return;
+        };
+        let writer = autosave.writer.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move { write_session(&writer, generation, &layout) })
+                .await;
+            let _ = this.update(cx, |view, cx| view.autosave_finished(outcome, cx));
+        })
+        .detach();
+    }
+
+    fn autosave_finished(&mut self, outcome: WriteOutcome, cx: &mut Context<Self>) {
+        self.note_autosave_outcome(&outcome);
+        let Some(autosave) = self.autosave.as_mut() else {
+            return;
+        };
+        if let Some(next) = autosave.queue.finish(&outcome) {
+            self.spawn_autosave_write(next, cx);
+        }
+        cx.notify();
+    }
+
+    fn note_autosave_outcome(&mut self, outcome: &WriteOutcome) {
+        match outcome {
+            WriteOutcome::Written(_) => self.autosave_writes += 1,
+            WriteOutcome::Skipped { .. } => {}
+            WriteOutcome::Failed { message, .. } => {
+                eprintln!("calm: {}", save_error_text(message));
+            }
+        }
+    }
+
+    /// The quit hook: writes the latest scene now. Waits for a write in flight, and the
+    /// ordered writer drops that older write if it runs after this one.
+    pub fn save_on_quit(&mut self) {
+        let revision = self.scene.sync_revision();
+        let Some(autosave) = self.autosave.as_mut() else {
+            return;
+        };
+        let queued = autosave.queue.take_queued().is_some();
+        // The live revision, not the clock's: a change since the last tick must be saved.
+        let pending =
+            autosave.clock.changed_since_submit(revision) || autosave.queue.in_flight().is_some();
+        if !queued && !pending {
+            return;
+        }
+        autosave.clock.submitted(revision);
+        let outcome = write_session(&autosave.writer, revision, &self.scene.to_layout());
+        autosave.queue.record(&outcome);
+        self.note_autosave_outcome(&outcome);
+    }
+
+    /// The installed manifest version of `plugin_id`, if that plugin is installed.
+    fn installed_version(&self, plugin_id: &str) -> Option<String> {
+        installed_version(&self.installed_plugins, plugin_id)
+    }
+
+    /// Adds a panel through the one path new panels take, so plugin and TUI kinds carry
+    /// the installed manifest version.
+    fn add_new_panel(&mut self, kind: PanelKind, rect: Rect) -> (PanelId, PanelKind) {
+        let kind = kind.with_installed_version(|id| self.installed_version(id));
+        (self.scene.add(kind.clone(), rect), kind)
     }
 
     /// Installs loaded settings at startup.
@@ -327,6 +723,11 @@ impl CanvasView {
                             browser.focus_page();
                         }
                     }
+                    if let Some((_, plugin)) = self.plugin_panels.iter().find(|(p, _)| *p == id)
+                        && !plugin.focus()
+                    {
+                        eprintln!("calm: plugin panel {}: could not take the keyboard", id.0);
+                    }
                 }
                 Effect::ClearFocus => {
                     self.focused = None;
@@ -373,6 +774,8 @@ impl CanvasView {
                     self.terminal_meta.retain(|(panel, _)| *panel != id);
                     self.browsers.retain(|(panel, _)| *panel != id);
                     self.plugin_panels.retain(|(panel, _)| *panel != id);
+                    self.placeholders.remove(&id);
+                    self.title_notes.remove(&id);
                     self.scene.remove(id);
                     if self.focused == Some(id) {
                         self.focused = None;
@@ -380,6 +783,8 @@ impl CanvasView {
                 }
             }
         }
+        // AppKit must see scene changes even when an occluded window does not paint.
+        self.sync_native_order(cx);
         window.refresh();
         cx.notify();
     }
@@ -451,7 +856,7 @@ impl CanvasView {
                 if matches!(kind, PanelKind::Terminal { .. }) {
                     rect.size = self.settings.settings.panels.default_terminal_size();
                 }
-                let id = self.scene.add(kind.clone(), rect);
+                let (id, kind) = self.add_new_panel(kind, rect);
                 if let Some(profile) = profile {
                     self.requested_profiles.insert(id, profile);
                 }
@@ -487,7 +892,9 @@ impl CanvasView {
                 vec![Effect::Redraw]
             }
             (Some(MenuCommand::Duplicate), MenuTarget::Panel(id)) => {
-                let Some(copy) = self.scene.duplicate(id) else {
+                let installed =
+                    |plugin_id: &str| installed_version(&self.installed_plugins, plugin_id);
+                let Some(copy) = self.scene.duplicate(id, installed) else {
                     return;
                 };
                 if let Some(profile) = self.terminal_meta(id).and_then(|meta| meta.profile.clone())
@@ -538,7 +945,7 @@ impl CanvasView {
                 }
             }
             PanelKind::Plugin { plugin_id, .. } => {
-                if let Err(err) = self.open_plugin_panel(id, plugin_id, window) {
+                if let Err(err) = self.open_plugin_panel(id, plugin_id, window, cx) {
                     eprintln!("calm: plugin panel failed to open: {err}");
                     if let Some(panel) = self.scene.get_mut(id) {
                         panel.title = format!("{plugin_id}: failed to open");
@@ -553,8 +960,12 @@ impl CanvasView {
                     }
                 }
             }
-            // No native view: the panel draws as chrome only until a placeholder exists.
-            PanelKind::Unsupported { .. } => {}
+            // No native view: drawn by GPUI as a placeholder, so it never covers a live one.
+            PanelKind::Unsupported { raw } => {
+                let reason = placeholder_reason(kind, |_| true, |_| true)
+                    .unwrap_or_else(|| format!("Unknown panel type {}", raw.type_name()));
+                self.placeholders.insert(id, reason);
+            }
         }
     }
 
@@ -581,9 +992,8 @@ impl CanvasView {
             .focused
             .and_then(|focused| self.terminal_meta(focused))
             .map(|meta| meta.cwd.clone());
-        let start = cwd.unwrap_or_else(|| {
-            terminal_profiles::start_dir(&resolved.cwd, inherited.as_deref(), &home)
-        });
+        let start =
+            terminal_profiles::terminal_start(cwd, &resolved.cwd, inherited.as_deref(), &home);
         let options = terminal_profiles::options(&resolved, command, start.clone());
         let configuration = terminal_profiles::configuration_name(&options.configuration);
         self.spawn_terminal(id, options, window, cx)?;
@@ -631,9 +1041,7 @@ impl CanvasView {
         };
         let cwd = display_cwd(&meta.cwd, &terminal_profiles::home_dir());
         let title = render_title(&resolved.title_template, meta.index, &cwd);
-        if let Some(panel) = self.scene.get_mut(id) {
-            panel.title = title;
-        }
+        self.scene.set_title(id, title);
         if let Some(TerminalIcon::Image(relative)) = &resolved.icon {
             let dir = self.settings_dir();
             self.tui_icons.entry(dir.join(relative)).or_insert_with(|| {
@@ -736,6 +1144,8 @@ impl CanvasView {
             old.update(cx, |terminal, _| terminal.release_preview(window));
             self.terminals.retain(|(panel, _)| *panel != id);
         }
+        // A restart replaces the native view without changing its panel id.
+        self.native_order.clear();
         self.spawn_terminal(id, options, window, cx)?;
         let terminal = self
             .terminal(id)
@@ -751,11 +1161,7 @@ impl CanvasView {
         if let Some(run) = self.tui_run_mut(id) {
             run.subscription = Some(subscription);
         }
-        if let Some(panel) = self.scene.get_mut(id) {
-            panel.title = title;
-        }
-        // The new native view was added on top; restack on the next paint.
-        self.native_order.clear();
+        self.scene.set_title(id, title);
         Ok(())
     }
 
@@ -775,9 +1181,7 @@ impl CanvasView {
                 run.plugin.dir.display()
             );
         }
-        if let Some(panel) = self.scene.get_mut(id) {
-            panel.title = title;
-        }
+        self.scene.set_title(id, title);
         if let calm_core::tui::ExitAction::RestartAfter(delay) = action {
             cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor().timer(delay).await;
@@ -886,6 +1290,7 @@ impl CanvasView {
         id: PanelId,
         plugin_id: &str,
         window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let plugin = self
             .installed_plugins
@@ -907,6 +1312,7 @@ impl CanvasView {
             self.scene.set_resize_policy(id, policy);
         }
         self.plugin_panels.push((id, panel));
+        self.sync_native_order(cx);
         Ok(())
     }
 
@@ -928,7 +1334,13 @@ impl CanvasView {
     }
 
     /// One message a plugin page posted. Bad JSON has no id to answer, so it is logged.
-    fn plugin_message(&mut self, id: PanelId, text: &str, cx: &mut Context<Self>) {
+    fn plugin_message(
+        &mut self,
+        id: PanelId,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let request = match BridgeRequest::from_json(text) {
             Ok(request) => request,
             Err(err) => {
@@ -936,16 +1348,50 @@ impl CanvasView {
                 return;
             }
         };
-        let Some(panel) = self.scene.get_mut(id) else {
+        let background = self.settings.settings.background.base_color().to_string();
+        let default_terminal_size = self.settings.settings.panels.default_terminal_size();
+        let mut host = plugin_host::HostContext {
+            scene: &mut self.scene,
+            caller: id,
+            focused: self.focused,
+            viewport: self.viewport.size,
+            background,
+            default_terminal_size,
+            plugins: &self.installed_plugins,
+        };
+        let Some(route) = plugin_host::route(&mut host, &request) else {
             return;
         };
-        let response = match plugin_host::route(panel, &request) {
-            Route::Reply(Some(response)) => response,
+        match route {
+            Route::Reply(Some(response)) => self.reply_to_plugin(id, &response),
             Route::Reply(None) => return,
             Route::Background(call) => return self.serve_in_background(id, request.id, call, cx),
-        };
-        self.reply_to_plugin(id, &response);
+            Route::Apply { reply, effects } => {
+                // The reply goes first: `panel.close` removes the page that waits for it.
+                self.reply_to_plugin(id, &reply);
+                self.apply_host_effects(effects, window, cx);
+            }
+        }
+        window.refresh();
         cx.notify();
+    }
+
+    /// Runs what a bridge call left for the canvas. Focus and close take the same effects
+    /// as a click, so a live terminal still asks before it closes.
+    fn apply_host_effects(
+        &mut self,
+        effects: Vec<plugin_host::HostEffect>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for effect in effects {
+            if let plugin_host::HostEffect::Open { id, kind } = &effect {
+                self.panel_created(*id, kind, window, cx);
+                continue;
+            }
+            let canvas = effect.canvas_effects();
+            self.apply_effects(canvas, window, cx);
+        }
     }
 
     fn reply_to_plugin(&mut self, id: PanelId, response: &calm_plugins::BridgeResponse) {
@@ -1004,6 +1450,7 @@ impl CanvasView {
         let events = self.browser_events(window, cx);
         let browser = BrowserPanel::open(id, address, events, window)?;
         self.browsers.push((id, browser));
+        self.sync_native_order(cx);
         Ok(())
     }
 
@@ -1055,6 +1502,7 @@ impl CanvasView {
             BrowserEvent::Clicked => {
                 // The click went to the native view, so GPUI never saw it.
                 self.scene.bring_to_front(id);
+                self.sync_native_order(cx);
                 self.focused = Some(id);
                 self.focus_handle.focus(window, cx);
             }
@@ -1099,10 +1547,11 @@ impl CanvasView {
         let host = NativeChild::new(window).map_err(|err| err.to_string())?;
         let terminal = TerminalPanel::spawn(options, host, window, cx)?;
         self.terminals.push((id, terminal));
+        self.sync_native_order(cx);
         Ok(())
     }
 
-    fn terminal(&self, id: PanelId) -> Option<Entity<TerminalPanel>> {
+    pub(crate) fn terminal(&self, id: PanelId) -> Option<Entity<TerminalPanel>> {
         self.terminals
             .iter()
             .find(|(panel, _)| *panel == id)
@@ -1250,6 +1699,9 @@ impl CanvasView {
             }
         }
         self.native_order = order;
+        if let Some(bar) = self.status_bar.as_mut() {
+            bar.ensure_front();
+        }
     }
 
     /// Updates the native status bar's text and frame and keeps it above every panel.
@@ -1283,7 +1735,16 @@ impl CanvasView {
         // The pill has one text color, so the warning sign marks the plugin item.
         let plugin_errors =
             plugin_host::plugin_problems_text(self.plugin_errors, self.plugin_warnings);
+        let session_error = self
+            .autosave
+            .as_ref()
+            .and_then(|autosave| autosave.queue.error())
+            .map(save_error_text)
+            .or_else(|| self.autosave_notice.clone())
+            .or_else(|| self.restore_notice.clone())
+            .unwrap_or_default();
         let text = status_text([
+            session_error.as_str(),
             saved.as_str(),
             plugin_errors.as_str(),
             zoom.as_str(),
@@ -1690,6 +2151,9 @@ struct PaintSnapshot {
     grid: GridFrame,
     /// Computed once per render from `scene`.
     joins: JoinLayout,
+    /// Restored panels that cannot run, with their line.
+    placeholders: HashMap<PanelId, String>,
+    title_notes: HashMap<PanelId, &'static str>,
 }
 
 /// How a terminal or plugin panel's content is drawn this paint. A plugin in Preview has
@@ -2171,7 +2635,22 @@ impl PaintSnapshot {
                         cx,
                     );
                 }
-                Some(TerminalContent::Live) | None => {}
+                Some(TerminalContent::Live) | None => {
+                    if let Some(reason) = self.placeholders.get(&panel.id) {
+                        let padding = 8.0 * zoom;
+                        let line = Rect::new(
+                            content_screen.origin.x + padding,
+                            content_screen.origin.y + padding,
+                            (content_screen.size.width - 2.0 * padding).max(0.0),
+                            TITLE_BAR_HEIGHT * zoom,
+                        );
+                        let look = TextLook {
+                            align: TextAlign::Left,
+                            color: opaque(theme::TITLE_TEXT),
+                        };
+                        paint_text(reason, line, look, zoom, origin, window, cx);
+                    }
+                }
             }
         }
 
@@ -2277,10 +2756,14 @@ impl PaintSnapshot {
             );
             middle.size.width = (middle.size.width - width - 8.0 * zoom).max(0.0);
         }
-        let title = if confirming {
-            CONFIRM_TITLE
-        } else {
-            panel.title.as_str()
+        let noted;
+        let title = match self.title_notes.get(&panel.id) {
+            _ if confirming => CONFIRM_TITLE,
+            Some(note) => {
+                noted = format!("{} ({note})", panel.title);
+                noted.as_str()
+            }
+            None => panel.title.as_str(),
         };
         paint_text(
             title,
@@ -2416,6 +2899,7 @@ impl Focusable for CanvasView {
 
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.autosave_tick(cx);
         if self.show_stats && self.settings.settings.developer.stats.show_fps {
             // Each render records a frame and asks for the next one, so the readout
             // measures the frame rate the window can sustain. Off means no extra frames.
@@ -2454,6 +2938,8 @@ impl Render for CanvasView {
             background,
             grid,
             joins: JoinLayout::compute(&self.scene.panels),
+            placeholders: self.placeholders.clone(),
+            title_notes: self.title_notes.clone(),
         };
         self.join_counts = (
             snapshot.joins.joins.len(),
@@ -2601,4 +3087,27 @@ fn to_bounds(rect: Rect, origin: gpui::Point<f64>) -> Bounds<Pixels> {
         ),
         size: size(px(rect.size.width as f32), px(rect.size.height as f32)),
     }
+}
+
+/// Runs one ordered session write. A poisoned lock still writes: the writer holds no
+/// half-done state between calls.
+fn write_session(
+    writer: &Mutex<OrderedWriter<SessionWriter>>,
+    generation: u64,
+    layout: &LayoutFile,
+) -> WriteOutcome {
+    writer
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .write(generation, |session| {
+            session.save(layout).map_err(|err| err.to_string())
+        })
+}
+
+/// The manifest version of the installed plugin `plugin_id`.
+fn installed_version(plugins: &[InstalledPlugin], plugin_id: &str) -> Option<String> {
+    plugins
+        .iter()
+        .find(|plugin| plugin.manifest.id == plugin_id)
+        .map(|plugin| plugin.manifest.version.clone())
 }

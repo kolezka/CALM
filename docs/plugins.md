@@ -424,15 +424,13 @@ host injects before the prelude, so it works before any call. A method the host 
 declared answers `false`.
 
 ```js
-try {
-  await calm.panel.close();
-} catch (err) {
-  if (err.code === "not_implemented") console.log("this CALM cannot close panels yet");
+if (calm.has("canvas.createPanel")) {
+  await calm.canvas.createPanel({ kind: "terminal" });
 }
 ```
 
-The app serves 9 of the 17 methods so far. Check [Host support](#host-support) or
-`calm.has` before you rely on one.
+The app serves all 17 methods. An older CALM may not, so check `calm.has` before you rely
+on one.
 
 ### Settings
 
@@ -462,33 +460,69 @@ does not parse makes every call reject and is left as it is, never replaced by `
 | Call                         | Result                                                         |
 | ---------------------------- | -------------------------------------------------------------- |
 | `calm.panel.setTitle(title)` | Sets the panel title.                                          |
-| `calm.panel.getBounds()`     | `{ width, height, zoom }`: size in canvas points, camera zoom. |
-| `calm.panel.minimize()`      | Minimizes the panel. The page keeps running.                   |
-| `calm.panel.close()`         | Asks to close the panel through the normal, confirmed path.    |
+| `calm.panel.getBounds()`     | `{ width, height, zoom }`: size in canvas points with the title bar, camera zoom. |
+| `calm.panel.minimize()`      | Minimizes the panel. The page keeps running. A second call changes nothing. |
+| `calm.panel.close()`         | Closes the panel through the normal close path. A plugin panel has no process, so it closes at once. |
 
 ### Canvas
 
 | Call                          | Result                                                  |
 | ----------------------------- | ------------------------------------------------------- |
 | `calm.canvas.createPanel(spec)` | Opens a new panel, resolves with its `PanelId`.       |
-| `calm.canvas.focusPanel(id)`  | Focuses a panel.                                        |
-| `calm.canvas.listPanels()`    | `PanelInfo[]`: `{ id, kind, title, rect, minimized }`.  |
+| `calm.canvas.focusPanel(id)`  | Restores a minimized panel, raises it and focuses it. `not_found` for a bad id. |
+| `calm.canvas.listPanels()`    | `PanelInfo[]` for every panel, back to front, not only this plugin's. |
 
 `spec` is one of:
 
 ```ts
-{ kind: "terminal", command?: string, cwd?: string, rect?: Rect }
-{ kind: "browser", url: string, rect?: Rect }
-{ kind: "plugin", pluginId: string, settings?: Record<string, unknown>, rect?: Rect }
+{ kind: "terminal", command?: string, cwd?: string, rect?: Rect, focus?: boolean }
+{ kind: "browser", url: string, rect?: Rect, focus?: boolean }
+{ kind: "plugin", pluginId: string, settings?: Record<string, unknown>, rect?: Rect, focus?: boolean }
+{ kind: "tui", pluginId: string, rect?: Rect, focus?: boolean }
 ```
 
-`Rect` is `{ x, y, width, height }` in canvas points. `PanelId` is a number.
+`Rect` is `{ x, y, width, height }` in world units, title bar included. `PanelId` is a number.
+
+- With `rect`, the panel goes exactly there. Without it, it opens at the center of the view
+  at the kind's default size: the terminal size from settings, 800x600 for a browser, the
+  manifest `defaultSize` for a plugin or TUI app.
+- The size is held within the panel's resize limits, as a drag is. A plugin with
+  `"resizable": false` rejects a `rect` of any other size with `invalid_params`.
+- `command` is a shell line, as in a terminal profile. `cwd` must be an absolute path to a
+  directory. `url` goes through the address bar rules, so `example.com` opens
+  `https://example.com`.
+- `focus` defaults to `true`, as for a panel from the Add menu.
+- `pluginId` must name an installed web plugin for `"plugin"` and a TUI app for `"tui"`,
+  else the call rejects with `not_installed`.
+- Fields of the v2 design that this CALM does not build yet (`near`, `side`, `size`, `gap`,
+  `title`, `args`, `env`, `appearance`) reject with `unavailable`. Any other unknown field
+  rejects with `invalid_params`.
+
+`PanelInfo` is `{ id, kind, title, rect, minimized, z, focused, pluginId?, url?, resize }`.
+`kind` is `"terminal"`, `"browser"`, `"plugin"`, `"tui"` or `"unsupported"` (a panel from a
+layout of a newer CALM). `z` is 0 for the backmost panel. `pluginId` is set for plugin and TUI
+panels, `url` for browsers. `resize` is `{ resizable, minSize, maxSize }`, `maxSize` `null`
+when there is no limit.
 
 ### Process
 
 `calm.process.exec(command, args, options?)` runs a program on the host and resolves with
-`{ code, stdout, stderr }`. `options` takes `cwd` and `timeoutMs`. It runs with your user's
-rights. This is why plugins must be trusted code (see [Trust](#trust)).
+`{ code, stdout, stderr }`. It runs with your user's rights. This is why plugins must be
+trusted code (see [Trust](#trust)).
+
+- No shell: `command` is the program, `args` its arguments, each passed as is. Run
+  `/bin/sh -c "..."` yourself when you need one.
+- A bare name is looked up in CALM's `PATH`. Started from the Dock or Finder, that is the
+  short system `PATH` without Homebrew. Use an absolute path, or `/bin/sh -lc "command -v gh"`
+  to ask the login shell.
+- `options.cwd` is an absolute path to a directory. `options.timeoutMs` is 1 to 600000,
+  default 30000. Past it CALM kills the program and everything it started (its process
+  group) and the call rejects with `timeout`.
+- `code` is the exit code, or 128 plus the signal number when a signal ended the program.
+- `stdout` and `stderr` are decoded as UTF-8; invalid bytes become U+FFFD. Each is capped
+  at 4 MiB; more rejects with `too_large`.
+- A program that cannot start rejects with `host_error`. stdin is empty. The program gets
+  CALM's environment.
 
 ### Other calls
 
@@ -496,7 +530,7 @@ rights. This is why plugins must be trusted code (see [Trust](#trust)).
 | ------------------------ | ------------------------------------------------------------ |
 | `calm.github.api(path)`  | Runs `gh api <path>` on the host, resolves with parsed JSON. |
 | `calm.openExternal(url)` | Opens an `http` or `https` URL in the default browser (`open`). Other schemes reject. |
-| `calm.theme.get()`       | `{ background }`, a `"#rrggbb"` string.                      |
+| `calm.theme.get()`       | `{ background }`, a `"#rrggbb"` string: the flat color that stands for the canvas background, also for a gradient or an image. |
 | `calm.log(message)`      | Writes `message` to CALM's stderr, tagged with the plugin. Fire and forget: returns nothing, never waits for the host. |
 
 ### Events
@@ -522,11 +556,10 @@ page in a normal browser while developing.
 
 ### Host support
 
-The prelude exposes every call above. The app's plugin host (`crates/calm-app/src/plugin_host.rs`)
-serves the methods marked below. `github.api`, `storage.*` and `openExternal` run on a
-background thread, so a slow `gh` never stalls the canvas. Every other method rejects with
-code `not_implemented`, so no call hangs. An unknown method rejects with code
-`unknown_method`.
+The prelude exposes every call above, and the app's plugin host
+(`crates/calm-app/src/plugin_host.rs`) serves all of them. `github.api`, `storage.*`,
+`openExternal` and `process.exec` run on a background thread, so a slow program never
+stalls the canvas. An unknown method rejects with code `unknown_method`.
 
 | `method`             | Host support                              |
 | -------------------- | ----------------------------------------- |
@@ -536,25 +569,27 @@ code `not_implemented`, so no call hangs. An unknown method rejects with code
 | `storage.set`        | Served: atomic write of the plugin file   |
 | `storage.remove`     | Served                                    |
 | `panel.setTitle`     | Served: sets the chrome title             |
-| `panel.getBounds`    | Not served yet, rejects with `not_implemented` |
-| `panel.minimize`     | Not served yet, rejects with `not_implemented` |
-| `panel.close`        | Not served yet, rejects with `not_implemented` |
-| `canvas.createPanel` | Not served yet, rejects with `not_implemented` |
-| `canvas.focusPanel`  | Not served yet, rejects with `not_implemented` |
-| `canvas.listPanels`  | Not served yet, rejects with `not_implemented` |
-| `process.exec`       | Not served yet, rejects with `not_implemented` |
+| `panel.getBounds`    | Served: size with the title bar, zoom     |
+| `panel.minimize`     | Served: the page keeps running            |
+| `panel.close`        | Served: the normal close path             |
+| `canvas.createPanel` | Served: terminal, browser, plugin, TUI app |
+| `canvas.focusPanel`  | Served: restores, raises, focuses         |
+| `canvas.listPanels`  | Served: every panel, back to front        |
+| `process.exec`       | Served: no shell, own process group       |
 | `github.api`         | Served: `gh api <path>` on the host       |
 | `openExternal`       | Served: `http` and `https` only           |
-| `theme.get`          | Not served yet, rejects with `not_implemented` |
+| `theme.get`          | Served: the background's base color       |
 | `log`                | Served: printed to stderr, no answer       |
 
 ### Errors
 
 A rejected call's `Error` has a `code`. The codes below are the whole list for plugin API v2.
-This host produces `unknown_method`, `not_implemented`, `invalid_params`, `wrong_kind`
-(`settings.*` or `storage.*` from a panel that is not a plugin), `too_large`,
-`storage_corrupt`, the four `gh_*` codes, `timeout` and `host_error` today; the rest belong
-to methods that are not served yet.
+This host produces `unknown_method`, `invalid_params`, `not_found` (`canvas.focusPanel`),
+`wrong_kind` (`settings.*` or `storage.*` from a panel that is not a plugin), `unavailable`
+(a `createPanel` field not built yet), `not_installed` (`createPanel` with an unknown
+`pluginId`), `too_large`, `storage_corrupt`, the four `gh_*` codes, `timeout` and
+`host_error` today. `not_implemented` is for a method a host knows but does not serve; this
+one serves them all. The rest belong to methods of the v2 design.
 
 | `code`             | When                                                                |
 | ------------------ | ------------------------------------------------------------------- |
@@ -573,9 +608,9 @@ to methods that are not served yet.
 | `gh_not_logged_in` | `gh` is not logged in                                               |
 | `gh_failed`        | `gh api` failed; the message has its error                          |
 | `gh_invalid_path`  | The `github.api` path is not a plain API path                       |
-| `timeout`          | The call ran past its limit (`gh api` today)                        |
+| `timeout`          | The call ran past its limit (`gh api`, `process.exec`)              |
 | `not_allowed`      | An external caller asked for a method outside its allowlist          |
-| `not_installed`    | `plugins.call` to a plugin that is not installed                    |
+| `not_installed`    | `createPanel` or `plugins.call` names a plugin that is not installed |
 | `not_running`      | `plugins.call` to an export no running page serves                  |
 | `method_not_found` | `plugins.call` to a method the callee does not export               |
 | `remote_error`     | The called plugin's handler threw                                   |
@@ -621,7 +656,7 @@ The host answers by evaluating `window.__calm.resolve(id, ok, value)` in the pag
 true, `value` is the result. With `ok` false, `value` is `{ "code": string, "message": string }`
 (`BridgeResponse::Err` carries an `ApiError`). The prelude turns it into an `Error` with that
 `message` and a `code` property. A plain string, the v1 shape, still works and gets
-`code: "host_error"`. The host answers a method it does not serve with
+`code: "host_error"`. A host answers a method it knows but does not serve with
 `{ "code": "not_implemented", "message": "not implemented: <method>" }`
 (`BridgeResponse::not_implemented`).
 

@@ -44,6 +44,9 @@ impl CanvasView {
     /// The panel menu for `id` as the user would see it now: built-ins, then plugin items.
     pub fn panel_menu(&self, id: PanelId) -> Option<Vec<MenuItem>> {
         let panel = self.scene.get(id)?;
+        if self.placeholder(id).is_some() {
+            return Some(menu::placeholder_menu());
+        }
         let can_restart = self
             .tui_run(id)
             .is_some_and(|run| run.supervisor.can_restart());
@@ -152,7 +155,7 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PanelId {
-        let id = self.scene.add(kind.clone(), rect);
+        let (id, kind) = self.add_new_panel(kind, rect);
         let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
         self.apply_effects(
             vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)],

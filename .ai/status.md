@@ -1,8 +1,8 @@
 # Status
 
-Last updated: 2026-10-31, against `origin/main` at `7de2c55` (PRs #1 to #37 merged). This
-file describes `main`, not branches. Facts are verified against the code unless marked
-otherwise.
+Last updated: 2026-11-01, against `origin/main` at `188d7a5` (PRs #1 to #41 merged; #11
+merged into a branch, see #20). This file describes `main`, not branches. Facts are
+verified against the code unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -154,6 +154,97 @@ Pull requests:
 - #37 Smoke diagnostics: `CanvasView::process_samples` counts sampler readings; the stats
   step waits up to 5 s for two samples and a CPU reading, then up to 2 s for the pill. It
   does not fix the flake; it says which side failed (see "Known small issues").
+- #38 Docs and `.ai` refresh after #22 to #37.
+- #39 Autosave (persistence plan Task 4), built behind an off gate that #41 turned on.
+  Review fixes: session settings apply live from the Settings form, duplicates carry the
+  installed `plugin_version`, read-only bridge calls no longer dirty the scene, and a quit
+  saves when the last change was not yet ticked.
+- #40 Native z-order without paint. Root cause of the z-order flake: the native restack ran
+  only in paint, and an occluded window does not paint. The app now restacks at scene and
+  native mutation boundaries and keeps the paint-time sync. Smoke asserts native order right
+  after send to back, bring to front, plugin reorder and a TUI restart. The preview and
+  stats paint stalls stay open (`.ai/backlog.md` item 6).
+- #41 Restore at launch (persistence plan Task 5), autosave on (`APP_AUTOSAVE_ACTIVE` is
+  `true`, so the real `~/.config/calm/session.json` is written). `calm_core::restore`
+  decides the launch (`pick_source`: `--layout NAME`, then `--no-restore`, then
+  `session.restore_on_launch`; `plan_restore`, `after_quarantine`, `placeholder_reason`,
+  `restored_cwd`, `version_note`). A missing session starts empty; a malformed or
+  unsupported one moves to `session.json.invalid-<n>` with a path-only notice and autosave
+  stays on; an unreadable one turns autosave off for the launch; a missing named layout
+  starts empty with the name kept; a malformed one exits 2 and is not moved.
+  `CanvasView::apply_restore_plan` builds panels back to front through the normal open
+  paths, then the camera, restacks native views, then starts autosave on the result (the
+  empty start guard). A missing plugin, TUI app or unknown kind is a GPUI-only placeholder
+  with a Delete-only menu that keeps its saved kind. `ask` has no dialog: it restores like
+  `on` with a notice. Review fixes: an autosave-off restore closes the gate for the whole
+  launch (`AutosaveStart::launch_gate`), so a Settings toggle cannot start the writer;
+  restored panels keep their saved title until the panel sets one; a gone cwd starts in
+  home with a chrome note "cwd missing, started in ~" that is never saved; an invalid saved
+  browser url opens `about:blank` (`browser_url::restored_url`). Missing-plugin settings
+  round trip as a JSON value, not byte for byte; unknown kinds are byte for byte. Smoke
+  lines `session saved=4 restored=4 ...`, `session malformed moved=session.json.invalid-0
+  started_empty=true` and `session edges titles=saved cwd=home`; the session step also
+  checks native order against scene order after a restore.
+- #43 Smoke runs every step, prints PASS, FAIL or SKIPPED per step and a summary, labels
+  known flakes (`smoke_runner::KNOWN_FLAKES`) and takes `CALM_SMOKE_ONLY`. rc stays 1 on any
+  failure. The `zorder` step raises the panel through `apply_menu_choice` and checks native
+  order at once, without waiting for a paint. Autosave, restore and session edge checks run
+  as the one `session` step. Merged without review or a smoke run, at the user's request.
+- #44 Plugin bridge control: the 8 remaining v1 bridge methods are served, so all 17
+  answer. `dispatch` takes a `HostContext` and returns `Route::Apply` with `HostEffect`s
+  (open, focus, close) that the canvas applies with the window; the bridge task now runs
+  through `spawn_in`. `panel.getBounds` (size with the title bar, zoom), `panel.minimize`
+  (sets, never toggles), `panel.close` (`Effect::ClosePanelRequested`, the click path),
+  `canvas.focusPanel` (restore, raise, focus; `not_found`), `canvas.listPanels` (every
+  panel, v1 fields plus `z`, `focused`, `pluginId`, `url`, `resize`), `canvas.createPanel`
+  (terminal, browser, plugin, TUI; `rect` or viewport center at the kind's default size;
+  `ResizePolicy::clamp`; a locked plugin rejects another size; `focus` default true; v2-only
+  fields reject `unavailable`, unknown ones `invalid_params`), `theme.get`
+  (`base_color()`), `process.exec` (`plugin_services`, no shell, own process group killed
+  on timeout, 30 s default, 1 to 600000 ms, 4 MiB per stream, signal as 128 + n). Smoke
+  prints `plugin errors ... bad_param=invalid_params has=[true,false,true]` and
+  `plugin reads bounds=true theme=true listed=true exec=true`. Not built from the v2 rows of
+  these methods: `near`/`side`/`size`/`gap` placement, `title`, `args`, `env`,
+  `appearance`, `PanelInfo.mode`, `joined`, `appearance`, `createdBy`, `tui`, `panels.*`
+  names, `panels.close(id)` with a pending reply and `busy`.
+
+## Persistence plan progress
+
+`docs/superpowers/plans/2026-10-31-canvas-persistence.md`, appendix "Remaining tasks".
+
+| Task | State |
+| --- | --- |
+| 1 Session restore decision | Done, #30 |
+| 2 Layout v2 | Done, #31 |
+| 3 Durable writes, session paths, backups | Done, #36, with the url scrub, the 8 KiB guard and the title scrub |
+| 4 Autosave | Done, #39; active since #41 |
+| 5 Restore at launch | Done, #41 |
+| 6 Browser url scrubbing | Mostly done in #36; `docs/sessions.md` and leftovers remain |
+| 7 File menu and Settings controls | Not started |
+| 8 `layouts.*` and `session.saveNow` | Is plugin API v2 phase 16, not started |
+| 9 Terminal cwd from Ghostty PWD | Waits on API v2 phase 10 |
+| 10 Browser page zoom saved | Waits on API v2 phase 12 |
+| 11 TUI app panels in the session | Not started |
+| 12 User overrides in chrome | Not started; needs a native text input |
+
+## Plugin API v2 progress
+
+Spec: `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Worker briefs:
+`docs/superpowers/plans/2026-11-01-plugin-api-v2-worker-briefs.md`.
+
+| Phase | State |
+| --- | --- |
+| 1 Error codes and manifest | Done, #35 |
+| 2 Request parsing | Next. Single writer on `bridge.rs` |
+| 3 Read-only host | Waits on open question 1 (`PanelInfo.joined`) |
+| 4 Control | Waits on open question 2 (`setAppearance` on every kind) |
+| 5 Close | After 4 |
+| 6 Events | Core `Coalescer` done, #34; wiring not started |
+| 7 Storage, bus, process, github, openExternal | Storage, `github.api`, `openExternal` done outside the plan, #23; bus and `process.exec` open |
+| 8 Contributions | `contributes.menus` done outside the plan, #28; the rest open |
+| 9 to 16 | Not started. 10 needs the user's go for the Ghostty fork; 11 may move earlier (open question 4); 16 is persistence Task 8 |
+
+Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
@@ -161,28 +252,35 @@ Pull requests:
 
 ## Not wired yet
 
-- Plugin bridge: 9 of the 17 `BRIDGE_METHODS` are served. `log`, `panel.setTitle`,
-  `settings.get` and `settings.set` in `plugin_host.rs`; `github.api`,
-  `storage.get/set/remove` and `openExternal` in `plugin_services.rs` on the background
-  executor. The other 8 reject with code `not_implemented` (message
-  `not implemented: <method>`): `panel.getBounds/minimize/close`, `canvas.*`,
-  `process.exec`, `theme.get`. `storage.keys` and `mailto:` for `openExternal` are not
-  served. The only host event is `command`; the phase 6 `Coalescer` is not wired.
+- Plugin bridge: all 17 `BRIDGE_METHODS` are served (#44). `storage.keys` and `mailto:` for
+  `openExternal` are not served. The only host event is `command`; the phase 6
+  `Coalescer` is not wired.
 - Plugin API v2 phases other than 1 and the phase 6 core are not built: no backends, no
   background pages, no `calm.menus.register`, no capability display.
 - Clicking inside a plugin page does not focus or raise its panel; AppKit routes the click
   to the WKWebView.
-- Layouts and session: session autosave and restore are not active. Nothing in `calm-app`
-  calls `SessionWriter`, `write_layout_file` or a layout load, so a launch still starts an
-  empty canvas. The `session` settings and the Settings window's Session section exist but
-  change nothing yet. Persistence plan Tasks 4 to 7 (autosave, restore and the steps after
-  them) are pending, then the later tasks. Layout save and load and `--layout` are not
-  built. Plugin settings are not saved anywhere.
+- Layouts and session: restore at launch and autosave are active (#41). Not built: layout
+  save (`--layout NAME` only opens), the File menu, the `ask` restore dialog (persistence
+  plan Task 7) and the later persistence tasks.
 - Layout v2 limits: the resize policy is not saved, overrides are stored but not applied
   in the chrome, `page_zoom` is stored but not applied, an unsupported panel draws chrome
-  only, `plugin_version` is not filled when panels are created (owned by Task 4), and the
-  terminal cwd is the spawn cwd. Lowering `backup_count` leaves older backups above the new
-  count in place.
+  only, and the terminal cwd is the spawn cwd. Lowering `backup_count` leaves older backups
+  above the new count in place.
+- Autosave details (persistence plan Task 4, #39; active since #41). `calm_core::autosave` holds `AutosaveClock` (quiet `session.debounce_ms`, max
+  dirty age 10 s), `SaveQueue` (one write in flight, the latest snapshot waiting) and
+  `OrderedWriter` (a write older than the file on disk is skipped, so a late background
+  write never replaces the quit write). `Scene` has a revision: every `Scene` mutator and
+  every `get_mut` bump it, and `sync_revision` counts direct camera writes. `CanvasView`
+  ticks it on each render and on a timer, writes on the background executor, shows a failed
+  write in the status pill and on stderr, and retries on the next change. A launch read
+  that fails (I/O or malformed) turns autosave off for that launch. Settings changes are reconciled by `autosave_change`: `session.autosave` off stops the
+  timer and the quit write, on starts again through the gate, and `debounce_ms`,
+  `backup_count` (at the next rotation) and `browser_query` apply to the running save.
+  Plugin bridge calls take `get_mut` only for `panel.setTitle` and `settings.set`, so
+  read-only calls do not cause writes. New and duplicated plugin and TUI panels carry the
+  installed manifest `plugin_version`. Unverified: whether `on_app_quit` fires on cmd-q and
+  on every quit path (the smoke calls the quit save directly, not through a real quit), and
+  the manual "drag writes `session.json` about 1 s later" check.
 - `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
@@ -221,10 +319,17 @@ Pull requests:
 - Stats readout (#33): CPU and memory against Activity Monitor, the Developer settings, the
   child process walk with real shells running.
 - Plugin API v2 phase 1 (#35): in the github-prs page's Web Inspector,
-  `calm.has("panel.setTitle")` is `true` and `calm.panel.close().catch(e => e.code)` gives
-  `"not_implemented"`; the gh logged-out message still shows.
+  `calm.has("panel.setTitle")` is `true`; the gh logged-out message still shows.
+- Bridge control (`feat/plugin-bridge-control`), from a plugin page's Web Inspector:
+  `calm.canvas.createPanel({ kind: "terminal" })` opens a focused shell at the view center,
+  `calm.canvas.focusPanel(id)` on a minimized panel restores and raises it,
+  `calm.canvas.focusPanel(id)` on another plugin panel moves the keyboard into that page,
+  `calm.panel.minimize()` keeps the page running, `calm.panel.close()` removes the plugin
+  panel, `calm.process.exec("/bin/sh", ["-lc", "command -v gh"])` finds `gh` from the Dock.
 - GitHub PRs plugin with a real `gh` login and with a `.env` token (#23).
-- Session settings section in the Settings window (#36), by eye only: it has no effect yet.
+- Session settings section in the Settings window (#36), by eye.
+- Session restore (#41): a manual quit and relaunch, and the `about:blank` fallback for a bad
+  saved url in a live view (unit tested only).
 - Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
@@ -237,7 +342,9 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
 
 ## Known small issues
 
-- Smoke flakes seen on 2026-10-31, cause unconfirmed for each:
+- Smoke flakes. Root cause found on 2026-11-01: an occluded window does not paint, so
+  every paint-driven step stalls (`.ai/conventions.md`, "Smoke flakes"). #40 (merged) fixed
+  the z-order case; the preview and stats cases remain. The notes from 2026-10-31 follow:
   - `preview_snapshots_in_3s=[0,0]`, on `main` and branches, more often under heavy load.
   - `window_visible=Some(false)`: the window was occluded, and GPUI stops painting an
     occluded window, so frame checks fail.
@@ -262,4 +369,5 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
 3. Set `CALM_MACOS_HOSTED=true` once billing allows hosted macOS CI.
 4. The manual GUI passes listed above.
 5. Say go for the remaining plan tasks (10, 11, 12 app wiring, 13, 14) and persistence plan
-   Tasks 4 onward.
+   Tasks 6 onward.
+6. Answer the plugin API v2 questions (`.ai/open-questions.md`).

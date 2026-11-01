@@ -521,3 +521,100 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   CPU reading" from "pill does not show it", without weakening the check. Reason: the old
   step already polled for 5 s, so it was not an early read. Cost: the flake remains until
   the paint stall is understood.
+
+## Panel overrides contract (2026-10-31, agreed by the persistence and API v2 lanes)
+
+- **`PanelOverrides` is `{title, icon, accent_color}`, each `Option<String>`,** skipped
+  when `None`, with no `deny_unknown_fields` (`calm-core::scene`). Later appearance fields
+  grow this struct through the persistence plan, not through API v2. The persistence plan
+  owns the layout file format and this struct; `calm-plugins::api` owns the wire types;
+  API v2 phase 16 maps one to the other and adds nothing to the file on its own. Reason: one
+  owner per format, and an older CALM still opens a file with more override fields. Cost
+  if wrong: an appearance field API v2 needs waits on a persistence plan change.
+
+## Autosave (2026-10-31, PR #39)
+
+- **Autosave ships behind `APP_AUTOSAVE_ACTIVE = false` until restore lands.** Reason:
+  without restore, a launch starts empty, and the first change would replace the last
+  session on disk. Cost: no user gets autosave until Task 5 (#41) turns the gate on.
+  Superseded: #41 merged and set the gate to `true`.
+- **Read-only bridge calls do not take `get_mut`.** Only `panel.setTitle` and
+  `settings.set` mark the scene dirty. Reason: every `get_mut` bumps the scene revision,
+  so a read caused a write. Cost: a new mutating bridge method must remember `get_mut`.
+
+## Restore at launch (2026-10-31, persistence plan Task 5)
+
+- **`ask` restores with a notice until the dialog exists.** The NSAlert needs new
+  `calm-native` code outside this task's files. `ask` behaves like `on` and the status pill
+  and stderr say so, so it never silently picks a side. Cost: `ask` users get no choice yet.
+- **The session file is read on every launch, whatever the source.** Autosave writes it
+  even with `--layout`, `--no-restore` or restore off, so a malformed one is moved aside in
+  those cases too, before any write could rotate it into the backups. Cost: a file the user
+  did not ask to restore can be renamed to `.invalid-<n>`, with a notice.
+- **A terminal whose saved cwd is gone keeps that cwd in its saved kind.** It starts in
+  home with a notice, and the next launch tries the path again (an unmounted drive comes
+  back). Cost: the notice repeats until the panel is closed or the path returns.
+- **Placeholders are an app-side mark, not a new kind.** The saved `PanelKind` stays as
+  loaded, so every save writes it back unchanged and an install brings the panel back at
+  the next launch. The plugin version is not restamped on restore.
+
+## Session restore review rulings (2026-11-01, PR #41)
+
+These shipped with #41, next to "Restore at launch" above.
+
+- **A failed launch read closes the autosave gate for the whole launch**
+  (`AutosaveStart::launch_gate`). A Settings toggle cannot start the writer afterwards.
+  Reason: the file on disk may be good but unreadable, and any write would replace it.
+  Cost: no autosave for that launch, even after the user fixes the cause.
+- **A restored panel keeps its saved title until the panel sets its own.** Reason: the
+  user should see the title they left, not the template. Cost: a plugin that fails to load
+  never sets a title, so `(not built)` stays hidden, and a terminal settings change still
+  re-renders the title (`.ai/backlog.md` items 11 and 12).
+- **A saved cwd that is gone starts the shell in home, not in the profile's cwd**
+  (`restore::restored_cwd`). The chrome shows "cwd missing, started in ~", which is never
+  saved, and the saved kind keeps the old path for the next launch. Reason: home always
+  exists, and the profile cwd may be gone too. Cost: the user lands in home, not in the
+  profile's folder.
+- **An invalid saved browser url opens `about:blank`** (`browser_url::restored_url`).
+  Reason: the panel keeps its place and the bad url never loads. Cost: the user sees a
+  blank page and has to type the address again.
+
+## Bridge control (2026-11-01, `feat/plugin-bridge-control`)
+
+- **Window work leaves `dispatch` as `HostEffect`s.** `dispatch` stays pure over a
+  `HostContext` and the canvas applies `Open`, `Focus` and `Close` with the window. The
+  bridge task runs through `spawn_in`, so effects apply in the same turn instead of a
+  queued `Effect::CreatePanel` at the next render (the spec's fallback). Cost:
+  `CanvasView::new` takes the window.
+- **A bridge close is a request, never a removal.** `HostEffect::Close` maps only to
+  `Effect::ClosePanelRequested`; a test fails if it maps to `ClosePanel`. In v1 only
+  `panel.close` on the calling plugin panel exists, which has no process and closes at
+  once, as the spec says. The live terminal confirmation with a pending reply and `busy` is
+  `panels.close(id)`, phase 5, not built. Cost if wrong: none today; phase 5 still owes the
+  pending reply.
+- **Focusing a plugin panel gives its page the keyboard.** `Effect::FocusPanel` used to
+  focus only terminals and browsers, so `canvas.focusPanel` and a focused `createPanel`
+  of a plugin left the keys where they were. `WebPanel::focus` makes the web view first
+  responder. This also applies to a title bar click and the Add menu. Cost: the canvas
+  shortcuts (`t`, `b`) stop while a plugin page has the keyboard, as with a terminal.
+- **`panel.minimize` sets, it does not toggle.** A second call changes nothing. Reason: a
+  plugin that calls it twice must not restore itself.
+- **`canvas.createPanel` defaults `focus` to true,** as the Add menu does. The spec gives
+  the field and no default. Cost: a plugin that opens many panels must pass `false`.
+- **`canvas.createPanel` without `rect` opens at the viewport center at the kind's default
+  size, unsnapped.** Spec text for "neither `rect` nor `near`". A locked plugin with a
+  `rect` of another size rejects `invalid_params` instead of silently taking its manifest
+  size. v2-only spec fields reject `unavailable`, unknown ones `invalid_params`.
+- **`canvas.listPanels` returns the v1 fields plus the scene-only v2 fields** (`z`,
+  `focused`, `pluginId`, `url`, `resize`). `mode`, `joined`, `appearance`, `createdBy` and
+  `tui` need host state this change does not collect. An `Unsupported` panel lists with
+  kind `"unsupported"`, a word the spec does not have. Cost: the d.ts kind union grew.
+- **`process.exec` has no shell and its own process group.** A timeout kills the group with
+  `/bin/kill -KILL -<pgid>`, so a grandchild cannot outlive it and no unsafe code is needed
+  in `calm-app`. Waiting on the pipes shares the same deadline, so a background grandchild
+  holding stdout ends as `timeout`, not a hang. A stream over the cap ends the call at once
+  with `too_large` and kills the group too, even while the child still runs (review
+  finding: a writer that ignores SIGPIPE used to run on until the timeout). Limits: 30 s default and 4 MiB per stream
+  (spec), 1 to 600000 ms (`EXEC_MAX_TIMEOUT_MS`, chosen here). A signal reports
+  `128 + n`. Output is UTF-8 lossy. The child gets CALM's environment and stdin is empty.
+  Cost: a bare name resolves in CALM's short Dock `PATH`; docs say to use `/bin/sh -lc`.

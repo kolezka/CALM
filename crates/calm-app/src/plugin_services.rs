@@ -1,10 +1,13 @@
-//! Bridge methods that block on the host: `gh api`, plugin storage files and `open`.
-//! `parse` only reads params and runs on the UI thread. `Services::run` does the work and
-//! runs on the background executor, so a slow `gh` never stalls a frame.
+//! Bridge methods that block on the host: `gh api`, plugin storage files, `open` and
+//! `process.exec`. `parse` only reads params and runs on the UI thread. `Services::run`
+//! does the work and runs on the background executor, so a slow child never stalls a frame.
 
+use std::io::Read;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Mutex;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use calm_plugins::{ApiError, ErrorCode, GhClient, GhError};
 use serde_json::{Map, Value};
@@ -15,6 +18,12 @@ pub const STORAGE_MAX_KEY: usize = 256;
 pub const STORAGE_MAX_FILE: usize = 5 * 1024 * 1024;
 /// Longest URL `openExternal` accepts.
 const MAX_URL: usize = 4096;
+/// `process.exec` without `timeoutMs`, from the spec.
+pub const EXEC_DEFAULT_TIMEOUT_MS: u64 = 30_000;
+/// Longest `timeoutMs` a plugin may ask for.
+pub const EXEC_MAX_TIMEOUT_MS: u64 = 600_000;
+/// Cap on stdout and on stderr, each, from the spec. Beyond it the call is `too_large`.
+pub const EXEC_MAX_OUTPUT: usize = 4 * 1024 * 1024;
 
 // One lock for every plugin data file: a get, set or remove reads and rewrites the whole
 // file, and two of them racing on the background executor would lose a write.
@@ -38,6 +47,16 @@ pub enum ServiceCall {
         key: String,
     },
     OpenExternal(String),
+    ProcessExec(ExecSpec),
+}
+
+/// One `process.exec`: the program runs directly, never through a shell.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecSpec {
+    pub command: String,
+    pub args: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub timeout: Duration,
 }
 
 /// What the background calls run against. Tests and the smoke swap in fakes.
@@ -99,9 +118,183 @@ pub fn parse(
         "storage.get" | "storage.set" | "storage.remove" => storage_call(plugin_id, method, params),
         "openExternal" => string_param(params, "url")
             .and_then(|url| check_url(&url).map(|()| ServiceCall::OpenExternal(url))),
+        "process.exec" => exec_spec(params).map(ServiceCall::ProcessExec),
         _ => return None,
     };
     Some(call)
+}
+
+fn exec_spec(params: &Value) -> Result<ExecSpec, ApiError> {
+    let command = string_param(params, "command")?;
+    if command.is_empty() || command.contains('\0') {
+        return Err(ApiError::invalid_params(
+            "command",
+            "must be a non-empty string without NUL",
+        ));
+    }
+    let args = match params.get("args") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| match item.as_str() {
+                Some(arg) if !arg.contains('\0') => Ok(arg.to_string()),
+                _ => Err(ApiError::invalid_params(
+                    &format!("args[{index}]"),
+                    "must be a string without NUL",
+                )),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(ApiError::invalid_params("args", "must be an array")),
+    };
+    let cwd = match params.get("cwd") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(cwd)) if Path::new(cwd).is_absolute() => Some(PathBuf::from(cwd)),
+        Some(_) => return Err(ApiError::invalid_params("cwd", "must be an absolute path")),
+    };
+    let timeout_ms = match params.get("timeoutMs") {
+        None | Some(Value::Null) => EXEC_DEFAULT_TIMEOUT_MS,
+        Some(value) => value
+            .as_u64()
+            .filter(|ms| (1..=EXEC_MAX_TIMEOUT_MS).contains(ms))
+            .ok_or_else(|| {
+                ApiError::invalid_params(
+                    "timeoutMs",
+                    &format!("must be an integer from 1 to {EXEC_MAX_TIMEOUT_MS}"),
+                )
+            })?,
+    };
+    Ok(ExecSpec {
+        command,
+        args,
+        cwd,
+        timeout: Duration::from_millis(timeout_ms),
+    })
+}
+
+/// Runs `spec` and answers `{ code, stdout, stderr }`. The child gets its own process
+/// group, so a timeout also ends what it started. A child killed by signal `n` reports
+/// `128 + n`, as a shell does.
+fn run_exec(spec: &ExecSpec, max_output: usize) -> Result<Value, ApiError> {
+    if let Some(cwd) = &spec.cwd
+        && !cwd.is_dir()
+    {
+        return Err(ApiError::invalid_params(
+            "cwd",
+            &format!("{} is not a directory", cwd.display()),
+        ));
+    }
+    let mut command = Command::new(&spec.command);
+    command
+        .args(&spec.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    if let Some(cwd) = &spec.cwd {
+        command.current_dir(cwd);
+    }
+    let mut child = command.spawn().map_err(|err| {
+        ApiError::host_error(format!("process.exec: cannot run {}: {err}", spec.command))
+    })?;
+    let group = child.id();
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        kill_group(group);
+        let _ = child.wait();
+        return Err(ApiError::host_error("process.exec: pipes were not opened"));
+    };
+    // One past the cap tells an oversized stream apart from one that fits exactly.
+    let limit = max_output as u64 + 1;
+    let (sender, receiver) = mpsc::channel();
+    for (stream, reader) in [
+        (0, Box::new(stdout) as Box<dyn Read + Send>),
+        (1, Box::new(stderr)),
+    ] {
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = reader.take(limit).read_to_end(&mut buf);
+            let _ = sender.send((stream, buf));
+        });
+    }
+    drop(sender);
+    let deadline = Instant::now() + spec.timeout;
+    let timed_out = |child: &mut std::process::Child| {
+        kill_group(group);
+        let _ = child.wait();
+        ApiError::new(
+            ErrorCode::Timeout,
+            format!(
+                "process.exec: {} ran past {} ms and was killed",
+                spec.command,
+                spec.timeout.as_millis()
+            ),
+        )
+    };
+    // A stream over the cap ends the call at once, whether or not the child has exited.
+    let mut outputs: [Option<Vec<u8>>; 2] = [None, None];
+    let too_large = |stream: usize, child: &mut std::process::Child| {
+        kill_group(group);
+        let _ = child.wait();
+        let name = if stream == 0 { "stdout" } else { "stderr" };
+        ApiError::new(
+            ErrorCode::TooLarge,
+            format!("process.exec: {name} is over the {max_output} byte limit"),
+        )
+    };
+    let status = loop {
+        while let Ok((stream, buf)) = receiver.try_recv() {
+            if buf.len() > max_output {
+                return Err(too_large(stream, &mut child));
+            }
+            outputs[stream] = Some(buf);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() >= deadline => return Err(timed_out(&mut child)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+            Err(err) => {
+                kill_group(group);
+                return Err(ApiError::host_error(format!("process.exec: {err}")));
+            }
+        }
+    };
+    // A grandchild can hold the pipes open after the child exits; it shares the deadline.
+    while outputs.iter().any(Option::is_none) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match receiver.recv_timeout(left) {
+            Ok((stream, buf)) if buf.len() > max_output => {
+                return Err(too_large(stream, &mut child));
+            }
+            Ok((stream, buf)) => outputs[stream] = Some(buf),
+            Err(_) => return Err(timed_out(&mut child)),
+        }
+    }
+    let [Some(stdout), Some(stderr)] = outputs else {
+        unreachable!("both streams arrived");
+    };
+    let code = status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+        .ok_or_else(|| ApiError::host_error(format!("process.exec: no exit status: {status}")))?;
+    Ok(serde_json::json!({
+        "code": code,
+        "stdout": String::from_utf8_lossy(&stdout),
+        "stderr": String::from_utf8_lossy(&stderr),
+    }))
+}
+
+/// `kill -KILL -<pgid>` through `/bin/kill`, which needs no unsafe code in this crate.
+fn kill_group(group: u32) {
+    let killed = Command::new("/bin/kill")
+        .args(["-KILL", "--", &format!("-{group}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if let Err(err) = killed {
+        eprintln!("calm: process.exec: could not kill process group {group}: {err}");
+    }
 }
 
 fn string_param(params: &Value, field: &str) -> Result<String, ApiError> {
@@ -218,6 +411,7 @@ impl Services {
                 }
                 Ok(Value::Null)
             }
+            ServiceCall::ProcessExec(spec) => run_exec(&spec, EXEC_MAX_OUTPUT),
         }
     }
 
@@ -489,6 +683,198 @@ pub(crate) mod tests {
             "{set:?}"
         );
         assert!(!services.data_dir.join("github-prs.json").exists());
+    }
+
+    fn exec(params: Value) -> Result<Value, ApiError> {
+        let Some(Ok(ServiceCall::ProcessExec(spec))) = parse(Some("p"), "process.exec", &params)
+        else {
+            panic!("not an exec call: {params}");
+        };
+        run_exec(&spec, EXEC_MAX_OUTPUT)
+    }
+
+    #[test]
+    fn process_exec_runs_without_a_shell_and_reports_code_and_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        // `$0` and the quotes reach the program as literal argv, so no shell parsed them.
+        let result = exec(json!({
+            "command": "/bin/sh",
+            "args": ["-c", "pwd; printf '%s|' \"$@\"; echo oops >&2; exit 3", "sh", "a b", "$HOME"],
+            "cwd": cwd.to_str().unwrap(),
+            "timeoutMs": null,
+        }))
+        .unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "code": 3,
+                "stdout": format!("{}\na b|$HOME|", cwd.display()),
+                "stderr": "oops\n",
+            })
+        );
+    }
+
+    #[test]
+    fn process_exec_checks_its_params() {
+        let bad = |params: Value, field: &str| {
+            let got = parse(Some("p"), "process.exec", &params);
+            assert!(
+                matches!(&got, Some(Err(e)) if e.code == ErrorCode::InvalidParams && e.message.starts_with(field)),
+                "{params}: {got:?}"
+            );
+        };
+        bad(json!({ "args": [] }), "command");
+        bad(json!({ "command": "" }), "command");
+        bad(json!({ "command": "ls", "args": "-l" }), "args");
+        bad(json!({ "command": "ls", "args": ["ok", 3] }), "args[1]");
+        bad(json!({ "command": "ls", "cwd": "relative/dir" }), "cwd");
+        bad(json!({ "command": "ls", "timeoutMs": 0 }), "timeoutMs");
+        bad(json!({ "command": "ls", "timeoutMs": 1.5 }), "timeoutMs");
+        bad(
+            json!({ "command": "ls", "timeoutMs": EXEC_MAX_TIMEOUT_MS + 1 }),
+            "timeoutMs",
+        );
+        let missing_dir = exec(json!({ "command": "/bin/pwd", "cwd": "/no/such/dir" }));
+        assert!(
+            matches!(&missing_dir, Err(e) if e.code == ErrorCode::InvalidParams && e.message.starts_with("cwd")),
+            "{missing_dir:?}"
+        );
+        let not_found = exec(json!({ "command": "/no/such/program" }));
+        assert!(
+            matches!(&not_found, Err(e) if e.code == ErrorCode::HostError && e.message.contains("cannot run /no/such/program")),
+            "{not_found:?}"
+        );
+    }
+
+    #[test]
+    fn process_exec_kills_the_whole_group_after_the_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("survived");
+        // The grandchild writes the marker if it outlives the kill.
+        let script = format!("(sleep 1; touch '{}') & sleep 5", marker.display());
+        let started = Instant::now();
+        let result =
+            exec(json!({ "command": "/bin/sh", "args": ["-c", script], "timeoutMs": 200 }));
+        assert!(
+            matches!(&result, Err(e) if e.code == ErrorCode::Timeout && e.message.contains("200 ms")),
+            "{result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!marker.exists(), "a grandchild outlived the timeout");
+    }
+
+    #[test]
+    fn process_exec_does_not_wait_for_a_grandchild_holding_the_pipes() {
+        // The child exits at once; the background sleep keeps stdout open.
+        let started = Instant::now();
+        let result = exec(json!({
+            "command": "/bin/sh",
+            "args": ["-c", "sleep 5 & echo started"],
+            "timeoutMs": 300,
+        }));
+        assert!(
+            matches!(&result, Err(e) if e.code == ErrorCode::Timeout),
+            "{result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn process_exec_refuses_output_over_the_cap() {
+        let spec = ExecSpec {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "printf 12345".into()],
+            cwd: None,
+            timeout: Duration::from_secs(5),
+        };
+        // Positive control: exactly at the cap fits.
+        assert_eq!(run_exec(&spec, 5).unwrap()["stdout"], json!("12345"));
+        let over = run_exec(&spec, 4);
+        assert!(
+            matches!(&over, Err(e) if e.code == ErrorCode::TooLarge && e.message.contains("stdout")),
+            "{over:?}"
+        );
+    }
+
+    // Far more than a pipe buffer: the writer must not block until the timeout.
+    #[test]
+    fn process_exec_output_over_the_cap_is_too_large_not_a_timeout() {
+        let spec = ExecSpec {
+            command: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "dd if=/dev/zero bs=4096 count=256 2>/dev/null".into(),
+            ],
+            cwd: None,
+            timeout: Duration::from_secs(10),
+        };
+        let started = Instant::now();
+        let result = run_exec(&spec, 1024);
+        assert!(
+            matches!(&result, Err(e) if e.code == ErrorCode::TooLarge),
+            "{result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn process_exec_too_large_leaves_no_writer_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("writer.pid");
+        // The writer runs in the background and ignores SIGPIPE, so only a kill stops it.
+        let script = format!(
+            "trap '' PIPE; (while :; do printf 'xxxxxxxxxxxxxxxx' 2>/dev/null; done) & echo $! > '{}'; wait",
+            pid_file.display()
+        );
+        let spec = ExecSpec {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            cwd: None,
+            timeout: Duration::from_secs(5),
+        };
+        let result = run_exec(&spec, 1024);
+        assert!(
+            matches!(&result, Err(e) if e.code == ErrorCode::TooLarge),
+            "{result:?}"
+        );
+        let pid = fs::read_to_string(&pid_file).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let alive = Command::new("/bin/kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .unwrap()
+            .success();
+        if alive {
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", pid.trim()])
+                .status();
+        }
+        assert!(
+            !alive,
+            "the writer {} outlived a too_large reply",
+            pid.trim()
+        );
+    }
+
+    #[test]
+    fn process_exec_reports_a_signal_as_128_plus_n() {
+        let result =
+            exec(json!({ "command": "/bin/sh", "args": ["-c", "kill -TERM $$"] })).unwrap();
+        assert_eq!(result["code"], json!(128 + 15));
     }
 
     #[test]

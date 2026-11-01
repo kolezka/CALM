@@ -190,6 +190,14 @@ impl WebPanel {
         unsafe { self.web_view.isLoading() }
     }
 
+    /// Gives the page the keyboard. False when the view is not in a window yet.
+    pub fn focus(&self) -> bool {
+        match self.web_view.window() {
+            Some(window) => window.makeFirstResponder(Some(&self.web_view)),
+            None => false,
+        }
+    }
+
     /// The web view, for tests and diagnostics.
     pub fn web_view(&self) -> &WKWebView {
         &self.web_view
