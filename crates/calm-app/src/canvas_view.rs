@@ -23,7 +23,8 @@ use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_m
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
 use calm_core::restore::{
-    AutosaveStart, CWD_MISSING_NOTE, RestorePlan, placeholder_reason, restored_cwd, version_note,
+    AutosaveStart, CWD_MISSING_NOTE, RestorePlan, placeholder_reason, restored_cwd,
+    restored_profile, version_note,
 };
 use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, chrome_height, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
@@ -54,6 +55,7 @@ use std::time::{Duration, Instant};
 
 use crate::background::{self, BackgroundRenderer, BackgroundTexture};
 use crate::browser_panel::{BrowserEvents, BrowserPanel};
+use crate::content_move::ContentMove;
 use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::grid_paint::{self, GridFrame, GridTextures};
 use crate::plugin_host::{self, BridgeSender, PluginPanel, Route};
@@ -239,6 +241,11 @@ pub struct CanvasView {
     restore_notice: Option<String>,
     /// The named layout this canvas came from, kept for a later save.
     pub layout_name: Option<String>,
+    /// Watches move-modifier presses on native panels. Installed on the first paint.
+    pub(crate) content_monitor: Option<calm_native::ContentGestureMonitor>,
+    /// Set when the monitor could not be installed, so paint stops retrying.
+    pub(crate) content_monitor_error: Option<String>,
+    pub(crate) content_move: ContentMove,
 }
 
 impl CanvasView {
@@ -324,6 +331,9 @@ impl CanvasView {
             title_notes: HashMap::new(),
             restore_notice: None,
             layout_name: None,
+            content_monitor: None,
+            content_monitor_error: None,
+            content_move: ContentMove::default(),
         }
     }
 
@@ -401,7 +411,16 @@ impl CanvasView {
                 continue;
             }
             match &saved.kind {
-                PanelKind::Terminal { command, cwd, .. } => {
+                PanelKind::Terminal {
+                    command,
+                    cwd,
+                    profile,
+                } => {
+                    // An unknown id opens with the defaults; the saved kind keeps it.
+                    let (profile, notice) = restored_profile(profile.as_deref(), |profile| {
+                        self.settings.settings.terminal.profile(profile).is_some()
+                    });
+                    notices.extend(notice);
                     let home = terminal_profiles::home_dir();
                     let (cwd, notice) =
                         restored_cwd(cwd.as_deref(), std::path::Path::is_dir, &home);
@@ -410,7 +429,7 @@ impl CanvasView {
                     }
                     notices.extend(notice);
                     let opened =
-                        self.open_plain_terminal(id, None, command.as_deref(), cwd, window, cx);
+                        self.open_plain_terminal(id, profile, command.as_deref(), cwd, window, cx);
                     if let Err(err) = opened {
                         notices.push(format!("a restored terminal failed to start: {err}"));
                     }
@@ -914,13 +933,11 @@ impl CanvasView {
             (Some(MenuCommand::Duplicate), MenuTarget::Panel(id)) => {
                 let installed =
                     |plugin_id: &str| installed_version(&self.installed_plugins, plugin_id);
+                // The kind carries a terminal's profile; the scene copies the overrides.
                 let Some(copy) = self.scene.duplicate(id, installed) else {
                     return;
                 };
-                if let Some(profile) = self.terminal_meta(id).and_then(|meta| meta.profile.clone())
-                {
-                    self.requested_profiles.insert(copy, profile);
-                }
+                self.cache_override_icon(copy);
                 let Some(panel) = self.scene.get(copy) else {
                     return;
                 };
@@ -945,8 +962,21 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) {
         match kind {
-            PanelKind::Terminal { command, cwd, .. } => {
-                let profile = self.requested_profiles.remove(&id);
+            PanelKind::Terminal {
+                command,
+                cwd,
+                profile: saved,
+            } => {
+                let profile = self
+                    .requested_profiles
+                    .remove(&id)
+                    .or_else(|| saved.clone());
+                // Saved with the panel, so a restore and a duplicate open the same profile.
+                if let Some(PanelKind::Terminal { profile: kept, .. }) =
+                    self.scene.get_mut(id).map(|panel| &mut panel.kind)
+                {
+                    kept.clone_from(&profile);
+                }
                 let opened = self.open_plain_terminal(
                     id,
                     profile,
@@ -2425,6 +2455,7 @@ impl PaintSnapshot {
             view.apply_plugin_modes(&plugin_modes, window);
             view.sync_native_order(cx);
             view.sync_status_bar(window);
+            view.ensure_content_monitor(window, cx);
             view.sync_preview_timer(previewing, cx);
             view.preview_input_targets += preview_targets;
             // Render picks input targets from the mode; rebuild them if paint disagreed.

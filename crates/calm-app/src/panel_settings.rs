@@ -76,6 +76,13 @@ impl CanvasView {
         settings_window.set_form(&panel_form(panel, &effective));
     }
 
+    /// After a global settings change, so inherited values in every open window follow.
+    pub fn refresh_all_panel_settings(&self) {
+        for id in self.panel_settings_windows.keys() {
+            self.refresh_panel_settings(*id);
+        }
+    }
+
     /// Closes panel `id`'s window, if it has one. The panel is gone or going.
     pub fn close_panel_settings(&mut self, id: PanelId) {
         if let Some(settings_window) = self.panel_settings_windows.remove(&id) {
@@ -131,7 +138,7 @@ impl CanvasView {
     fn choose_panel_icon(&mut self, id: PanelId, window: &mut Window, cx: &mut Context<Self>) {
         // The open panel runs its own modal loop, so it runs outside this update.
         cx.spawn_in(window, async move |this, cx| {
-            let chosen = match choose_image_file() {
+            let chosen = match choose_image_file("Choose a Panel Icon") {
                 Ok(chosen) => chosen,
                 Err(err) => {
                     eprintln!("calm: image chooser unavailable: {err}");

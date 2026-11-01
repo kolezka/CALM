@@ -73,7 +73,9 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 ## In the app
 
 `t` then drag draws a terminal, `b` then drag a browser. Right-click opens Add, Settings and panel
-actions, plus plugin menu items. Space+drag or
+actions, plus plugin menu items; Settings… in the panel menu opens that panel's own Settings
+window. Cmd+drag on a terminal's or page's content moves the panel, a Cmd+click still
+reaches it, and Cmd+right-click there opens the panel menu (`canvas.move_modifier`). Space+drag or
 middle-drag pans. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom. `cmd-shift-h`
 centers the world origin, `cmd-shift-0` fits all panels (both also in the View menu).
 `cmd-ctrl-f` fullscreen, `cmd-shift-f` stats (FPS, CPU, memory; items in `developer.stats`). A click on empty canvas clears panel focus

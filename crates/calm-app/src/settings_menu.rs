@@ -128,6 +128,7 @@ impl CanvasView {
         self.reconcile_autosave(&old_session, cx);
         self.terminal_settings_changed(cx);
         self.sync_stats_timer(cx);
+        self.refresh_all_panel_settings();
         let show_stats = self.show_stats;
         let settings = self.settings.settings.clone();
         cx.defer(move |cx| cx.set_menus(menus(show_stats, &settings)));
@@ -213,7 +214,7 @@ impl CanvasView {
             Ok(FormOutcome::Command(FormCommand::ChooseImage)) => {
                 // The open panel runs its own modal loop, so it runs outside this update.
                 cx.spawn_in(window, async move |this, cx| {
-                    let chosen = match choose_image_file() {
+                    let chosen = match choose_image_file("Choose a Background Image") {
                         Ok(chosen) => chosen,
                         Err(err) => {
                             eprintln!("calm: image chooser unavailable: {err}");

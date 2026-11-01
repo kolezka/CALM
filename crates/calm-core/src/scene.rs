@@ -453,7 +453,7 @@ impl Scene {
     }
 
     /// Adds a copy of `id` on top, shifted by `DUPLICATE_OFFSET`, never minimized.
-    /// Only the kind and size are copied, so a duplicated terminal gets a fresh process.
+    /// The kind, size and overrides are copied; a duplicated terminal gets a fresh process.
     /// `installed` gives a plugin's installed manifest version, stamped on the copy.
     pub fn duplicate(
         &mut self,
@@ -469,7 +469,12 @@ impl Scene {
             ),
             size: source.rect.size,
         };
-        Some(self.add(kind, rect))
+        let overrides = source.overrides.clone();
+        let copy = self.add(kind, rect);
+        if let Some(panel) = self.get_mut(copy) {
+            panel.overrides = overrides;
+        }
+        Some(copy)
     }
 
     /// Topmost panel under `world`. A minimized panel only hits its chip.
@@ -914,6 +919,34 @@ mod tests {
         assert_eq!(scene.hit_test(Point::new(150.0, 150.0)), Some(back));
         scene.send_to_back(PanelId(99));
         assert_eq!(scene.panels.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_copies_overrides() {
+        let mut scene = Scene::default();
+        let source = scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: Some("neon".into()),
+            },
+            Rect::new(0.0, 0.0, 300.0, 200.0),
+        );
+        let overrides = PanelOverrides {
+            title: Some("build {n}".into()),
+            accent_color: Some("#ff0000".into()),
+            borderless: Some(true),
+            ..PanelOverrides::default()
+        };
+        scene.get_mut(source).unwrap().overrides = overrides.clone();
+        let copy = scene.duplicate(source, |_| None).unwrap();
+        let panel = scene.get(copy).unwrap();
+        assert_eq!(panel.overrides, overrides);
+        assert!(matches!(
+            &panel.kind,
+            PanelKind::Terminal { profile: Some(id), .. } if id == "neon"
+        ));
+        assert_eq!(panel.rect.size, Size::new(300.0, 200.0));
     }
 
     #[test]

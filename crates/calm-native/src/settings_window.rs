@@ -618,13 +618,13 @@ pub fn settings_window_count(title: &str) -> Result<usize, NativeError> {
 }
 
 /// Runs a modal NSOpenPanel for one image file. `None` when cancelled.
-pub fn choose_image_file() -> Result<Option<PathBuf>, NativeError> {
+pub fn choose_image_file(title: &str) -> Result<Option<PathBuf>, NativeError> {
     let mtm = MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
     let panel = NSOpenPanel::openPanel(mtm);
     panel.setCanChooseFiles(true);
     panel.setCanChooseDirectories(false);
     panel.setAllowsMultipleSelection(false);
-    panel.setTitle(Some(&NSString::from_str("Choose a Background Image")));
+    panel.setTitle(Some(&NSString::from_str(title)));
     if panel.runModal() != NSModalResponseOK {
         return Ok(None);
     }

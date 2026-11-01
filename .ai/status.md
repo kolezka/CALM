@@ -253,6 +253,16 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
+- `feat/panel-settings`, no PR yet: per-panel settings. Settings… in every panel menu opens
+  one native Settings window per panel (tabs, each field inherited or set with Reset to
+  global), saved as the panel's `overrides`: title, icon (built-in or an image copied to
+  `panel-icons/`), accent, title bar and title colors, terminal colors, borderless.
+  Cmd+drag on a terminal's or page's content moves the panel (`canvas.move_modifier`,
+  default `cmd`); a Cmd+click inside the slop is replayed to the native view;
+  Cmd+right-click opens the panel menu. Terminals save their profile in the session and a
+  restore reopens it (an unknown id gives one notice). Duplicate copies overrides and
+  profile. Policy is unit tested (`calm_core::gesture`, `calm-app` `content_move`); the
+  AppKit monitor is tested on its state machine only.
 - No PR yet: a Linux port plan.
 - `fix/native-occlusion`, PR #54: a back panel's native view (Ghostty, WKWebView, the
   browser's address bar, a plugin page) no longer covers the title bar and ring of a panel
@@ -303,7 +313,6 @@ Open questions: `.ai/open-questions.md`.
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
   or exit code from Ghostty, and TUI `fontSize`, `fontFamily` and `padding` are rejected.
-- Per-panel edits after adding (Rename, Change Icon, Accent Color) are not built.
 - Bun lookup for plugin backends (`plugins.bun_path`) is decided but not built; no plugin
   backend runs yet.
 - Browser: no cmd+click on terminal URLs, no non-web schemes, no page snapshots for
@@ -349,6 +358,10 @@ Open questions: `.ai/open-questions.md`.
 - Session restore (#41): a manual quit and relaunch, and the `about:blank` fallback for a bad
   saved url in a live view (unit tested only).
 - Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
+- Per-panel settings (`feat/panel-settings`), by eye: Cmd+drag over a live terminal and
+  over a page, Cmd+click on a link in a terminal and in a page (the click must land),
+  Cmd+right-click menu on both, the panel Settings window and its tabs, Reset to global,
+  the borderless look.
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
 

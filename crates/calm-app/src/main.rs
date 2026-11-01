@@ -1,6 +1,7 @@
 mod background;
 mod browser_panel;
 mod canvas_view;
+mod content_move;
 mod dev_menu;
 mod grid_paint;
 mod icon_image;

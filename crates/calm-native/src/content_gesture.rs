@@ -12,7 +12,8 @@ use calm_core::geometry::Point;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, Message};
-use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSWindow};
+use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindow};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::NativeError;
 use crate::child::is_in_native_child;
@@ -100,6 +101,35 @@ impl ContentGestureMonitor {
             unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &handler) };
         Ok(ContentGestureMonitor { monitor })
     }
+
+    /// `install` on the AppKit window behind a window handle, such as a GPUI window.
+    pub fn install_for(
+        window: &impl HasWindowHandle,
+        wants: impl Fn(Point, GestureMods) -> bool + 'static,
+        on_event: impl FnMut(ContentEvent) -> ContentDecision + 'static,
+    ) -> Result<ContentGestureMonitor, NativeError> {
+        let ns_window = ns_window(window)?;
+        ContentGestureMonitor::install(&ns_window, wants, on_event)
+    }
+}
+
+/// The NSWindow behind an AppKit window handle, retained.
+fn ns_window(window: &impl HasWindowHandle) -> Result<Retained<NSWindow>, NativeError> {
+    MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
+    let handle = window
+        .window_handle()
+        .map_err(|err| NativeError::UnsupportedWindowHandle(err.to_string()))?;
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return Err(NativeError::UnsupportedWindowHandle(
+            "not an AppKit handle".to_string(),
+        ));
+    };
+    // SAFETY: an AppKit window handle's ns_view is a live NSView while the handle is
+    // borrowed, and we are on the main thread (checked above).
+    let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+    view.window().ok_or_else(|| {
+        NativeError::UnsupportedWindowHandle("the view is not in a window".to_string())
+    })
 }
 
 impl Drop for ContentGestureMonitor {
@@ -205,7 +235,15 @@ fn window_point(window: &NSWindow, event: &NSEvent) -> Point {
 }
 
 fn gesture_mods(event: &NSEvent) -> GestureMods {
-    let flags = event.modifierFlags();
+    mods_from_flags(event.modifierFlags())
+}
+
+/// The modifier keys held right now. Drag events reach `on_event` without their keys.
+pub fn held_mods() -> GestureMods {
+    mods_from_flags(NSEvent::modifierFlags_class())
+}
+
+fn mods_from_flags(flags: NSEventModifierFlags) -> GestureMods {
     GestureMods {
         shift: flags.contains(NSEventModifierFlags::Shift),
         control: flags.contains(NSEventModifierFlags::Control),
