@@ -371,6 +371,7 @@ impl CanvasView {
         let mut notices = Vec::new();
         for saved in layout.panels {
             let id = self.scene.add(saved.kind.clone(), saved.rect);
+            let saved_title = saved.title.clone();
             if let Some(panel) = self.scene.get_mut(id) {
                 panel.title = saved.title;
                 panel.minimized = saved.minimized;
@@ -427,10 +428,23 @@ impl CanvasView {
                     self.panel_created(id, kind, window, cx);
                 }
             }
+            // The open paths set a default title; the saved one stays until the panel sets
+            // its own. A panel that failed to open keeps its failure title.
+            if self.panel_running(id) && !saved_title.is_empty() {
+                self.scene.set_title(id, saved_title);
+            }
         }
         // Last, so placement runs once with the saved zoom.
         self.scene.camera = layout.camera;
         notices
+    }
+
+    /// Whether `id` has a live terminal, TUI app, browser or plugin view.
+    fn panel_running(&self, id: PanelId) -> bool {
+        self.terminal(id).is_some()
+            || self.tui_run(id).is_some()
+            || self.browser(id).is_some()
+            || self.plugin_panels.iter().any(|(panel, _)| *panel == id)
     }
 
     /// The note drawn after `id`'s title, if it has one.
