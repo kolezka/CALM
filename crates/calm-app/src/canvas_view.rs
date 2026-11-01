@@ -619,6 +619,8 @@ impl CanvasView {
                 }
             }
         }
+        // AppKit must see scene changes even when an occluded window does not paint.
+        self.sync_native_order(cx);
         window.refresh();
         cx.notify();
     }
@@ -779,7 +781,7 @@ impl CanvasView {
                 }
             }
             PanelKind::Plugin { plugin_id, .. } => {
-                if let Err(err) = self.open_plugin_panel(id, plugin_id, window) {
+                if let Err(err) = self.open_plugin_panel(id, plugin_id, window, cx) {
                     eprintln!("calm: plugin panel failed to open: {err}");
                     if let Some(panel) = self.scene.get_mut(id) {
                         panel.title = format!("{plugin_id}: failed to open");
@@ -975,6 +977,8 @@ impl CanvasView {
             old.update(cx, |terminal, _| terminal.release_preview(window));
             self.terminals.retain(|(panel, _)| *panel != id);
         }
+        // A restart replaces the native view without changing its panel id.
+        self.native_order.clear();
         self.spawn_terminal(id, options, window, cx)?;
         let terminal = self
             .terminal(id)
@@ -991,8 +995,6 @@ impl CanvasView {
             run.subscription = Some(subscription);
         }
         self.scene.set_title(id, title);
-        // The new native view was added on top; restack on the next paint.
-        self.native_order.clear();
         Ok(())
     }
 
@@ -1121,6 +1123,7 @@ impl CanvasView {
         id: PanelId,
         plugin_id: &str,
         window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let plugin = self
             .installed_plugins
@@ -1142,6 +1145,7 @@ impl CanvasView {
             self.scene.set_resize_policy(id, policy);
         }
         self.plugin_panels.push((id, panel));
+        self.sync_native_order(cx);
         Ok(())
     }
 
@@ -1239,6 +1243,7 @@ impl CanvasView {
         let events = self.browser_events(window, cx);
         let browser = BrowserPanel::open(id, address, events, window)?;
         self.browsers.push((id, browser));
+        self.sync_native_order(cx);
         Ok(())
     }
 
@@ -1290,6 +1295,7 @@ impl CanvasView {
             BrowserEvent::Clicked => {
                 // The click went to the native view, so GPUI never saw it.
                 self.scene.bring_to_front(id);
+                self.sync_native_order(cx);
                 self.focused = Some(id);
                 self.focus_handle.focus(window, cx);
             }
@@ -1334,6 +1340,7 @@ impl CanvasView {
         let host = NativeChild::new(window).map_err(|err| err.to_string())?;
         let terminal = TerminalPanel::spawn(options, host, window, cx)?;
         self.terminals.push((id, terminal));
+        self.sync_native_order(cx);
         Ok(())
     }
 
@@ -1485,6 +1492,9 @@ impl CanvasView {
             }
         }
         self.native_order = order;
+        if let Some(bar) = self.status_bar.as_mut() {
+            bar.ensure_front();
+        }
     }
 
     /// Updates the native status bar's text and frame and keeps it above every panel.

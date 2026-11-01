@@ -157,6 +157,10 @@ Pull requests:
 
 ## In progress (not on `main`)
 
+- `fix/native-zorder-desync`: native stacking was only synchronized during GPUI paint, which
+  can stop when a window is occluded. The branch syncs after scene and native-view changes
+  and checks both reorder directions in smoke without waiting for a paint. Other paint-based
+  smoke flakes remain open in `.ai/backlog.md` item 6.
 - No PR yet: a Linux port plan.
 
 ## Not wired yet
