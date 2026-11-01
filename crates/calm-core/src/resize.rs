@@ -172,6 +172,7 @@ mod tests {
         PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         }
     }
 

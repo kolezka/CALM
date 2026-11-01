@@ -444,6 +444,7 @@ impl InputHandler {
             Tool::DrawTerminal => Some(PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             }),
             Tool::DrawBrowser => Some(PanelKind::Browser {
                 url: "about:blank".to_string(),
@@ -519,6 +520,7 @@ mod tests {
         PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         }
     }
 

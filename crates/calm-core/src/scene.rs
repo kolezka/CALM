@@ -6,6 +6,9 @@ use serde_json::value::RawValue;
 use crate::camera::Camera;
 use crate::geometry::{Point, Rect, Size};
 use crate::resize::ResizePolicy;
+use crate::terminal_profile::{
+    MAX_TITLE_CHARS, TerminalColorsSetting, check_color, check_icon, check_text,
+};
 
 pub const MIN_PANEL_SIZE: Size = Size::new(120.0, 80.0);
 /// Height of the title strip at the top of every panel, in world units.
@@ -24,6 +27,8 @@ pub enum PanelKind {
     Terminal {
         command: Option<String>,
         cwd: Option<PathBuf>,
+        /// Settings profile id the terminal was opened with. `None` means the defaults.
+        profile: Option<String>,
     },
     Browser {
         url: String,
@@ -79,6 +84,8 @@ enum KnownKind {
     Terminal {
         command: Option<String>,
         cwd: Option<PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
     },
     Browser {
         url: String,
@@ -107,7 +114,15 @@ struct KindTypeProbe {
 impl Serialize for PanelKind {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let known = match self.clone() {
-            PanelKind::Terminal { command, cwd } => KnownKind::Terminal { command, cwd },
+            PanelKind::Terminal {
+                command,
+                cwd,
+                profile,
+            } => KnownKind::Terminal {
+                command,
+                cwd,
+                profile,
+            },
             PanelKind::Browser { url, page_zoom } => KnownKind::Browser { url, page_zoom },
             PanelKind::Plugin {
                 plugin_id,
@@ -147,7 +162,15 @@ impl<'de> Deserialize<'de> for PanelKind {
         // A known type with a bad shape stays an error.
         let known: KnownKind = serde_json::from_str(raw.get()).map_err(de::Error::custom)?;
         Ok(match known {
-            KnownKind::Terminal { command, cwd } => PanelKind::Terminal { command, cwd },
+            KnownKind::Terminal {
+                command,
+                cwd,
+                profile,
+            } => PanelKind::Terminal {
+                command,
+                cwd,
+                profile,
+            },
             KnownKind::Browser { url, page_zoom } => PanelKind::Browser { url, page_zoom },
             KnownKind::Plugin {
                 plugin_id,
@@ -170,7 +193,7 @@ impl<'de> Deserialize<'de> for PanelKind {
 }
 
 /// What the user chose for a panel's look. Always wins over what the panel sets.
-/// Applying and validating them is the plugin API's job; files only need the types.
+/// Loading never validates them; `validate` is for whoever writes them.
 /// Unknown keys are ignored so an older CALM opens a file with more override fields.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -183,11 +206,45 @@ pub struct PanelOverrides {
     /// "#rrggbb" or "#rrggbbaa".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accent_color: Option<String>,
+    /// "#rrggbb" or "#rrggbbaa".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_bar_color: Option<String>,
+    /// "#rrggbb" or "#rrggbbaa".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_color: Option<String>,
+    /// Terminals only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_colors: Option<TerminalColorsSetting>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub borderless: Option<bool>,
 }
 
 impl PanelOverrides {
     pub fn is_empty(&self) -> bool {
         *self == PanelOverrides::default()
+    }
+
+    /// The first bad field, named as `overrides.<field>`. Terminal-only fields on another
+    /// kind are an error.
+    pub fn validate(&self, kind: &PanelKind) -> Result<(), String> {
+        if let Some(title) = &self.title {
+            check_text("overrides.title", title, MAX_TITLE_CHARS)?;
+        }
+        if let Some(icon) = &self.icon {
+            check_icon("overrides.icon", icon)?;
+        }
+        check_color("overrides.accent_color", &self.accent_color)?;
+        check_color("overrides.title_bar_color", &self.title_bar_color)?;
+        check_color("overrides.title_color", &self.title_color)?;
+        if let Some(colors) = &self.terminal_colors {
+            if !matches!(kind, PanelKind::Terminal { .. }) {
+                return Err(
+                    "\"overrides.terminal_colors\" applies only to terminal panels".to_string(),
+                );
+            }
+            colors.parse("overrides.terminal_colors")?;
+        }
+        Ok(())
     }
 }
 
@@ -686,7 +743,82 @@ mod tests {
         PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         }
+    }
+
+    #[test]
+    fn terminal_profile_roundtrips_and_is_omitted_when_none() {
+        let with = PanelKind::Terminal {
+            command: None,
+            cwd: None,
+            profile: Some("neon".into()),
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["profile"], "neon", "{json}");
+        let back: PanelKind = serde_json::from_str(&json.to_string()).unwrap();
+        assert_eq!(back, with);
+
+        let json = serde_json::to_value(terminal()).unwrap();
+        assert!(json.get("profile").is_none(), "{json}");
+        let back: PanelKind = serde_json::from_str(&json.to_string()).unwrap();
+        assert_eq!(back, terminal());
+    }
+
+    #[test]
+    fn validate_rejects_terminal_fields_on_a_browser() {
+        let browser = PanelKind::Browser {
+            url: "https://example.com".into(),
+            page_zoom: None,
+        };
+        let colors = PanelOverrides {
+            terminal_colors: Some(crate::terminal_profile::TerminalColorsSetting::from_colors(
+                &crate::terminal_profile::PALETTE_PRESETS[0].colors,
+            )),
+            ..PanelOverrides::default()
+        };
+        // Positive control: the same overrides are fine on a terminal.
+        assert_eq!(colors.validate(&terminal()), Ok(()));
+        let error = colors.validate(&browser).unwrap_err();
+        assert!(error.contains("terminal_colors"), "{error}");
+
+        let shared = PanelOverrides {
+            title: Some("Docs".into()),
+            borderless: Some(true),
+            title_bar_color: Some("#000000".into()),
+            ..PanelOverrides::default()
+        };
+        assert_eq!(shared.validate(&browser), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_bad_color_and_long_icon() {
+        let good = PanelOverrides {
+            icon: Some("abcd".into()),
+            title_color: Some("#123456".into()),
+            ..PanelOverrides::default()
+        };
+        assert_eq!(good.validate(&terminal()), Ok(()));
+
+        let bad_color = PanelOverrides {
+            title_color: Some("#12".into()),
+            ..good.clone()
+        };
+        let error = bad_color.validate(&terminal()).unwrap_err();
+        assert!(error.contains("title_color"), "{error}");
+
+        let long_icon = PanelOverrides {
+            icon: Some("abcde".into()),
+            ..good.clone()
+        };
+        let error = long_icon.validate(&terminal()).unwrap_err();
+        assert!(error.contains("icon"), "{error}");
+
+        let image_icon = PanelOverrides {
+            icon: Some("icons/logo.svg".into()),
+            ..good
+        };
+        assert_eq!(image_icon.validate(&terminal()), Ok(()));
     }
 
     #[test]
@@ -739,6 +871,7 @@ mod tests {
         let kind = PanelKind::Terminal {
             command: Some("htop".into()),
             cwd: Some(PathBuf::from("/tmp")),
+            profile: None,
         };
         let source = scene.add(kind.clone(), Rect::new(10.0, 20.0, 300.0, 200.0));
         let _other = scene.add(terminal(), Rect::new(900.0, 0.0, 200.0, 200.0));

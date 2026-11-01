@@ -265,7 +265,7 @@ fn is_image_icon(icon: &str) -> bool {
         })
 }
 
-fn check_text(path: &str, text: &str, max: usize) -> Result<(), String> {
+pub(crate) fn check_text(path: &str, text: &str, max: usize) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err(format!("\"{path}\" must not be empty"));
     }
@@ -293,7 +293,7 @@ fn check_title_template(path: &str, template: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn check_icon(path: &str, icon: &str) -> Result<(), String> {
+pub(crate) fn check_icon(path: &str, icon: &str) -> Result<(), String> {
     if !is_image_icon(icon) {
         return check_text(path, icon, MAX_ICON_CHARS);
     }
@@ -310,7 +310,7 @@ fn check_icon(path: &str, icon: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn check_color(path: &str, value: &Option<String>) -> Result<(), String> {
+pub(crate) fn check_color(path: &str, value: &Option<String>) -> Result<(), String> {
     match value {
         Some(text) if parse_hex_color(text).is_none() => Err(format!(
             "\"{path}\" is {text:?}, expected #rrggbb or #rrggbbaa"

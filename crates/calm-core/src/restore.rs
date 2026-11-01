@@ -261,6 +261,7 @@ mod tests {
             PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             },
             Rect::new(0.0, 0.0, 300.0, 200.0),
         );
@@ -540,6 +541,7 @@ mod tests {
         let terminal = PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         };
         assert_eq!(placeholder_reason(&terminal, web, tui), None);
     }

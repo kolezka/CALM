@@ -118,6 +118,7 @@ fn add_smoke_panels(
         let kind = PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         };
         let id = view.scene.add(kind, rect);
         view.spawn_terminal(id, terminal::options(None, None), window, cx)?;
@@ -812,6 +813,7 @@ fn smoke_terminal_profile(
             let kind = PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             };
             let id = view.scene.add(kind, Rect::new(720.0, 660.0, 300.0, 160.0));
             view.open_plain_terminal(id, chosen, None, None, window, cx)?;
@@ -2375,6 +2377,7 @@ fn smoke_session_edges(
         PanelKind::Terminal {
             command: None,
             cwd: Some(gone.clone()),
+            profile: None,
         },
         PanelKind::Plugin {
             plugin_id: "smoke-plugin".to_string(),
@@ -2505,6 +2508,7 @@ async fn smoke_session(
         PanelKind::Terminal {
             command: None,
             cwd: Some(cwd.path().to_path_buf()),
+            profile: None,
         },
         PanelKind::Browser {
             url: SMOKE_SESSION_PAGE.to_string(),
@@ -2723,6 +2727,7 @@ mod tests {
             PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             },
             Rect::new(0.0, 0.0, 300.0, 200.0),
         );

@@ -391,7 +391,7 @@ impl CanvasView {
                 continue;
             }
             match &saved.kind {
-                PanelKind::Terminal { command, cwd } => {
+                PanelKind::Terminal { command, cwd, .. } => {
                     let home = terminal_profiles::home_dir();
                     let (cwd, notice) =
                         restored_cwd(cwd.as_deref(), std::path::Path::is_dir, &home);
@@ -925,7 +925,7 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) {
         match kind {
-            PanelKind::Terminal { command, cwd } => {
+            PanelKind::Terminal { command, cwd, .. } => {
                 let profile = self.requested_profiles.remove(&id);
                 let opened = self.open_plain_terminal(
                     id,

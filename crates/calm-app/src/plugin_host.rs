@@ -621,7 +621,11 @@ fn create_panel(
                     "must be an absolute path to a directory",
                 ));
             }
-            let kind = PanelKind::Terminal { command, cwd };
+            let kind = PanelKind::Terminal {
+                command,
+                cwd,
+                profile: None,
+            };
             (kind, host.default_terminal_size, None)
         }
         "browser" => {
@@ -872,6 +876,7 @@ mod tests {
             PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             },
             Rect::new(400.0, 0.0, 320.0, 200.0),
         );
@@ -947,6 +952,7 @@ mod tests {
             PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             },
             Rect::new(0.0, 0.0, 320.0, 200.0),
         );
@@ -1126,6 +1132,7 @@ mod tests {
             PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             },
             Rect::new(400.0, 0.0, 320.0, 200.0),
         );
@@ -1196,6 +1203,7 @@ mod tests {
         let kind = PanelKind::Terminal {
             command: Some("htop".into()),
             cwd: Some(cwd.into()),
+            profile: None,
         };
         assert_eq!(
             effects,

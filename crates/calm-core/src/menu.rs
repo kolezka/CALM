@@ -199,6 +199,7 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
             PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             },
             DEFAULT_TERMINAL_SIZE,
         ),
@@ -338,7 +339,8 @@ mod tests {
             Some(MenuCommand::AddPanel {
                 kind: PanelKind::Terminal {
                     command: None,
-                    cwd: None
+                    cwd: None,
+                    profile: None,
                 },
                 rect: Rect::new(120.0, -40.0, 640.0, 400.0),
             })
@@ -386,6 +388,7 @@ mod tests {
         PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         }
     }
 
