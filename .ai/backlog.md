@@ -108,9 +108,8 @@ manual test bed. Ideas: Scratchpad (storage, settings, menus), Repo Pulse (`gith
   `feat/example-plugins`, holds one unmerged commit (`4985f5f`, adds the TUI panel kind and
   a null storage miss to `calm.d.ts` and `docs/plugins.md`). No plugin code. That commit
   is worth landing on its own, as a small types fix.
-- Blocker: 8 of the 17 bridge methods still reject with `not implemented` (`canvas.*`,
-  `process.exec`, `theme.get`, part of `panel.*`), so the Inspector would mostly show
-  rejections.
+- Former blocker, cleared on `feat/plugin-bridge-control`: all 17 bridge methods are
+  served there. Events still have no senders except `command`.
 - Origin: example plugins brief in the prototype session.
 
 ### 8. Show plugin capabilities to the user

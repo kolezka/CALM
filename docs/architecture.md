@@ -105,12 +105,15 @@ with `window.__calmHost` and the prelude at document start. TUI plugins run thei
 through a `/bin/sh` status wrapper that records the exit code. Both kinds may add
 right-click menu items; a web plugin gets a `command` event, a TUI item opens a new panel.
 
-A bridge call goes through `plugin_host::route`. `github.api`, `storage.*` and
-`openExternal` run on a background thread (`plugin_services.rs`) and answer from a GPUI
-task, so a slow `gh` never stalls the canvas. `log`, `panel.setTitle` and `settings.*` are
-served on the UI thread. Every other known method rejects with code `not_implemented`, an
-unknown one with `unknown_method`. Every reject is `{ code, message }`, and the prelude turns
-it into an `Error` with `code`. See [plugins.md](plugins.md).
+A bridge call goes through `plugin_host::route`. `github.api`, `storage.*`, `openExternal`
+and `process.exec` run on a background thread (`plugin_services.rs`) and answer from a GPUI
+task, so a slow program never stalls the canvas. The rest is served on the UI thread by
+`dispatch`, which sees the scene through a `HostContext`. Calls that need the window
+(opening a panel's native view, focus, close) come back as `HostEffect`s that the canvas
+applies; a close is `Effect::ClosePanelRequested`, the path a click takes, so a live
+process still asks first. An unknown method rejects with `unknown_method`. Every reject is
+`{ code, message }`, and the prelude turns it into an `Error` with `code`. See
+[plugins.md](plugins.md).
 
 ## Settings and storage
 

@@ -190,6 +190,23 @@ Pull requests:
   failure. The `zorder` step raises the panel through `apply_menu_choice` and checks native
   order at once, without waiting for a paint. Autosave, restore and session edge checks run
   as the one `session` step. Merged without review or a smoke run, at the user's request.
+- #44 Plugin bridge control: the 8 remaining v1 bridge methods are served, so all 17
+  answer. `dispatch` takes a `HostContext` and returns `Route::Apply` with `HostEffect`s
+  (open, focus, close) that the canvas applies with the window; the bridge task now runs
+  through `spawn_in`. `panel.getBounds` (size with the title bar, zoom), `panel.minimize`
+  (sets, never toggles), `panel.close` (`Effect::ClosePanelRequested`, the click path),
+  `canvas.focusPanel` (restore, raise, focus; `not_found`), `canvas.listPanels` (every
+  panel, v1 fields plus `z`, `focused`, `pluginId`, `url`, `resize`), `canvas.createPanel`
+  (terminal, browser, plugin, TUI; `rect` or viewport center at the kind's default size;
+  `ResizePolicy::clamp`; a locked plugin rejects another size; `focus` default true; v2-only
+  fields reject `unavailable`, unknown ones `invalid_params`), `theme.get`
+  (`base_color()`), `process.exec` (`plugin_services`, no shell, own process group killed
+  on timeout, 30 s default, 1 to 600000 ms, 4 MiB per stream, signal as 128 + n). Smoke
+  prints `plugin errors ... bad_param=invalid_params has=[true,false,true]` and
+  `plugin reads bounds=true theme=true listed=true exec=true`. Not built from the v2 rows of
+  these methods: `near`/`side`/`size`/`gap` placement, `title`, `args`, `env`,
+  `appearance`, `PanelInfo.mode`, `joined`, `appearance`, `createdBy`, `tui`, `panels.*`
+  names, `panels.close(id)` with a pending reply and `busy`.
 
 ## Persistence plan progress
 
@@ -235,13 +252,9 @@ Open questions: `.ai/open-questions.md`.
 
 ## Not wired yet
 
-- Plugin bridge: 9 of the 17 `BRIDGE_METHODS` are served. `log`, `panel.setTitle`,
-  `settings.get` and `settings.set` in `plugin_host.rs`; `github.api`,
-  `storage.get/set/remove` and `openExternal` in `plugin_services.rs` on the background
-  executor. The other 8 reject with code `not_implemented` (message
-  `not implemented: <method>`): `panel.getBounds/minimize/close`, `canvas.*`,
-  `process.exec`, `theme.get`. `storage.keys` and `mailto:` for `openExternal` are not
-  served. The only host event is `command`; the phase 6 `Coalescer` is not wired.
+- Plugin bridge: all 17 `BRIDGE_METHODS` are served (#44). `storage.keys` and `mailto:` for
+  `openExternal` are not served. The only host event is `command`; the phase 6
+  `Coalescer` is not wired.
 - Plugin API v2 phases other than 1 and the phase 6 core are not built: no backends, no
   background pages, no `calm.menus.register`, no capability display.
 - Clicking inside a plugin page does not focus or raise its panel; AppKit routes the click
@@ -306,8 +319,13 @@ Open questions: `.ai/open-questions.md`.
 - Stats readout (#33): CPU and memory against Activity Monitor, the Developer settings, the
   child process walk with real shells running.
 - Plugin API v2 phase 1 (#35): in the github-prs page's Web Inspector,
-  `calm.has("panel.setTitle")` is `true` and `calm.panel.close().catch(e => e.code)` gives
-  `"not_implemented"`; the gh logged-out message still shows.
+  `calm.has("panel.setTitle")` is `true`; the gh logged-out message still shows.
+- Bridge control (`feat/plugin-bridge-control`), from a plugin page's Web Inspector:
+  `calm.canvas.createPanel({ kind: "terminal" })` opens a focused shell at the view center,
+  `calm.canvas.focusPanel(id)` on a minimized panel restores and raises it,
+  `calm.canvas.focusPanel(id)` on another plugin panel moves the keyboard into that page,
+  `calm.panel.minimize()` keeps the page running, `calm.panel.close()` removes the plugin
+  panel, `calm.process.exec("/bin/sh", ["-lc", "command -v gh"])` finds `gh` from the Dock.
 - GitHub PRs plugin with a real `gh` login and with a `.env` token (#23).
 - Session settings section in the Settings window (#36), by eye.
 - Session restore (#41): a manual quit and relaunch, and the `about:blank` fallback for a bad

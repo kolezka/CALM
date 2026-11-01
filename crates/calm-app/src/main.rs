@@ -1224,11 +1224,15 @@ fn window_visible(window: AnyWindowHandle, cx: &mut App) -> Option<bool> {
 
 /// A fixture plugin whose page sets the title twice; the second call runs only after the
 /// host answered the first, so the final title proves load, prelude and bridge round trip.
-/// It first probes error codes and `calm.has` through the real bridge and stores what it saw
-/// with `settings.set`, so the smoke reads it once the title says `smoke-ok`.
+/// It first probes error codes, `calm.has` and the read-only calls through the real bridge
+/// and stores what it saw with `settings.set`, so the smoke reads it once the title says
+/// `smoke-ok`.
 const SMOKE_PLUGIN_HTML: &str = r#"<!doctype html><body>smoke<script>
 function codeOf(promise) {
   return promise.then(function () { return "resolved"; }, function (err) { return err && err.code; });
+}
+function valueOf(promise) {
+  return promise.then(function (v) { return v; }, function (err) { return "rejected " + (err && err.code); });
 }
 // The prelude has no generic call, so rename the next posted method to an unknown one.
 var realStringify = JSON.stringify;
@@ -1237,10 +1241,22 @@ JSON.stringify = function (value) {
   return realStringify.call(JSON, { id: value.id, method: "nope", params: null });
 };
 var unknown = codeOf(calm.theme.get());
-var unserved = codeOf(calm.panel.getBounds());
-Promise.all([unknown, unserved]).then(function (codes) {
-  var errors = { unknown: codes[0], unserved: codes[1],
-    has: [calm.has("panel.setTitle"), calm.has("nope")] };
+var badParam = codeOf(calm.canvas.focusPanel(-1));
+var reads = Promise.all([
+  valueOf(calm.panel.getBounds()),
+  valueOf(calm.theme.get()),
+  valueOf(calm.canvas.listPanels()),
+  valueOf(calm.process.exec("/bin/echo", ["smoke", "exec"])),
+]);
+Promise.all([unknown, badParam, reads]).then(function (got) {
+  var r = got[2];
+  var mine = Array.isArray(r[2]) ? r[2].filter(function (p) { return p.pluginId === "smoke-plugin"; }) : [];
+  var errors = { unknown: got[0], badParam: got[1],
+    has: [calm.has("panel.setTitle"), calm.has("nope"), calm.has("canvas.createPanel")],
+    bounds: typeof r[0].zoom === "number" && r[0].width > 0,
+    theme: /^#[0-9a-f]{6}$/.test(r[1].background),
+    listed: mine.length === 1 && mine[0].kind === "plugin",
+    exec: r[3].code === 0 && r[3].stdout === "smoke exec\n" };
   calm.log("smoke errors " + JSON.stringify(errors));
   return calm.settings.set({ errors: errors });
 }).then(function () { return calm.panel.setTitle("smoke-1"); })
@@ -1420,16 +1436,25 @@ async fn smoke_plugins(
     }
 }
 
-/// What the fixture page saw: the codes of an unknown and an unserved call, and `calm.has`.
+/// What the fixture page saw: the codes of an unknown call and a bad param, `calm.has`, and
+/// whether `getBounds`, `theme.get`, `listPanels` and `process.exec` answered as expected.
 fn smoke_plugin_errors(errors: &serde_json::Value) {
     let text = |key: &str| errors[key].as_str().unwrap_or("missing").to_string();
-    let (unknown, unserved) = (text("unknown"), text("unserved"));
+    let (unknown, bad_param) = (text("unknown"), text("badParam"));
     let has = errors["has"].to_string();
-    println!("smoke: plugin errors unknown={unknown} unserved={unserved} has={has}");
-    if unknown != "unknown_method" || unserved != "not_implemented" || has != "[true,false]" {
+    println!("smoke: plugin errors unknown={unknown} bad_param={bad_param} has={has}");
+    if unknown != "unknown_method" || bad_param != "invalid_params" || has != "[true,false,true]" {
         smoke_fail(&format!(
             "plugin error codes or calm.has are wrong: {errors}"
         ));
+    }
+    let reads: Vec<String> = ["bounds", "theme", "listed", "exec"]
+        .iter()
+        .map(|key| format!("{key}={}", errors[*key]))
+        .collect();
+    println!("smoke: plugin reads {}", reads.join(" "));
+    if reads.iter().any(|read| !read.ends_with("=true")) {
+        smoke_fail(&format!("plugin read calls answered wrong: {errors}"));
     }
 }
 
@@ -2016,7 +2041,7 @@ fn main() {
         let builtin_plugins = settings.settings.plugins.builtin;
         let opened = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| {
-                let mut view = CanvasView::new(builtin_plugins, cx);
+                let mut view = CanvasView::new(builtin_plugins, window, cx);
                 view.set_settings_state(settings);
                 if let Some((plan, session)) = plan {
                     view.apply_restore_plan(plan, session, window, cx);

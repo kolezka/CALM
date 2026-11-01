@@ -236,15 +236,18 @@ pub struct CanvasView {
 
 impl CanvasView {
     /// `builtin_plugins` is the `plugins.builtin` setting, read once here.
-    pub fn new(builtin_plugins: bool, cx: &mut Context<Self>) -> Self {
+    pub fn new(builtin_plugins: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (discovery, plugin_search_dirs) = plugin_host::discover_installed(builtin_plugins);
         let plugin_counts = (discovery.builtin_count, discovery.user_count());
         let entries = plugin_host::menu_entries(&discovery.plugins);
         let (bridge, mut messages) = futures::channel::mpsc::unbounded::<(PanelId, String)>();
-        let bridge_task = cx.spawn(async move |this, cx| {
+        // Bridge calls open native views and move focus, so they run with the window.
+        let bridge_task = cx.spawn_in(window, async move |this, cx| {
             while let Some((id, text)) = messages.next().await {
                 if this
-                    .update(cx, |view, cx| view.plugin_message(id, &text, cx))
+                    .update_in(cx, |view, window, cx| {
+                        view.plugin_message(id, &text, window, cx)
+                    })
                     .is_err()
                 {
                     break;
@@ -719,6 +722,11 @@ impl CanvasView {
                         } else {
                             browser.focus_page();
                         }
+                    }
+                    if let Some((_, plugin)) = self.plugin_panels.iter().find(|(p, _)| *p == id)
+                        && !plugin.focus()
+                    {
+                        eprintln!("calm: plugin panel {}: could not take the keyboard", id.0);
                     }
                 }
                 Effect::ClearFocus => {
@@ -1326,7 +1334,13 @@ impl CanvasView {
     }
 
     /// One message a plugin page posted. Bad JSON has no id to answer, so it is logged.
-    fn plugin_message(&mut self, id: PanelId, text: &str, cx: &mut Context<Self>) {
+    fn plugin_message(
+        &mut self,
+        id: PanelId,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let request = match BridgeRequest::from_json(text) {
             Ok(request) => request,
             Err(err) => {
@@ -1334,16 +1348,50 @@ impl CanvasView {
                 return;
             }
         };
-        let Some(route) = plugin_host::route_in_scene(&mut self.scene, id, &request) else {
+        let background = self.settings.settings.background.base_color().to_string();
+        let default_terminal_size = self.settings.settings.panels.default_terminal_size();
+        let mut host = plugin_host::HostContext {
+            scene: &mut self.scene,
+            caller: id,
+            focused: self.focused,
+            viewport: self.viewport.size,
+            background,
+            default_terminal_size,
+            plugins: &self.installed_plugins,
+        };
+        let Some(route) = plugin_host::route(&mut host, &request) else {
             return;
         };
-        let response = match route {
-            Route::Reply(Some(response)) => response,
+        match route {
+            Route::Reply(Some(response)) => self.reply_to_plugin(id, &response),
             Route::Reply(None) => return,
             Route::Background(call) => return self.serve_in_background(id, request.id, call, cx),
-        };
-        self.reply_to_plugin(id, &response);
+            Route::Apply { reply, effects } => {
+                // The reply goes first: `panel.close` removes the page that waits for it.
+                self.reply_to_plugin(id, &reply);
+                self.apply_host_effects(effects, window, cx);
+            }
+        }
+        window.refresh();
         cx.notify();
+    }
+
+    /// Runs what a bridge call left for the canvas. Focus and close take the same effects
+    /// as a click, so a live terminal still asks before it closes.
+    fn apply_host_effects(
+        &mut self,
+        effects: Vec<plugin_host::HostEffect>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for effect in effects {
+            if let plugin_host::HostEffect::Open { id, kind } = &effect {
+                self.panel_created(*id, kind, window, cx);
+                continue;
+            }
+            let canvas = effect.canvas_effects();
+            self.apply_effects(canvas, window, cx);
+        }
     }
 
     fn reply_to_plugin(&mut self, id: PanelId, response: &calm_plugins::BridgeResponse) {

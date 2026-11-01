@@ -578,3 +578,43 @@ These shipped with #41, next to "Restore at launch" above.
 - **An invalid saved browser url opens `about:blank`** (`browser_url::restored_url`).
   Reason: the panel keeps its place and the bad url never loads. Cost: the user sees a
   blank page and has to type the address again.
+
+## Bridge control (2026-11-01, `feat/plugin-bridge-control`)
+
+- **Window work leaves `dispatch` as `HostEffect`s.** `dispatch` stays pure over a
+  `HostContext` and the canvas applies `Open`, `Focus` and `Close` with the window. The
+  bridge task runs through `spawn_in`, so effects apply in the same turn instead of a
+  queued `Effect::CreatePanel` at the next render (the spec's fallback). Cost:
+  `CanvasView::new` takes the window.
+- **A bridge close is a request, never a removal.** `HostEffect::Close` maps only to
+  `Effect::ClosePanelRequested`; a test fails if it maps to `ClosePanel`. In v1 only
+  `panel.close` on the calling plugin panel exists, which has no process and closes at
+  once, as the spec says. The live terminal confirmation with a pending reply and `busy` is
+  `panels.close(id)`, phase 5, not built. Cost if wrong: none today; phase 5 still owes the
+  pending reply.
+- **Focusing a plugin panel gives its page the keyboard.** `Effect::FocusPanel` used to
+  focus only terminals and browsers, so `canvas.focusPanel` and a focused `createPanel`
+  of a plugin left the keys where they were. `WebPanel::focus` makes the web view first
+  responder. This also applies to a title bar click and the Add menu. Cost: the canvas
+  shortcuts (`t`, `b`) stop while a plugin page has the keyboard, as with a terminal.
+- **`panel.minimize` sets, it does not toggle.** A second call changes nothing. Reason: a
+  plugin that calls it twice must not restore itself.
+- **`canvas.createPanel` defaults `focus` to true,** as the Add menu does. The spec gives
+  the field and no default. Cost: a plugin that opens many panels must pass `false`.
+- **`canvas.createPanel` without `rect` opens at the viewport center at the kind's default
+  size, unsnapped.** Spec text for "neither `rect` nor `near`". A locked plugin with a
+  `rect` of another size rejects `invalid_params` instead of silently taking its manifest
+  size. v2-only spec fields reject `unavailable`, unknown ones `invalid_params`.
+- **`canvas.listPanels` returns the v1 fields plus the scene-only v2 fields** (`z`,
+  `focused`, `pluginId`, `url`, `resize`). `mode`, `joined`, `appearance`, `createdBy` and
+  `tui` need host state this change does not collect. An `Unsupported` panel lists with
+  kind `"unsupported"`, a word the spec does not have. Cost: the d.ts kind union grew.
+- **`process.exec` has no shell and its own process group.** A timeout kills the group with
+  `/bin/kill -KILL -<pgid>`, so a grandchild cannot outlive it and no unsafe code is needed
+  in `calm-app`. Waiting on the pipes shares the same deadline, so a background grandchild
+  holding stdout ends as `timeout`, not a hang. A stream over the cap ends the call at once
+  with `too_large` and kills the group too, even while the child still runs (review
+  finding: a writer that ignores SIGPIPE used to run on until the timeout). Limits: 30 s default and 4 MiB per stream
+  (spec), 1 to 600000 ms (`EXEC_MAX_TIMEOUT_MS`, chosen here). A signal reports
+  `128 + n`. Output is UTF-8 lossy. The child gets CALM's environment and stdin is empty.
+  Cost: a bare name resolves in CALM's short Dock `PATH`; docs say to use `/bin/sh -lc`.
