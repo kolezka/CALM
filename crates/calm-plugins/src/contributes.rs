@@ -422,8 +422,8 @@ mod tests {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         for (dir, ids) in [
             ("plugins/hello-world", &["wave"][..]),
-            ("plugins/github-prs", &["open-repo", "new-panel"][..]),
-            ("plugins/top-example", &["slow-refresh"][..]),
+            ("plugins/github-prs", &["open-repo"][..]),
+            ("plugins/top-example", &[][..]),
             ("templates/plugin-tsx", &["say-hi"][..]),
         ] {
             let path = repo.join(dir).join(crate::manifest::MANIFEST_FILE);

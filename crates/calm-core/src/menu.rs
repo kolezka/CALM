@@ -13,6 +13,8 @@ pub const ADD_TUI_PREFIX: &str = "add.tui.";
 /// A plain terminal opened with the named profile from `terminal.profiles`.
 pub const ADD_TERMINAL_PROFILE_PREFIX: &str = "add.terminal_profile.";
 pub const TERMINAL_PROFILES_LABEL: &str = "Terminal Profiles";
+/// Section header above the plugin entries in the Add menu.
+pub const PLUGINS_SECTION_LABEL: &str = "Plugins";
 /// Starts a TUI panel's command again after it exited.
 pub const PANEL_RESTART: &str = "panel.restart";
 pub const PANEL_MINIMIZE: &str = "panel.minimize";
@@ -35,6 +37,10 @@ pub enum MenuItem {
     },
     /// Shown greyed out, picks nothing. Used to explain an empty list.
     Disabled {
+        label: String,
+    },
+    /// A non-interactive title that names the group of items below it.
+    Header {
         label: String,
     },
     Separator,
@@ -66,8 +72,8 @@ fn disabled(label: &str) -> MenuItem {
 }
 
 /// Right click on empty canvas. `plugins` is (id, name) per installed web plugin and
-/// `apps` the same per TUI plugin. Apps sit next to Terminal: they are terminals too.
-/// `searched_dirs` is shown when no plugin of either kind was found, so the user knows
+/// `apps` the same per TUI plugin. Both sit in one section under a "Plugins" header,
+/// apps first. `searched_dirs` is shown when no plugin of either kind was found, so the user knows
 /// where to put one.
 pub fn canvas_menu(
     plugins: &[(String, String)],
@@ -78,6 +84,9 @@ pub fn canvas_menu(
         action(ADD_TERMINAL, "Terminal"),
         action(ADD_BROWSER, "Browser"),
         MenuItem::Separator,
+        MenuItem::Header {
+            label: PLUGINS_SECTION_LABEL.to_string(),
+        },
     ];
     for (plugin_id, name) in apps {
         items.push(action(&format!("{ADD_TUI_PREFIX}{plugin_id}"), name));
@@ -93,9 +102,6 @@ pub fn canvas_menu(
             label: "Searched Folders".to_string(),
             items: searched,
         });
-    }
-    if !apps.is_empty() && !plugins.is_empty() {
-        items.push(MenuItem::Separator);
     }
     for (plugin_id, name) in plugins {
         items.push(action(&format!("{ADD_PLUGIN_PREFIX}{plugin_id}"), name));
@@ -292,6 +298,9 @@ mod tests {
                     action("add.terminal", "Terminal"),
                     action("add.browser", "Browser"),
                     MenuItem::Separator,
+                    MenuItem::Header {
+                        label: "Plugins".to_string(),
+                    },
                     action("add.plugin.hello-world", "Hello World"),
                     action("add.plugin.github-prs", "GitHub PRs"),
                 ],
@@ -310,6 +319,9 @@ mod tests {
                     action("add.terminal", "Terminal"),
                     action("add.browser", "Browser"),
                     MenuItem::Separator,
+                    MenuItem::Header {
+                        label: "Plugins".to_string(),
+                    },
                     disabled("No plugins found"),
                     MenuItem::Submenu {
                         label: "Searched Folders".to_string(),
@@ -463,14 +475,24 @@ mod tests {
     }
 
     #[test]
-    fn tui_apps_sit_next_to_terminal_and_add_a_tui_panel() {
+    fn tui_apps_and_web_plugins_share_the_plugins_section() {
         let apps = vec![("slack".to_string(), "Slack".to_string())];
         let [MenuItem::Submenu { items, .. }] = &canvas_menu(&plugins(), &apps, &[])[..] else {
             panic!("expected one Add submenu");
         };
-        assert_eq!(items[2], MenuItem::Separator);
-        assert_eq!(items[3], action("add.tui.slack", "Slack"));
-        assert_eq!(items[4], MenuItem::Separator);
+        // One "Plugins" section: TUI apps, then web plugins, no divider between them.
+        assert_eq!(
+            &items[2..],
+            &[
+                MenuItem::Separator,
+                MenuItem::Header {
+                    label: "Plugins".to_string()
+                },
+                action("add.tui.slack", "Slack"),
+                action("add.plugin.hello-world", "Hello World"),
+                action("add.plugin.github-prs", "GitHub PRs"),
+            ]
+        );
         let sizes = vec![("slack".to_string(), Size::new(900.0, 600.0))];
         let world = Point::new(5.0, 6.0);
         assert_eq!(

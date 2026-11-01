@@ -121,7 +121,7 @@ For example, to add "Slack" running the `slk` client, make
 }
 ```
 
-Restart CALM. "Slack" now shows in the right-click Add menu, next to Terminal. Choosing it opens
+Restart CALM. "Slack" now shows in the right-click Add menu, under Plugins. Choosing it opens
 a terminal panel titled "Slack" that runs `slk`.
 
 | Field         | Required | Meaning                                                              |
@@ -772,13 +772,11 @@ Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
 
 ## Examples
 
-- `plugins/top-example`: a TUI app running macOS `top`, sorted by CPU. Its canvas menu
-  item "Top, refresh every 5 s" opens one with `-s 5` appended.
+- `plugins/top-example`: a TUI app running macOS `top`, sorted by CPU.
 - `plugins/hello-world`: plain HTML and JS. Shows text and sets the panel title. Its panel
   menu item "Say hello" changes the title from a `command` handler.
 - `plugins/github-prs`: TSX. Lists open pull requests for the repositories saved in its
   settings (`{ "repos": ["owner/name"] }`), editable in the panel. Clicking a pull request
   opens it in the browser. Build it first with `bun install && bun run build` in its folder.
-  Menu items: "Open repo in browser" on its own panels, and "New GitHub PRs panel here" on
-  the canvas (`"open": "new"`, no code needed). Opening a URL goes through `openExternal`,
+  Menu item: "Open repo in browser" on its own panels. Opening a URL goes through `openExternal`,
   which the host does not serve yet, so for now the item logs the rejection.
