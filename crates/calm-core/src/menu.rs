@@ -28,6 +28,8 @@ pub const PANEL_SEND_TO_BACK: &str = "panel.send_to_back";
 pub const PANEL_DUPLICATE: &str = "panel.duplicate";
 /// Goes through the same confirmed close as every other close.
 pub const PANEL_DELETE: &str = "panel.delete";
+/// Opens this panel's own Settings window.
+pub const PANEL_SETTINGS: &str = "panel.settings";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MenuItem {
@@ -61,6 +63,7 @@ pub enum MenuCommand {
     Delete,
     Restart,
     OpenSettings,
+    PanelSettings,
 }
 
 fn action(id: &str, label: &str) -> MenuItem {
@@ -184,6 +187,7 @@ pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
         action(PANEL_BRING_TO_FRONT, "Bring to Front"),
         action(PANEL_SEND_TO_BACK, "Send to Back"),
     ]);
+    items.extend([MenuItem::Separator, action(PANEL_SETTINGS, "Settings…")]);
     if matches!(
         panel.kind,
         PanelKind::Terminal { .. } | PanelKind::Tui { .. }
@@ -236,6 +240,7 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
         PANEL_SEND_TO_BACK => Some(MenuCommand::SendToBack),
         PANEL_DUPLICATE => Some(MenuCommand::Duplicate),
         PANEL_DELETE => Some(MenuCommand::Delete),
+        PANEL_SETTINGS => Some(MenuCommand::PanelSettings),
         PANEL_RESTART => Some(MenuCommand::Restart),
         OPEN_SETTINGS => Some(MenuCommand::OpenSettings),
         _ if id.starts_with(ADD_TUI_PREFIX) => {
@@ -454,6 +459,8 @@ mod tests {
                 action("panel.bring_to_front", "Bring to Front"),
                 action("panel.send_to_back", "Send to Back"),
                 MenuItem::Separator,
+                action("panel.settings", "Settings…"),
+                MenuItem::Separator,
                 action("panel.duplicate", "Duplicate"),
                 MenuItem::Separator,
                 action("panel.delete", "Delete"),
@@ -494,6 +501,34 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_offers_settings() {
+        let settings = action("panel.settings", "Settings…");
+        let kinds = [
+            terminal_kind(),
+            PanelKind::Browser {
+                url: "about:blank".to_string(),
+                page_zoom: None,
+            },
+            PanelKind::Plugin {
+                plugin_id: "hello".to_string(),
+                plugin_version: None,
+                settings: Default::default(),
+            },
+            PanelKind::Tui {
+                plugin_id: "top".to_string(),
+                plugin_version: None,
+            },
+        ];
+        for kind in kinds {
+            for minimized in [false, true] {
+                let items = panel_menu(&panel(kind.clone(), minimized), false);
+                assert!(items.contains(&settings), "{kind:?} minimized={minimized}");
+            }
+        }
+        assert!(!placeholder_menu().contains(&settings));
+    }
+
+    #[test]
     fn every_panel_menu_id_maps_to_its_command() {
         let world = Point::new(0.0, 0.0);
         let cases = [
@@ -503,6 +538,7 @@ mod tests {
             ("panel.send_to_back", MenuCommand::SendToBack),
             ("panel.duplicate", MenuCommand::Duplicate),
             ("panel.delete", MenuCommand::Delete),
+            ("panel.settings", MenuCommand::PanelSettings),
         ];
         for (id, command) in cases {
             assert_eq!(menu_action(id, world, &[]), Some(command), "{id}");
