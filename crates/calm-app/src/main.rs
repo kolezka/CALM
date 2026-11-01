@@ -205,6 +205,53 @@ fn smoke_status_bar(state: Result<(bool, bool, String), String>) {
     }
 }
 
+/// Menu reorders must update AppKit's stack before any later GPUI paint. An occluded
+/// window may not paint at all, but these native views still exist.
+fn smoke_native_reorder(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let result = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let last = view.scene.panels.last().map(|panel| panel.id);
+            let Some(last) = last else {
+                smoke_fail("no panel to reorder");
+            };
+            view.apply_menu_choice(
+                calm_core::menu::PANEL_SEND_TO_BACK,
+                canvas_view::MenuTarget::Panel(last),
+                window,
+                cx,
+            );
+            let back = (view.native_zorder(cx), view.status_bar_state());
+            view.apply_menu_choice(
+                calm_core::menu::PANEL_BRING_TO_FRONT,
+                canvas_view::MenuTarget::Panel(last),
+                window,
+                cx,
+            );
+            (back, (view.native_zorder(cx), view.status_bar_state()))
+        })
+    });
+    let (back, front) = match result {
+        Ok(orders) => orders,
+        Err(err) => smoke_fail(&format!("native reorder window: {err:#}")),
+    };
+    for (action, (orders, bar)) in [("send to back", back), ("bring to front", front)] {
+        let (scene, native) = orders;
+        if scene != native {
+            smoke_fail(&format!(
+                "native order after {action}: zorder={native:?} scene={scene:?}"
+            ));
+        }
+        if !matches!(bar, Ok((true, true, _))) {
+            smoke_fail(&format!("status bar after {action}: {bar:?}"));
+        }
+    }
+    println!("smoke: native reorder back=match front=match bar=front");
+}
+
 fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, cx: &mut App) {
     let started = Instant::now();
     cx.spawn(async move |cx| {
@@ -310,6 +357,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         }
 
         cx.update(|_| smoke_app_icon());
+        smoke_native_reorder(&view, window, cx);
         smoke_plugins(&view, window, cx).await;
         smoke_tui(&view, window, cx).await;
 
@@ -777,10 +825,29 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
         smoke_fail(&format!("tui marker: {err}"));
     }
     let restarted = cx.update_window(window, |_, window, cx| {
-        view.update(cx, |view, cx| view.restart_tui(ids[0], true, window, cx))
+        view.update(cx, |view, cx| {
+            view.apply_menu_choice(
+                calm_core::menu::PANEL_SEND_TO_BACK,
+                canvas_view::MenuTarget::Panel(ids[0]),
+                window,
+                cx,
+            );
+            let before = view.native_zorder(cx);
+            view.restart_tui(ids[0], true, window, cx);
+            (before, view.native_zorder(cx), view.status_bar_state())
+        })
     });
-    if let Err(err) = restarted {
-        smoke_fail(&format!("tui restart: {err:#}"));
+    let (before, after, bar) = match restarted {
+        Ok(orders) => orders,
+        Err(err) => smoke_fail(&format!("tui restart: {err:#}")),
+    };
+    if before.0 != before.1 || after.0 != after.1 {
+        smoke_fail(&format!(
+            "tui restart native order: before={before:?} after={after:?}"
+        ));
+    }
+    if !matches!(bar, Ok((true, true, _))) {
+        smoke_fail(&format!("tui restart status bar: {bar:?}"));
     }
     wait_for(2)(cx).await;
 
@@ -908,7 +975,7 @@ async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &m
                 settings: serde_json::json!({}),
             };
             let locked = view.scene.add(kind, Rect::new(20.0, 460.0, 300.0, 120.0));
-            view.open_plugin_panel(locked, "smoke-locked", window)?;
+            view.open_plugin_panel(locked, "smoke-locked", window, cx)?;
             let browser = view
                 .scene
                 .panels
@@ -1152,7 +1219,7 @@ async fn smoke_plugins(
                     settings: serde_json::json!({}),
                 };
                 let id = view.scene.add(kind, rect);
-                view.open_plugin_panel(id, plugin_id, window)?;
+                view.open_plugin_panel(id, plugin_id, window, cx)?;
                 ids.push(id);
             }
             cx.notify();
@@ -1198,31 +1265,29 @@ async fn smoke_plugins(
         }
     }
 
-    // Raise the backmost terminal over the plugins: all native views must restack.
-    cx.update(|cx| {
+    // Raise the backmost terminal over the plugins through the panel menu action.
+    let orders = cx.update_window(window, |_, window, cx| {
         view.update(cx, |view, cx| {
             if let Some(first) = view.scene.panels.first().map(|panel| panel.id) {
-                view.scene.bring_to_front(first);
+                view.apply_menu_choice(
+                    calm_core::menu::PANEL_BRING_TO_FRONT,
+                    canvas_view::MenuTarget::Panel(first),
+                    window,
+                    cx,
+                );
             }
-            cx.notify();
+            view.native_zorder(cx)
         })
     });
-    let raised = Instant::now();
-    loop {
-        cx.background_executor()
-            .timer(Duration::from_millis(50))
-            .await;
-        let (scene, native) = cx.update(|cx| view.read(cx).native_zorder(cx));
-        let line = format!("zorder={native:?} scene={scene:?}");
-        // Two terminals, the browser and two plugins.
-        if scene == native && scene.len() == 5 {
-            println!("smoke: plugins {line}");
-            break;
-        }
-        if raised.elapsed() > SMOKE_ZORDER_TIMEOUT {
-            smoke_fail(&format!("native order with plugins does not match: {line}"));
-        }
+    let (scene, native) = match orders {
+        Ok(orders) => orders,
+        Err(err) => smoke_fail(&format!("plugin native reorder window: {err:#}")),
+    };
+    let line = format!("zorder={native:?} scene={scene:?}");
+    if scene != native || scene.len() != 5 {
+        smoke_fail(&format!("native order with plugins does not match: {line}"));
     }
+    println!("smoke: plugins {line}");
     if let Err(err) = fixtures.close() {
         eprintln!("smoke: could not remove the plugin temp dir: {err}");
     }
@@ -1572,7 +1637,7 @@ async fn smoke_github_api(
                 settings: serde_json::json!({}),
             };
             let id = view.scene.add(kind, Rect::new(20.0, 420.0, 300.0, 160.0));
-            view.open_plugin_panel(id, "smoke-gh", window)?;
+            view.open_plugin_panel(id, "smoke-gh", window, cx)?;
             cx.notify();
             Ok::<_, String>(id)
         })
