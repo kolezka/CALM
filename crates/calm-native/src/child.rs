@@ -7,9 +7,9 @@ use calm_core::viewport::NativePlacement;
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{NSView, NSWindowOrderingMode};
-use objc2_core_graphics::CGColor;
+use objc2_core_graphics::CGMutablePath;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
-use objc2_quartz_core::{CALayer, CATransaction};
+use objc2_quartz_core::{CAShapeLayer, CATransaction};
 use raw_window_handle::{
     AppKitWindowHandle, DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle,
     RawWindowHandle, WindowHandle,
@@ -244,15 +244,20 @@ impl NativeChild {
                 unsafe { layer.setMask(None) };
             }
             Some(pieces) => {
-                let mask = CALayer::new();
-                mask.setFrame(layer.bounds());
-                let opaque = CGColor::new_generic_gray(0.0, 1.0);
+                // One path, not one layer per piece: separate layers antialias their shared
+                // edges at fractional points and leave a see-through hairline.
+                let path = CGMutablePath::new();
                 for piece in pieces {
-                    let sublayer = CALayer::new();
-                    sublayer.setFrame(ns_rect(*piece));
-                    sublayer.setBackgroundColor(Some(&opaque));
-                    mask.addSublayer(&sublayer);
+                    // SAFETY: a null transform is allowed; the path is ours and alive.
+                    unsafe {
+                        CGMutablePath::add_rect(Some(&path), std::ptr::null(), ns_rect(*piece))
+                    };
                 }
+                let mask = CAShapeLayer::new();
+                mask.setFrame(layer.bounds());
+                // The default fill is opaque black with the non-zero rule, which is what the
+                // mask needs: pieces are disjoint, so the union is every piece.
+                mask.setPath(Some(&path));
                 // SAFETY: a fresh layer that is not in any tree, set as the mask of a layer
                 // we own, on the main thread.
                 unsafe { layer.setMask(Some(&mask)) };

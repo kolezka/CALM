@@ -19,7 +19,9 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
     NSWindowStyleMask,
 };
+use objc2_core_graphics::CGPath;
 use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize};
+use objc2_quartz_core::CAShapeLayer;
 use raw_window_handle::{
     AppKitWindowHandle, HandleError, HasWindowHandle, RawWindowHandle, WindowHandle,
 };
@@ -240,13 +242,19 @@ fn main() {
     let layer = clip
         .layer()
         .unwrap_or_else(|| fail("clip view has no layer"));
-    // SAFETY: plain property reads on the main thread.
-    let pieces = layer.mask().and_then(|mask| unsafe { mask.sublayers() });
-    let mask_pieces = pieces.as_ref().map(|sublayers| sublayers.count());
-    let piece_frame = pieces
+    // The mask is one shape layer with one path and no sublayers: per-piece layers left a
+    // hairline where two pieces meet.
+    let mask = layer.mask();
+    // SAFETY: plain property read on the main thread.
+    let mask_sublayers = mask
         .as_ref()
-        .and_then(|sublayers| sublayers.firstObject())
-        .map(|piece| piece.frame());
+        .and_then(|mask| unsafe { mask.sublayers() })
+        .map_or(0, |sublayers| sublayers.count());
+    let path = mask
+        .and_then(|mask| mask.downcast::<CAShapeLayer>().ok())
+        .and_then(|shape| shape.path());
+    let mask_pieces = path.as_ref().map(|_| 1 + mask_sublayers);
+    let piece_frame = path.map(|path| CGPath::bounding_box(Some(&path)));
     // The strip is the clip's top 40 points: off the far end of y in an unflipped layer.
     let flipped = layer.isGeometryFlipped();
     let expected_piece = if flipped {
