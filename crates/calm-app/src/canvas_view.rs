@@ -134,7 +134,7 @@ pub struct CanvasView {
     pub viewport: Rect,
     /// (id, name) per discovered web plugin, for the Add menu.
     pub plugins: Vec<(String, String)>,
-    /// (id, name) per discovered TUI plugin, listed next to Terminal in the Add menu.
+    /// (id, name) per discovered TUI plugin, listed under Plugins in the Add menu.
     pub apps: Vec<(String, String)>,
     /// (id, default panel size) per discovered plugin.
     pub plugin_sizes: Vec<(String, Size)>,

@@ -618,3 +618,10 @@ These shipped with #41, next to "Restore at launch" above.
   (spec), 1 to 600000 ms (`EXEC_MAX_TIMEOUT_MS`, chosen here). A signal reports
   `128 + n`. Output is UTF-8 lossy. The child gets CALM's environment and stdin is empty.
   Cost: a bare name resolves in CALM's short Dock `PATH`; docs say to use `/bin/sh -lc`.
+- **Fixed labels in the canvas menu (2026-11-01).** The "Native" and "Plugins" section
+  headers in Add and the "Settings…" item below it are hard-coded, like "Add", "Terminal"
+  and "Browser" before them. This is an exception to Customization first. Reason: they
+  name built-in structure, not a look or behavior a user tunes, and a rename setting per
+  label adds validation and docs for little gain. Cost: a user cannot rename them. If that
+  is wanted, add one `menus.labels` settings block for all built-in menu labels rather than
+  one setting per label.

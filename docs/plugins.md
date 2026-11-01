@@ -778,5 +778,5 @@ Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
 - `plugins/github-prs`: TSX. Lists open pull requests for the repositories saved in its
   settings (`{ "repos": ["owner/name"] }`), editable in the panel. Clicking a pull request
   opens it in the browser. Build it first with `bun install && bun run build` in its folder.
-  Menu item: "Open repo in browser" on its own panels. Opening a URL goes through `openExternal`,
-  which the host does not serve yet, so for now the item logs the rejection.
+  Menu item: "Open repo in browser" on its own panels. It opens the repo through
+  `openExternal`.
