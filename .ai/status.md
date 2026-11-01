@@ -166,7 +166,10 @@ Pull requests:
   failure. Two full runs on 1584575 (2026-11-01): fps, stats and preview failed in both;
   run 1 also failed tui, live (window hidden), resize and blur, run 2 resize. Both runs
   reached `session`, which passed. A failed `tui` step left its panels open, so the
-  following preview counts saw 4 terminals.
+  following preview counts saw 4 terminals. The first `zorder` step now raises the panel
+  through `apply_menu_choice` and checks the native order at once. The old raw
+  `scene.bring_to_front` plus `cx.notify()` waited for a paint, which an occluded window
+  skips; checked with no paint, it fails every time with `zorder=[1, 2, 3] scene=[2, 3, 1]`.
 - No PR yet: a Linux port plan.
 
 ## Not wired yet

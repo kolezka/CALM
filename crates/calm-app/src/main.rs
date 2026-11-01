@@ -344,33 +344,34 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         })
         .await;
         smoke_step(&mut run, "zorder", async {
-            // The first terminal was created first, so it starts at the back.
-            cx.update(|cx| {
+            // The first terminal was created first, so it starts at the back. Raise it through
+            // the menu path, which restacks the native views at once; a raw scene change waits
+            // for a paint that an occluded window never does.
+            let raised = cx.update_window(window, |_, window, cx| {
                 view.update(cx, |view, cx| {
-                    if let Some(first) = view.scene.panels.first().map(|panel| panel.id) {
-                        view.scene.bring_to_front(first);
-                    }
-                    cx.notify();
+                    let first = view.scene.panels.first().map(|panel| panel.id)?;
+                    view.apply_menu_choice(
+                        calm_core::menu::PANEL_BRING_TO_FRONT,
+                        canvas_view::MenuTarget::Panel(first),
+                        window,
+                        cx,
+                    );
+                    Some((view.native_zorder(cx), view.status_bar_state()))
                 })
             });
-            let raised = Instant::now();
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(50))
-                    .await;
-                let (scene, native) = cx.update(|cx| view.read(cx).native_zorder(cx));
-                let line = format!("zorder={native:?} scene={scene:?}");
-                // Two terminals and the browser share the native stack.
-                if scene == native && scene.len() == 3 {
-                    println!("smoke: {line}");
-                    // Restacking the panels must not bury the status bar.
-                    smoke_status_bar(cx.update(|cx| view.read(cx).status_bar_state()));
-                    break;
-                }
-                if raised.elapsed() > SMOKE_ZORDER_TIMEOUT {
-                    smoke_fail(&format!("native order does not match the scene: {line}"));
-                }
+            let ((scene, native), bar) = match raised {
+                Ok(Some(state)) => state,
+                Ok(None) => smoke_fail("no panel to raise"),
+                Err(err) => smoke_fail(&format!("zorder window: {err:#}")),
+            };
+            let line = format!("zorder={native:?} scene={scene:?}");
+            // Two terminals and the browser share the native stack.
+            if scene != native || scene.len() != 3 {
+                smoke_fail(&format!("native order does not match the scene: {line}"));
             }
+            println!("smoke: {line}");
+            // Restacking the panels must not bury the status bar.
+            smoke_status_bar(bar);
         })
         .await;
         smoke_step(&mut run, "join", async {
