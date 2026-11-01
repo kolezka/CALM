@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > CALM is an early prototype. I am preparing the first release candidate of the alpha
-> version, maybe in the first weeks of November 2026.
+> version for the first weeks of November 2026.
 
 # CALM
 
