@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::geometry::{Point, Rect, Size};
+use crate::gesture::{ContentGesture, GestureStep, content_gesture_target};
 use crate::resize::resize_target;
 use crate::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, chrome_height};
 use crate::snap::{SnapConfig, snap_draw, snap_move, snap_resize};
@@ -177,6 +178,10 @@ pub struct InputHandler {
     pub snap: SnapConfig,
     /// A click on empty canvas, or Escape, drops panel focus.
     pub click_empty_clears_focus: bool,
+    /// Keys that turn a press on panel content into a panel gesture (`canvas.move_modifier`).
+    pub move_modifier: MoveModifier,
+    /// A move-modifier press on GPUI-painted content, waiting to become a click or a move.
+    pub content_press: Option<(PanelId, ContentGesture)>,
 }
 
 impl Default for InputHandler {
@@ -188,6 +193,8 @@ impl Default for InputHandler {
             confirming: None,
             snap: SnapConfig::default(),
             click_empty_clears_focus: true,
+            move_modifier: MoveModifier::default(),
+            content_press: None,
         }
     }
 }
@@ -197,9 +204,23 @@ impl InputHandler {
         &mut self,
         screen: Point,
         button: Button,
-        _mods: Modifiers,
+        mods: Modifiers,
         scene: &mut Scene,
     ) -> Vec<Effect> {
+        self.content_press = None;
+        // Move-modifier gestures on content GPUI paints (placeholders, previews, a panel
+        // without a native view). Presses over a native view are taken by the native
+        // monitor and never reach here, so nothing is handled twice.
+        if button != Button::Middle
+            && self.move_modifier.matches(mods)
+            && let Some(id) = content_gesture_target(scene, screen)
+        {
+            if button == Button::Right {
+                return self.content_menu(id, screen);
+            }
+            self.content_press = Some((id, ContentGesture::press(screen)));
+            return vec![Effect::FocusPanel(id)];
+        }
         if button == Button::Right {
             let mut effects = context_menu(screen, scene);
             if matches!(effects.first(), Some(Effect::ShowCanvasMenu { .. })) {
@@ -306,6 +327,16 @@ impl InputHandler {
     }
 
     pub fn mouse_move(&mut self, screen: Point, mods: Modifiers, scene: &mut Scene) -> Vec<Effect> {
+        if let Some((id, gesture)) = self.content_press.as_mut() {
+            let GestureStep::StartMove { from } = gesture.moved(screen) else {
+                return Vec::new();
+            };
+            let id = *id;
+            self.content_press = None;
+            let mut effects = self.begin_content_move(id, from, scene);
+            effects.extend(self.mouse_move(screen, mods, scene));
+            return effects;
+        }
         let world = scene.camera.screen_to_world(screen);
         let snap = !mods.alt;
         match self.state {
@@ -370,6 +401,10 @@ impl InputHandler {
     /// `mouse_move`, so a press and release without movement changes nothing.
     pub fn mouse_up(&mut self, screen: Point, mods: Modifiers, scene: &mut Scene) -> Vec<Effect> {
         let mut effects = Vec::new();
+        // Released within the slop: a plain click, already focused at the press.
+        if self.content_press.take().is_some() {
+            return effects;
+        }
         if let Interaction::Pressing { start_screen } = self.state {
             self.state = Interaction::Idle;
             if beyond_slop(start_screen, screen) {
@@ -1539,6 +1574,144 @@ mod tests {
             Vec::new()
         );
         assert_eq!(handler.state, Interaction::Idle);
+    }
+
+    fn cmd() -> Modifiers {
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        }
+    }
+
+    /// Snapping off, so a drag moves by exactly the pointer delta.
+    fn unsnapped() -> InputHandler {
+        InputHandler {
+            snap: SnapConfig {
+                grid: None,
+                edge_distance: 0.0,
+            },
+            ..InputHandler::default()
+        }
+    }
+
+    /// A borderless plugin panel and a placeholder panel, both drawn by GPUI.
+    fn gpui_painted_panels() -> (Scene, Vec<PanelId>) {
+        let mut scene = Scene::default();
+        let plugin = scene.add(plugin_kind(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        crate::scene::set_borderless(scene.get_mut(plugin).unwrap(), true);
+        let unknown: PanelKind = serde_json::from_str(r#"{"type":"mystery"}"#).unwrap();
+        assert!(matches!(unknown, PanelKind::Unsupported { .. }));
+        let placeholder = scene.add(unknown, Rect::new(1000.0, 0.0, 400.0, 300.0));
+        (scene, vec![plugin, placeholder])
+    }
+
+    fn center(scene: &Scene, id: PanelId) -> Point {
+        let rect = crate::scene::content_rect(scene.get(id).unwrap());
+        scene.camera.world_to_screen(Point::new(
+            rect.origin.x + rect.size.width / 2.0,
+            rect.origin.y + rect.size.height / 2.0,
+        ))
+    }
+
+    #[test]
+    fn move_modifier_drag_on_gpui_content_moves_the_panel() {
+        let (mut scene, ids) = gpui_painted_panels();
+        for id in ids {
+            let before = scene.get(id).unwrap().rect;
+            let press = center(&scene, id);
+            let mut handler = unsnapped();
+            let down = handler.mouse_down(press, Button::Left, cmd(), &mut scene);
+            assert_eq!(down, vec![Effect::FocusPanel(id)], "{id:?}");
+            let to = Point::new(press.x + 80.0, press.y + 40.0);
+            handler.mouse_move(to, cmd(), &mut scene);
+            handler.mouse_up(to, cmd(), &mut scene);
+            let after = scene.get(id).unwrap().rect;
+            assert_eq!(after.size, before.size, "{id:?}");
+            assert_eq!(
+                (
+                    after.origin.x - before.origin.x,
+                    after.origin.y - before.origin.y
+                ),
+                (80.0, 40.0),
+                "{id:?}"
+            );
+            assert_eq!(handler.state, Interaction::Idle);
+        }
+    }
+
+    #[test]
+    fn move_modifier_click_on_gpui_content_only_focuses() {
+        let (mut scene, ids) = gpui_painted_panels();
+        for id in ids {
+            let before = scene.get(id).unwrap().rect;
+            let press = center(&scene, id);
+            let mut handler = unsnapped();
+            let down = handler.mouse_down(press, Button::Left, cmd(), &mut scene);
+            assert_eq!(down, vec![Effect::FocusPanel(id)], "{id:?}");
+            let wiggle = Point::new(press.x + CLICK_SLOP / 2.0, press.y);
+            handler.mouse_move(wiggle, cmd(), &mut scene);
+            let up = handler.mouse_up(wiggle, cmd(), &mut scene);
+            assert!(up.is_empty(), "{id:?}: {up:?}");
+            assert_eq!(scene.get(id).unwrap().rect, before, "{id:?}");
+            assert_eq!(handler.state, Interaction::Idle);
+        }
+    }
+
+    #[test]
+    fn move_modifier_right_click_on_gpui_content_opens_the_panel_menu() {
+        let (mut scene, ids) = gpui_painted_panels();
+        for id in ids {
+            let press = center(&scene, id);
+            let mut handler = unsnapped();
+            assert_eq!(
+                handler.mouse_down(press, Button::Right, cmd(), &mut scene),
+                vec![Effect::ShowPanelMenu { id, screen: press }],
+                "{id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn gpui_content_without_the_move_modifier_is_unchanged() {
+        let (mut scene, ids) = gpui_painted_panels();
+        for id in ids {
+            let before = scene.get(id).unwrap().rect;
+            let press = center(&scene, id);
+            let mut handler = unsnapped();
+            assert_eq!(
+                handler.mouse_down(press, Button::Left, no_mods(), &mut scene),
+                vec![Effect::FocusPanel(id)]
+            );
+            let to = Point::new(press.x + 80.0, press.y + 40.0);
+            handler.mouse_move(to, no_mods(), &mut scene);
+            handler.mouse_up(to, no_mods(), &mut scene);
+            assert_eq!(scene.get(id).unwrap().rect, before, "{id:?}");
+            // Plain right click on content is the native view's, not a panel menu.
+            let right = handler.mouse_down(press, Button::Right, no_mods(), &mut scene);
+            assert!(
+                !right
+                    .iter()
+                    .any(|e| matches!(e, Effect::ShowPanelMenu { .. })),
+                "{id:?}: {right:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_different_move_modifier_setting_is_honored_on_gpui_content() {
+        let (mut scene, ids) = gpui_painted_panels();
+        let id = ids[0];
+        let before = scene.get(id).unwrap().rect;
+        let press = center(&scene, id);
+        let mut handler = InputHandler {
+            move_modifier: MoveModifier::Alt,
+            ..unsnapped()
+        };
+        let to = Point::new(press.x + 80.0, press.y + 40.0);
+        handler.mouse_down(press, Button::Left, cmd(), &mut scene);
+        handler.mouse_move(to, cmd(), &mut scene);
+        handler.mouse_up(to, cmd(), &mut scene);
+        assert_eq!(scene.get(id).unwrap().rect, before);
     }
 
     #[test]

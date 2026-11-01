@@ -703,6 +703,7 @@ impl CanvasView {
         self.input.snap = self.settings.settings.snap.config();
         self.input.click_empty_clears_focus =
             self.settings.settings.canvas.click_empty_clears_focus;
+        self.input.move_modifier = self.settings.settings.canvas.move_modifier;
     }
 
     pub fn set_show_stats(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
