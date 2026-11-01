@@ -1,0 +1,149 @@
+---
+import Page from '../layouts/Page.astro';
+import PixelText from '../components/PixelText.astro';
+
+const panels = [
+  { title: 'TERMINAL', x: 6, y: 12, w: 34, h: 26, kind: 'term' },
+  { title: 'TERMINAL', x: 44, y: 12, w: 34, h: 26, kind: 'term' },
+  { title: 'BROWSER', x: 6, y: 44, w: 72, h: 42, kind: 'browser' },
+];
+
+---
+
+<Page>
+
+<main>
+  <section class="hero">
+    <div class="hero-canvas" aria-hidden="true">
+      <div class="canvas-grid"></div>
+      {panels.map((p) => (
+        <div class="canvas-panel" style={`left:${p.x}%;top:${p.y}%;width:${p.w}%;height:${p.h}%`}>
+          <div class="panel-bar">
+            <span class="panel-dots"></span>
+            <span class="panel-title">{p.title}</span>
+          </div>
+          <div class:list={['panel-body', p.kind]}>
+            {p.kind === 'term' ? (
+              <>
+                <span class="prompt">~ cargo run -p calm-app</span>
+                <span class="dim">building calm-app v0.1.0</span>
+                <span class="dim">Finished in 4.21s</span>
+                <span class="prompt">~ <span class="cursor"></span></span>
+              </>
+            ) : (
+              <>
+                <span class="urlbar">github.com/kolezka/CALM</span>
+                <span class="dim">CALM — infinite canvas for macOS</span>
+              </>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <div class="hero-copy">
+      <PixelText
+        text="CALM"
+        unit={14}
+        gap={2}
+        fill="#E7F6FF"
+        shadow="#48F5E7"
+        shadowDx={-2}
+        shadowDy={2}
+        class="hero-wordmark"
+      />
+      <div class="hero-underline" aria-hidden="true"></div>
+      <p class="hero-tagline">Infinite canvas for terminals, browsers and plugins.</p>
+      <p class="hero-sub">
+        One pan and zoom canvas on macOS. Ghostty terminals, a live browser and your own
+        plugins side by side, all of them still running while you move around.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="https://github.com/kolezka/CALM">Source on GitHub</a>
+      </div>
+      <p class="hero-note">
+        Early build. No release yet, so you clone it and build from source.
+      </p>
+    </div>
+  </section>
+
+  <section class="buyer-beware" aria-labelledby="wrong">
+    <h2 id="wrong" class="sr-only">What CALM is not</h2>
+    <div class="care-box">
+      <p class="care-lead">Wrong tool if you want</p>
+      <ul>
+        <li>a tabbed terminal, because CALM is one canvas instead</li>
+        <li>a Linux or Windows build, because this is macOS on Apple Silicon only</li>
+        <li>a sandbox for untrusted plugins, because plugins run as trusted code</li>
+        <li>a shipped download, because there is no release yet</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="features" aria-labelledby="what">
+    <h2 id="what">What it does</h2>
+    <div class="cards">
+      <article class="card">
+        <h3>Terminals</h3>
+        <p>
+          Live Ghostty surfaces. Five, ten, twenty of them at any size. A panel keeps its
+          process through pan, zoom, preview and minimize. Only an explicit, confirmed
+          close ends it.
+        </p>
+      </article>
+      <article class="card">
+        <h3>Browsers</h3>
+        <p>
+          Real web pages in a panel, with an address bar, back, forward and reload. Type a
+          host and it opens, type anything else and it searches.
+        </p>
+      </article>
+      <article class="card">
+        <h3>Plugins</h3>
+        <p>
+          Panels written in HTML and JavaScript, talking to the app over <code>window.calm</code>.
+          They add entries to the right-click Add menu. TSX is optional.
+        </p>
+      </article>
+      <article class="card">
+        <h3>TUI apps</h3>
+        <p>
+          One manifest turns any terminal program into an Add menu entry, so a TUI tool
+          lands on the canvas like a panel instead of a window.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section class="why" aria-labelledby="why-title">
+    <h2 id="why-title">Why a canvas instead of windows</h2>
+    <p>
+      Stacked windows and tabs hide each other. A canvas does not. Draw a rectangle and you
+      get a panel there. Arrange them like notes on a whiteboard, zoom out to see the whole
+      workspace, zoom in to work. Zooming scales the view and never the terminal, so rows
+      and columns stay put.
+    </p>
+    <p>
+      Panels dropped edge to edge join into one block with a single divider. Distant panels
+      become still previews refreshed every two seconds, which is what keeps twenty live
+      terminals affordable to paint.
+    </p>
+  </section>
+
+  <section class="discover" aria-labelledby="discover-title">
+    <h2 id="discover-title">Plugins</h2>
+    <p>
+      Panels people have built for CALM: terminals, dashboards and small tools that open
+      straight on the canvas.
+    </p>
+    <a class="btn btn-primary" href="/plugins">Discover plugins</a>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <PixelText text="CALM" unit={4} gap={1} fill="#455A88" label="CALM" />
+  <p>Built with Rust, GPUI and AppKit. macOS 14 or newer on Apple Silicon.</p>
+</footer>
+
+</Page>

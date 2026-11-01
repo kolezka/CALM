@@ -1,0 +1,63 @@
+---
+// Renders text with CALM's own 5x7 pixel glyphs, the same table that draws the
+// wordmark in assets/brand/build.py. Each filled cell becomes one <rect> on an
+// integer grid, with an optional chromatic offset copy behind it, which is how
+// the banner gets its cyan/magenta fringe.
+import { layoutText } from '../lib/glyphs.js';
+
+const {
+  text,
+  gap = 1,
+  unit = 6,
+  fill = '#E7F6FF',
+  shadow = null,
+  shadowDx = 0,
+  shadowDy = 0,
+  label = null,
+  class: className = '',
+} = Astro.props;
+
+const layout = layoutText(text, gap);
+const w = layout.width * unit;
+const h = layout.height * unit;
+
+const rects = layout.cells
+  .map(([x, y]) => `<rect x="${x * unit}" y="${y * unit}" width="${unit}" height="${unit}"/>`)
+  .join('');
+---
+
+<span class:list={['pixel-text', className]} style="--pt-w: {w}px; --pt-h: {h}px; --pt-fill: {fill};">
+  <svg
+    viewBox={`0 0 ${w} ${h}`}
+    width={w}
+    height={h}
+    role="img"
+    aria-label={label ?? text}
+    shape-rendering="crispEdges"
+    focusable="false"
+  >
+    {
+      shadow && (
+        <g
+          fill={shadow}
+          transform={`translate(${shadowDx}, ${shadowDy})`}
+          set:html={rects}
+        />
+      )
+    }
+    <g fill={fill} set:html={rects} />
+  </svg>
+</span>
+
+<style>
+  .pixel-text {
+    display: inline-block;
+    line-height: 0;
+  }
+
+  .pixel-text svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+  }
+</style>
