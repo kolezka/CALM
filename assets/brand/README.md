@@ -25,3 +25,16 @@ iconutil -c icns assets/brand/CALM.iconset -o assets/brand/CALM.icns
 ```
 
 `CALM.iconset/` contains every macOS required size (16 through 1024 pixels). The bundle script copies `CALM.icns` into `Contents/Resources`.
+
+## Social preview card
+
+`social_preview.py` renders `social-preview.png` at 1280x640, the size GitHub asks for
+(minimum 640x320). It uses the same glyph grid and palette as `build.py`:
+
+```sh
+uv run --with pillow python3 assets/brand/social_preview.py
+```
+
+The PNG is generated, not exported by hand. GitHub takes the image from the repository
+settings page (Settings, General, Social preview), so uploading it stays a manual step.
+
