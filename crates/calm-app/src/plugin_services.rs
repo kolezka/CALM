@@ -231,7 +231,24 @@ fn run_exec(spec: &ExecSpec, max_output: usize) -> Result<Value, ApiError> {
             ),
         )
     };
+    // A stream over the cap ends the call at once, whether or not the child has exited.
+    let mut outputs: [Option<Vec<u8>>; 2] = [None, None];
+    let too_large = |stream: usize, child: &mut std::process::Child| {
+        kill_group(group);
+        let _ = child.wait();
+        let name = if stream == 0 { "stdout" } else { "stderr" };
+        ApiError::new(
+            ErrorCode::TooLarge,
+            format!("process.exec: {name} is over the {max_output} byte limit"),
+        )
+    };
     let status = loop {
+        while let Ok((stream, buf)) = receiver.try_recv() {
+            if buf.len() > max_output {
+                return Err(too_large(stream, &mut child));
+            }
+            outputs[stream] = Some(buf);
+        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() >= deadline => return Err(timed_out(&mut child)),
@@ -243,10 +260,12 @@ fn run_exec(spec: &ExecSpec, max_output: usize) -> Result<Value, ApiError> {
         }
     };
     // A grandchild can hold the pipes open after the child exits; it shares the deadline.
-    let mut outputs = [None, None];
     while outputs.iter().any(Option::is_none) {
         let left = deadline.saturating_duration_since(Instant::now());
         match receiver.recv_timeout(left) {
+            Ok((stream, buf)) if buf.len() > max_output => {
+                return Err(too_large(stream, &mut child));
+            }
             Ok((stream, buf)) => outputs[stream] = Some(buf),
             Err(_) => return Err(timed_out(&mut child)),
         }
@@ -254,14 +273,6 @@ fn run_exec(spec: &ExecSpec, max_output: usize) -> Result<Value, ApiError> {
     let [Some(stdout), Some(stderr)] = outputs else {
         unreachable!("both streams arrived");
     };
-    for (name, buf) in [("stdout", &stdout), ("stderr", &stderr)] {
-        if buf.len() > max_output {
-            return Err(ApiError::new(
-                ErrorCode::TooLarge,
-                format!("process.exec: {name} is over the {max_output} byte limit"),
-            ));
-        }
-    }
     let code = status
         .code()
         .or_else(|| status.signal().map(|signal| 128 + signal))
@@ -792,6 +803,70 @@ pub(crate) mod tests {
         assert!(
             matches!(&over, Err(e) if e.code == ErrorCode::TooLarge && e.message.contains("stdout")),
             "{over:?}"
+        );
+    }
+
+    // Far more than a pipe buffer: the writer must not block until the timeout.
+    #[test]
+    fn process_exec_output_over_the_cap_is_too_large_not_a_timeout() {
+        let spec = ExecSpec {
+            command: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "dd if=/dev/zero bs=4096 count=256 2>/dev/null".into(),
+            ],
+            cwd: None,
+            timeout: Duration::from_secs(10),
+        };
+        let started = Instant::now();
+        let result = run_exec(&spec, 1024);
+        assert!(
+            matches!(&result, Err(e) if e.code == ErrorCode::TooLarge),
+            "{result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn process_exec_too_large_leaves_no_writer_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("writer.pid");
+        // The writer runs in the background and ignores SIGPIPE, so only a kill stops it.
+        let script = format!(
+            "trap '' PIPE; (while :; do printf 'xxxxxxxxxxxxxxxx' 2>/dev/null; done) & echo $! > '{}'; wait",
+            pid_file.display()
+        );
+        let spec = ExecSpec {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), script],
+            cwd: None,
+            timeout: Duration::from_secs(5),
+        };
+        let result = run_exec(&spec, 1024);
+        assert!(
+            matches!(&result, Err(e) if e.code == ErrorCode::TooLarge),
+            "{result:?}"
+        );
+        let pid = fs::read_to_string(&pid_file).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let alive = Command::new("/bin/kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .unwrap()
+            .success();
+        if alive {
+            let _ = Command::new("/bin/kill")
+                .args(["-KILL", pid.trim()])
+                .status();
+        }
+        assert!(
+            !alive,
+            "the writer {} outlived a too_large reply",
+            pid.trim()
         );
     }
 

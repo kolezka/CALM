@@ -260,6 +260,7 @@ Pull requests:
 - Bridge control (`feat/plugin-bridge-control`), from a plugin page's Web Inspector:
   `calm.canvas.createPanel({ kind: "terminal" })` opens a focused shell at the view center,
   `calm.canvas.focusPanel(id)` on a minimized panel restores and raises it,
+  `calm.canvas.focusPanel(id)` on another plugin panel moves the keyboard into that page,
   `calm.panel.minimize()` keeps the page running, `calm.panel.close()` removes the plugin
   panel, `calm.process.exec("/bin/sh", ["-lc", "command -v gh"])` finds `gh` from the Dock.
 - GitHub PRs plugin with a real `gh` login and with a `.env` token (#23).

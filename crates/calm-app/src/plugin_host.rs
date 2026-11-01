@@ -219,6 +219,11 @@ impl PluginPanel {
         self.host.bring_to_front();
     }
 
+    /// Gives the page the keyboard, as a terminal or browser gets it on focus.
+    pub fn focus(&self) -> bool {
+        self.web.focus()
+    }
+
     pub fn stack_index(&self) -> Option<usize> {
         self.host.stack_index()
     }

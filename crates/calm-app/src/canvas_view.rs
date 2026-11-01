@@ -569,6 +569,11 @@ impl CanvasView {
                             browser.focus_page();
                         }
                     }
+                    if let Some((_, plugin)) = self.plugin_panels.iter().find(|(p, _)| *p == id)
+                        && !plugin.focus()
+                    {
+                        eprintln!("calm: plugin panel {}: could not take the keyboard", id.0);
+                    }
                 }
                 Effect::ClearFocus => {
                     self.focused = None;

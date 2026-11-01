@@ -535,6 +535,11 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   once, as the spec says. The live terminal confirmation with a pending reply and `busy` is
   `panels.close(id)`, phase 5, not built. Cost if wrong: none today; phase 5 still owes the
   pending reply.
+- **Focusing a plugin panel gives its page the keyboard.** `Effect::FocusPanel` used to
+  focus only terminals and browsers, so `canvas.focusPanel` and a focused `createPanel`
+  of a plugin left the keys where they were. `WebPanel::focus` makes the web view first
+  responder. This also applies to a title bar click and the Add menu. Cost: the canvas
+  shortcuts (`t`, `b`) stop while a plugin page has the keyboard, as with a terminal.
 - **`panel.minimize` sets, it does not toggle.** A second call changes nothing. Reason: a
   plugin that calls it twice must not restore itself.
 - **`canvas.createPanel` defaults `focus` to true,** as the Add menu does. The spec gives
@@ -550,7 +555,9 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
 - **`process.exec` has no shell and its own process group.** A timeout kills the group with
   `/bin/kill -KILL -<pgid>`, so a grandchild cannot outlive it and no unsafe code is needed
   in `calm-app`. Waiting on the pipes shares the same deadline, so a background grandchild
-  holding stdout ends as `timeout`, not a hang. Limits: 30 s default and 4 MiB per stream
+  holding stdout ends as `timeout`, not a hang. A stream over the cap ends the call at once
+  with `too_large` and kills the group too, even while the child still runs (review
+  finding: a writer that ignores SIGPIPE used to run on until the timeout). Limits: 30 s default and 4 MiB per stream
   (spec), 1 to 600000 ms (`EXEC_MAX_TIMEOUT_MS`, chosen here). A signal reports
   `128 + n`. Output is UTF-8 lossy. The child gets CALM's environment and stdin is empty.
   Cost: a bare name resolves in CALM's short Dock `PATH`; docs say to use `/bin/sh -lc`.
