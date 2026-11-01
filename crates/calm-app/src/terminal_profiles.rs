@@ -47,6 +47,17 @@ pub fn start_dir(mode: &CwdMode, inherited: Option<&Path>, home: &Path) -> PathB
     }
 }
 
+/// Where a plain terminal starts: the panel's own cwd (a restored one, already checked)
+/// wins over the profile's mode.
+pub fn terminal_start(
+    panel_cwd: Option<PathBuf>,
+    mode: &CwdMode,
+    inherited: Option<&Path>,
+    home: &Path,
+) -> PathBuf {
+    panel_cwd.unwrap_or_else(|| start_dir(mode, inherited, home))
+}
+
 /// Launch options for a plain terminal. A `command` stored on the panel wins over the
 /// profile's; the env and args then do not apply.
 pub fn options(
@@ -128,6 +139,15 @@ pub fn icon_file(settings_dir: &Path, relative: &Path) -> Result<PathBuf, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_terminal_with_a_gone_cwd_starts_in_home_not_the_fixed_cwd() {
+        let home = Path::new("/Users/someone");
+        let gone = Path::new("/no/such/calm/dir");
+        let (cwd, _) = calm_core::restore::restored_cwd(Some(gone), |p| p.is_dir(), home);
+        let start = terminal_start(cwd, &CwdMode::Fixed("/other".into()), None, home);
+        assert_eq!(start, home);
+    }
 
     #[test]
     fn start_dir_follows_the_mode() {

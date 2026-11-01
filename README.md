@@ -71,7 +71,8 @@ pan, zoom or minimize it. Only an explicit, confirmed close ends it.
 ### Customization
 
 - A native Settings window (`cmd-,`) with Background, Grid, Canvas and Snapping, Panels,
-  Terminal, Session and Developer sections. The Session settings have no effect yet.
+  Terminal, Session and Developer sections. Session controls restore at launch and
+  autosave.
 - Backgrounds: solid color, linear or radial gradients with 2 to 6 stops, or an image with
   cover, contain, tile or center.
 - Image filters: blur, brightness, contrast, saturation, grayscale and dim.
@@ -171,9 +172,9 @@ from the TSX template in [templates/plugin-tsx](templates/plugin-tsx/README.md).
 CALM is an early prototype. Nothing has been released and the GUI has had limited manual
 testing.
 
-Not built yet: saving and restoring layouts or sessions (the file format and safe write
-code exist, nothing uses them yet, so every launch starts empty), a benchmark mode, and
-about half of the plugin bridge.
+A launch restores the last session (panels, order and camera, with fresh processes) and
+autosaves it. Not built yet: saving named layouts and the File menu, the `ask` restore
+dialog, a benchmark mode, and about half of the plugin bridge.
 
 ## Documentation
 
@@ -187,7 +188,7 @@ about half of the plugin bridge.
 - [Plugin API v2 design](docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md)
   (phase 1 built, the rest is design).
 - [Canvas persistence plan](docs/superpowers/plans/2026-10-31-canvas-persistence.md)
-  (Tasks 1 to 3 merged, autosave and restore not built).
+  (Tasks 1 to 5 merged: storage, autosave and restore at launch).
 - [Claude Code mods integration](docs/superpowers/specs/2026-10-31-claude-code-mods-integration.md)
   (research).
 

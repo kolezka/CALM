@@ -9,10 +9,10 @@ use crate::settings::SessionSettings;
 /// A scene that keeps changing (a long pan) still saves this often.
 pub const MAX_DIRTY_AGE: Duration = Duration::from_secs(10);
 
-/// Whether the app starts autosave at launch. Off until restore at launch lands (plan
-/// Task 5): without restore, the first change on the empty start canvas would replace the
-/// last real session. The smoke drives autosave explicitly in its own temp dir.
-pub const APP_AUTOSAVE_ACTIVE: bool = false;
+/// Whether the app starts autosave at launch. On since restore at launch (plan Task 5):
+/// an empty start writes nothing until its first change, so the last session survives.
+/// The smoke drives autosave explicitly in its own temp dir.
+pub const APP_AUTOSAVE_ACTIVE: bool = true;
 
 /// Autosave runs only when the build gate and the `session.autosave` setting both allow it.
 pub fn autosave_active(gate: bool, setting: bool) -> bool {
@@ -408,8 +408,9 @@ mod tests {
     }
 
     #[test]
-    fn app_activation_gate_is_off() {
-        assert!(!autosave_active(APP_AUTOSAVE_ACTIVE, true));
+    fn app_activation_gate_is_on() {
+        assert!(autosave_active(APP_AUTOSAVE_ACTIVE, true));
+        assert!(!autosave_active(APP_AUTOSAVE_ACTIVE, false));
         assert!(autosave_active(true, true));
         assert!(!autosave_active(true, false));
     }

@@ -16,6 +16,7 @@ pub mod plugin_menu;
 pub mod preview;
 pub mod process_stats;
 pub mod resize;
+pub mod restore;
 pub mod scene;
 pub mod settings;
 pub mod settings_form;

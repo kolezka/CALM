@@ -7,6 +7,7 @@ mod icon_image;
 mod plugin_host;
 mod plugin_services;
 mod settings_menu;
+mod smoke_runner;
 mod terminal;
 mod terminal_profiles;
 mod theme;
@@ -16,11 +17,21 @@ use calm_core::geometry::{Point, Rect, Size};
 use calm_core::grid::{GridKind, mark_primitive_bound};
 use calm_core::interaction::{Effect, ResizeEdge};
 use calm_core::join::JOIN_SNAP_GAP;
+use calm_core::layout::{load_layout_from, move_aside};
 use calm_core::preview::PanelMode;
+use calm_core::restore::{
+    LaunchExit, LaunchFlags, RestorePlan, Source, after_quarantine, pick_source, plan_restore,
+};
 use calm_core::scene::{PanelId, PanelKind};
+use calm_core::settings::RestoreOnLaunch;
 use calm_core::snap::{SnapConfig, snap_move};
 use calm_core::tui::TuiState;
+use std::cell::Cell;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::path::Path;
 use std::sync::{Mutex, PoisonError, TryLockError};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -35,18 +46,54 @@ use crate::settings_menu::SettingsState;
 struct Args {
     smoke: bool,
     fullscreen: bool,
+    restore: LaunchFlags,
 }
 
 fn parse_args() -> Args {
     let mut args = Args::default();
-    for arg in std::env::args().skip(1) {
+    let mut rest = std::env::args().skip(1);
+    while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--smoke" => args.smoke = true,
             "--fullscreen" => args.fullscreen = true,
+            "--no-restore" => args.restore.no_restore = true,
+            "--layout" => match rest.next() {
+                Some(name) => args.restore.layout = Some(name),
+                None => {
+                    eprintln!("calm: --layout needs a layout name");
+                    std::process::exit(2);
+                }
+            },
             other => eprintln!("calm: ignoring unknown argument {other}"),
         }
     }
     args
+}
+
+/// Reads what the launch needs, moves a session that failed to load aside, and returns
+/// the plan. Reads only `session` and, for `--layout`, `layouts/<name>.json`.
+fn launch_plan(
+    flags: &LaunchFlags,
+    setting: RestoreOnLaunch,
+    session: &Path,
+    layouts: &Path,
+) -> Result<RestorePlan, LaunchExit> {
+    let (source, notice) = pick_source(flags, setting);
+    let dir = session.parent().unwrap_or(Path::new("."));
+    let stem = session
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("session");
+    let session_read = load_layout_from(dir, stem);
+    let layout_read = match &source {
+        Source::NamedLayout(name) => Some(load_layout_from(layouts, name)),
+        _ => None,
+    };
+    let mut plan = plan_restore(&source, notice, session_read, layout_read)?;
+    if let Some(path) = plan.quarantine.clone() {
+        after_quarantine(&mut plan, move_aside(&path));
+    }
+    Ok(plan)
 }
 
 /// A page with no network use that clicks its own link as soon as it parses, so following
@@ -89,10 +136,58 @@ fn add_smoke_panels(
 
 const SMOKE_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Inside a step, ends only that step: `smoke_step` records the failure and moves on.
+/// Elsewhere (setup before the steps), ends the process with exit code 1.
 fn smoke_fail(reason: &str) -> ! {
     eprintln!("smoke: FAILED {reason}");
+    if IN_SMOKE_STEP.get() {
+        std::panic::panic_any(SmokeFailure(reason.to_string()));
+    }
     remove_smoke_dir();
     std::process::exit(1);
+}
+
+/// The panic payload of a failed step. The panic hook stays quiet for it.
+struct SmokeFailure(String);
+
+thread_local! {
+    /// True only while `smoke_step` polls a step, so setup failures still exit.
+    static IN_SMOKE_STEP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs one named step unless the filter or a failed requirement rules it out, and records
+/// PASS, FAIL or SKIPPED. Steps must not call `smoke_fail` inside a GPUI update closure:
+/// unwinding through one would leave GPUI's state broken for the later steps.
+async fn smoke_step(run: &mut smoke_runner::SmokeRun, name: &str, step: impl Future<Output = ()>) {
+    match run.decide(name) {
+        None => return,
+        Some(Err(why)) => {
+            println!("{}", run.record(name, smoke_runner::Outcome::Skipped(why)));
+            return;
+        }
+        Some(Ok(())) => {}
+    }
+    let mut step = std::pin::pin!(step);
+    let result = futures::future::poll_fn(|task| {
+        IN_SMOKE_STEP.set(true);
+        let polled = std::panic::catch_unwind(AssertUnwindSafe(|| step.as_mut().poll(task)));
+        IN_SMOKE_STEP.set(false);
+        match polled {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(())) => Poll::Ready(Ok(())),
+            Err(payload) => Poll::Ready(Err(payload)),
+        }
+    })
+    .await;
+    let line = match result {
+        Ok(()) => run.record(name, smoke_runner::Outcome::Pass),
+        Err(payload) => match payload.downcast::<SmokeFailure>() {
+            Ok(failure) => run.fail(name, failure.0),
+            // A real panic is a bug, not a step result: keep its old behavior.
+            Err(payload) => std::panic::resume_unwind(payload),
+        },
+    };
+    println!("{line}");
 }
 
 /// The smoke's settings dir. Held here because `process::exit` and statics skip destructors,
@@ -214,10 +309,7 @@ fn smoke_native_reorder(
 ) {
     let result = cx.update_window(window, |_, window, cx| {
         view.update(cx, |view, cx| {
-            let last = view.scene.panels.last().map(|panel| panel.id);
-            let Some(last) = last else {
-                smoke_fail("no panel to reorder");
-            };
+            let last = view.scene.panels.last().map(|panel| panel.id)?;
             view.apply_menu_choice(
                 calm_core::menu::PANEL_SEND_TO_BACK,
                 canvas_view::MenuTarget::Panel(last),
@@ -231,11 +323,12 @@ fn smoke_native_reorder(
                 window,
                 cx,
             );
-            (back, (view.native_zorder(cx), view.status_bar_state()))
+            Some((back, (view.native_zorder(cx), view.status_bar_state())))
         })
     });
     let (back, front) = match result {
-        Ok(orders) => orders,
+        Ok(Some(orders)) => orders,
+        Ok(None) => smoke_fail("no panel to reorder"),
         Err(err) => smoke_fail(&format!("native reorder window: {err:#}")),
     };
     for (action, (orders, bar)) in [("send to back", back), ("bring to front", front)] {
@@ -255,311 +348,361 @@ fn smoke_native_reorder(
 fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, cx: &mut App) {
     let started = Instant::now();
     cx.spawn(async move |cx| {
-        let status_line;
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(100))
-                .await;
-            let status = cx.update(|cx| view.update(cx, |view, cx| view.terminal_status(cx)));
-            if status.len() != 2 {
-                smoke_fail(&format!("expected 2 terminals, found {}", status.len()));
-            }
-            let drawn = status.iter().all(|(frames, _)| *frames > 0);
-            if !drawn && started.elapsed() <= SMOKE_FRAME_TIMEOUT {
-                continue;
-            }
-            let frames: Vec<String> = status.iter().map(|(f, _)| f.to_string()).collect();
-            let alive: Vec<String> = status.iter().map(|(_, a)| a.to_string()).collect();
-            let line = format!(
-                "smoke: terminals=2 frames=[{}] alive=[{}]",
-                frames.join(","),
-                alive.join(",")
-            );
-            if !drawn {
-                smoke_fail(&format!("no frame within 10 s: {line}"));
-            }
-            if !status.iter().all(|(_, alive)| *alive) {
-                smoke_fail(&format!("a terminal exited: {line}"));
-            }
-            status_line = line;
-            break;
-        }
-        println!("{status_line}");
-
-        // The first terminal was created first, so it starts at the back.
-        cx.update(|cx| {
-            view.update(cx, |view, cx| {
-                if let Some(first) = view.scene.panels.first().map(|panel| panel.id) {
-                    view.scene.bring_to_front(first);
+        let only = std::env::var(smoke_runner::ONLY_ENV).ok();
+        let mut run = smoke_runner::SmokeRun::new(only.as_deref())
+            .unwrap_or_else(|err| smoke_fail(&err));
+        println!("{}", run.filter_line());
+        smoke_step(&mut run, "terminals", async {
+            let status_line;
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let status = cx.update(|cx| view.update(cx, |view, cx| view.terminal_status(cx)));
+                if status.len() != 2 {
+                    smoke_fail(&format!("expected 2 terminals, found {}", status.len()));
                 }
-                cx.notify();
-            })
-        });
-        let raised = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-            let (scene, native) = cx.update(|cx| view.read(cx).native_zorder(cx));
+                let drawn = status.iter().all(|(frames, _)| *frames > 0);
+                if !drawn && started.elapsed() <= SMOKE_FRAME_TIMEOUT {
+                    continue;
+                }
+                let frames: Vec<String> = status.iter().map(|(f, _)| f.to_string()).collect();
+                let alive: Vec<String> = status.iter().map(|(_, a)| a.to_string()).collect();
+                let line = format!(
+                    "smoke: terminals=2 frames=[{}] alive=[{}]",
+                    frames.join(","),
+                    alive.join(",")
+                );
+                if !drawn {
+                    smoke_fail(&format!("no frame within 10 s: {line}"));
+                }
+                if !status.iter().all(|(_, alive)| *alive) {
+                    smoke_fail(&format!("a terminal exited: {line}"));
+                }
+                status_line = line;
+                break;
+            }
+            println!("{status_line}");
+        })
+        .await;
+        smoke_step(&mut run, "zorder", async {
+            // The first terminal was created first, so it starts at the back. Raise it through
+            // the menu path, which restacks the native views at once; a raw scene change waits
+            // for a paint that an occluded window never does.
+            let raised = cx.update_window(window, |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    let first = view.scene.panels.first().map(|panel| panel.id)?;
+                    view.apply_menu_choice(
+                        calm_core::menu::PANEL_BRING_TO_FRONT,
+                        canvas_view::MenuTarget::Panel(first),
+                        window,
+                        cx,
+                    );
+                    Some((view.native_zorder(cx), view.status_bar_state()))
+                })
+            });
+            let ((scene, native), bar) = match raised {
+                Ok(Some(state)) => state,
+                Ok(None) => smoke_fail("no panel to raise"),
+                Err(err) => smoke_fail(&format!("zorder window: {err:#}")),
+            };
             let line = format!("zorder={native:?} scene={scene:?}");
             // Two terminals and the browser share the native stack.
-            if scene == native && scene.len() == 3 {
-                println!("smoke: {line}");
-                // Restacking the panels must not bury the status bar.
-                smoke_status_bar(cx.update(|cx| view.read(cx).status_bar_state()));
-                break;
-            }
-            if raised.elapsed() > SMOKE_ZORDER_TIMEOUT {
+            if scene != native || scene.len() != 3 {
                 smoke_fail(&format!("native order does not match the scene: {line}"));
             }
-        }
-
-        // Drop the second terminal 5 units right of the first through the real snap path:
-        // it must land one unit off and render as one joined pair with a visible divider.
-        let gap = cx.update(|cx| {
-            view.update(cx, |view, cx| {
-                let mut ids: Vec<PanelId> = view.scene.panels.iter().map(|p| p.id).collect();
-                ids.sort();
-                let anchor = view.scene.get(ids[0]).map(|p| p.rect)?;
-                let moving = view.scene.get_mut(ids[1])?;
-                let dropped = Rect::new(
-                    anchor.right() + 5.0,
-                    anchor.origin.y,
-                    moving.rect.size.width,
-                    moving.rect.size.height,
-                );
-                moving.rect = snap_move(dropped, &[anchor], &SnapConfig::default());
-                let gap = moving.rect.origin.x - anchor.right();
-                cx.notify();
-                Some(gap)
-            })
-        });
-        if gap != Some(JOIN_SNAP_GAP) {
-            smoke_fail(&format!(
-                "flush drop landed at gap {gap:?}, not {JOIN_SNAP_GAP}"
-            ));
-        }
-        let moved = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-            let (pairs, dividers) = cx.update(|cx| view.read(cx).join_counts);
-            if (pairs, dividers) == (1, 1) {
-                println!("smoke: join pairs={pairs} dividers={dividers} gap={JOIN_SNAP_GAP}");
-                break;
-            }
-            if moved.elapsed() > SMOKE_ZORDER_TIMEOUT {
+            println!("smoke: {line}");
+            // Restacking the panels must not bury the status bar.
+            smoke_status_bar(bar);
+        })
+        .await;
+        smoke_step(&mut run, "join", async {
+            // Drop the second terminal 5 units right of the first through the real snap path:
+            // it must land one unit off and render as one joined pair with a visible divider.
+            let gap = cx.update(|cx| {
+                view.update(cx, |view, cx| {
+                    let mut ids: Vec<PanelId> = view.scene.panels.iter().map(|p| p.id).collect();
+                    ids.sort();
+                    let anchor = view.scene.get(ids[0]).map(|p| p.rect)?;
+                    let moving = view.scene.get_mut(ids[1])?;
+                    let dropped = Rect::new(
+                        anchor.right() + 5.0,
+                        anchor.origin.y,
+                        moving.rect.size.width,
+                        moving.rect.size.height,
+                    );
+                    moving.rect = snap_move(dropped, &[anchor], &SnapConfig::default());
+                    let gap = moving.rect.origin.x - anchor.right();
+                    cx.notify();
+                    Some(gap)
+                })
+            });
+            if gap != Some(JOIN_SNAP_GAP) {
                 smoke_fail(&format!(
-                    "flush pair not joined: pairs={pairs} dividers={dividers}"
+                    "flush drop landed at gap {gap:?}, not {JOIN_SNAP_GAP}"
                 ));
             }
-        }
-
-        cx.update(|_| smoke_app_icon());
-        smoke_native_reorder(&view, window, cx);
-        smoke_plugins(&view, window, cx).await;
-        smoke_tui(&view, window, cx).await;
-
-        let toggled = cx.update_window(window, |_, window, cx| {
-            view.update(cx, |view, cx| view.set_show_stats(true, window, cx))
-        });
-        if let Err(err) = toggled {
-            smoke_fail(&format!("show_stats toggle: {err:#}"));
-        }
-        let shown = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-            let (frames, fps) = cx.update(|cx| {
-                let stats = &view.read(cx).frame_stats;
-                (stats.frames(), stats.fps())
-            });
-            // The first frame after the toggle starts the window; wait for 10 more.
-            if frames > SMOKE_FPS_FRAMES {
-                match fps {
-                    Some(fps) if fps > 0.0 => println!("smoke: fps={fps:.1}"),
-                    _ => smoke_fail(&format!("no fps after {frames} frames")),
+            let moved = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let (pairs, dividers) = cx.update(|cx| view.read(cx).join_counts);
+                if (pairs, dividers) == (1, 1) {
+                    println!("smoke: join pairs={pairs} dividers={dividers} gap={JOIN_SNAP_GAP}");
+                    break;
                 }
-                break;
+                if moved.elapsed() > SMOKE_ZORDER_TIMEOUT {
+                    smoke_fail(&format!(
+                        "flush pair not joined: pairs={pairs} dividers={dividers}"
+                    ));
+                }
             }
-            if shown.elapsed() > SMOKE_FPS_TIMEOUT {
-                smoke_fail(&format!("only {frames} frames with show_stats on"));
+        })
+        .await;
+        smoke_step(&mut run, "app_icon", async { smoke_app_icon() }).await;
+        smoke_step(&mut run, "native_reorder", async {
+            smoke_native_reorder(&view, window, cx)
+        })
+        .await;
+        smoke_step(&mut run, "plugins", smoke_plugins(&view, window, cx)).await;
+        smoke_step(&mut run, "tui", smoke_tui(&view, window, cx)).await;
+        smoke_step(&mut run, "show_stats", async {
+            let toggled = cx.update_window(window, |_, window, cx| {
+                view.update(cx, |view, cx| view.set_show_stats(true, window, cx))
+            });
+            if let Err(err) = toggled {
+                smoke_fail(&format!("show_stats toggle: {err:#}"));
             }
-        }
-        smoke_process_stats(&view, cx).await;
-        // Zoom out: both terminals switch to GPUI-drawn snapshots.
-        cx.update(|cx| {
-            view.update(cx, |view, _| view.preview_input_targets = 0);
-            set_zoom(&view, SMOKE_PREVIEW_ZOOM, cx);
-        });
-        let zoomed = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-            let previews = cx.update(|cx| view.read(cx).terminal_previews(cx));
-            let ready = previews.len() == 2
-                && previews
+        })
+        .await;
+        smoke_step(&mut run, "fps", async {
+            let shown = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let (frames, fps) = cx.update(|cx| {
+                    let stats = &view.read(cx).frame_stats;
+                    (stats.frames(), stats.fps())
+                });
+                // The first frame after the toggle starts the window; wait for 10 more.
+                if frames > SMOKE_FPS_FRAMES {
+                    match fps {
+                        Some(fps) if fps > 0.0 => println!("smoke: fps={fps:.1}"),
+                        _ => smoke_fail(&format!("no fps after {frames} frames")),
+                    }
+                    break;
+                }
+                if shown.elapsed() > SMOKE_FPS_TIMEOUT {
+                    smoke_fail(&format!("only {frames} frames with show_stats on"));
+                }
+            }
+        })
+        .await;
+        smoke_step(&mut run, "stats", smoke_process_stats(&view, cx)).await;
+        smoke_step(&mut run, "preview", async {
+            // Zoom out: both terminals switch to GPUI-drawn snapshots.
+            cx.update(|cx| {
+                view.update(cx, |view, _| view.preview_input_targets = 0);
+                set_zoom(&view, SMOKE_PREVIEW_ZOOM, cx);
+            });
+            let zoomed = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let previews = cx.update(|cx| view.read(cx).terminal_previews(cx));
+                let ready = previews.len() == 2
+                    && previews
+                        .iter()
+                        .all(|(mode, snapshot)| *mode == PanelMode::Preview && *snapshot);
+                if ready {
+                    println!("smoke: preview=2 snapshots=[true,true]");
+                    break;
+                }
+                if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
+                    smoke_fail(&format!("no preview snapshots at zoom 0.4: {previews:?}"));
+                }
+            }
+        })
+        .await;
+        smoke_step(&mut run, "preview_cadence", async {
+            // show_stats is still on, so a frame paints every tick. Readbacks must stay at
+            // one per refresh period anyway.
+            let before = cx.update(|cx| view.read(cx).snapshot_counts(cx));
+            cx.background_executor().timer(SMOKE_SNAPSHOT_WINDOW).await;
+            let (after, previews) = cx.update(|cx| {
+                let view = view.read(cx);
+                (view.snapshot_counts(cx), view.terminal_previews(cx))
+            });
+            if !previews.iter().all(|(mode, _)| *mode == PanelMode::Preview) {
+                smoke_fail(&format!(
+                    "left preview while counting snapshots: {previews:?}"
+                ));
+            }
+            let taken: Vec<u64> = after
+                .iter()
+                .zip(&before)
+                .map(|(after, before)| after - before)
+                .collect();
+            let line = format!(
+                "preview_snapshots_in_3s=[{}]",
+                taken
                     .iter()
-                    .all(|(mode, snapshot)| *mode == PanelMode::Preview && *snapshot);
-            if ready {
-                println!("smoke: preview=2 snapshots=[true,true]");
-                break;
-            }
-            if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
-                smoke_fail(&format!("no preview snapshots at zoom 0.4: {previews:?}"));
-            }
-        }
-
-        // show_stats is still on, so a frame paints every tick. Readbacks must stay at
-        // one per refresh period anyway.
-        let before = cx.update(|cx| view.read(cx).snapshot_counts(cx));
-        cx.background_executor().timer(SMOKE_SNAPSHOT_WINDOW).await;
-        let (after, previews, targets) = cx.update(|cx| {
-            let view = view.read(cx);
-            (
-                view.snapshot_counts(cx),
-                view.terminal_previews(cx),
-                view.preview_input_targets,
-            )
-        });
-        if !previews.iter().all(|(mode, _)| *mode == PanelMode::Preview) {
-            smoke_fail(&format!(
-                "left preview while counting snapshots: {previews:?}"
-            ));
-        }
-        let taken: Vec<u64> = after
-            .iter()
-            .zip(&before)
-            .map(|(after, before)| after - before)
-            .collect();
-        let line = format!(
-            "preview_snapshots_in_3s=[{}]",
-            taken
-                .iter()
-                .map(u64::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        println!("smoke: {line}");
-        if taken.len() != 2
-            || taken
-                .iter()
-                .any(|count| *count == 0 || *count > SMOKE_MAX_SNAPSHOTS)
-        {
-            let visible = cx.update(|cx| window_visible(window, cx));
-            smoke_fail(&format!(
-                "preview refresh outside 1..=3 snapshots: {line} window_visible={visible:?}"
-            ));
-        }
-        // The grid painted every frame of that window; its draw count must not follow the
-        // number of dots on screen.
-        let (kind, last, most, rasters, canvas) = cx.update(|cx| {
-            let view = view.read(cx);
-            let grid = &view.grid;
-            (
-                view.settings.settings.grid.kind,
-                grid.last_primitives,
-                grid.max_primitives,
-                grid.rasters,
-                Size::new(view.viewport.size.width, view.viewport.size.height),
-            )
-        });
-        let bound = mark_primitive_bound(canvas);
-        println!(
-            "smoke: grid kind={kind:?} primitives={last} max_primitives={most} bound={bound} \
-             rasters={rasters}"
-        );
-        if kind != GridKind::None && last == 0 {
-            smoke_fail("the grid drew nothing during the preview window");
-        }
-        if matches!(kind, GridKind::Dots | GridKind::Crosses) && most > bound {
-            smoke_fail(&format!("grid drew {most} primitives, over {bound}"));
-        }
-        // Input divs over a preview would steal its scroll and keys from the canvas.
-        println!("smoke: preview_input_targets={targets}");
-        if targets != 0 {
-            smoke_fail(&format!("{targets} terminal input divs over previews"));
-        }
-
-        // Zoom back in: both return to live native views.
-        cx.update(|cx| set_zoom(&view, SMOKE_LIVE_ZOOM, cx));
-        let zoomed = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-            let (previews, status) = cx.update(|cx| {
-                let previews = view.read(cx).terminal_previews(cx);
-                let status = view.update(cx, |view, cx| view.terminal_status(cx));
-                (previews, status)
-            });
-            let live =
-                previews.len() == 2 && previews.iter().all(|(mode, _)| *mode == PanelMode::Live);
-            if live {
-                if !status.iter().all(|(_, alive)| *alive) {
-                    smoke_fail(&format!("a terminal exited during preview: {status:?}"));
-                }
-                println!("smoke: live=2");
-                break;
-            }
-            if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            println!("smoke: {line}");
+            if taken.len() != 2
+                || taken
+                    .iter()
+                    .any(|count| *count == 0 || *count > SMOKE_MAX_SNAPSHOTS)
+            {
                 let visible = cx.update(|cx| window_visible(window, cx));
                 smoke_fail(&format!(
-                    "terminals not live at zoom 1.5: {previews:?} window_visible={visible:?}"
+                    "preview refresh outside 1..=3 snapshots: {line} window_visible={visible:?}"
                 ));
             }
-        }
-        // The gradient set by `smoke_settings` rendered once per size, off the UI thread.
-        let (renders, idle, error) = cx.update(|cx| {
-            let background = &view.read(cx).background;
-            (
-                background.renders,
-                background.is_idle(),
-                background.error.clone(),
-            )
-        });
-        println!("smoke: background renders={renders} idle={idle} error={error:?}");
-        if renders == 0 || !idle || error.is_some() {
-            smoke_fail("gradient background did not render");
-        }
-
-        // The browser loaded its page, followed the link and reported the new URL.
-        let started = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(100))
-                .await;
-            let status = cx.update(|cx| view.read(cx).browser_status());
-            let [(mode, loading, page, scene)] = status.as_slice() else {
-                smoke_fail(&format!("expected 1 browser, found {}", status.len()));
-            };
-            let target = Some(SMOKE_BROWSER_TARGET.to_string());
-            let done = !loading && *page == target && *scene == target;
-            if done && *mode == PanelMode::Live {
-                println!(
-                    "smoke: browser loaded=true link=followed url={SMOKE_BROWSER_TARGET} mode=live"
-                );
-                break;
+        })
+        .await;
+        smoke_step(&mut run, "grid", async {
+            // The grid painted every frame of that window; its draw count must not follow the
+            // number of dots on screen.
+            let (kind, last, most, rasters, canvas) = cx.update(|cx| {
+                let view = view.read(cx);
+                let grid = &view.grid;
+                (
+                    view.settings.settings.grid.kind,
+                    grid.last_primitives,
+                    grid.max_primitives,
+                    grid.rasters,
+                    Size::new(view.viewport.size.width, view.viewport.size.height),
+                )
+            });
+            let bound = mark_primitive_bound(canvas);
+            println!(
+                "smoke: grid kind={kind:?} primitives={last} max_primitives={most} bound={bound} \
+                 rasters={rasters}"
+            );
+            if kind != GridKind::None && last == 0 {
+                smoke_fail("the grid drew nothing during the preview window");
             }
-            if started.elapsed() > SMOKE_BROWSER_TIMEOUT {
-                smoke_fail(&format!(
-                    "browser: mode={mode:?} loading={loading} page={page:?} scene={scene:?}"
-                ));
+            if matches!(kind, GridKind::Dots | GridKind::Crosses) && most > bound {
+                smoke_fail(&format!("grid drew {most} primitives, over {bound}"));
             }
-        }
-
-        smoke_resize(&view, window, cx).await;
-        smoke_blur(&view, window, cx);
-        smoke_settings_dispatch(&view, window, cx).await;
-        smoke_github_api(&view, window, cx).await;
-        smoke_plugin_menus(&view, window, cx).await;
+        })
+        .await;
+        smoke_step(&mut run, "preview_input_targets", async {
+            // Input divs over a preview would steal its scroll and keys from the canvas.
+            let targets = cx.update(|cx| view.read(cx).preview_input_targets);
+            println!("smoke: preview_input_targets={targets}");
+            if targets != 0 {
+                smoke_fail(&format!("{targets} terminal input divs over previews"));
+            }
+        })
+        .await;
+        smoke_step(&mut run, "live", async {
+            // Zoom back in: both return to live native views.
+            cx.update(|cx| set_zoom(&view, SMOKE_LIVE_ZOOM, cx));
+            let zoomed = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let (previews, status) = cx.update(|cx| {
+                    let previews = view.read(cx).terminal_previews(cx);
+                    let status = view.update(cx, |view, cx| view.terminal_status(cx));
+                    (previews, status)
+                });
+                let live =
+                    previews.len() == 2 && previews.iter().all(|(mode, _)| *mode == PanelMode::Live);
+                if live {
+                    if !status.iter().all(|(_, alive)| *alive) {
+                        smoke_fail(&format!("a terminal exited during preview: {status:?}"));
+                    }
+                    println!("smoke: live=2");
+                    break;
+                }
+                if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
+                    let visible = cx.update(|cx| window_visible(window, cx));
+                    smoke_fail(&format!(
+                        "terminals not live at zoom 1.5: {previews:?} window_visible={visible:?}"
+                    ));
+                }
+            }
+        })
+        .await;
+        smoke_step(&mut run, "background", async {
+            // The gradient set by `smoke_settings` rendered once per size, off the UI thread.
+            let (renders, idle, error) = cx.update(|cx| {
+                let background = &view.read(cx).background;
+                (
+                    background.renders,
+                    background.is_idle(),
+                    background.error.clone(),
+                )
+            });
+            println!("smoke: background renders={renders} idle={idle} error={error:?}");
+            if renders == 0 || !idle || error.is_some() {
+                smoke_fail("gradient background did not render");
+            }
+        })
+        .await;
+        smoke_step(&mut run, "browser", async {
+            // The browser loaded its page, followed the link and reported the new URL.
+            let started = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let status = cx.update(|cx| view.read(cx).browser_status());
+                let [(mode, loading, page, scene)] = status.as_slice() else {
+                    smoke_fail(&format!("expected 1 browser, found {}", status.len()));
+                };
+                let target = Some(SMOKE_BROWSER_TARGET.to_string());
+                let done = !loading && *page == target && *scene == target;
+                if done && *mode == PanelMode::Live {
+                    println!(
+                        "smoke: browser loaded=true link=followed url={SMOKE_BROWSER_TARGET} mode=live"
+                    );
+                    break;
+                }
+                if started.elapsed() > SMOKE_BROWSER_TIMEOUT {
+                    smoke_fail(&format!(
+                        "browser: mode={mode:?} loading={loading} page={page:?} scene={scene:?}"
+                    ));
+                }
+            }
+        })
+        .await;
+        smoke_step(&mut run, "resize", smoke_resize(&view, window, cx)).await;
+        smoke_step(&mut run, "blur", async { smoke_blur(&view, window, cx) }).await;
+        smoke_step(
+            &mut run,
+            "settings_dispatch",
+            smoke_settings_dispatch(&view, window, cx),
+        )
+        .await;
+        smoke_step(&mut run, "github_api", smoke_github_api(&view, window, cx)).await;
+        smoke_step(&mut run, "plugin_menus", smoke_plugin_menus(&view, window, cx)).await;
         // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
-        smoke_autosave(&view, window, cx).await;
+        smoke_step(&mut run, "session", async {
+            smoke_autosave(&view, window, cx).await;
+            smoke_session(&view, window, cx).await;
+            smoke_session_edges(&view, window, cx);
+        })
+        .await;
 
+        for line in run.summary() {
+            println!("{line}");
+        }
+        let code = run.exit_code();
         remove_smoke_dir();
+        if code != 0 {
+            std::process::exit(code);
+        }
         cx.update(|cx| cx.quit());
     })
     .detach();
@@ -1694,25 +1837,23 @@ async fn smoke_settings_dispatch(
     cx: &mut gpui::AsyncApp,
 ) {
     use gpui::Action as _;
-    let (available, bindings) = cx.update(|cx| {
+    let dispatched = cx.update(|cx| -> gpui::Result<(bool, usize)> {
         let available = cx.is_action_available(&settings_menu::OpenSettings);
-        let bindings = window
-            .update(cx, |_, window, _| {
-                window
-                    .bindings_for_action(&settings_menu::OpenSettings)
-                    .len()
-            })
-            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+        let bindings = window.update(cx, |_, window, _| {
+            window
+                .bindings_for_action(&settings_menu::OpenSettings)
+                .len()
+        })?;
         if let Some(settings_window) = &view.read(cx).settings_window {
             settings_window.hide();
         }
-        window
-            .update(cx, |_, window, cx| {
-                window.dispatch_action(settings_menu::OpenSettings.boxed_clone(), cx)
-            })
-            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
-        (available, bindings)
+        window.update(cx, |_, window, cx| {
+            window.dispatch_action(settings_menu::OpenSettings.boxed_clone(), cx)
+        })?;
+        Ok((available, bindings))
     });
+    let (available, bindings) =
+        dispatched.unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
     let started = Instant::now();
     let (visible, on_screen) = loop {
         cx.background_executor()
@@ -1735,14 +1876,13 @@ async fn smoke_settings_dispatch(
     if !(available && bindings > 0 && visible && on_screen) {
         smoke_fail("OpenSettings dispatched on the canvas window did not show Settings");
     }
-    cx.update(|cx| {
+    let activated = cx.update(|cx| {
         if let Some(settings_window) = &view.read(cx).settings_window {
             settings_window.hide();
         }
-        window
-            .update(cx, |_, window, _| window.activate_window())
-            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+        window.update(cx, |_, window, _| window.activate_window())
     });
+    activated.unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
 }
 
 /// Sets a gradient background and the grid through the settings path, reads the file back,
@@ -1847,6 +1987,9 @@ fn main() {
         if args.smoke {
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
+                if info.payload().is::<SmokeFailure>() {
+                    return;
+                }
                 remove_smoke_dir();
                 previous(info);
             }));
@@ -1880,13 +2023,28 @@ fn main() {
             ..Default::default()
         };
         let smoke = args.smoke;
+        // The smoke never reads or writes the real session or layouts.
+        let plan = if smoke {
+            None
+        } else {
+            let session = calm_core::layout::session_path();
+            let layouts = calm_core::layout::layouts_dir();
+            let setting = settings.settings.session.restore_on_launch;
+            match launch_plan(&args.restore, setting, &session, &layouts) {
+                Ok(plan) => Some((plan, session)),
+                Err(exit) => {
+                    eprintln!("calm: {}", exit.message);
+                    std::process::exit(exit.code);
+                }
+            }
+        };
         let builtin_plugins = settings.settings.plugins.builtin;
         let opened = cx.open_window(options, move |window, cx| {
             let view = cx.new(|cx| {
                 let mut view = CanvasView::new(builtin_plugins, window, cx);
                 view.set_settings_state(settings);
-                if !smoke {
-                    view.start_autosave_at_launch(cx);
+                if let Some((plan, session)) = plan {
+                    view.apply_restore_plan(plan, session, window, cx);
                 }
                 if smoke && let Err(err) = add_smoke_panels(&mut view, window, cx) {
                     smoke_fail(&format!("terminal spawn: {err}"));
@@ -2171,4 +2329,455 @@ async fn smoke_autosave(
         "smoke: autosave written={written} kinds={} order=match",
         layout_kinds(&on_disk).join(",")
     );
+}
+
+/// A data page with no script, so its url stays put between save and compare.
+const SMOKE_SESSION_PAGE: &str = "data:text/html,%3Cp%3Esession%3C%2Fp%3E";
+const SMOKE_MISSING_PLUGIN: &str = "calm-smoke-not-installed";
+
+/// Closes every panel through the confirmed close path.
+fn smoke_close_all(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
+    let closed = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let ids: Vec<PanelId> = view.scene.panels.iter().map(|panel| panel.id).collect();
+            let effects = ids.into_iter().map(Effect::ClosePanel).collect();
+            view.apply_effects(effects, window, cx);
+        });
+    });
+    if let Err(err) = closed {
+        smoke_fail(&format!("session: close: {err}"));
+    }
+}
+
+/// Restores panels whose saved state no longer fits: saved titles must survive the open
+/// paths, and a gone cwd starts the shell in home even when the profile has a fixed cwd.
+/// Every problem is collected, so one run reports them all.
+fn smoke_session_edges(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let fixed = match tempfile::Builder::new()
+        .prefix("calm-smoke-fixed-")
+        .tempdir()
+    {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("session edges: temp dir: {err}")),
+    };
+    let gone = fixed.path().join("gone");
+    smoke_close_all(view, window, cx);
+    let old_cwd = view.update(cx, |view, _| {
+        view.scene = calm_core::scene::Scene::default();
+        let cwd = &mut view.settings.settings.terminal.defaults.cwd;
+        cwd.replace(fixed.path().display().to_string())
+    });
+    let fixture = [
+        PanelKind::Terminal {
+            command: None,
+            cwd: Some(gone.clone()),
+        },
+        PanelKind::Plugin {
+            plugin_id: "smoke-plugin".to_string(),
+            plugin_version: None,
+            settings: serde_json::Value::Null,
+        },
+        PanelKind::Tui {
+            plugin_id: "top-example".to_string(),
+            plugin_version: None,
+        },
+    ];
+    let mut layout = calm_core::scene::Scene::default().to_layout();
+    for (n, kind) in fixture.into_iter().enumerate() {
+        layout.panels.push(calm_core::layout::LayoutPanel {
+            kind,
+            rect: Rect::new(40.0 + 340.0 * n as f64, 40.0, 320.0, 200.0),
+            title: format!("saved title {n}"),
+            minimized: false,
+            overrides: Default::default(),
+        });
+    }
+    let plan = RestorePlan {
+        layout: Some(layout),
+        layout_name: None,
+        quarantine: None,
+        autosave: calm_core::restore::AutosaveStart::Off("smoke fixture".to_string()),
+        notices: Vec::new(),
+    };
+    let home = terminal_profiles::home_dir();
+    let checked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let gate = view.autosave_gate;
+            view.apply_restore_plan(plan, fixed.path().join("session.json"), window, cx);
+            view.autosave_gate = gate;
+            let mut problems = Vec::new();
+            for (n, panel) in view.scene.panels.iter().enumerate() {
+                let want = format!("saved title {n}");
+                if panel.title != want {
+                    problems.push(format!("title {n}: want {want:?}, got {:?}", panel.title));
+                }
+            }
+            let terminal = view.scene.panels.first().map(|panel| panel.id);
+            let cwd = terminal
+                .and_then(|id| view.terminal_meta(id))
+                .map(|meta| meta.cwd.clone());
+            if cwd.as_deref() != Some(home.as_path()) {
+                problems.push(format!("cwd: want {}, got {cwd:?}", home.display()));
+            }
+            let note = terminal.and_then(|id| view.title_note(id));
+            let saved_titles = view.scene.to_layout().panels;
+            if note.is_none() || saved_titles.iter().any(|p| p.title.contains("cwd missing")) {
+                problems.push(format!("cwd note: {note:?}, saved {saved_titles:?}"));
+            }
+            problems
+        })
+    });
+    view.update(cx, |view, _| {
+        view.settings.settings.terminal.defaults.cwd = old_cwd;
+    });
+    smoke_close_all(view, window, cx);
+    let problems = match checked {
+        Ok(problems) => problems,
+        Err(err) => smoke_fail(&format!("session edges: restore: {err}")),
+    };
+    if !problems.is_empty() {
+        smoke_fail(&format!("session edges: {}", problems.join("; ")));
+    }
+    println!("smoke: session edges titles=saved cwd=home");
+}
+
+/// Runs the launch restore path on `session` with restore on.
+fn smoke_launch(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    session: &Path,
+    cx: &mut gpui::AsyncApp,
+) {
+    let plan = match launch_plan(
+        &LaunchFlags::default(),
+        RestoreOnLaunch::On,
+        session,
+        &session.with_file_name("layouts"),
+    ) {
+        Ok(plan) => plan,
+        Err(exit) => smoke_fail(&format!("session: launch plan: {}", exit.message)),
+    };
+    let applied = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.apply_restore_plan(plan, session.to_path_buf(), window, cx);
+        });
+    });
+    if let Err(err) = applied {
+        smoke_fail(&format!("session: restore: {err}"));
+    }
+}
+
+/// Saves a four panel canvas, closes it, drops the scene and restores it from disk
+/// through the launch path; then a one byte corrupt copy is moved aside and starts empty.
+async fn smoke_session(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::layout::{LayoutFile, SessionWriter};
+    let root = SMOKE_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|dir| dir.path().join("session-restore"));
+    let Some(root) = root else {
+        smoke_fail("session: no smoke dir");
+    };
+    let cwd = match tempfile::Builder::new().prefix("calm-smoke-cwd-").tempdir() {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("session: cwd temp dir: {err}")),
+    };
+    let malformed_dir = root.join("malformed");
+    if let Err(err) = std::fs::create_dir_all(&malformed_dir) {
+        smoke_fail(&format!("session: dir: {err}"));
+    }
+    let session = root.join("session.json");
+    view.update(cx, |view, _| view.stop_autosave());
+    smoke_close_all(view, window, cx);
+
+    let settings = serde_json::json!({ "repos": ["kolezka/CALM"], "depth": { "n": 3 } });
+    let missing_settings = serde_json::json!({ "kept": [1, 2, 3] });
+    let fixture = vec![
+        PanelKind::Terminal {
+            command: None,
+            cwd: Some(cwd.path().to_path_buf()),
+        },
+        PanelKind::Browser {
+            url: SMOKE_SESSION_PAGE.to_string(),
+            page_zoom: None,
+        },
+        PanelKind::Plugin {
+            plugin_id: "smoke-plugin".to_string(),
+            plugin_version: Some("0.1.0".to_string()),
+            settings: settings.clone(),
+        },
+        PanelKind::Plugin {
+            plugin_id: SMOKE_MISSING_PLUGIN.to_string(),
+            plugin_version: Some("9.9.9".to_string()),
+            settings: missing_settings.clone(),
+        },
+    ];
+    let mut layout = calm_core::scene::Scene::default().to_layout();
+    for (n, kind) in fixture.into_iter().enumerate() {
+        layout.panels.push(calm_core::layout::LayoutPanel {
+            kind,
+            rect: Rect::new(40.0 + 340.0 * n as f64, 40.0, 320.0, 200.0),
+            title: format!("panel {n}"),
+            minimized: false,
+            overrides: Default::default(),
+        });
+    }
+    layout.camera.zoom = 0.75;
+    // Build the live canvas, then save it with the session writer autosave uses.
+    let built = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let plan = RestorePlan {
+                layout: Some(layout),
+                layout_name: None,
+                quarantine: None,
+                autosave: calm_core::restore::AutosaveStart::Off("smoke fixture".to_string()),
+                notices: Vec::new(),
+            };
+            // The fixture plan closes the launch gate; later steps run their own launches.
+            let gate = view.autosave_gate;
+            view.apply_restore_plan(plan, session.clone(), window, cx);
+            view.autosave_gate = gate;
+            let saved = view.scene.to_layout();
+            let first = view.scene.panels.first().map(|panel| panel.id);
+            let old = first
+                .and_then(|id| view.terminal(id))
+                .map(|terminal| (terminal.entity_id(), terminal.downgrade()));
+            let mut writer = SessionWriter::new(
+                session.clone(),
+                0,
+                calm_core::browser_url::BrowserQueryMode::StripAll,
+            );
+            writer.save(&saved).map(|_| (saved, old))
+        })
+    });
+    let (saved_scene, old_terminal) = match built {
+        Ok(Ok((saved, Some(old)))) => (saved, old),
+        Ok(Ok((_, None))) => smoke_fail("session: fixture terminal did not start"),
+        Ok(Err(err)) => smoke_fail(&format!("session: save: {err}")),
+        Err(err) => smoke_fail(&format!("session: fixture: {err}")),
+    };
+    let on_disk: LayoutFile = match calm_core::layout::load_layout_from(&root, "session") {
+        Ok(layout) => layout,
+        Err(err) => smoke_fail(&format!("session: saved file: {err}")),
+    };
+    let saved = on_disk.panels.len();
+    if layout_order(&on_disk) != layout_order(&saved_scene) {
+        smoke_fail("session: the file does not match the scene it saved");
+    }
+
+    // Dispose of it all, then drop the old scene.
+    smoke_close_all(view, window, cx);
+    view.update(cx, |view, _| {
+        view.scene = calm_core::scene::Scene::default()
+    });
+    let started = Instant::now();
+    while old_terminal.1.upgrade().is_some() {
+        if started.elapsed() > SMOKE_AUTOSAVE_TIMEOUT {
+            smoke_fail("session: the closed terminal was never released");
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+
+    smoke_launch(view, window, &session, cx);
+    let report = view.update(cx, |view, cx| {
+        let restored = view.scene.to_layout();
+        let kinds: Vec<String> = view
+            .scene
+            .panels
+            .iter()
+            .zip(layout_kinds(&restored))
+            .map(|(panel, kind)| match view.placeholder(panel.id) {
+                Some(_) => "placeholder".to_string(),
+                None => kind,
+            })
+            .collect();
+        let new_terminal = view
+            .scene
+            .panels
+            .first()
+            .and_then(|panel| view.terminal(panel.id))
+            .map(|terminal| terminal.entity_id());
+        let frames = view.terminal_status(cx);
+        (
+            restored,
+            kinds,
+            new_terminal,
+            frames,
+            view.native_zorder(cx),
+        )
+    });
+    view.update(cx, |view, _| view.stop_autosave());
+    let (restored, kinds, new_terminal, frames, (scene_order, native_order)) = report;
+    if scene_order != native_order {
+        smoke_fail(&format!(
+            "session: native order after restore: zorder={native_order:?} scene={scene_order:?}"
+        ));
+    }
+    let kind_json = |layout: &LayoutFile| -> Vec<String> {
+        layout
+            .panels
+            .iter()
+            .map(|panel| serde_json::to_string(&panel.kind).unwrap_or_default())
+            .collect()
+    };
+    let order =
+        layout_order(&on_disk) == layout_order(&restored) && restored.camera == on_disk.camera;
+    let plugin_settings = restored
+        .panels
+        .iter()
+        .filter_map(|panel| match &panel.kind {
+            PanelKind::Plugin { settings, .. } => Some(settings.clone()),
+            _ => None,
+        });
+    let settings_match = kind_json(&on_disk) == kind_json(&restored)
+        && plugin_settings.collect::<Vec<_>>() == vec![settings, missing_settings];
+    let Some(new_terminal) = new_terminal else {
+        smoke_fail("session: the restored terminal did not start");
+    };
+    // A new shell: a different entity, the old one released, and frames counted afresh.
+    if new_terminal == old_terminal.0 || frames.len() != 1 || !frames[0].1 {
+        smoke_fail(&format!(
+            "session: terminal not fresh: old={:?} new={new_terminal:?} status={frames:?}",
+            old_terminal.0
+        ));
+    }
+    let line = format!(
+        "smoke: session saved={saved} restored={} kinds={} order={} settings={} zorder=match",
+        restored.panels.len(),
+        kinds.join(","),
+        if order { "match" } else { "mismatch" },
+        if settings_match { "match" } else { "mismatch" },
+    );
+    println!("{line}");
+    if saved != 4
+        || restored.panels.len() != 4
+        || kinds != ["terminal", "browser", "plugin", "placeholder"]
+        || !order
+        || !settings_match
+    {
+        smoke_fail(&format!("session: {line}"));
+    }
+
+    // The same file with one byte corrupted: moved aside, empty start.
+    smoke_close_all(view, window, cx);
+    view.update(cx, |view, _| {
+        view.scene = calm_core::scene::Scene::default()
+    });
+    let bad = malformed_dir.join("session.json");
+    let mut bytes = match std::fs::read(&session) {
+        Ok(bytes) => bytes,
+        Err(err) => smoke_fail(&format!("session: copy: {err}")),
+    };
+    bytes[0] = b'#';
+    if let Err(err) = std::fs::write(&bad, &bytes) {
+        smoke_fail(&format!("session: corrupt copy: {err}"));
+    }
+    smoke_launch(view, window, &bad, cx);
+    let (empty, autosave_on) = view.update(cx, |view, _| {
+        let state = (view.scene.panels.is_empty(), view.autosave_running());
+        view.stop_autosave();
+        state
+    });
+    let moved = malformed_dir.join("session.json.invalid-0");
+    let moved_intact = std::fs::read(&moved).ok() == Some(bytes);
+    println!(
+        "smoke: session malformed moved={} started_empty={empty}",
+        moved
+            .file_name()
+            .filter(|_| moved_intact)
+            .map_or("none".into(), |name| name.to_string_lossy())
+    );
+    if !moved_intact || bad.exists() || !empty || !autosave_on {
+        smoke_fail(&format!(
+            "session: malformed moved={moved_intact} left={} empty={empty} autosave={autosave_on}",
+            bad.exists()
+        ));
+    }
+    if let Err(err) = cwd.close() {
+        eprintln!("smoke: could not remove the cwd temp dir: {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calm_core::browser_url::BrowserQueryMode;
+    use calm_core::layout::SessionWriter;
+    use calm_core::restore::AutosaveStart;
+
+    fn saved_session(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("session.json");
+        let mut scene = calm_core::scene::Scene::default();
+        scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+            },
+            Rect::new(0.0, 0.0, 300.0, 200.0),
+        );
+        SessionWriter::new(path.clone(), 0, BrowserQueryMode::StripAll)
+            .save(&scene.to_layout())
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn launch_plan_restores_a_valid_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = saved_session(dir.path());
+        let flags = LaunchFlags::default();
+        let plan = launch_plan(&flags, RestoreOnLaunch::On, &session, dir.path()).unwrap();
+        assert_eq!(plan.layout.map(|layout| layout.panels.len()), Some(1));
+        assert!(session.exists());
+    }
+
+    #[test]
+    fn launch_plan_moves_a_malformed_session_aside_and_starts_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = saved_session(dir.path());
+        let mut bytes = std::fs::read(&session).unwrap();
+        bytes[0] = b'#';
+        std::fs::write(&session, &bytes).unwrap();
+        let flags = LaunchFlags::default();
+        let plan = launch_plan(&flags, RestoreOnLaunch::On, &session, dir.path()).unwrap();
+        let moved = dir.path().join("session.json.invalid-0");
+        assert_eq!(std::fs::read(&moved).ok(), Some(bytes), "not moved aside");
+        assert!(!session.exists());
+        assert_eq!(plan.layout, None);
+        assert_eq!(plan.autosave, AutosaveStart::On);
+        assert!(
+            plan.notices
+                .iter()
+                .any(|n| n.contains("session.json.invalid-0"))
+        );
+    }
+
+    #[test]
+    fn launch_plan_exits_2_on_a_malformed_named_layout_without_moving_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let layouts = dir.path().join("layouts");
+        std::fs::create_dir(&layouts).unwrap();
+        let named = layouts.join("work.json");
+        std::fs::write(&named, b"{ not json").unwrap();
+        let flags = LaunchFlags {
+            layout: Some("work".to_string()),
+            no_restore: false,
+        };
+        let session = dir.path().join("session.json");
+        let exit = launch_plan(&flags, RestoreOnLaunch::On, &session, &layouts).unwrap_err();
+        assert_eq!(exit.code, 2);
+        assert!(named.exists());
+        assert!(!layouts.join("work.json.invalid-0").exists());
+    }
 }

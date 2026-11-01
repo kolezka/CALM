@@ -1324,6 +1324,10 @@ in a temp dir and checks 401 with no or wrong token, 200 with the right one, and
 
 Each phase ends with `cargo test` for the touched crates and lands as its own commit.
 
+Ordered worker briefs for these phases:
+[2026-11-01-plugin-api-v2-worker-briefs.md](../plans/2026-11-01-plugin-api-v2-worker-briefs.md).
+Progress per phase lives in `.ai/status.md`.
+
 1. **Error codes and manifest.** `ApiError`, `ErrorCode`, structured rejects in the prelude
    with v1 string fallback. Manifest `apiVersion`, `capabilities` (declarative, unknown
    words warn), `main`, `backend`, `engines`, `background`, `contributes` parsing and

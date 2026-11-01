@@ -63,10 +63,18 @@ Developer. Unknown keys in `developer.stats` are errors.
 
 ## Session
 
-The `session` section is read and validated, and has a Session section in the Settings
-window, but **it has no effect yet**: CALM does not autosave or restore the canvas today.
-A launch always starts with an empty canvas. The fields are there for the coming restore
-work:
+The `session` section controls restore at launch and autosave of `session.json` (in
+`$CALM_HOME` or `~/.config/calm`). A restore builds the saved panels back to front with
+fresh processes: terminals start a new shell in their saved cwd (home if it is gone),
+browsers load their url, plugins get their saved panel settings. A plugin that is not
+installed, or a panel type this build does not know, shows a placeholder that keeps its
+saved data and offers only Delete. A session file that cannot be parsed is moved to
+`session.json.invalid-<n>` and the launch starts empty; an unreadable one turns autosave
+off for that launch. An empty start never touches the last session until the first change,
+which rotates it into `session.json.1`.
+
+Launch flags win over the setting: `--layout NAME` opens `layouts/NAME.json` (a missing one
+starts empty, a malformed one exits with code 2), then `--no-restore` starts empty.
 
 ```json
 {
@@ -80,7 +88,8 @@ work:
 }
 ```
 
-- `restore_on_launch`: `on` (default), `off` or `ask`.
+- `restore_on_launch`: `on` (default), `off` or `ask`. `ask` has no dialog yet: it
+  restores like `on` and says so in the status pill.
 - `autosave` (default `true`).
 - `debounce_ms` (default 1000, 250 to 10000): quiet time after the last change before a save.
 - `backup_count` (default 3, 0 to 20): how many `session.json.<n>` backups to keep.

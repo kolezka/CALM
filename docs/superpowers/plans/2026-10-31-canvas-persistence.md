@@ -455,3 +455,32 @@ terminal scrollback; runtime plugin re-discovery.
 3. Browser urls: the user asked for the lowest effort. Keeping urls verbatim would break the
    "no credentials in layouts" rule, so the default is `strip_all` (drop query and fragment),
    with `keep` as an opt-in. `strip_sensitive` and its name list are dropped.
+
+## Appendix: remaining tasks (2026-11-01)
+
+State checked against GitHub and `origin/main` at `1f39de2`.
+
+| Task | State |
+| --- | --- |
+| 1 | Done, #30 |
+| 2 | Done, #31 |
+| 3 | Done, #36. Also took the url scrub helper, the 8 KiB url guard and the title url scrub from Task 6 |
+| 4 | Done, #39. Autosave is built but off (`APP_AUTOSAVE_ACTIVE = false`) until Task 5 |
+| 5 | Open PR #41. Turns autosave on |
+| 6 | Only `docs/sessions.md` and leftovers remain; most scrub work landed in #36 |
+| 7 | Not started. File menu (7 items), `NSOpenPanel`, Open Recent capped at 10, the replace confirmation, the ask-on-launch `NSAlert` |
+| 8 | Is plugin API v2 phase 16 |
+| 9 | Waits on API v2 phase 10 (Ghostty shim) |
+| 10 | Waits on API v2 phase 12 (native browser API) |
+| 11 | Not started. Keep `type = "tui"` as the saved kind |
+| 12 | Not started. Needs a native text input; who owns it is to be agreed with API v2 |
+
+Lead rulings already applied in the merged tasks:
+
+- Browser urls are saved with `strip_all` from the first write, not added later.
+- An unknown panel kind keeps its raw JSON bytes and saves them back unchanged.
+- TUI panels keep `type = "tui"`; Task 11 does not rename it to `tui_app`.
+- `PanelOverrides` is `{title, icon, accent_color}`, each optional and skipped when empty,
+  with no `deny_unknown_fields`. Later appearance fields grow this struct here, not in API
+  v2 (`.ai/decisions.md`, "Panel overrides contract").
+- The debounce setting is `session.debounce_ms`.
