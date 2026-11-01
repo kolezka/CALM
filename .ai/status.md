@@ -176,17 +176,34 @@ Pull requests:
   background pages, no `calm.menus.register`, no capability display.
 - Clicking inside a plugin page does not focus or raise its panel; AppKit routes the click
   to the WKWebView.
-- Layouts and session: session autosave and restore are not active. Nothing in `calm-app`
-  calls `SessionWriter`, `write_layout_file` or a layout load, so a launch still starts an
-  empty canvas. The `session` settings and the Settings window's Session section exist but
-  change nothing yet. Persistence plan Tasks 4 to 7 (autosave, restore and the steps after
-  them) are pending, then the later tasks. Layout save and load and `--layout` are not
-  built. Plugin settings are not saved anywhere.
+- Layouts and session: session restore is not built, and autosave is built but not active
+  (below), so a launch still starts an empty canvas. The `session` settings and the Settings
+  window's Session section apply live to autosave, which only the smoke runs. Persistence
+  plan Tasks 5 to 7 (restore and the steps after it) are pending, then the later tasks.
+  Layout save and load and `--layout` are not built. Plugin settings are not saved anywhere.
 - Layout v2 limits: the resize policy is not saved, overrides are stored but not applied
   in the chrome, `page_zoom` is stored but not applied, an unsupported panel draws chrome
-  only, `plugin_version` is not filled when panels are created (owned by Task 4), and the
-  terminal cwd is the spawn cwd. Lowering `backup_count` leaves older backups above the new
-  count in place.
+  only, and the terminal cwd is the spawn cwd. Lowering `backup_count` leaves older backups
+  above the new count in place.
+- Autosave (persistence plan Task 4, `feat/session-autosave`, not on `main`): built but not
+  active. `calm_core::autosave` holds `AutosaveClock` (quiet `session.debounce_ms`, max
+  dirty age 10 s), `SaveQueue` (one write in flight, the latest snapshot waiting) and
+  `OrderedWriter` (a write older than the file on disk is skipped, so a late background
+  write never replaces the quit write). `Scene` has a revision: every `Scene` mutator and
+  every `get_mut` bump it, and `sync_revision` counts direct camera writes. `CanvasView`
+  ticks it on each render and on a timer, writes on the background executor, shows a failed
+  write in the status pill and on stderr, and retries on the next change. A launch read
+  that fails (I/O or malformed) turns autosave off for that launch. `APP_AUTOSAVE_ACTIVE`
+  stays `false` until Task 5 adds restore, because a first change on the empty start canvas
+  would otherwise replace the last session. Only the smoke runs autosave, in its temp dir.
+  Settings changes are reconciled by `autosave_change`: `session.autosave` off stops the
+  timer and the quit write, on starts again through the gate, and `debounce_ms`,
+  `backup_count` (at the next rotation) and `browser_query` apply to the running save.
+  Plugin bridge calls take `get_mut` only for `panel.setTitle` and `settings.set`, so
+  read-only calls do not cause writes. New and duplicated plugin and TUI panels carry the
+  installed manifest `plugin_version`. Unverified: whether `on_app_quit` fires on cmd-q and
+  on every quit path (the smoke calls the quit save directly, not through a real quit), and
+  the manual "drag writes `session.json` about 1 s later" check, which needs the gate on.
 - `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title

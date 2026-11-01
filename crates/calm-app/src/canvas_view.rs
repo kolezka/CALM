@@ -1,5 +1,9 @@
 //! The canvas: paints panels from the `calm-core` scene and feeds it input.
 
+use calm_core::autosave::{
+    APP_AUTOSAVE_ACTIVE, AutosaveChange, AutosaveClock, OrderedWriter, SaveQueue, WriteOutcome,
+    autosave_active, autosave_allowed_after_read, autosave_change, save_error_text,
+};
 use calm_core::camera::FIT_MARGIN;
 use calm_core::chrome::{
     CORNER_RADIUS, ChromeButton, ChromeOverrides, ChromePalette, ChromeState, PanelIcon,
@@ -12,6 +16,7 @@ use calm_core::interaction::{
     Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool, ZoomStep,
 };
 use calm_core::join::{Axis, JoinLayout, JoinedEdges, Side};
+use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
@@ -30,14 +35,15 @@ use gpui::{
     Edges, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, ParentElement,
     PathBuilder, PinchEvent, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
-    SharedString, Styled, Task, TextAlign, TextRun, WeakEntity, Window, actions, canvas, div, fill,
-    outline, point, px, quad, rgb, rgba, size,
+    SharedString, Styled, Subscription, Task, TextAlign, TextRun, WeakEntity, Window, actions,
+    canvas, div, fill, outline, point, px, quad, rgb, rgba, size,
 };
 
 use calm_plugins::{BridgeRequest, InstalledPlugin};
 use futures::StreamExt as _;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::background::{self, BackgroundRenderer, BackgroundTexture};
@@ -105,6 +111,17 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("escape", NoAction, Some(terminal::KEY_CONTEXT)),
         KeyBinding::new("enter", NoAction, Some(terminal::KEY_CONTEXT)),
     ]
+}
+
+/// Autosave state for one launch. Present only once autosave has started.
+struct Autosave {
+    started: Instant,
+    clock: AutosaveClock,
+    queue: SaveQueue<LayoutFile>,
+    /// Shared with the background writes and the quit path; it puts writes in order.
+    writer: Arc<Mutex<OrderedWriter<SessionWriter>>>,
+    timer: Option<(Duration, Task<()>)>,
+    _quit: Subscription,
 }
 
 pub struct CanvasView {
@@ -193,6 +210,16 @@ pub struct CanvasView {
     pub join_counts: (usize, usize),
     /// `run` args of the plugin menu item opening a TUI panel right now.
     pending_tui_args: Option<Vec<String>>,
+    autosave: Option<Autosave>,
+    /// Why autosave could not start this launch, shown in the status pill.
+    autosave_notice: Option<String>,
+    /// Session files written this launch.
+    pub autosave_writes: u64,
+    /// The build gate for starting autosave from settings. `APP_AUTOSAVE_ACTIVE`, except
+    /// while the smoke drives the live toggle in its own dir.
+    pub autosave_gate: bool,
+    /// Where the last autosave wrote, so turning it back on resumes the same file.
+    autosave_path: Option<PathBuf>,
 }
 
 impl CanvasView {
@@ -264,7 +291,219 @@ impl CanvasView {
             status_bar_error: None,
             join_counts: (0, 0),
             pending_tui_args: None,
+            autosave: None,
+            autosave_notice: None,
+            autosave_writes: 0,
+            autosave_gate: APP_AUTOSAVE_ACTIVE,
+            autosave_path: None,
         }
+    }
+
+    /// Starts autosave at launch when the build gate and `session.autosave` allow it.
+    /// The gate stays off until restore at launch exists.
+    pub fn start_autosave_at_launch(&mut self, cx: &mut Context<Self>) {
+        if !autosave_active(self.autosave_gate, self.settings.settings.session.autosave) {
+            return;
+        }
+        if let Err(err) = self.start_autosave(calm_core::layout::session_path(), cx) {
+            eprintln!("calm: {err}");
+        }
+    }
+
+    /// Starts writing the scene to `path`. The scene as it is now counts as saved, so an
+    /// untouched canvas never replaces the file. A file that cannot be read or parsed
+    /// turns autosave off for this launch.
+    pub fn start_autosave(&mut self, path: PathBuf, cx: &mut Context<Self>) -> Result<(), String> {
+        let dir = path.parent().map(PathBuf::from).unwrap_or_default();
+        let name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if let Err(err) = autosave_allowed_after_read(&load_layout_from(&dir, &name)) {
+            self.autosave_notice = Some(err.clone());
+            cx.notify();
+            return Err(err);
+        }
+        let session = &self.settings.settings.session;
+        let writer = SessionWriter::new(path.clone(), session.backup_count, session.browser_query);
+        let debounce = Duration::from_millis(session.debounce_ms);
+        self.autosave = Some(Autosave {
+            started: Instant::now(),
+            clock: AutosaveClock::new(debounce, self.scene.sync_revision()),
+            queue: SaveQueue::default(),
+            writer: Arc::new(Mutex::new(OrderedWriter::new(writer))),
+            timer: None,
+            _quit: cx.on_app_quit(|view, _| {
+                view.save_on_quit();
+                async {}
+            }),
+        });
+        self.autosave_notice = None;
+        self.autosave_path = Some(path);
+        Ok(())
+    }
+
+    /// Ends autosave without a last write. The smoke uses it before removing its dir.
+    pub fn stop_autosave(&mut self) {
+        self.autosave = None;
+    }
+
+    /// Applies a change to the session settings: off stops the timer and the quit write, on
+    /// starts through the build gate, and a running save takes the new debounce on its next
+    /// tick, the browser query mode on its next write and the backup count at rotation.
+    pub fn reconcile_autosave(
+        &mut self,
+        old: &calm_core::settings::SessionSettings,
+        cx: &mut Context<Self>,
+    ) {
+        let new = &self.settings.settings.session;
+        match autosave_change(self.autosave_gate, self.autosave.is_some(), old, new) {
+            AutosaveChange::Keep => {}
+            AutosaveChange::Stop => self.stop_autosave(),
+            AutosaveChange::Start => {
+                let path = self
+                    .autosave_path
+                    .clone()
+                    .unwrap_or_else(calm_core::layout::session_path);
+                if let Err(err) = self.start_autosave(path, cx) {
+                    eprintln!("calm: {err}");
+                }
+            }
+            AutosaveChange::Update => {
+                let debounce = Duration::from_millis(new.debounce_ms);
+                let (backup_count, browser_query) = (new.backup_count, new.browser_query);
+                if let Some(autosave) = self.autosave.as_mut() {
+                    autosave.clock.set_debounce(debounce);
+                    autosave
+                        .writer
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .inner_mut()
+                        .set_options(backup_count, browser_query);
+                }
+                self.autosave_tick(cx);
+            }
+        }
+    }
+
+    /// Checks the scene revision, starts a save when one is due and sets the timer for the
+    /// next one. Runs on every render and from its own timer.
+    pub fn autosave_tick(&mut self, cx: &mut Context<Self>) {
+        let revision = self.scene.sync_revision();
+        let Some(autosave) = self.autosave.as_mut() else {
+            return;
+        };
+        let now = autosave.started.elapsed();
+        autosave.clock.observe(revision, now);
+        if let Some(due) = autosave.clock.due(now) {
+            autosave.clock.submitted(due);
+            if let Some(job) = autosave.queue.submit(due, self.scene.to_layout()) {
+                self.spawn_autosave_write(job, cx);
+            }
+        }
+        self.schedule_autosave_timer(cx);
+    }
+
+    fn schedule_autosave_timer(&mut self, cx: &mut Context<Self>) {
+        let Some(autosave) = self.autosave.as_mut() else {
+            return;
+        };
+        let Some(deadline) = autosave.clock.next_deadline() else {
+            autosave.timer = None;
+            return;
+        };
+        if autosave
+            .timer
+            .as_ref()
+            .is_some_and(|(at, _)| *at == deadline)
+        {
+            return;
+        }
+        let delay = deadline.saturating_sub(autosave.started.elapsed());
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |view, cx| {
+                if let Some(autosave) = view.autosave.as_mut() {
+                    autosave.timer = None;
+                }
+                view.autosave_tick(cx);
+            });
+        });
+        autosave.timer = Some((deadline, task));
+    }
+
+    /// Writes one snapshot on the background executor, then acknowledges it on the UI thread.
+    fn spawn_autosave_write(
+        &mut self,
+        (generation, layout): (u64, LayoutFile),
+        cx: &mut Context<Self>,
+    ) {
+        let Some(autosave) = self.autosave.as_ref() else {
+            return;
+        };
+        let writer = autosave.writer.clone();
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_executor()
+                .spawn(async move { write_session(&writer, generation, &layout) })
+                .await;
+            let _ = this.update(cx, |view, cx| view.autosave_finished(outcome, cx));
+        })
+        .detach();
+    }
+
+    fn autosave_finished(&mut self, outcome: WriteOutcome, cx: &mut Context<Self>) {
+        self.note_autosave_outcome(&outcome);
+        let Some(autosave) = self.autosave.as_mut() else {
+            return;
+        };
+        if let Some(next) = autosave.queue.finish(&outcome) {
+            self.spawn_autosave_write(next, cx);
+        }
+        cx.notify();
+    }
+
+    fn note_autosave_outcome(&mut self, outcome: &WriteOutcome) {
+        match outcome {
+            WriteOutcome::Written(_) => self.autosave_writes += 1,
+            WriteOutcome::Skipped { .. } => {}
+            WriteOutcome::Failed { message, .. } => {
+                eprintln!("calm: {}", save_error_text(message));
+            }
+        }
+    }
+
+    /// The quit hook: writes the latest scene now. Waits for a write in flight, and the
+    /// ordered writer drops that older write if it runs after this one.
+    pub fn save_on_quit(&mut self) {
+        let revision = self.scene.sync_revision();
+        let Some(autosave) = self.autosave.as_mut() else {
+            return;
+        };
+        let queued = autosave.queue.take_queued().is_some();
+        // The live revision, not the clock's: a change since the last tick must be saved.
+        let pending =
+            autosave.clock.changed_since_submit(revision) || autosave.queue.in_flight().is_some();
+        if !queued && !pending {
+            return;
+        }
+        autosave.clock.submitted(revision);
+        let outcome = write_session(&autosave.writer, revision, &self.scene.to_layout());
+        autosave.queue.record(&outcome);
+        self.note_autosave_outcome(&outcome);
+    }
+
+    /// The installed manifest version of `plugin_id`, if that plugin is installed.
+    fn installed_version(&self, plugin_id: &str) -> Option<String> {
+        installed_version(&self.installed_plugins, plugin_id)
+    }
+
+    /// Adds a panel through the one path new panels take, so plugin and TUI kinds carry
+    /// the installed manifest version.
+    fn add_new_panel(&mut self, kind: PanelKind, rect: Rect) -> (PanelId, PanelKind) {
+        let kind = kind.with_installed_version(|id| self.installed_version(id));
+        (self.scene.add(kind.clone(), rect), kind)
     }
 
     /// Installs loaded settings at startup.
@@ -453,7 +692,7 @@ impl CanvasView {
                 if matches!(kind, PanelKind::Terminal { .. }) {
                     rect.size = self.settings.settings.panels.default_terminal_size();
                 }
-                let id = self.scene.add(kind.clone(), rect);
+                let (id, kind) = self.add_new_panel(kind, rect);
                 if let Some(profile) = profile {
                     self.requested_profiles.insert(id, profile);
                 }
@@ -489,7 +728,9 @@ impl CanvasView {
                 vec![Effect::Redraw]
             }
             (Some(MenuCommand::Duplicate), MenuTarget::Panel(id)) => {
-                let Some(copy) = self.scene.duplicate(id) else {
+                let installed =
+                    |plugin_id: &str| installed_version(&self.installed_plugins, plugin_id);
+                let Some(copy) = self.scene.duplicate(id, installed) else {
                     return;
                 };
                 if let Some(profile) = self.terminal_meta(id).and_then(|meta| meta.profile.clone())
@@ -633,9 +874,7 @@ impl CanvasView {
         };
         let cwd = display_cwd(&meta.cwd, &terminal_profiles::home_dir());
         let title = render_title(&resolved.title_template, meta.index, &cwd);
-        if let Some(panel) = self.scene.get_mut(id) {
-            panel.title = title;
-        }
+        self.scene.set_title(id, title);
         if let Some(TerminalIcon::Image(relative)) = &resolved.icon {
             let dir = self.settings_dir();
             self.tui_icons.entry(dir.join(relative)).or_insert_with(|| {
@@ -755,9 +994,7 @@ impl CanvasView {
         if let Some(run) = self.tui_run_mut(id) {
             run.subscription = Some(subscription);
         }
-        if let Some(panel) = self.scene.get_mut(id) {
-            panel.title = title;
-        }
+        self.scene.set_title(id, title);
         Ok(())
     }
 
@@ -777,9 +1014,7 @@ impl CanvasView {
                 run.plugin.dir.display()
             );
         }
-        if let Some(panel) = self.scene.get_mut(id) {
-            panel.title = title;
-        }
+        self.scene.set_title(id, title);
         if let calm_core::tui::ExitAction::RestartAfter(delay) = action {
             cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor().timer(delay).await;
@@ -940,10 +1175,10 @@ impl CanvasView {
                 return;
             }
         };
-        let Some(panel) = self.scene.get_mut(id) else {
+        let Some(route) = plugin_host::route_in_scene(&mut self.scene, id, &request) else {
             return;
         };
-        let response = match plugin_host::route(panel, &request) {
+        let response = match route {
             Route::Reply(Some(response)) => response,
             Route::Reply(None) => return,
             Route::Background(call) => return self.serve_in_background(id, request.id, call, cx),
@@ -1293,7 +1528,15 @@ impl CanvasView {
         // The pill has one text color, so the warning sign marks the plugin item.
         let plugin_errors =
             plugin_host::plugin_problems_text(self.plugin_errors, self.plugin_warnings);
+        let session_error = self
+            .autosave
+            .as_ref()
+            .and_then(|autosave| autosave.queue.error())
+            .map(save_error_text)
+            .or_else(|| self.autosave_notice.clone())
+            .unwrap_or_default();
         let text = status_text([
+            session_error.as_str(),
             saved.as_str(),
             plugin_errors.as_str(),
             zoom.as_str(),
@@ -2426,6 +2669,7 @@ impl Focusable for CanvasView {
 
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.autosave_tick(cx);
         if self.show_stats && self.settings.settings.developer.stats.show_fps {
             // Each render records a frame and asks for the next one, so the readout
             // measures the frame rate the window can sustain. Off means no extra frames.
@@ -2611,4 +2855,27 @@ fn to_bounds(rect: Rect, origin: gpui::Point<f64>) -> Bounds<Pixels> {
         ),
         size: size(px(rect.size.width as f32), px(rect.size.height as f32)),
     }
+}
+
+/// Runs one ordered session write. A poisoned lock still writes: the writer holds no
+/// half-done state between calls.
+fn write_session(
+    writer: &Mutex<OrderedWriter<SessionWriter>>,
+    generation: u64,
+    layout: &LayoutFile,
+) -> WriteOutcome {
+    writer
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .write(generation, |session| {
+            session.save(layout).map_err(|err| err.to_string())
+        })
+}
+
+/// The manifest version of the installed plugin `plugin_id`.
+fn installed_version(plugins: &[InstalledPlugin], plugin_id: &str) -> Option<String> {
+    plugins
+        .iter()
+        .find(|plugin| plugin.manifest.id == plugin_id)
+        .map(|plugin| plugin.manifest.version.clone())
 }

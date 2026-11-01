@@ -218,12 +218,18 @@ pub struct Panel {
     pub resize: ResizePolicy,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Scene {
-    /// Back to front: the last panel is topmost.
+    /// Back to front: the last panel is topmost. Change panels through `Scene` methods or
+    /// `get_mut`, so the revision moves.
     pub panels: Vec<Panel>,
+    /// Direct writes are fine: `sync_revision` notices a changed camera.
     pub camera: Camera,
     next_id: u64,
+    /// Bumped by every change a saved layout would show. Autosave compares it.
+    revision: u64,
+    /// The camera as of the last `sync_revision`.
+    camera_seen: Camera,
 }
 
 impl Default for Scene {
@@ -232,13 +238,80 @@ impl Default for Scene {
             panels: Vec::new(),
             camera: Camera::default(),
             next_id: 1,
+            revision: 0,
+            camera_seen: Camera::default(),
+        }
+    }
+}
+
+/// Equal content is equal; the revision bookkeeping is not content.
+impl PartialEq for Scene {
+    fn eq(&self, other: &Self) -> bool {
+        self.panels == other.panels && self.camera == other.camera && self.next_id == other.next_id
+    }
+}
+
+impl PanelKind {
+    /// Fills `plugin_version` of a plugin or TUI kind from `installed`, which maps a plugin
+    /// id to its installed manifest version. Other kinds come back unchanged.
+    pub fn with_installed_version(self, installed: impl Fn(&str) -> Option<String>) -> Self {
+        match self {
+            PanelKind::Plugin {
+                plugin_id,
+                settings,
+                ..
+            } => PanelKind::Plugin {
+                plugin_version: installed(&plugin_id),
+                plugin_id,
+                settings,
+            },
+            PanelKind::Tui { plugin_id, .. } => PanelKind::Tui {
+                plugin_version: installed(&plugin_id),
+                plugin_id,
+            },
+            other => other,
         }
     }
 }
 
 impl Scene {
+    /// The current revision, without folding in a camera written since the last sync.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Counts a camera change made through the public field, then returns the revision.
+    /// Autosave calls this before it compares revisions.
+    pub fn sync_revision(&mut self) -> u64 {
+        if self.camera != self.camera_seen {
+            self.camera_seen = self.camera;
+            self.bump();
+        }
+        self.revision
+    }
+
+    /// Marks a change that went around the `Scene` methods.
+    pub fn touch(&mut self) {
+        self.bump();
+    }
+
+    fn bump(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Sets a panel's title. Only a real change moves the revision, so a program that
+    /// repeats its title does not cause saves.
+    pub fn set_title(&mut self, id: PanelId, title: String) -> bool {
+        let changed = self.get(id).is_some_and(|panel| panel.title != title);
+        if changed && let Some(panel) = self.get_mut(id) {
+            panel.title = title;
+        }
+        changed
+    }
+
     /// Adds a panel on top. Ids are never reused, even after a remove.
     pub fn add(&mut self, kind: PanelKind, rect: Rect) -> PanelId {
+        self.bump();
         let id = PanelId(self.next_id);
         self.next_id += 1;
         let rect = Rect {
@@ -265,6 +338,7 @@ impl Scene {
     /// Applies a panel's resize policy. A resizable panel's size moves into the new
     /// limits at once; a locked panel keeps the size it was created with.
     pub fn set_resize_policy(&mut self, id: PanelId, policy: ResizePolicy) {
+        // `get_mut` counts this as a change: the size may move.
         if let Some(panel) = self.get_mut(id) {
             panel.resize = policy;
             if policy.resizable {
@@ -275,6 +349,7 @@ impl Scene {
 
     pub fn remove(&mut self, id: PanelId) -> Option<Panel> {
         let index = self.index_of(id)?;
+        self.bump();
         Some(self.panels.remove(index))
     }
 
@@ -282,29 +357,44 @@ impl Scene {
         self.panels.iter().find(|panel| panel.id == id)
     }
 
+    /// Any mutable access counts as a change, so no field write can skip autosave.
+    /// Read through `get` when nothing changes.
     pub fn get_mut(&mut self, id: PanelId) -> Option<&mut Panel> {
-        self.panels.iter_mut().find(|panel| panel.id == id)
+        let index = self.index_of(id)?;
+        self.bump();
+        self.panels.get_mut(index)
     }
 
     pub fn bring_to_front(&mut self, id: PanelId) {
-        if let Some(index) = self.index_of(id) {
+        if let Some(index) = self.index_of(id)
+            && index + 1 != self.panels.len()
+        {
             let panel = self.panels.remove(index);
             self.panels.push(panel);
+            self.bump();
         }
     }
 
     pub fn send_to_back(&mut self, id: PanelId) {
-        if let Some(index) = self.index_of(id) {
+        if let Some(index) = self.index_of(id)
+            && index != 0
+        {
             let panel = self.panels.remove(index);
             self.panels.insert(0, panel);
+            self.bump();
         }
     }
 
     /// Adds a copy of `id` on top, shifted by `DUPLICATE_OFFSET`, never minimized.
     /// Only the kind and size are copied, so a duplicated terminal gets a fresh process.
-    pub fn duplicate(&mut self, id: PanelId) -> Option<PanelId> {
+    /// `installed` gives a plugin's installed manifest version, stamped on the copy.
+    pub fn duplicate(
+        &mut self,
+        id: PanelId,
+        installed: impl Fn(&str) -> Option<String>,
+    ) -> Option<PanelId> {
         let source = self.get(id)?;
-        let kind = source.kind.clone();
+        let kind = source.kind.clone().with_installed_version(installed);
         let rect = Rect {
             origin: Point::new(
                 source.rect.origin.x + DUPLICATE_OFFSET,
@@ -371,6 +461,227 @@ pub fn content_rect(panel: &Panel) -> Rect {
 mod tests {
     use super::*;
 
+    type Change = Box<dyn FnOnce(&mut Scene, PanelId, PanelId)>;
+
+    /// Runs `change` on a fresh two-panel scene and reports whether the revision moved.
+    fn bumps(change: impl FnOnce(&mut Scene, PanelId, PanelId)) -> bool {
+        let mut scene = Scene::default();
+        let back = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 100.0));
+        let front = scene.add(terminal(), Rect::new(300.0, 0.0, 200.0, 100.0));
+        let before = scene.sync_revision();
+        change(&mut scene, back, front);
+        scene.sync_revision() != before
+    }
+
+    #[test]
+    fn every_persisted_mutation_bumps_the_revision() {
+        let browser = PanelKind::Browser {
+            url: "https://example.com".to_string(),
+            page_zoom: None,
+        };
+        let cases: Vec<(&str, Change)> = vec![
+            (
+                "add",
+                Box::new(|s, _, _| {
+                    let _ = s.add(terminal(), Rect::new(0.0, 0.0, 1.0, 1.0));
+                }),
+            ),
+            (
+                "remove",
+                Box::new(|s, back, _| {
+                    let _ = s.remove(back);
+                }),
+            ),
+            (
+                "duplicate",
+                Box::new(|s, back, _| {
+                    let _ = s.duplicate(back, |_| None);
+                }),
+            ),
+            (
+                "bring_to_front",
+                Box::new(|s, back, _| s.bring_to_front(back)),
+            ),
+            (
+                "send_to_back",
+                Box::new(|s, _, front| s.send_to_back(front)),
+            ),
+            (
+                "move",
+                Box::new(|s, back, _| s.get_mut(back).unwrap().rect.origin.x = 5.0),
+            ),
+            (
+                "resize",
+                Box::new(|s, back, _| s.get_mut(back).unwrap().rect.size.width = 400.0),
+            ),
+            (
+                "minimize",
+                Box::new(|s, back, _| s.get_mut(back).unwrap().minimized = true),
+            ),
+            (
+                "title",
+                Box::new(|s, back, _| {
+                    let _ = s.set_title(back, "new".to_string());
+                }),
+            ),
+            (
+                "kind",
+                Box::new(move |s, back, _| s.get_mut(back).unwrap().kind = browser),
+            ),
+            (
+                "overrides",
+                Box::new(|s, back, _| {
+                    s.get_mut(back).unwrap().overrides.title = Some("mine".to_string())
+                }),
+            ),
+            ("camera zoom", Box::new(|s, _, _| s.camera.zoom = 2.0)),
+            (
+                "camera pan",
+                Box::new(|s, _, _| s.camera.pan_by_screen(10.0, 0.0)),
+            ),
+            ("touch", Box::new(|s, _, _| s.touch())),
+        ];
+        for (name, change) in cases {
+            assert!(bumps(change), "{name} did not bump the revision");
+        }
+    }
+
+    #[test]
+    fn reads_and_no_op_changes_keep_the_revision() {
+        let cases: Vec<(&str, Change)> = vec![
+            (
+                "get",
+                Box::new(|s, back, _| {
+                    let _ = s.get(back);
+                }),
+            ),
+            (
+                "hit_test",
+                Box::new(|s, _, _| {
+                    let _ = s.hit_test(Point::new(1.0, 1.0));
+                }),
+            ),
+            (
+                "front already front",
+                Box::new(|s, _, front| s.bring_to_front(front)),
+            ),
+            (
+                "back already back",
+                Box::new(|s, back, _| s.send_to_back(back)),
+            ),
+            (
+                "same title",
+                Box::new(|s, back, _| {
+                    let _ = s.set_title(back, "Terminal".to_string());
+                }),
+            ),
+            (
+                "missing id",
+                Box::new(|s, _, _| {
+                    let _ = s.get_mut(PanelId(99));
+                }),
+            ),
+            (
+                "camera written unchanged",
+                Box::new(|s, _, _| {
+                    s.camera = Camera { ..s.camera };
+                }),
+            ),
+        ];
+        for (name, change) in cases {
+            assert!(!bumps(change), "{name} bumped the revision");
+        }
+    }
+
+    #[test]
+    fn scene_equality_ignores_the_revision() {
+        let mut moved = Scene::default();
+        moved.touch();
+        assert_eq!(moved, Scene::default());
+    }
+
+    #[test]
+    fn duplicate_stamps_the_installed_version_on_plugin_and_tui_copies() {
+        let installed = |id: &str| (id == "notes").then(|| "2.0.0".to_string());
+        let mut scene = Scene::default();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let tui = scene.add(
+            PanelKind::Tui {
+                plugin_id: "notes".to_string(),
+                plugin_version: Some("1.0.0".to_string()),
+            },
+            rect,
+        );
+        let plugin = scene.add(
+            PanelKind::Plugin {
+                plugin_id: "notes".to_string(),
+                plugin_version: Some("1.0.0".to_string()),
+                settings: serde_json::json!({ "a": 1 }),
+            },
+            rect,
+        );
+        let tui_copy = scene.duplicate(tui, installed).unwrap();
+        assert_eq!(
+            scene.get(tui_copy).unwrap().kind,
+            PanelKind::Tui {
+                plugin_id: "notes".to_string(),
+                plugin_version: Some("2.0.0".to_string()),
+            }
+        );
+        let plugin_copy = scene.duplicate(plugin, installed).unwrap();
+        assert_eq!(
+            scene.get(plugin_copy).unwrap().kind,
+            PanelKind::Plugin {
+                plugin_id: "notes".to_string(),
+                plugin_version: Some("2.0.0".to_string()),
+                settings: serde_json::json!({ "a": 1 }),
+            }
+        );
+        // The source keeps the version it was saved with.
+        assert!(matches!(
+            &scene.get(tui).unwrap().kind,
+            PanelKind::Tui { plugin_version: Some(v), .. } if v == "1.0.0"
+        ));
+    }
+
+    #[test]
+    fn with_installed_version_fills_plugin_and_tui_kinds_only() {
+        let installed = |id: &str| (id == "notes").then(|| "1.2.3".to_string());
+        let plugin = PanelKind::Plugin {
+            plugin_id: "notes".to_string(),
+            plugin_version: None,
+            settings: serde_json::json!({ "a": 1 }),
+        };
+        assert_eq!(
+            plugin.with_installed_version(installed),
+            PanelKind::Plugin {
+                plugin_id: "notes".to_string(),
+                plugin_version: Some("1.2.3".to_string()),
+                settings: serde_json::json!({ "a": 1 }),
+            }
+        );
+        let tui = PanelKind::Tui {
+            plugin_id: "notes".to_string(),
+            plugin_version: None,
+        };
+        assert!(matches!(
+            tui.with_installed_version(installed),
+            PanelKind::Tui { plugin_version: Some(v), .. } if v == "1.2.3"
+        ));
+        let missing = PanelKind::Tui {
+            plugin_id: "gone".to_string(),
+            plugin_version: Some("stale".to_string()),
+        };
+        assert!(matches!(
+            missing.with_installed_version(installed),
+            PanelKind::Tui {
+                plugin_version: None,
+                ..
+            }
+        ));
+        assert_eq!(terminal().with_installed_version(installed), terminal());
+    }
+
     fn terminal() -> PanelKind {
         PanelKind::Terminal {
             command: None,
@@ -432,7 +743,7 @@ mod tests {
         let source = scene.add(kind.clone(), Rect::new(10.0, 20.0, 300.0, 200.0));
         let _other = scene.add(terminal(), Rect::new(900.0, 0.0, 200.0, 200.0));
         scene.get_mut(source).unwrap().minimized = true;
-        let copy = scene.duplicate(source).unwrap();
+        let copy = scene.duplicate(source, |_| None).unwrap();
         assert_ne!(copy, source);
         assert_eq!(scene.panels.last().map(|panel| panel.id), Some(copy));
         let panel = scene.get(copy).unwrap();
@@ -448,7 +759,7 @@ mod tests {
         );
         assert!(!panel.minimized);
         assert!(scene.get(source).unwrap().minimized);
-        assert_eq!(scene.duplicate(PanelId(99)), None);
+        assert_eq!(scene.duplicate(PanelId(99), |_| None), None);
     }
 
     #[test]
