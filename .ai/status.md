@@ -170,8 +170,15 @@ Pull requests:
   missing plugin, TUI app or unknown kind is a GPUI-only placeholder with a Delete-only
   menu that keeps its saved kind. `APP_AUTOSAVE_ACTIVE` is `true`. `ask` has no dialog: it
   restores like `on` with a notice. Smoke lines `session saved=4 restored=4 ...` and
-  `session malformed moved=session.json.invalid-0 started_empty=true`. Unverified: the
-  manual quit and relaunch, and a native restack after restore before #40 lands.
+  `session malformed moved=session.json.invalid-0 started_empty=true`. Review fixes: an
+  autosave-off restore closes the gate for the whole launch (`AutosaveStart::launch_gate`),
+  so a Settings toggle cannot start the writer; restored panels keep their saved title
+  until the panel sets one; a gone cwd starts in home with a chrome note "cwd missing,
+  started in ~" that is never saved; an invalid saved browser url opens `about:blank`
+  (`browser_url::restored_url`). Smoke line `session edges titles=saved cwd=home`.
+  Missing-plugin settings round trip as a JSON value, not byte for byte; unknown kinds
+  are byte for byte. Unverified: the manual quit and relaunch, the browser fallback in a
+  live view (unit tested only), and a native restack after restore before #40 lands.
 
 ## Not wired yet
 
