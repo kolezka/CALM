@@ -4,6 +4,7 @@ mod canvas_view;
 mod dev_menu;
 mod grid_paint;
 mod icon_image;
+mod panel_settings;
 mod plugin_host;
 mod plugin_services;
 mod settings_menu;
@@ -691,6 +692,12 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_step(&mut run, "panel_overrides", async {
             smoke_panel_overrides(&view, window, cx)
         })
+        .await;
+        smoke_step(
+            &mut run,
+            "panel_settings",
+            smoke_panel_settings(&view, window, cx),
+        )
         .await;
         // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
         smoke_step(&mut run, "session", async {
@@ -1599,6 +1606,90 @@ fn smoke_panel_overrides(
         other => smoke_fail(&format!(
             "panel_overrides: expected styled=1 borderless=1, size unchanged, literal title, recolor, cleared, got {other:?}"
         )),
+    }
+}
+
+/// Opens a panel's Settings window twice, renames the panel through it, closes the panel,
+/// then sends a late change. One window while open, none after, and the late change is
+/// ignored without touching the scene.
+async fn smoke_panel_settings(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::settings_form::FieldValue;
+    const TITLE: &str = "smoke panel settings";
+    let title = crate::panel_settings::window_title(TITLE);
+    let count = |title: &str| {
+        calm_native::settings_window_count(title)
+            .unwrap_or_else(|err| smoke_fail(&format!("panel settings count: {err}")))
+    };
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let kind = PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+            };
+            let id = view.scene.add(kind, Rect::new(760.0, 1080.0, 300.0, 160.0));
+            view.open_panel_settings(id, window, cx);
+            view.open_panel_settings(id, window, cx);
+            view.panel_settings_changed(
+                id,
+                "panel.title",
+                FieldValue::Text(TITLE.to_string()),
+                window,
+                cx,
+            );
+            let renamed = view.scene.get(id).and_then(|p| p.overrides.title.clone());
+            let open = count(&title);
+            let mapped = view.panel_settings_windows.len();
+            view.apply_effects(
+                vec![calm_core::interaction::Effect::ClosePanel(id)],
+                window,
+                cx,
+            );
+            (id, renamed, open, mapped)
+        })
+    });
+    let Ok((id, renamed, open, mapped)) = opened else {
+        smoke_fail("panel_settings: canvas window unavailable");
+    };
+    // Let AppKit finish closing before counting.
+    cx.background_executor()
+        .timer(Duration::from_millis(200))
+        .await;
+    let late = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let before = view.scene.revision();
+            view.panel_settings_changed(
+                id,
+                "panel.title",
+                FieldValue::Text("late".into()),
+                window,
+                cx,
+            );
+            (
+                view.scene.revision() == before && view.scene.get(id).is_none(),
+                view.panel_settings_windows.len(),
+            )
+        })
+    });
+    let after = count(&title);
+    println!(
+        "smoke: panel_settings windows_open={open} after_close={after} renamed={} late_ignored={}",
+        renamed.as_deref() == Some(TITLE),
+        matches!(late, Ok((true, 0)))
+    );
+    if open != 1 || mapped != 1 || after != 0 || renamed.as_deref() != Some(TITLE) {
+        smoke_fail(&format!(
+            "panel_settings: expected windows_open=1 after_close=0, got open={open} mapped={mapped} after={after} renamed={renamed:?}"
+        ));
+    }
+    if !matches!(late, Ok((true, 0))) {
+        smoke_fail(&format!(
+            "panel_settings: late change was not ignored: {late:?}"
+        ));
     }
 }
 

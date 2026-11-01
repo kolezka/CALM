@@ -52,6 +52,7 @@ pub const STEPS: &[StepSpec] = &[
     step("github_api", &[], &[]),
     step("plugin_menus", &[], &[]),
     step("panel_overrides", &["terminals"], &[]),
+    step("panel_settings", &[], &[]),
     step("session", &[], &[]),
 ];
 

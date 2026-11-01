@@ -47,7 +47,7 @@ use gpui::{
 
 use calm_plugins::{BridgeRequest, InstalledPlugin, PluginContent};
 use futures::StreamExt as _;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -206,6 +206,10 @@ pub struct CanvasView {
     pub settings: SettingsState,
     /// Created on first `cmd-,`, then hidden and shown.
     pub settings_window: Option<calm_native::SettingsWindow>,
+    /// At most one Settings window per panel, closed with the panel.
+    pub panel_settings_windows: HashMap<PanelId, calm_native::SettingsWindow>,
+    /// Closed panels a late Settings change was already logged for.
+    pub gone_panel_changes: HashSet<PanelId>,
     pub background: BackgroundRenderer,
     pub grid: GridTextures,
     /// Native bar floating over the bottom of the canvas. Created on the first paint.
@@ -303,6 +307,8 @@ impl CanvasView {
                 notice: None,
             },
             settings_window: None,
+            panel_settings_windows: HashMap::new(),
+            gone_panel_changes: HashSet::new(),
             background: BackgroundRenderer::default(),
             grid: GridTextures::default(),
             status_bar: None,
@@ -781,6 +787,7 @@ impl CanvasView {
                     self.placeholders.remove(&id);
                     self.title_notes.remove(&id);
                     self.scene.remove(id);
+                    self.close_panel_settings(id);
                     if self.focused == Some(id) {
                         self.focused = None;
                     }
@@ -870,6 +877,10 @@ impl CanvasView {
             // The same action as `cmd-,` and the menu bar, so one handler opens Settings.
             (Some(MenuCommand::OpenSettings), MenuTarget::Canvas { .. }) => {
                 window.dispatch_action(Box::new(crate::settings_menu::OpenSettings), cx);
+                return;
+            }
+            (Some(MenuCommand::PanelSettings), MenuTarget::Panel(id)) => {
+                self.open_panel_settings(id, window, cx);
                 return;
             }
             (Some(MenuCommand::Restart), MenuTarget::Panel(id)) => {
@@ -1042,7 +1053,7 @@ impl CanvasView {
         }
     }
 
-    fn settings_dir(&self) -> std::path::PathBuf {
+    pub(crate) fn settings_dir(&self) -> std::path::PathBuf {
         self.settings
             .path
             .parent()

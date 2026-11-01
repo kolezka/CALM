@@ -550,6 +550,16 @@ impl SettingsWindow {
         self.window.orderOut(None);
     }
 
+    /// Closes the window for good, for a window whose subject is gone.
+    pub fn close(&self) {
+        self.window.makeFirstResponder(None);
+        self.window.close();
+    }
+
+    pub fn set_title(&self, title: &str) {
+        self.window.setTitle(&NSString::from_str(title));
+    }
+
     pub fn is_visible(&self) -> bool {
         self.window.isVisible()
     }

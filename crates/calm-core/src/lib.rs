@@ -15,6 +15,7 @@ pub mod layout;
 pub mod menu;
 pub mod occlusion;
 pub mod panel_form;
+pub mod panel_icons;
 pub mod plugin_menu;
 pub mod preview;
 pub mod process_stats;

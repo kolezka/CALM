@@ -201,8 +201,8 @@ impl<'de> Deserialize<'de> for PanelKind {
 pub struct PanelOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// 1 to 4 characters, `builtin:<name>` for a `chrome::PanelIcon`, or a relative .png or
-    /// .svg path inside the settings folder.
+    /// 1 to 4 characters, `builtin:<name>` for a `chrome::PanelIcon`, or a .png or .svg
+    /// path relative to the settings folder, such as `panel-icons/<hash>.png`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// "#rrggbb" or "#rrggbbaa".
