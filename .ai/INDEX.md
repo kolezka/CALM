@@ -13,6 +13,7 @@ knowledge behind them. Read in this order for a cold start: `system.md`, `status
 | `decisions.md` | Settled decisions with rationale and cost if wrong | A decision is made or reversed |
 | `status.md` | Done, pending, not wired, unverified | A task lands or a gap is found |
 | `backlog.md` | Agreed follow-ups nobody is working on yet, with blockers and origin | An item is agreed, picked up or found done |
+| `open-questions.md` | Decisions pending with the user, one line each. Ask once, do not repeat | A question is asked, answered or added |
 
 ## Other documents
 
@@ -27,7 +28,8 @@ knowledge behind them. Read in this order for a cold start: `system.md`, `status
 | `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md` | Plugin API v2 design: native browser, terminal and plugin-to-plugin APIs, capabilities, events, external socket channel, phases |
 | `docs/superpowers/specs/2026-10-31-claude-code-mods-integration.md` | Research: Claude Code mods integration and the external socket allowlist (PR #9) |
 | `docs/superpowers/plans/2026-10-31-calm-prototype.md` | The task plan the prototype follows |
-| `docs/superpowers/plans/2026-10-31-canvas-persistence.md` | Plan for session autosave, restore at launch, named layouts and layout v2 (not implemented) |
+| `docs/superpowers/plans/2026-10-31-canvas-persistence.md` | Plan for session autosave, restore at launch, named layouts and layout v2. Tasks 1 to 4 merged; "Remaining tasks" appendix |
+| `docs/superpowers/plans/2026-11-01-plugin-api-v2-worker-briefs.md` | Ordered worker briefs for plugin API v2 from the API v2 orchestrator. Phase 2 is next |
 | `packages/calm-plugin-sdk/calm.d.ts` | The plugin API as TypeScript types |
 | `.superpowers/sdd/2026-10-31-calm-prototype/progress.md` | SDD ledger with every ruling (git-ignored, main checkout only) |
 
