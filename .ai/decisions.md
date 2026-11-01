@@ -618,3 +618,17 @@ These shipped with #41, next to "Restore at launch" above.
   (spec), 1 to 600000 ms (`EXEC_MAX_TIMEOUT_MS`, chosen here). A signal reports
   `128 + n`. Output is UTF-8 lossy. The child gets CALM's environment and stdin is empty.
   Cost: a bare name resolves in CALM's short Dock `PATH`; docs say to use `/bin/sh -lc`.
+
+## Native occlusion (2026-11-01, `fix/native-occlusion`)
+
+- **Native views are masked by the panels above them.** Native views are subviews of the
+  GPUI host, so they draw over all GPUI paint, and a back panel's content covered a front
+  panel's title bar. Each placement now carries the visible pieces of its container
+  (`calm_core::occlusion`, the container minus each higher panel's rect or chip plus the
+  1 px ring, shadows ignored). The clip view gets a `CALayer` mask of those pieces, with
+  implicit animations off, and a `hitTest:` override so masked areas take no clicks. No
+  mask when nothing covers it; hidden when everything does. Rejected: drawing chrome as
+  native views (a second chrome implementation and a native view per panel), and hiding
+  overlapped panels (a partly covered terminal would vanish). Cost if wrong: a mask layer
+  per overlapped panel per paint while it moves, and joined sides ignore the gap reach of
+  the ring (the gap lies outside both panels' native content, so nothing shows).
