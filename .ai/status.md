@@ -361,7 +361,8 @@ Open questions: `.ai/open-questions.md`.
 - Per-panel settings (`feat/panel-settings`), by eye: Cmd+drag over a live terminal and
   over a page, Cmd+click on a link in a terminal and in a page (the click must land),
   Cmd+right-click menu on both, the panel Settings window and its tabs, Reset to global,
-  the borderless look.
+  the borderless look. The panel form does not yet explain that untouched terminal colors come
+  from Ghostty Default when no palette is set.
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
 

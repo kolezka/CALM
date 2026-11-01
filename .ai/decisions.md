@@ -686,6 +686,17 @@ These shipped with #41, next to "Restore at launch" above.
   it looks like the original; borderless geometry stays consistent.
 - **A one-well color edit seeds from Ghostty Default.** Setting one terminal color when
   nothing is set yet fills the other wells from the Ghostty Default palette.
+- **Terminal colors are inherited and reset one by one.** A panel stores only the colors it
+  sets (each of background, foreground and color 0 to 15 is optional); a session file with a
+  full palette loads as every color set. Reason: the spec says each field is inherited or set,
+  and the window has a Reset per color. Cost: builds before fa8ab43 cannot read the partial form.
+- **Untouched colors fall back to Ghostty Default on a live terminal when nothing else defines a palette.**
+  libghostty takes a full theme only, so the panel's colors are merged over Ghostty Default,
+  not over the user's Ghostty config. The form does not say so yet. Cost: a user with Ghostty
+  config colors sees the other colors change after a one-color edit.
+- **Cmd on panel content wins over a resize handle inside the content rect,** in both the
+  native and the GPUI paths. Plain drag still resizes. Reason: the spec gives Cmd+drag anywhere
+  on content to moving.
 - **A restored terminal opens its saved profile.** `PanelKind::Terminal.profile` is saved
   with the session. An unknown profile id opens with the defaults and one notice; the saved
   kind keeps the id, so it comes back if the profile does.
