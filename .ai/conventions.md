@@ -21,6 +21,13 @@ How work on CALM is done. `CLAUDE.md` repeats the ones that are easiest to break
 - Before a merge: `gmake ci` (clippy `-D warnings`, fmt check, workspace tests, smoke,
   plugin type checks). The GUI gate is `cargo run -p calm-app -- --smoke; echo rc=$?` and
   must exit 0 with all its lines printed. A green build is not a running window.
+- The smoke runs every step and ends with `smoke: summary pass=N fail=M skipped=K`, the
+  failure count per label, and one line per failure or skip. `CALM_SMOKE_ONLY=a,b` runs
+  only those steps plus what they need; unknown names exit 1. The gate needs the full run
+  (no filter) at rc=0. A filtered run is for diagnosis only. Details: `docs/dev-setup.md`.
+- A failure labeled `known-flake:<id>` is still a failure: rc stays 1 and the gate is not
+  met. Never report a known flake as a pass, and never add a flake to the list below to make
+  a run look green. A new entry needs a seen message and a backlog item.
 - Capture each command's own exit code. Never read a status through a pipe to `tail` or
   `grep`.
 - Clean before a pre-merge gate: `cargo clean -p calm-core -p calm-plugins -p calm-native
@@ -34,20 +41,31 @@ How work on CALM is done. `CLAUDE.md` repeats the ones that are easiest to break
   after #23 and #28 added code that used it: the text merge was clean and the build broke.
 - Benchmarks are recorded with hardware and method. No number is quoted without a run.
 
-### Smoke flakes
+## Smoke flakes
 
 When the smoke window is occluded, AppKit reports `window_visible=Some(false)` and GPUI
 stops painting. Everything driven by paint then stalls: preview refresh
-(`preview_snapshots_in_3s=[0,0]`), FPS frames ("only N frames with show_stats on"), the
-stats pill ("sampler has CPU but the status bar does not show it"). The native restack
-stalled too until #40 made it independent of paint, so a `zorder` vs scene mismatch is now
-a real failure. Machine load was ruled out: `main` failed at load 17 too.
+(`preview_snapshots_in_3s=[0,0]`), FPS frames, the stats pill. The native restack stalled
+too until #40 made it independent of paint, so a `zorder` vs scene mismatch is now a real
+failure. Machine load was ruled out: `main` failed at load 17 too.
 
-- Treat those lines as known flakes. Any other smoke failure is real.
 - A run that hit a flake did not pass. Do not report it as rc=0.
 - Before blaming a branch, run the same smoke on `origin/main` as a control.
 - Unconfirmed: a TUI "second exit not reported after restart" failure, seen on branches,
   0 of 1 runs on `main`.
+
+Failures seen before (`.ai/backlog.md` item 6). `crates/calm-app/src/smoke_runner.rs`
+(`KNOWN_FLAKES`) matches failure messages against this list; keep the two in step.
+Checked in this order:
+
+- `stats-pill`: "stats: sampler has CPU but the status bar does not show it".
+- `few-frames`: "only N frames with show_stats on".
+- `tui-exit`: "tui: ran=... status=...", the TUI exit waits timing out.
+- `preview-cadence`: "preview refresh outside 1..=3 snapshots".
+- `window-hidden`: any other message with `window_visible=Some(false)`.
+
+Everything else is `new`, including "no preview snapshots at zoom 0.4" and "terminals not
+live at zoom 1.5" while the window is visible.
 
 ## Tests
 

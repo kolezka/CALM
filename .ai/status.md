@@ -185,6 +185,11 @@ Pull requests:
   lines `session saved=4 restored=4 ...`, `session malformed moved=session.json.invalid-0
   started_empty=true` and `session edges titles=saved cwd=home`; the session step also
   checks native order against scene order after a restore.
+- #43 Smoke runs every step, prints PASS, FAIL or SKIPPED per step and a summary, labels
+  known flakes (`smoke_runner::KNOWN_FLAKES`) and takes `CALM_SMOKE_ONLY`. rc stays 1 on any
+  failure. The `zorder` step raises the panel through `apply_menu_choice` and checks native
+  order at once, without waiting for a paint. Autosave, restore and session edge checks run
+  as the one `session` step. Merged without review or a smoke run, at the user's request.
 
 ## Persistence plan progress
 

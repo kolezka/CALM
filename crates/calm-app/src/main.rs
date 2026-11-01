@@ -7,6 +7,7 @@ mod icon_image;
 mod plugin_host;
 mod plugin_services;
 mod settings_menu;
+mod smoke_runner;
 mod terminal;
 mod terminal_profiles;
 mod theme;
@@ -25,8 +26,12 @@ use calm_core::scene::{PanelId, PanelKind};
 use calm_core::settings::RestoreOnLaunch;
 use calm_core::snap::{SnapConfig, snap_move};
 use calm_core::tui::TuiState;
+use std::cell::Cell;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError, TryLockError};
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -131,10 +136,58 @@ fn add_smoke_panels(
 
 const SMOKE_FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Inside a step, ends only that step: `smoke_step` records the failure and moves on.
+/// Elsewhere (setup before the steps), ends the process with exit code 1.
 fn smoke_fail(reason: &str) -> ! {
     eprintln!("smoke: FAILED {reason}");
+    if IN_SMOKE_STEP.get() {
+        std::panic::panic_any(SmokeFailure(reason.to_string()));
+    }
     remove_smoke_dir();
     std::process::exit(1);
+}
+
+/// The panic payload of a failed step. The panic hook stays quiet for it.
+struct SmokeFailure(String);
+
+thread_local! {
+    /// True only while `smoke_step` polls a step, so setup failures still exit.
+    static IN_SMOKE_STEP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs one named step unless the filter or a failed requirement rules it out, and records
+/// PASS, FAIL or SKIPPED. Steps must not call `smoke_fail` inside a GPUI update closure:
+/// unwinding through one would leave GPUI's state broken for the later steps.
+async fn smoke_step(run: &mut smoke_runner::SmokeRun, name: &str, step: impl Future<Output = ()>) {
+    match run.decide(name) {
+        None => return,
+        Some(Err(why)) => {
+            println!("{}", run.record(name, smoke_runner::Outcome::Skipped(why)));
+            return;
+        }
+        Some(Ok(())) => {}
+    }
+    let mut step = std::pin::pin!(step);
+    let result = futures::future::poll_fn(|task| {
+        IN_SMOKE_STEP.set(true);
+        let polled = std::panic::catch_unwind(AssertUnwindSafe(|| step.as_mut().poll(task)));
+        IN_SMOKE_STEP.set(false);
+        match polled {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(())) => Poll::Ready(Ok(())),
+            Err(payload) => Poll::Ready(Err(payload)),
+        }
+    })
+    .await;
+    let line = match result {
+        Ok(()) => run.record(name, smoke_runner::Outcome::Pass),
+        Err(payload) => match payload.downcast::<SmokeFailure>() {
+            Ok(failure) => run.fail(name, failure.0),
+            // A real panic is a bug, not a step result: keep its old behavior.
+            Err(payload) => std::panic::resume_unwind(payload),
+        },
+    };
+    println!("{line}");
 }
 
 /// The smoke's settings dir. Held here because `process::exit` and statics skip destructors,
@@ -256,10 +309,7 @@ fn smoke_native_reorder(
 ) {
     let result = cx.update_window(window, |_, window, cx| {
         view.update(cx, |view, cx| {
-            let last = view.scene.panels.last().map(|panel| panel.id);
-            let Some(last) = last else {
-                smoke_fail("no panel to reorder");
-            };
+            let last = view.scene.panels.last().map(|panel| panel.id)?;
             view.apply_menu_choice(
                 calm_core::menu::PANEL_SEND_TO_BACK,
                 canvas_view::MenuTarget::Panel(last),
@@ -273,11 +323,12 @@ fn smoke_native_reorder(
                 window,
                 cx,
             );
-            (back, (view.native_zorder(cx), view.status_bar_state()))
+            Some((back, (view.native_zorder(cx), view.status_bar_state())))
         })
     });
     let (back, front) = match result {
-        Ok(orders) => orders,
+        Ok(Some(orders)) => orders,
+        Ok(None) => smoke_fail("no panel to reorder"),
         Err(err) => smoke_fail(&format!("native reorder window: {err:#}")),
     };
     for (action, (orders, bar)) in [("send to back", back), ("bring to front", front)] {
@@ -297,313 +348,361 @@ fn smoke_native_reorder(
 fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, cx: &mut App) {
     let started = Instant::now();
     cx.spawn(async move |cx| {
-        let status_line;
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(100))
-                .await;
-            let status = cx.update(|cx| view.update(cx, |view, cx| view.terminal_status(cx)));
-            if status.len() != 2 {
-                smoke_fail(&format!("expected 2 terminals, found {}", status.len()));
-            }
-            let drawn = status.iter().all(|(frames, _)| *frames > 0);
-            if !drawn && started.elapsed() <= SMOKE_FRAME_TIMEOUT {
-                continue;
-            }
-            let frames: Vec<String> = status.iter().map(|(f, _)| f.to_string()).collect();
-            let alive: Vec<String> = status.iter().map(|(_, a)| a.to_string()).collect();
-            let line = format!(
-                "smoke: terminals=2 frames=[{}] alive=[{}]",
-                frames.join(","),
-                alive.join(",")
-            );
-            if !drawn {
-                smoke_fail(&format!("no frame within 10 s: {line}"));
-            }
-            if !status.iter().all(|(_, alive)| *alive) {
-                smoke_fail(&format!("a terminal exited: {line}"));
-            }
-            status_line = line;
-            break;
-        }
-        println!("{status_line}");
-
-        // The first terminal was created first, so it starts at the back.
-        cx.update(|cx| {
-            view.update(cx, |view, cx| {
-                if let Some(first) = view.scene.panels.first().map(|panel| panel.id) {
-                    view.scene.bring_to_front(first);
+        let only = std::env::var(smoke_runner::ONLY_ENV).ok();
+        let mut run = smoke_runner::SmokeRun::new(only.as_deref())
+            .unwrap_or_else(|err| smoke_fail(&err));
+        println!("{}", run.filter_line());
+        smoke_step(&mut run, "terminals", async {
+            let status_line;
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let status = cx.update(|cx| view.update(cx, |view, cx| view.terminal_status(cx)));
+                if status.len() != 2 {
+                    smoke_fail(&format!("expected 2 terminals, found {}", status.len()));
                 }
-                cx.notify();
-            })
-        });
-        let raised = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-            let (scene, native) = cx.update(|cx| view.read(cx).native_zorder(cx));
+                let drawn = status.iter().all(|(frames, _)| *frames > 0);
+                if !drawn && started.elapsed() <= SMOKE_FRAME_TIMEOUT {
+                    continue;
+                }
+                let frames: Vec<String> = status.iter().map(|(f, _)| f.to_string()).collect();
+                let alive: Vec<String> = status.iter().map(|(_, a)| a.to_string()).collect();
+                let line = format!(
+                    "smoke: terminals=2 frames=[{}] alive=[{}]",
+                    frames.join(","),
+                    alive.join(",")
+                );
+                if !drawn {
+                    smoke_fail(&format!("no frame within 10 s: {line}"));
+                }
+                if !status.iter().all(|(_, alive)| *alive) {
+                    smoke_fail(&format!("a terminal exited: {line}"));
+                }
+                status_line = line;
+                break;
+            }
+            println!("{status_line}");
+        })
+        .await;
+        smoke_step(&mut run, "zorder", async {
+            // The first terminal was created first, so it starts at the back. Raise it through
+            // the menu path, which restacks the native views at once; a raw scene change waits
+            // for a paint that an occluded window never does.
+            let raised = cx.update_window(window, |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    let first = view.scene.panels.first().map(|panel| panel.id)?;
+                    view.apply_menu_choice(
+                        calm_core::menu::PANEL_BRING_TO_FRONT,
+                        canvas_view::MenuTarget::Panel(first),
+                        window,
+                        cx,
+                    );
+                    Some((view.native_zorder(cx), view.status_bar_state()))
+                })
+            });
+            let ((scene, native), bar) = match raised {
+                Ok(Some(state)) => state,
+                Ok(None) => smoke_fail("no panel to raise"),
+                Err(err) => smoke_fail(&format!("zorder window: {err:#}")),
+            };
             let line = format!("zorder={native:?} scene={scene:?}");
             // Two terminals and the browser share the native stack.
-            if scene == native && scene.len() == 3 {
-                println!("smoke: {line}");
-                // Restacking the panels must not bury the status bar.
-                smoke_status_bar(cx.update(|cx| view.read(cx).status_bar_state()));
-                break;
-            }
-            if raised.elapsed() > SMOKE_ZORDER_TIMEOUT {
+            if scene != native || scene.len() != 3 {
                 smoke_fail(&format!("native order does not match the scene: {line}"));
             }
-        }
-
-        // Drop the second terminal 5 units right of the first through the real snap path:
-        // it must land one unit off and render as one joined pair with a visible divider.
-        let gap = cx.update(|cx| {
-            view.update(cx, |view, cx| {
-                let mut ids: Vec<PanelId> = view.scene.panels.iter().map(|p| p.id).collect();
-                ids.sort();
-                let anchor = view.scene.get(ids[0]).map(|p| p.rect)?;
-                let moving = view.scene.get_mut(ids[1])?;
-                let dropped = Rect::new(
-                    anchor.right() + 5.0,
-                    anchor.origin.y,
-                    moving.rect.size.width,
-                    moving.rect.size.height,
-                );
-                moving.rect = snap_move(dropped, &[anchor], &SnapConfig::default());
-                let gap = moving.rect.origin.x - anchor.right();
-                cx.notify();
-                Some(gap)
-            })
-        });
-        if gap != Some(JOIN_SNAP_GAP) {
-            smoke_fail(&format!(
-                "flush drop landed at gap {gap:?}, not {JOIN_SNAP_GAP}"
-            ));
-        }
-        let moved = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-            let (pairs, dividers) = cx.update(|cx| view.read(cx).join_counts);
-            if (pairs, dividers) == (1, 1) {
-                println!("smoke: join pairs={pairs} dividers={dividers} gap={JOIN_SNAP_GAP}");
-                break;
-            }
-            if moved.elapsed() > SMOKE_ZORDER_TIMEOUT {
+            println!("smoke: {line}");
+            // Restacking the panels must not bury the status bar.
+            smoke_status_bar(bar);
+        })
+        .await;
+        smoke_step(&mut run, "join", async {
+            // Drop the second terminal 5 units right of the first through the real snap path:
+            // it must land one unit off and render as one joined pair with a visible divider.
+            let gap = cx.update(|cx| {
+                view.update(cx, |view, cx| {
+                    let mut ids: Vec<PanelId> = view.scene.panels.iter().map(|p| p.id).collect();
+                    ids.sort();
+                    let anchor = view.scene.get(ids[0]).map(|p| p.rect)?;
+                    let moving = view.scene.get_mut(ids[1])?;
+                    let dropped = Rect::new(
+                        anchor.right() + 5.0,
+                        anchor.origin.y,
+                        moving.rect.size.width,
+                        moving.rect.size.height,
+                    );
+                    moving.rect = snap_move(dropped, &[anchor], &SnapConfig::default());
+                    let gap = moving.rect.origin.x - anchor.right();
+                    cx.notify();
+                    Some(gap)
+                })
+            });
+            if gap != Some(JOIN_SNAP_GAP) {
                 smoke_fail(&format!(
-                    "flush pair not joined: pairs={pairs} dividers={dividers}"
+                    "flush drop landed at gap {gap:?}, not {JOIN_SNAP_GAP}"
                 ));
             }
-        }
-
-        cx.update(|_| smoke_app_icon());
-        smoke_native_reorder(&view, window, cx);
-        smoke_plugins(&view, window, cx).await;
-        smoke_tui(&view, window, cx).await;
-
-        let toggled = cx.update_window(window, |_, window, cx| {
-            view.update(cx, |view, cx| view.set_show_stats(true, window, cx))
-        });
-        if let Err(err) = toggled {
-            smoke_fail(&format!("show_stats toggle: {err:#}"));
-        }
-        let shown = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-            let (frames, fps) = cx.update(|cx| {
-                let stats = &view.read(cx).frame_stats;
-                (stats.frames(), stats.fps())
-            });
-            // The first frame after the toggle starts the window; wait for 10 more.
-            if frames > SMOKE_FPS_FRAMES {
-                match fps {
-                    Some(fps) if fps > 0.0 => println!("smoke: fps={fps:.1}"),
-                    _ => smoke_fail(&format!("no fps after {frames} frames")),
+            let moved = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let (pairs, dividers) = cx.update(|cx| view.read(cx).join_counts);
+                if (pairs, dividers) == (1, 1) {
+                    println!("smoke: join pairs={pairs} dividers={dividers} gap={JOIN_SNAP_GAP}");
+                    break;
                 }
-                break;
+                if moved.elapsed() > SMOKE_ZORDER_TIMEOUT {
+                    smoke_fail(&format!(
+                        "flush pair not joined: pairs={pairs} dividers={dividers}"
+                    ));
+                }
             }
-            if shown.elapsed() > SMOKE_FPS_TIMEOUT {
-                smoke_fail(&format!("only {frames} frames with show_stats on"));
+        })
+        .await;
+        smoke_step(&mut run, "app_icon", async { smoke_app_icon() }).await;
+        smoke_step(&mut run, "native_reorder", async {
+            smoke_native_reorder(&view, window, cx)
+        })
+        .await;
+        smoke_step(&mut run, "plugins", smoke_plugins(&view, window, cx)).await;
+        smoke_step(&mut run, "tui", smoke_tui(&view, window, cx)).await;
+        smoke_step(&mut run, "show_stats", async {
+            let toggled = cx.update_window(window, |_, window, cx| {
+                view.update(cx, |view, cx| view.set_show_stats(true, window, cx))
+            });
+            if let Err(err) = toggled {
+                smoke_fail(&format!("show_stats toggle: {err:#}"));
             }
-        }
-        smoke_process_stats(&view, cx).await;
-        // Zoom out: both terminals switch to GPUI-drawn snapshots.
-        cx.update(|cx| {
-            view.update(cx, |view, _| view.preview_input_targets = 0);
-            set_zoom(&view, SMOKE_PREVIEW_ZOOM, cx);
-        });
-        let zoomed = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-            let previews = cx.update(|cx| view.read(cx).terminal_previews(cx));
-            let ready = previews.len() == 2
-                && previews
+        })
+        .await;
+        smoke_step(&mut run, "fps", async {
+            let shown = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let (frames, fps) = cx.update(|cx| {
+                    let stats = &view.read(cx).frame_stats;
+                    (stats.frames(), stats.fps())
+                });
+                // The first frame after the toggle starts the window; wait for 10 more.
+                if frames > SMOKE_FPS_FRAMES {
+                    match fps {
+                        Some(fps) if fps > 0.0 => println!("smoke: fps={fps:.1}"),
+                        _ => smoke_fail(&format!("no fps after {frames} frames")),
+                    }
+                    break;
+                }
+                if shown.elapsed() > SMOKE_FPS_TIMEOUT {
+                    smoke_fail(&format!("only {frames} frames with show_stats on"));
+                }
+            }
+        })
+        .await;
+        smoke_step(&mut run, "stats", smoke_process_stats(&view, cx)).await;
+        smoke_step(&mut run, "preview", async {
+            // Zoom out: both terminals switch to GPUI-drawn snapshots.
+            cx.update(|cx| {
+                view.update(cx, |view, _| view.preview_input_targets = 0);
+                set_zoom(&view, SMOKE_PREVIEW_ZOOM, cx);
+            });
+            let zoomed = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let previews = cx.update(|cx| view.read(cx).terminal_previews(cx));
+                let ready = previews.len() == 2
+                    && previews
+                        .iter()
+                        .all(|(mode, snapshot)| *mode == PanelMode::Preview && *snapshot);
+                if ready {
+                    println!("smoke: preview=2 snapshots=[true,true]");
+                    break;
+                }
+                if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
+                    smoke_fail(&format!("no preview snapshots at zoom 0.4: {previews:?}"));
+                }
+            }
+        })
+        .await;
+        smoke_step(&mut run, "preview_cadence", async {
+            // show_stats is still on, so a frame paints every tick. Readbacks must stay at
+            // one per refresh period anyway.
+            let before = cx.update(|cx| view.read(cx).snapshot_counts(cx));
+            cx.background_executor().timer(SMOKE_SNAPSHOT_WINDOW).await;
+            let (after, previews) = cx.update(|cx| {
+                let view = view.read(cx);
+                (view.snapshot_counts(cx), view.terminal_previews(cx))
+            });
+            if !previews.iter().all(|(mode, _)| *mode == PanelMode::Preview) {
+                smoke_fail(&format!(
+                    "left preview while counting snapshots: {previews:?}"
+                ));
+            }
+            let taken: Vec<u64> = after
+                .iter()
+                .zip(&before)
+                .map(|(after, before)| after - before)
+                .collect();
+            let line = format!(
+                "preview_snapshots_in_3s=[{}]",
+                taken
                     .iter()
-                    .all(|(mode, snapshot)| *mode == PanelMode::Preview && *snapshot);
-            if ready {
-                println!("smoke: preview=2 snapshots=[true,true]");
-                break;
-            }
-            if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
-                smoke_fail(&format!("no preview snapshots at zoom 0.4: {previews:?}"));
-            }
-        }
-
-        // show_stats is still on, so a frame paints every tick. Readbacks must stay at
-        // one per refresh period anyway.
-        let before = cx.update(|cx| view.read(cx).snapshot_counts(cx));
-        cx.background_executor().timer(SMOKE_SNAPSHOT_WINDOW).await;
-        let (after, previews, targets) = cx.update(|cx| {
-            let view = view.read(cx);
-            (
-                view.snapshot_counts(cx),
-                view.terminal_previews(cx),
-                view.preview_input_targets,
-            )
-        });
-        if !previews.iter().all(|(mode, _)| *mode == PanelMode::Preview) {
-            smoke_fail(&format!(
-                "left preview while counting snapshots: {previews:?}"
-            ));
-        }
-        let taken: Vec<u64> = after
-            .iter()
-            .zip(&before)
-            .map(|(after, before)| after - before)
-            .collect();
-        let line = format!(
-            "preview_snapshots_in_3s=[{}]",
-            taken
-                .iter()
-                .map(u64::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        println!("smoke: {line}");
-        if taken.len() != 2
-            || taken
-                .iter()
-                .any(|count| *count == 0 || *count > SMOKE_MAX_SNAPSHOTS)
-        {
-            let visible = cx.update(|cx| window_visible(window, cx));
-            smoke_fail(&format!(
-                "preview refresh outside 1..=3 snapshots: {line} window_visible={visible:?}"
-            ));
-        }
-        // The grid painted every frame of that window; its draw count must not follow the
-        // number of dots on screen.
-        let (kind, last, most, rasters, canvas) = cx.update(|cx| {
-            let view = view.read(cx);
-            let grid = &view.grid;
-            (
-                view.settings.settings.grid.kind,
-                grid.last_primitives,
-                grid.max_primitives,
-                grid.rasters,
-                Size::new(view.viewport.size.width, view.viewport.size.height),
-            )
-        });
-        let bound = mark_primitive_bound(canvas);
-        println!(
-            "smoke: grid kind={kind:?} primitives={last} max_primitives={most} bound={bound} \
-             rasters={rasters}"
-        );
-        if kind != GridKind::None && last == 0 {
-            smoke_fail("the grid drew nothing during the preview window");
-        }
-        if matches!(kind, GridKind::Dots | GridKind::Crosses) && most > bound {
-            smoke_fail(&format!("grid drew {most} primitives, over {bound}"));
-        }
-        // Input divs over a preview would steal its scroll and keys from the canvas.
-        println!("smoke: preview_input_targets={targets}");
-        if targets != 0 {
-            smoke_fail(&format!("{targets} terminal input divs over previews"));
-        }
-
-        // Zoom back in: both return to live native views.
-        cx.update(|cx| set_zoom(&view, SMOKE_LIVE_ZOOM, cx));
-        let zoomed = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(50))
-                .await;
-            let (previews, status) = cx.update(|cx| {
-                let previews = view.read(cx).terminal_previews(cx);
-                let status = view.update(cx, |view, cx| view.terminal_status(cx));
-                (previews, status)
-            });
-            let live =
-                previews.len() == 2 && previews.iter().all(|(mode, _)| *mode == PanelMode::Live);
-            if live {
-                if !status.iter().all(|(_, alive)| *alive) {
-                    smoke_fail(&format!("a terminal exited during preview: {status:?}"));
-                }
-                println!("smoke: live=2");
-                break;
-            }
-            if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            println!("smoke: {line}");
+            if taken.len() != 2
+                || taken
+                    .iter()
+                    .any(|count| *count == 0 || *count > SMOKE_MAX_SNAPSHOTS)
+            {
                 let visible = cx.update(|cx| window_visible(window, cx));
                 smoke_fail(&format!(
-                    "terminals not live at zoom 1.5: {previews:?} window_visible={visible:?}"
+                    "preview refresh outside 1..=3 snapshots: {line} window_visible={visible:?}"
                 ));
             }
-        }
-        // The gradient set by `smoke_settings` rendered once per size, off the UI thread.
-        let (renders, idle, error) = cx.update(|cx| {
-            let background = &view.read(cx).background;
-            (
-                background.renders,
-                background.is_idle(),
-                background.error.clone(),
-            )
-        });
-        println!("smoke: background renders={renders} idle={idle} error={error:?}");
-        if renders == 0 || !idle || error.is_some() {
-            smoke_fail("gradient background did not render");
-        }
-
-        // The browser loaded its page, followed the link and reported the new URL.
-        let started = Instant::now();
-        loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(100))
-                .await;
-            let status = cx.update(|cx| view.read(cx).browser_status());
-            let [(mode, loading, page, scene)] = status.as_slice() else {
-                smoke_fail(&format!("expected 1 browser, found {}", status.len()));
-            };
-            let target = Some(SMOKE_BROWSER_TARGET.to_string());
-            let done = !loading && *page == target && *scene == target;
-            if done && *mode == PanelMode::Live {
-                println!(
-                    "smoke: browser loaded=true link=followed url={SMOKE_BROWSER_TARGET} mode=live"
-                );
-                break;
+        })
+        .await;
+        smoke_step(&mut run, "grid", async {
+            // The grid painted every frame of that window; its draw count must not follow the
+            // number of dots on screen.
+            let (kind, last, most, rasters, canvas) = cx.update(|cx| {
+                let view = view.read(cx);
+                let grid = &view.grid;
+                (
+                    view.settings.settings.grid.kind,
+                    grid.last_primitives,
+                    grid.max_primitives,
+                    grid.rasters,
+                    Size::new(view.viewport.size.width, view.viewport.size.height),
+                )
+            });
+            let bound = mark_primitive_bound(canvas);
+            println!(
+                "smoke: grid kind={kind:?} primitives={last} max_primitives={most} bound={bound} \
+                 rasters={rasters}"
+            );
+            if kind != GridKind::None && last == 0 {
+                smoke_fail("the grid drew nothing during the preview window");
             }
-            if started.elapsed() > SMOKE_BROWSER_TIMEOUT {
-                smoke_fail(&format!(
-                    "browser: mode={mode:?} loading={loading} page={page:?} scene={scene:?}"
-                ));
+            if matches!(kind, GridKind::Dots | GridKind::Crosses) && most > bound {
+                smoke_fail(&format!("grid drew {most} primitives, over {bound}"));
             }
-        }
-
-        smoke_resize(&view, window, cx).await;
-        smoke_blur(&view, window, cx);
-        smoke_settings_dispatch(&view, window, cx).await;
-        smoke_github_api(&view, window, cx).await;
-        smoke_plugin_menus(&view, window, cx).await;
+        })
+        .await;
+        smoke_step(&mut run, "preview_input_targets", async {
+            // Input divs over a preview would steal its scroll and keys from the canvas.
+            let targets = cx.update(|cx| view.read(cx).preview_input_targets);
+            println!("smoke: preview_input_targets={targets}");
+            if targets != 0 {
+                smoke_fail(&format!("{targets} terminal input divs over previews"));
+            }
+        })
+        .await;
+        smoke_step(&mut run, "live", async {
+            // Zoom back in: both return to live native views.
+            cx.update(|cx| set_zoom(&view, SMOKE_LIVE_ZOOM, cx));
+            let zoomed = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                let (previews, status) = cx.update(|cx| {
+                    let previews = view.read(cx).terminal_previews(cx);
+                    let status = view.update(cx, |view, cx| view.terminal_status(cx));
+                    (previews, status)
+                });
+                let live =
+                    previews.len() == 2 && previews.iter().all(|(mode, _)| *mode == PanelMode::Live);
+                if live {
+                    if !status.iter().all(|(_, alive)| *alive) {
+                        smoke_fail(&format!("a terminal exited during preview: {status:?}"));
+                    }
+                    println!("smoke: live=2");
+                    break;
+                }
+                if zoomed.elapsed() > SMOKE_PREVIEW_TIMEOUT {
+                    let visible = cx.update(|cx| window_visible(window, cx));
+                    smoke_fail(&format!(
+                        "terminals not live at zoom 1.5: {previews:?} window_visible={visible:?}"
+                    ));
+                }
+            }
+        })
+        .await;
+        smoke_step(&mut run, "background", async {
+            // The gradient set by `smoke_settings` rendered once per size, off the UI thread.
+            let (renders, idle, error) = cx.update(|cx| {
+                let background = &view.read(cx).background;
+                (
+                    background.renders,
+                    background.is_idle(),
+                    background.error.clone(),
+                )
+            });
+            println!("smoke: background renders={renders} idle={idle} error={error:?}");
+            if renders == 0 || !idle || error.is_some() {
+                smoke_fail("gradient background did not render");
+            }
+        })
+        .await;
+        smoke_step(&mut run, "browser", async {
+            // The browser loaded its page, followed the link and reported the new URL.
+            let started = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let status = cx.update(|cx| view.read(cx).browser_status());
+                let [(mode, loading, page, scene)] = status.as_slice() else {
+                    smoke_fail(&format!("expected 1 browser, found {}", status.len()));
+                };
+                let target = Some(SMOKE_BROWSER_TARGET.to_string());
+                let done = !loading && *page == target && *scene == target;
+                if done && *mode == PanelMode::Live {
+                    println!(
+                        "smoke: browser loaded=true link=followed url={SMOKE_BROWSER_TARGET} mode=live"
+                    );
+                    break;
+                }
+                if started.elapsed() > SMOKE_BROWSER_TIMEOUT {
+                    smoke_fail(&format!(
+                        "browser: mode={mode:?} loading={loading} page={page:?} scene={scene:?}"
+                    ));
+                }
+            }
+        })
+        .await;
+        smoke_step(&mut run, "resize", smoke_resize(&view, window, cx)).await;
+        smoke_step(&mut run, "blur", async { smoke_blur(&view, window, cx) }).await;
+        smoke_step(
+            &mut run,
+            "settings_dispatch",
+            smoke_settings_dispatch(&view, window, cx),
+        )
+        .await;
+        smoke_step(&mut run, "github_api", smoke_github_api(&view, window, cx)).await;
+        smoke_step(&mut run, "plugin_menus", smoke_plugin_menus(&view, window, cx)).await;
         // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
-        smoke_autosave(&view, window, cx).await;
-        smoke_session(&view, window, cx).await;
-        smoke_session_edges(&view, window, cx);
+        smoke_step(&mut run, "session", async {
+            smoke_autosave(&view, window, cx).await;
+            smoke_session(&view, window, cx).await;
+            smoke_session_edges(&view, window, cx);
+        })
+        .await;
 
+        for line in run.summary() {
+            println!("{line}");
+        }
+        let code = run.exit_code();
         remove_smoke_dir();
+        if code != 0 {
+            std::process::exit(code);
+        }
         cx.update(|cx| cx.quit());
     })
     .detach();
@@ -1713,25 +1812,23 @@ async fn smoke_settings_dispatch(
     cx: &mut gpui::AsyncApp,
 ) {
     use gpui::Action as _;
-    let (available, bindings) = cx.update(|cx| {
+    let dispatched = cx.update(|cx| -> gpui::Result<(bool, usize)> {
         let available = cx.is_action_available(&settings_menu::OpenSettings);
-        let bindings = window
-            .update(cx, |_, window, _| {
-                window
-                    .bindings_for_action(&settings_menu::OpenSettings)
-                    .len()
-            })
-            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+        let bindings = window.update(cx, |_, window, _| {
+            window
+                .bindings_for_action(&settings_menu::OpenSettings)
+                .len()
+        })?;
         if let Some(settings_window) = &view.read(cx).settings_window {
             settings_window.hide();
         }
-        window
-            .update(cx, |_, window, cx| {
-                window.dispatch_action(settings_menu::OpenSettings.boxed_clone(), cx)
-            })
-            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
-        (available, bindings)
+        window.update(cx, |_, window, cx| {
+            window.dispatch_action(settings_menu::OpenSettings.boxed_clone(), cx)
+        })?;
+        Ok((available, bindings))
     });
+    let (available, bindings) =
+        dispatched.unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
     let started = Instant::now();
     let (visible, on_screen) = loop {
         cx.background_executor()
@@ -1754,14 +1851,13 @@ async fn smoke_settings_dispatch(
     if !(available && bindings > 0 && visible && on_screen) {
         smoke_fail("OpenSettings dispatched on the canvas window did not show Settings");
     }
-    cx.update(|cx| {
+    let activated = cx.update(|cx| {
         if let Some(settings_window) = &view.read(cx).settings_window {
             settings_window.hide();
         }
-        window
-            .update(cx, |_, window, _| window.activate_window())
-            .unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
+        window.update(cx, |_, window, _| window.activate_window())
     });
+    activated.unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
 }
 
 /// Sets a gradient background and the grid through the settings path, reads the file back,
@@ -1866,6 +1962,9 @@ fn main() {
         if args.smoke {
             let previous = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |info| {
+                if info.payload().is::<SmokeFailure>() {
+                    return;
+                }
                 remove_smoke_dir();
                 previous(info);
             }));
