@@ -2832,6 +2832,26 @@ impl PaintSnapshot {
             }
         }
 
+        if let Some(ConfirmPrompt::Strip(strip)) = confirm_prompt(panel, confirming) {
+            // While a close is confirmed the native view is a preview (`modal_open`), so
+            // this strip covers no live native rect.
+            let strip_screen = camera.world_rect_to_screen(strip);
+            window.paint_quad(fill(to_bounds(strip_screen, origin), rgba(colors.bar)));
+            if details_visible(zoom) {
+                let padding = 8.0 * zoom;
+                let line = Rect::new(
+                    strip_screen.origin.x + padding,
+                    strip_screen.origin.y,
+                    (strip_screen.size.width - 2.0 * padding).max(0.0),
+                    strip_screen.size.height,
+                );
+                let look = TextLook {
+                    align: TextAlign::Left,
+                    color: colors.title,
+                };
+                paint_text(CONFIRM_TITLE, line, look, zoom, origin, window, cx);
+            }
+        }
         if !bar_shown || !details_visible(zoom) {
             return;
         }
@@ -2960,6 +2980,31 @@ impl PaintSnapshot {
             cx,
         );
     }
+}
+
+/// Where a panel's close confirmation prompt draws.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ConfirmPrompt {
+    /// The title bar or chip shows it in place of the title.
+    InTitleBar,
+    /// A borderless panel has no bar: a strip at the top of its content, in world units.
+    Strip(Rect),
+}
+
+fn confirm_prompt(panel: &Panel, confirming: bool) -> Option<ConfirmPrompt> {
+    if !confirming {
+        return None;
+    }
+    if panel.minimized || chrome_height(panel) > 0.0 {
+        return Some(ConfirmPrompt::InTitleBar);
+    }
+    let content = content_rect(panel);
+    Some(ConfirmPrompt::Strip(Rect::new(
+        content.origin.x,
+        content.origin.y,
+        content.size.width,
+        calm_core::scene::CHROME_HEIGHT.min(content.size.height),
+    )))
 }
 
 /// What a panel's chrome outlines: the chip when minimized, else the whole panel.
@@ -3356,5 +3401,35 @@ mod tests {
         let look = &looks[&browser];
         assert_eq!(look.overrides.accent, Some(0x12ab34ff));
         assert_eq!(look.title.as_deref(), Some("docs"));
+    }
+
+    #[test]
+    fn close_confirmation_draws_on_bar_and_borderless_panels() {
+        let mut scene = Scene::default();
+        let kind = PanelKind::Browser {
+            url: "https://example.com".to_string(),
+            page_zoom: None,
+        };
+        let bar = scene.add(kind.clone(), Rect::new(0.0, 0.0, 300.0, 200.0));
+        let borderless = scene.add(kind, Rect::new(400.0, 0.0, 300.0, 200.0));
+        calm_core::scene::set_borderless(scene.get_mut(borderless).unwrap(), true);
+        let bar = scene.get(bar).unwrap();
+        assert_eq!(confirm_prompt(bar, false), None);
+        assert_eq!(confirm_prompt(bar, true), Some(ConfirmPrompt::InTitleBar));
+        let panel = scene.get(borderless).unwrap().clone();
+        assert_eq!(confirm_prompt(&panel, false), None);
+        let content = content_rect(&panel);
+        assert_eq!(
+            confirm_prompt(&panel, true),
+            Some(ConfirmPrompt::Strip(Rect::new(
+                content.origin.x,
+                content.origin.y,
+                content.size.width,
+                calm_core::scene::CHROME_HEIGHT,
+            )))
+        );
+        let mut chip = panel;
+        chip.minimized = true;
+        assert_eq!(confirm_prompt(&chip, true), Some(ConfirmPrompt::InTitleBar));
     }
 }
