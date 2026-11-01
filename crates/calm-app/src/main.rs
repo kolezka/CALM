@@ -553,6 +553,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
         smoke_autosave(&view, window, cx).await;
         smoke_session(&view, window, cx).await;
+        smoke_session_edges(&view, window, cx);
 
         remove_smoke_dir();
         cx.update(|cx| cx.quit());
@@ -2157,6 +2158,102 @@ fn smoke_close_all(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
     if let Err(err) = closed {
         smoke_fail(&format!("session: close: {err}"));
     }
+}
+
+/// Restores panels whose saved state no longer fits: saved titles must survive the open
+/// paths, and a gone cwd starts the shell in home even when the profile has a fixed cwd.
+/// Every problem is collected, so one run reports them all.
+fn smoke_session_edges(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let fixed = match tempfile::Builder::new().prefix("calm-smoke-fixed-").tempdir() {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("session edges: temp dir: {err}")),
+    };
+    let gone = fixed.path().join("gone");
+    smoke_close_all(view, window, cx);
+    let old_cwd = view.update(cx, |view, _| {
+        view.scene = calm_core::scene::Scene::default();
+        let cwd = &mut view.settings.settings.terminal.defaults.cwd;
+        std::mem::replace(
+            cwd,
+            Some(fixed.path().display().to_string()),
+        )
+    });
+    let fixture = [
+        PanelKind::Terminal {
+            command: None,
+            cwd: Some(gone.clone()),
+        },
+        PanelKind::Plugin {
+            plugin_id: "smoke-plugin".to_string(),
+            plugin_version: None,
+            settings: serde_json::Value::Null,
+        },
+        PanelKind::Tui {
+            plugin_id: "top-example".to_string(),
+            plugin_version: None,
+        },
+    ];
+    let mut layout = calm_core::scene::Scene::default().to_layout();
+    for (n, kind) in fixture.into_iter().enumerate() {
+        layout.panels.push(calm_core::layout::LayoutPanel {
+            kind,
+            rect: Rect::new(40.0 + 340.0 * n as f64, 40.0, 320.0, 200.0),
+            title: format!("saved title {n}"),
+            minimized: false,
+            overrides: Default::default(),
+        });
+    }
+    let plan = RestorePlan {
+        layout: Some(layout),
+        layout_name: None,
+        quarantine: None,
+        autosave: calm_core::restore::AutosaveStart::Off("smoke fixture".to_string()),
+        notices: Vec::new(),
+    };
+    let home = terminal_profiles::home_dir();
+    let checked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let gate = view.autosave_gate;
+            view.apply_restore_plan(plan, fixed.path().join("session.json"), window, cx);
+            view.autosave_gate = gate;
+            let mut problems = Vec::new();
+            for (n, panel) in view.scene.panels.iter().enumerate() {
+                let want = format!("saved title {n}");
+                if panel.title != want {
+                    problems.push(format!("title {n}: want {want:?}, got {:?}", panel.title));
+                }
+            }
+            let terminal = view.scene.panels.first().map(|panel| panel.id);
+            let cwd = terminal
+                .and_then(|id| view.terminal_meta(id))
+                .map(|meta| meta.cwd.clone());
+            if cwd.as_deref() != Some(home.as_path()) {
+                problems.push(format!("cwd: want {}, got {cwd:?}", home.display()));
+            }
+            let note = terminal.and_then(|id| view.title_note(id));
+            let saved_titles = view.scene.to_layout().panels;
+            if note.is_none() || saved_titles.iter().any(|p| p.title.contains("cwd missing")) {
+                problems.push(format!("cwd note: {note:?}, saved {saved_titles:?}"));
+            }
+            problems
+        })
+    });
+    view.update(cx, |view, _| {
+        view.settings.settings.terminal.defaults.cwd = old_cwd;
+    });
+    smoke_close_all(view, window, cx);
+    let problems = match checked {
+        Ok(problems) => problems,
+        Err(err) => smoke_fail(&format!("session edges: restore: {err}")),
+    };
+    if !problems.is_empty() {
+        smoke_fail(&format!("session edges: {}", problems.join("; ")));
+    }
+    println!("smoke: session edges titles=saved cwd=home");
 }
 
 /// Runs the launch restore path on `session` with restore on.
