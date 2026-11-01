@@ -505,12 +505,36 @@ pub fn chip_rect(panel: &Panel) -> Rect {
     }
 }
 
+/// Height of the strip above the content: 0 for a borderless panel.
+pub fn chrome_height(panel: &Panel) -> f64 {
+    if panel.overrides.borderless == Some(true) {
+        0.0
+    } else {
+        CHROME_HEIGHT
+    }
+}
+
+/// Turns borderless on or off, moving the outer rect so `content_rect` stays put.
+/// Off clears the field rather than storing `false`.
+pub fn set_borderless(panel: &mut Panel, on: bool) {
+    let was = chrome_height(panel) == 0.0;
+    panel.overrides.borderless = on.then_some(true);
+    if on && !was {
+        panel.rect.origin.y += CHROME_HEIGHT;
+        panel.rect.size.height = (panel.rect.size.height - CHROME_HEIGHT).max(0.0);
+    } else if !on && was {
+        panel.rect.origin.y -= CHROME_HEIGHT;
+        panel.rect.size.height += CHROME_HEIGHT;
+    }
+}
+
 pub fn content_rect(panel: &Panel) -> Rect {
+    let bar = chrome_height(panel);
     Rect::new(
         panel.rect.origin.x,
-        panel.rect.origin.y + CHROME_HEIGHT,
+        panel.rect.origin.y + bar,
         panel.rect.size.width,
-        (panel.rect.size.height - CHROME_HEIGHT).max(0.0),
+        (panel.rect.size.height - bar).max(0.0),
     )
 }
 
@@ -528,6 +552,23 @@ mod tests {
         let before = scene.sync_revision();
         change(&mut scene, back, front);
         scene.sync_revision() != before
+    }
+
+    #[test]
+    fn toggling_borderless_keeps_the_content_rect() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(10.0, 20.0, 300.0, 200.0));
+        let panel = scene.get_mut(id).unwrap();
+        let before = content_rect(panel);
+        set_borderless(panel, true);
+        assert_eq!(panel.overrides.borderless, Some(true));
+        assert_eq!(chrome_height(panel), 0.0);
+        assert_eq!(content_rect(panel), before);
+        set_borderless(panel, false);
+        assert_eq!(panel.overrides.borderless, None);
+        assert_eq!(chrome_height(panel), CHROME_HEIGHT);
+        assert_eq!(content_rect(panel), before);
+        assert_eq!(panel.rect, Rect::new(10.0, 20.0, 300.0, 200.0));
     }
 
     #[test]

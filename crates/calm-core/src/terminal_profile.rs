@@ -10,7 +10,8 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::chrome::{ChromeOverrides, parse_hex_color};
+use crate::chrome::{ChromeOverrides, lay_overrides, parse_hex_color};
+use crate::scene::PanelOverrides;
 
 pub const DEFAULT_TITLE_TEMPLATE: &str = "Terminal";
 /// Becomes the terminal's number: plain terminals opened since CALM started, from 1.
@@ -232,6 +233,9 @@ pub struct ResolvedTerminal {
     /// The profile used, if any.
     pub profile: Option<String>,
     pub title_template: String,
+    /// True when the title came from a panel override: show it as is, with no `{n}` or
+    /// `{cwd}` expansion.
+    pub title_is_literal: bool,
     pub icon: Option<TerminalIcon>,
     pub overrides: ChromeOverrides,
     pub colors: Option<TerminalColors>,
@@ -503,6 +507,7 @@ impl TerminalSettings {
             profile: chosen.map(|profile| profile.id.clone()),
             title_template: pick(|f| &f.title_template)
                 .unwrap_or_else(|| DEFAULT_TITLE_TEMPLATE.to_string()),
+            title_is_literal: false,
             icon: pick(|f| &f.icon).map(|icon| {
                 if is_image_icon(&icon) {
                     TerminalIcon::Image(PathBuf::from(icon))
@@ -528,6 +533,37 @@ impl TerminalSettings {
                 .unwrap_or(CwdMode::Home),
             env,
         }
+    }
+
+    /// `resolve`, then each panel override that is set replaces the resolved field.
+    pub fn resolve_for_panel(
+        &self,
+        profile: Option<&str>,
+        user_config: bool,
+        overrides: &PanelOverrides,
+    ) -> ResolvedTerminal {
+        let mut resolved = self.resolve(profile, user_config);
+        if let Some(title) = &overrides.title {
+            resolved.title_template = title.clone();
+            resolved.title_is_literal = true;
+        }
+        if let Some(icon) = &overrides.icon {
+            resolved.icon = Some(if is_image_icon(icon) {
+                TerminalIcon::Image(PathBuf::from(icon))
+            } else {
+                TerminalIcon::Text(icon.clone())
+            });
+        }
+        resolved.overrides = lay_overrides(resolved.overrides, overrides);
+        // Loading does not validate overrides, so a bad palette keeps the resolved one.
+        if let Some(colors) = overrides
+            .terminal_colors
+            .as_ref()
+            .and_then(|colors| colors.parse("overrides.terminal_colors").ok())
+        {
+            resolved.colors = Some(colors);
+        }
+        resolved
     }
 }
 
@@ -618,6 +654,37 @@ mod tests {
             "default_profile": "plain"
         }}"##
         )
+    }
+
+    #[test]
+    fn panel_override_wins_over_profile_and_defaults() {
+        let settings = parse(
+            r##"{"title_bar_color": "#111111",
+                 "profiles": [{"id": "p", "name": "P", "title_bar_color": "#222222"}]}"##,
+        )
+        .unwrap();
+        let mut overrides = PanelOverrides {
+            title_bar_color: Some("#333333".into()),
+            ..PanelOverrides::default()
+        };
+        let resolved = settings.resolve_for_panel(Some("p"), false, &overrides);
+        assert_eq!(resolved.overrides.title_bar, Some(0x333333ff));
+        overrides.title_bar_color = None;
+        let resolved = settings.resolve_for_panel(Some("p"), false, &overrides);
+        assert_eq!(resolved.overrides.title_bar, Some(0x222222ff));
+    }
+
+    #[test]
+    fn override_title_is_literal() {
+        let settings = parse(r#"{"title_template": "{n} {cwd}"}"#).unwrap();
+        assert!(!settings.resolve(None, false).title_is_literal);
+        let overrides = PanelOverrides {
+            title: Some("{n} logs".into()),
+            ..PanelOverrides::default()
+        };
+        let resolved = settings.resolve_for_panel(None, false, &overrides);
+        assert_eq!(resolved.title_template, "{n} logs");
+        assert!(resolved.title_is_literal);
     }
 
     #[test]

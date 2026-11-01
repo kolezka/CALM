@@ -1,6 +1,6 @@
 use crate::geometry::{Point, Rect, Size};
 use crate::resize::resize_target;
-use crate::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect};
+use crate::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, chrome_height};
 use crate::snap::{SnapConfig, snap_draw, snap_move, snap_resize};
 
 pub use crate::resize::RESIZE_BAND;
@@ -206,7 +206,7 @@ impl InputHandler {
             };
         };
         let id = panel.id;
-        if world.y < panel.rect.origin.y + CHROME_HEIGHT {
+        if world.y < panel.rect.origin.y + chrome_height(panel) {
             self.state = Interaction::Dragging {
                 id,
                 grab_offset_world: Point::new(
@@ -487,7 +487,7 @@ fn context_menu(screen: Point, scene: &Scene) -> Vec<Effect> {
         return vec![Effect::ShowCanvasMenu { screen, world }];
     };
     match scene.get(id) {
-        Some(panel) if panel.minimized || world.y < panel.rect.origin.y + CHROME_HEIGHT => {
+        Some(panel) if panel.minimized || world.y < panel.rect.origin.y + chrome_height(panel) => {
             vec![Effect::ShowPanelMenu { id, screen }]
         }
         _ => Vec::new(),
@@ -1156,6 +1156,38 @@ mod tests {
         );
         assert_eq!(handler.state, Interaction::Idle);
         assert_eq!(scene.panels.len(), 1);
+    }
+
+    #[test]
+    fn borderless_panel_has_no_chrome_hit_and_no_bar_menu() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        crate::scene::set_borderless(scene.get_mut(id).unwrap(), true);
+        let panel = scene.get(id).unwrap();
+        // Inside the panel, within the strip where a bar would be, over where Close sits.
+        let top = panel.rect.origin.y;
+        let close_spot = Point::new(panel.rect.right() - 14.0, top + 14.0);
+        assert!(close_spot.y < top + crate::scene::CHROME_HEIGHT);
+        assert_eq!(scene.hit_test(close_spot), Some(id));
+        assert_eq!(crate::chrome::chrome_hit(panel, close_spot), None);
+        assert_eq!(
+            crate::chrome::chrome_hit(panel, Point::new(panel.rect.right() - 38.0, top + 14.0)),
+            None
+        );
+
+        let mut handler = InputHandler::default();
+        let screen = scene.camera.world_to_screen(Point::new(100.0, top + 10.0));
+        let effects = handler.mouse_down(screen, Button::Right, no_mods(), &mut scene);
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::ShowPanelMenu { .. })),
+            "{effects:?}"
+        );
+        // A left press there is content, not a drag.
+        let effects = handler.mouse_down(screen, Button::Left, no_mods(), &mut scene);
+        assert_eq!(effects, vec![Effect::FocusPanel(id)]);
+        assert_eq!(handler.state, Interaction::Idle);
     }
 
     #[test]
