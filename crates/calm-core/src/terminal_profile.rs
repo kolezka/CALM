@@ -258,7 +258,7 @@ fn opaque_color(text: &str) -> Option<u32> {
         .map(|rgba| rgba >> 8)
 }
 
-fn is_image_icon(icon: &str) -> bool {
+pub fn is_image_icon(icon: &str) -> bool {
     Path::new(icon)
         .extension()
         .and_then(|ext| ext.to_str())

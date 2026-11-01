@@ -688,6 +688,10 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         .await;
         smoke_step(&mut run, "github_api", smoke_github_api(&view, window, cx)).await;
         smoke_step(&mut run, "plugin_menus", smoke_plugin_menus(&view, window, cx)).await;
+        smoke_step(&mut run, "panel_overrides", async {
+            smoke_panel_overrides(&view, window, cx)
+        })
+        .await;
         // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
         smoke_step(&mut run, "session", async {
             smoke_autosave(&view, window, cx).await;
@@ -1170,7 +1174,10 @@ async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &m
             .await;
         let (rect, page, locked_rect) = cx.update(|cx| {
             let view = view.read(cx);
-            let rect = view.scene.get(browser).map(|panel| panel.rect);
+            let rect = view
+                .scene
+                .get(browser)
+                .map(|panel| (panel.rect, calm_core::scene::content_rect(panel).size));
             let page = view
                 .browser_page_sizes()
                 .into_iter()
@@ -1178,7 +1185,7 @@ async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &m
                 .map(|(_, size)| size);
             (rect, page, view.scene.get(locked).map(|panel| panel.rect))
         });
-        let Some(rect) = rect else {
+        let Some((rect, content)) = rect else {
             smoke_fail("browser left the scene during resize");
         };
         if rect.size != want {
@@ -1190,10 +1197,6 @@ async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &m
             ));
         }
         // The web view fills the content below the address bar.
-        let content = Size::new(
-            rect.size.width,
-            rect.size.height - calm_core::scene::CHROME_HEIGHT,
-        );
         let want_page = Size::new(
             content.width,
             content.height - calm_native::BROWSER_BAR_HEIGHT,
@@ -1514,6 +1517,91 @@ async fn wait_for_title(
 /// the plugin's own panels. The canvas item runs through the real menu choice path with no
 /// panel open, so CALM opens one at the click point and delivers after load; the panel
 /// item then reuses that panel.
+/// Opens a plain terminal, gives it a literal title, an accent, a palette and borderless,
+/// then reads back the look and the content rect paint and placement use. The content (the
+/// terminal's logical size) must not move and the palette is applied live. Clearing the
+/// overrides brings the bar and the rendered title back.
+fn smoke_panel_overrides(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::scene::{chrome_height, content_rect, set_borderless};
+    use calm_core::terminal_profile::{PALETTE_PRESETS, TerminalColorsSetting};
+    const TITLE: &str = "smoke {n} literal";
+    const ACCENT: u32 = 0x12ab34ff;
+    let palette = PALETTE_PRESETS[1].colors;
+    let checked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let kind = PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+            };
+            let id = view.scene.add(kind, Rect::new(720.0, 860.0, 300.0, 160.0));
+            view.open_plain_terminal(id, None, None, None, window, cx)?;
+            let before = view.scene.get(id).map(content_rect).ok_or("no panel")?;
+            if let Some(panel) = view.scene.get_mut(id) {
+                panel.overrides.title = Some(TITLE.to_string());
+                panel.overrides.accent_color = Some("#12ab34".to_string());
+                panel.overrides.terminal_colors =
+                    Some(TerminalColorsSetting::from_colors(&palette));
+                set_borderless(panel, true);
+            }
+            view.apply_panel_overrides(id, cx);
+            let ids: Vec<PanelId> = view.scene.panels.iter().map(|panel| panel.id).collect();
+            let styled = ids
+                .iter()
+                .filter(|id| {
+                    let look = view.panel_look(**id);
+                    look.title.as_deref() == Some(TITLE) && look.overrides.accent == Some(ACCENT)
+                })
+                .count();
+            let borderless = view
+                .scene
+                .panels
+                .iter()
+                .filter(|panel| chrome_height(panel) == 0.0 && content_rect(panel) == panel.rect)
+                .count();
+            let after = view.scene.get(id).map(content_rect).ok_or("no panel")?;
+            let scene_title = view.scene.get(id).map(|panel| panel.title.clone());
+            let recolored =
+                view.terminal_meta(id).and_then(|meta| meta.applied_colors) == Some(palette);
+            if let Some(panel) = view.scene.get_mut(id) {
+                set_borderless(panel, false);
+                panel.overrides = Default::default();
+            }
+            view.apply_panel_overrides(id, cx);
+            let cleared = view.scene.get(id).map(content_rect) == Some(before)
+                && view.scene.get(id).map(chrome_height) == Some(calm_core::scene::CHROME_HEIGHT)
+                && view.panel_look(id).title.is_none()
+                && view.scene.get(id).is_some_and(|panel| panel.title != TITLE);
+            // The shell is still running: close as if the user confirmed.
+            view.apply_effects(
+                vec![calm_core::interaction::Effect::ClosePanel(id)],
+                window,
+                cx,
+            );
+            Ok::<_, String>((
+                styled,
+                borderless,
+                before == after,
+                scene_title,
+                recolored,
+                cleared,
+            ))
+        })
+    });
+    match checked {
+        Ok(Ok((1, 1, true, Some(title), true, true))) if title == TITLE => println!(
+            "smoke: panel_overrides styled=1 borderless=1 size=unchanged title={title:?} recolor=ok cleared=ok"
+        ),
+        other => smoke_fail(&format!(
+            "panel_overrides: expected styled=1 borderless=1, size unchanged, literal title, recolor, cleared, got {other:?}"
+        )),
+    }
+}
+
 async fn smoke_plugin_menus(
     view: &Entity<CanvasView>,
     window: AnyWindowHandle,
