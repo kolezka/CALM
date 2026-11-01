@@ -134,7 +134,7 @@ pub struct CanvasView {
     pub viewport: Rect,
     /// (id, name) per discovered web plugin, for the Add menu.
     pub plugins: Vec<(String, String)>,
-    /// (id, name) per discovered TUI plugin, listed next to Terminal in the Add menu.
+    /// (id, name) per discovered TUI plugin, listed under Plugins in the Add menu.
     pub apps: Vec<(String, String)>,
     /// (id, default panel size) per discovered plugin.
     pub plugin_sizes: Vec<(String, Size)>,
@@ -862,6 +862,11 @@ impl CanvasView {
                 }
                 let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
                 vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)]
+            }
+            // The same action as `cmd-,` and the menu bar, so one handler opens Settings.
+            (Some(MenuCommand::OpenSettings), MenuTarget::Canvas { .. }) => {
+                window.dispatch_action(Box::new(crate::settings_menu::OpenSettings), cx);
+                return;
             }
             (Some(MenuCommand::Restart), MenuTarget::Panel(id)) => {
                 self.restart_tui(id, true, window, cx);

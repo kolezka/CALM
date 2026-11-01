@@ -11,12 +11,6 @@
         "title": "Open repo in browser",
         "location": "panel",
         "when": { "plugin": ["github-prs"] }
-      },
-      {
-        "id": "new-panel",
-        "title": "New GitHub PRs panel here",
-        "location": "canvas",
-        "open": "new"
       }
     ]
   }
