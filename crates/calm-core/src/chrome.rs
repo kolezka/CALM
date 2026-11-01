@@ -37,7 +37,37 @@ pub enum PanelIcon {
     Plugin,
 }
 
+/// How `PanelOverrides.icon` names a built-in icon: `builtin:<name>`.
+pub const BUILTIN_ICON_PREFIX: &str = "builtin:";
+
 impl PanelIcon {
+    pub const ALL: [PanelIcon; 3] = [PanelIcon::Terminal, PanelIcon::Browser, PanelIcon::Plugin];
+
+    /// The `<name>` in `builtin:<name>`.
+    pub fn name(self) -> &'static str {
+        match self {
+            PanelIcon::Terminal => "terminal",
+            PanelIcon::Browser => "browser",
+            PanelIcon::Plugin => "plugin",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PanelIcon::Terminal => "Terminal",
+            PanelIcon::Browser => "Browser",
+            PanelIcon::Plugin => "Plugin",
+        }
+    }
+
+    /// The icon an override names with `builtin:<name>`, if it names one.
+    pub fn from_override(icon: &str) -> Option<Self> {
+        let name = icon.strip_prefix(BUILTIN_ICON_PREFIX)?;
+        PanelIcon::ALL
+            .into_iter()
+            .find(|known| known.name() == name)
+    }
+
     pub fn for_kind(kind: &PanelKind) -> Self {
         match kind {
             PanelKind::Terminal { .. } | PanelKind::Tui { .. } => PanelIcon::Terminal,

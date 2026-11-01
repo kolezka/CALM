@@ -4,6 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::value::RawValue;
 
 use crate::camera::Camera;
+use crate::chrome::{BUILTIN_ICON_PREFIX, PanelIcon};
 use crate::geometry::{Point, Rect, Size};
 use crate::resize::ResizePolicy;
 use crate::terminal_profile::{
@@ -200,7 +201,8 @@ impl<'de> Deserialize<'de> for PanelKind {
 pub struct PanelOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// 1 to 4 characters, or a relative .png or .svg path inside the plugin folder.
+    /// 1 to 4 characters, `builtin:<name>` for a `chrome::PanelIcon`, or a relative .png or
+    /// .svg path inside the settings folder.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// "#rrggbb" or "#rrggbbaa".
@@ -231,7 +233,15 @@ impl PanelOverrides {
             check_text("overrides.title", title, MAX_TITLE_CHARS)?;
         }
         if let Some(icon) = &self.icon {
-            check_icon("overrides.icon", icon)?;
+            if icon.starts_with(BUILTIN_ICON_PREFIX) {
+                if PanelIcon::from_override(icon).is_none() {
+                    return Err(format!(
+                        "\"overrides.icon\" is {icon:?}: no such built-in icon"
+                    ));
+                }
+            } else {
+                check_icon("overrides.icon", icon)?;
+            }
         }
         check_color("overrides.accent_color", &self.accent_color)?;
         check_color("overrides.title_bar_color", &self.title_bar_color)?;

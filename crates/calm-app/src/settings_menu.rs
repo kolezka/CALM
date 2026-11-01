@@ -237,6 +237,10 @@ impl CanvasView {
                 })
                 .detach();
             }
+            // Only the per-panel form sends this.
+            Ok(FormOutcome::Command(command @ FormCommand::ChoosePanelIcon(_))) => {
+                eprintln!("calm: settings window: unexpected {command:?}");
+            }
             // The form and `apply_field` disagree: a bug, so say so instead of guessing.
             Err(err) => eprintln!("calm: settings window: {err}"),
         }

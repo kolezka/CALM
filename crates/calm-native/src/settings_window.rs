@@ -359,6 +359,11 @@ impl SettingsWindow {
                 button.setFrame(frame);
                 (Retained::into_super(button), BindingKind::Button)
             }
+            // Read-only until text input is drawn: shows the value, else the placeholder.
+            Control::Text { value, placeholder } => {
+                let shown = if value.is_empty() { placeholder } else { value };
+                return self.build_control(&Control::Note(shown.clone()), y, document);
+            }
             Control::Note(text) => {
                 let note = NSTextField::wrappingLabelWithString(&NSString::from_str(text), mtm);
                 note.setFrame(rect(CONTROL_X, y + 5.0, CONTROL_WIDTH + VALUE_WIDTH, 20.0));
