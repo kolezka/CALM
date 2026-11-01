@@ -73,12 +73,16 @@ pub fn title_bar_layout(panel: &Panel) -> TitleBarLayout {
         )
     };
     let borderless = !panel.minimized && bar.size.height == 0.0;
-    let icon = Rect::new(
-        bar.origin.x + LEADING_PADDING,
-        bar.origin.y + (bar.size.height - ICON_SIZE) / 2.0,
-        ICON_SIZE,
-        ICON_SIZE,
-    );
+    let icon = if borderless {
+        Rect::new(bar.origin.x, bar.origin.y, 0.0, 0.0)
+    } else {
+        Rect::new(
+            bar.origin.x + LEADING_PADDING,
+            bar.origin.y + (bar.size.height - ICON_SIZE) / 2.0,
+            ICON_SIZE,
+            ICON_SIZE,
+        )
+    };
     let (minimize, close, trailing_edge) = if panel.minimized || borderless {
         (None, None, bar.right() - LEADING_PADDING)
     } else {
@@ -496,6 +500,18 @@ mod tests {
                 title: Some(0x44444480),
             }
         );
+    }
+
+    #[test]
+    fn borderless_layout_has_no_icon_and_no_middle() {
+        let (mut scene, id) = scene_with_panel();
+        crate::scene::set_borderless(scene.get_mut(id).unwrap(), true);
+        let layout = title_bar_layout(scene.get(id).unwrap());
+        assert_eq!(layout.icon.size.width, 0.0);
+        assert_eq!(layout.icon.size.height, 0.0);
+        assert_eq!(layout.middle.size.height, 0.0);
+        assert!(layout.minimize.is_none());
+        assert!(layout.close.is_none());
     }
 
     #[test]
