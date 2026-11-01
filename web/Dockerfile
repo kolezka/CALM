@@ -2,10 +2,10 @@
 # Dockerfile build pack; set Base Directory to /web so the build context is the
 # site, not the repo root.
 #
-# Astro 7 needs Node 22.23.4 or newer, so the build stage pins 22-alpine rather
-# than drifting on latest. The runtime stage only carries nginx and static
-# files; Node never ships.
-FROM node:22-alpine AS build
+# Astro 7 needs Node 22.23.4 or newer. This pins the current line, 26, rather
+# than the oldest supported one, matching the Node the site is developed on.
+# The runtime stage only carries nginx and static files; Node never ships.
+FROM node:26-alpine AS build
 
 WORKDIR /app
 
