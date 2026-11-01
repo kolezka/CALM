@@ -472,6 +472,9 @@ impl Scene {
         let overrides = source.overrides.clone();
         let copy = self.add(kind, rect);
         if let Some(panel) = self.get_mut(copy) {
+            if overrides.borderless == Some(true) {
+                panel.rect.size = rect.size;
+            }
             panel.overrides = overrides;
         }
         Some(copy)
@@ -947,6 +950,21 @@ mod tests {
             PanelKind::Terminal { profile: Some(id), .. } if id == "neon"
         ));
         assert_eq!(panel.rect.size, Size::new(300.0, 200.0));
+    }
+
+    #[test]
+    fn duplicate_keeps_size_of_a_small_borderless_panel() {
+        let mut scene = Scene::default();
+        let source = scene.add(
+            terminal(),
+            Rect::new(0.0, 0.0, MIN_PANEL_SIZE.width, MIN_PANEL_SIZE.height),
+        );
+        set_borderless(scene.get_mut(source).unwrap(), true);
+        let copy = scene.duplicate(source, |_| None).unwrap();
+        let source = scene.get(source).unwrap();
+        let copy = scene.get(copy).unwrap();
+        assert_eq!(copy.rect.size, source.rect.size);
+        assert_eq!(content_rect(copy).size, content_rect(source).size);
     }
 
     #[test]
