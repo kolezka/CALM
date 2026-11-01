@@ -154,7 +154,7 @@ impl CanvasView {
             let executor = cx.foreground_executor().clone();
             // AppKit calls this inside the control's action. Hop onto GPUI's executor so
             // the view is never updated while GPUI itself is mid-update.
-            SettingsWindow::new("Settings", WindowLayout::Tabs, move |id, value| {
+            SettingsWindow::new("CALM Settings", WindowLayout::Tabs, move |id, value| {
                 let this = this.clone();
                 let mut cx = async_cx.clone();
                 executor

@@ -1977,7 +1977,7 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
     // A second open, as from another entry point, must reuse the same window.
     view.open_settings(window, cx);
     let second = view.settings_window.as_ref().map(|w| w.window_number());
-    let count = calm_native::settings_window_count("Settings")
+    let count = calm_native::settings_window_count("CALM Settings")
         .unwrap_or_else(|err| smoke_fail(&format!("settings window count: {err}")));
     println!(
         "smoke: settings_window opens=2 windows={count} same={}",

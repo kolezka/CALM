@@ -9,6 +9,7 @@
 //! which field id it edits and how to read its value.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use calm_core::background::Rgb;
@@ -72,6 +73,7 @@ struct Binding {
 #[derive(Default)]
 struct TargetIvars {
     callback: RefCell<Option<ChangeCallback>>,
+    pending: RefCell<VecDeque<(String, FieldValue)>>,
     bindings: RefCell<Vec<Binding>>,
 }
 
@@ -89,14 +91,18 @@ define_class!(
             let Some((id, value)) = self.read(sender) else {
                 return;
             };
+            self.ivars().pending.borrow_mut().push_back((id, value));
             // Take the callback out while it runs, so it may rebuild the form.
             let taken = self.ivars().callback.borrow_mut().take();
             if let Some(mut callback) = taken {
-                callback(id, value);
-                let mut slot = self.ivars().callback.borrow_mut();
-                if slot.is_none() {
-                    *slot = Some(callback);
+                loop {
+                    let change = self.ivars().pending.borrow_mut().pop_front();
+                    let Some((id, value)) = change else {
+                        break;
+                    };
+                    callback(id, value);
                 }
+                *self.ivars().callback.borrow_mut() = Some(callback);
             }
         }
     }
