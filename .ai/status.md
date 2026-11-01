@@ -96,7 +96,8 @@ Pull requests:
   plugins get a `command` event in an open panel or a new one; TUI items open a new panel
   with `run` args appended. Not built: `calm.menus.register`, `shortcut`,
   `contributes.commands`.
-- Add menu: TUI apps and web plugins share one section under a native "Plugins" header
+- Add menu: Terminal and Browser sit under a "Native" header; TUI apps and web plugins
+  share one section under a "Plugins" header
   (`MenuItem::Header`, `NSMenuItem.sectionHeaderWithTitle`, macOS 14+). The shipped examples
   no longer contribute canvas items (`new-panel`, `slow-refresh`): they duplicated Add.
 - #23 Plugin services: `github.api`, `storage.get/set/remove` and `openExternal` (http and

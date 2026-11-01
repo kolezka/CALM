@@ -13,6 +13,8 @@ pub const ADD_TUI_PREFIX: &str = "add.tui.";
 /// A plain terminal opened with the named profile from `terminal.profiles`.
 pub const ADD_TERMINAL_PROFILE_PREFIX: &str = "add.terminal_profile.";
 pub const TERMINAL_PROFILES_LABEL: &str = "Terminal Profiles";
+/// Section header above Terminal and Browser in the Add menu.
+pub const NATIVE_SECTION_LABEL: &str = "Native";
 /// Section header above the plugin entries in the Add menu.
 pub const PLUGINS_SECTION_LABEL: &str = "Plugins";
 /// Starts a TUI panel's command again after it exited.
@@ -72,8 +74,8 @@ fn disabled(label: &str) -> MenuItem {
 }
 
 /// Right click on empty canvas. `plugins` is (id, name) per installed web plugin and
-/// `apps` the same per TUI plugin. Both sit in one section under a "Plugins" header,
-/// apps first. `searched_dirs` is shown when no plugin of either kind was found, so the user knows
+/// `apps` the same per TUI plugin. Terminal and Browser sit under a "Native" header; apps
+/// and plugins share one section under a "Plugins" header, apps first. `searched_dirs` is shown when no plugin of either kind was found, so the user knows
 /// where to put one.
 pub fn canvas_menu(
     plugins: &[(String, String)],
@@ -81,6 +83,9 @@ pub fn canvas_menu(
     searched_dirs: &[String],
 ) -> Vec<MenuItem> {
     let mut items = vec![
+        MenuItem::Header {
+            label: NATIVE_SECTION_LABEL.to_string(),
+        },
         action(ADD_TERMINAL, "Terminal"),
         action(ADD_BROWSER, "Browser"),
         MenuItem::Separator,
@@ -260,13 +265,16 @@ mod tests {
         let [MenuItem::Submenu { items, .. }] = &with_terminal_profiles(base, &profiles)[..] else {
             panic!("expected the Add submenu");
         };
-        assert!(matches!(&items[0], MenuItem::Action { id, .. } if id == ADD_TERMINAL));
+        assert!(matches!(&items[1], MenuItem::Action { id, .. } if id == ADD_TERMINAL));
         let MenuItem::Submenu {
             label,
             items: entries,
-        } = &items[1]
+        } = &items[2]
         else {
-            panic!("expected the profiles submenu second, got {:?}", items[1]);
+            panic!(
+                "expected the profiles submenu after Terminal, got {:?}",
+                items[2]
+            );
         };
         assert_eq!(label, TERMINAL_PROFILES_LABEL);
         assert_eq!(entries, &vec![action("add.terminal_profile.neon", "Neon")]);
@@ -295,6 +303,9 @@ mod tests {
             vec![MenuItem::Submenu {
                 label: "Add".to_string(),
                 items: vec![
+                    MenuItem::Header {
+                        label: "Native".to_string(),
+                    },
                     action("add.terminal", "Terminal"),
                     action("add.browser", "Browser"),
                     MenuItem::Separator,
@@ -316,6 +327,9 @@ mod tests {
             vec![MenuItem::Submenu {
                 label: "Add".to_string(),
                 items: vec![
+                    MenuItem::Header {
+                        label: "Native".to_string(),
+                    },
                     action("add.terminal", "Terminal"),
                     action("add.browser", "Browser"),
                     MenuItem::Separator,
@@ -482,7 +496,7 @@ mod tests {
         };
         // One "Plugins" section: TUI apps, then web plugins, no divider between them.
         assert_eq!(
-            &items[2..],
+            &items[3..],
             &[
                 MenuItem::Separator,
                 MenuItem::Header {
