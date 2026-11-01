@@ -144,6 +144,39 @@ pub fn normalize_address(input: &str) -> Option<String> {
     Some(search_url(input))
 }
 
+/// What a restored browser loads instead of a saved url that is not valid.
+pub const RESTORE_FALLBACK_URL: &str = "about:blank";
+
+/// The url a restored browser loads. A saved url is loaded as saved only when it is a
+/// whole url with a kept scheme; anything else (blank, whitespace, a bare host, a search,
+/// `https://` with no host) is an error, and the caller loads `about:blank`. Never routed
+/// through `normalize_address`: that turns typed text into a search. The error does not
+/// quote the url.
+pub fn restored_url(saved: &str) -> Result<String, String> {
+    let whole = !saved.is_empty()
+        && !saved.chars().any(|c| c.is_whitespace() || c.is_control())
+        && scheme_of(saved).is_some_and(|scheme| {
+            let rest = &saved[scheme.len() + 1..];
+            match scheme.to_ascii_lowercase().as_str() {
+                "http" | "https" => rest.strip_prefix("//").is_some_and(|after| {
+                    let authority = after.split(['/', '?', '#']).next().unwrap_or_default();
+                    let host = authority.rsplit('@').next().unwrap_or_default();
+                    !host.split(':').next().unwrap_or_default().is_empty()
+                }),
+                "file" => rest.starts_with("//"),
+                "about" | "data" => !rest.is_empty(),
+                _ => false,
+            }
+        });
+    if whole {
+        Ok(saved.to_string())
+    } else {
+        Err(format!(
+            "a restored browser had no valid saved url: opened {RESTORE_FALLBACK_URL}"
+        ))
+    }
+}
+
 /// The search URL for `query`.
 pub fn search_url(query: &str) -> String {
     format!("{SEARCH_URL_PREFIX}{}", form_encode(query.trim()))
@@ -197,6 +230,34 @@ fn form_encode(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn restored_url_loads_only_whole_urls() {
+        for valid in [
+            "https://example.com/a",
+            "http://localhost:3000/x",
+            "about:blank",
+            "file:///tmp/page.html",
+            "data:text/html,hi",
+        ] {
+            assert_eq!(restored_url(valid).as_deref(), Ok(valid), "{valid}");
+        }
+        for invalid in [
+            "",
+            "   ",
+            " https://example.com",
+            "https://",
+            "https:///path",
+            "not a url",
+            "example.com",
+            "javascript:alert(1)",
+            "https://exa mple.com",
+            "about:",
+        ] {
+            let error = restored_url(invalid).expect_err(invalid);
+            assert!(error.contains(RESTORE_FALLBACK_URL), "{error}");
+        }
+    }
+
     use super::*;
 
     #[test]

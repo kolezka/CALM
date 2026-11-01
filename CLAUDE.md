@@ -62,9 +62,8 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
   at `--% CPU`, and a z-order mismatch until #40 lands. A run with a flake is not a pass.
   Run a control on `origin/main` before blaming a branch.
 - Plugin tests that need bun fail unless bun is installed; `CALM_SKIP_BUN_TESTS=1` skips them.
-- Not wired yet: `--bench`, `--layout`, `--no-restore`, layout save and load, session
-  restore (a launch starts empty), active autosave (built, but `APP_AUTOSAVE_ACTIVE` is
-  `false`, so only the smoke runs it), the event coalescer, and part of the plugin bridge (`log`, `panel.setTitle`, `settings.*`,
+- Not wired yet: `--bench`, layout save (`--layout` only opens), the `ask` restore dialog, the event
+  coalescer, and part of the plugin bridge (`log`, `panel.setTitle`, `settings.*`,
   `storage.*`, `github.api` and `openExternal` answer; the rest reject with code
   `not_implemented`). The Makefile `bench` target exists; the flag does not. Do not
   document them as working. Browser, plugin and TUI app panels and plugin menu items are
@@ -82,9 +81,11 @@ centers the world origin, `cmd-shift-0` fits all panels (both also in the View m
 (`canvas.click_empty_clears_focus`). `alt` while dragging disables snapping (default
 grid 8 world units, edge snap within 8). `cmd-,` opens the native Settings window
 (background, grid, snapping, panels, terminal, session, developer). Settings persist in
-`~/.config/calm/settings.json`; `CALM_HOME` overrides the directory. The session settings
-have no effect yet outside the smoke: every launch starts with an empty canvas. Distant
-panels become previews refreshed every 2 s.
+`~/.config/calm/settings.json`; `CALM_HOME` overrides the directory. A launch restores the
+last session from `session.json` (new shells, browsers at their url, plugins with their
+settings) and autosaves it; `--no-restore` starts empty, `--layout NAME` opens
+`layouts/NAME.json`, and `session.restore_on_launch` `off` turns restore off (`ask` has no
+dialog yet and restores with a notice). Distant panels become previews refreshed every 2 s.
 
 ## Rules that are easy to break
 

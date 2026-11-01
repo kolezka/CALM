@@ -1,8 +1,8 @@
 # Backlog
 
-Agreed follow-ups that nobody is working on yet. Checked against `origin/main` at
-`1f39de2` (PRs #1 to #39 merged) on 2026-11-01. Items from open PRs say so. When an item gets an owner or a branch,
-move it to `status.md` under "In progress" and delete it here.
+Agreed follow-ups with remaining unassigned work. Checked against `origin/main` at
+`1f39de2` (PRs #1 to #39 merged) on 2026-11-01. Items from open PRs say so. Move an item
+to `status.md` under "In progress" once all of its remaining work has an owner or branch.
 
 ## Open items
 
@@ -70,6 +70,11 @@ Seen several times on 2026-10-31:
 - `preview_snapshots_in_3s=[0,0]`, often with `window_visible=Some(false)`. The window is
   occluded or not key, and GPUI stops painting it.
 - "terminals not live at zoom 1.5".
+- Native z-order mismatch: `zorder=[1, 2] scene=[2, 1]` and
+  `zorder=[1,2,3] scene=[2,3,1]`. Traced to restacking only during paint: an occluded
+  window can stop painting while scene changes and new native panels arrive. The
+  `fix/native-zorder-desync` branch restacks on scene changes and native creation; pending
+  merge. Its smoke checks both reorder directions immediately, without waiting for paint.
 - Twice, native z-order not matching the scene: `zorder=[1, 2] scene=[2, 1]` and
   `zorder=[1,2,3] scene=[2,3,1]`.
 - On `feat/session-autosave`, with the autosave smoke step run right after the app icon
@@ -84,11 +89,12 @@ Seen several times on 2026-10-31:
 - State: root cause found on 2026-11-01. An occluded window reports
   `window_visible=Some(false)` and GPUI stops painting, so every paint-driven step stalls:
   previews, FPS frames, the stats pill and the native restack. Load was ruled out (`main`
-  failed at load 17). Open PR #40 makes the native restack independent of paint and adds a
-  deterministic reorder check to the smoke. The preview and stats stalls remain.
-- Fix direction for the rest: make the preview and stats checks independent of paint, or
-  keep the window visible during the smoke. Until then treat them as known flakes
-  (`.ai/conventions.md`, "Smoke flakes").
+  failed at load 17). PR #40 (merged) makes the native restack independent of paint and
+  adds a deterministic reorder check to the smoke. The preview, terminal mode and stats
+  failures remain open.
+- Fix direction for the rest: make their checks independent of window visibility, or bring
+  the window to the front before checking paint-dependent state. Until then treat them as
+  known flakes (`.ai/conventions.md`, "Smoke flakes").
 - Unconfirmed: a TUI "second exit not reported after restart" failure, seen on branches,
   0 of 1 runs on `main`.
 - Origin: smoke runs during the prototype merges (`status.md`, "Known small issues").

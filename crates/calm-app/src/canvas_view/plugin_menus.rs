@@ -44,6 +44,9 @@ impl CanvasView {
     /// The panel menu for `id` as the user would see it now: built-ins, then plugin items.
     pub fn panel_menu(&self, id: PanelId) -> Option<Vec<MenuItem>> {
         let panel = self.scene.get(id)?;
+        if self.placeholder(id).is_some() {
+            return Some(menu::placeholder_menu());
+        }
         let can_restart = self
             .tui_run(id)
             .is_some_and(|run| run.supervisor.can_restart());

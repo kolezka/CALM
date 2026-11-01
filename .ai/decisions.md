@@ -537,15 +537,30 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
 - **Autosave ships behind `APP_AUTOSAVE_ACTIVE = false` until restore lands.** Reason:
   without restore, a launch starts empty, and the first change would replace the last
   session on disk. Cost: no user gets autosave until Task 5 (#41) turns the gate on.
+  Superseded: #41 merged and set the gate to `true`.
 - **Read-only bridge calls do not take `get_mut`.** Only `panel.setTitle` and
   `settings.set` mark the scene dirty. Reason: every `get_mut` bumps the scene revision,
   so a read caused a write. Cost: a new mutating bridge method must remember `get_mut`.
 
-## Session restore review rulings (2026-11-01, PR #41, open)
+## Restore at launch (2026-10-31, persistence plan Task 5)
 
-These ship with #41 and are not on `main` yet. #41 itself records `ask` with a notice,
-reading the session file on every launch (so a malformed file is moved aside even under
-`--no-restore`, `--layout` or restore off), and placeholders as an app-side mark.
+- **`ask` restores with a notice until the dialog exists.** The NSAlert needs new
+  `calm-native` code outside this task's files. `ask` behaves like `on` and the status pill
+  and stderr say so, so it never silently picks a side. Cost: `ask` users get no choice yet.
+- **The session file is read on every launch, whatever the source.** Autosave writes it
+  even with `--layout`, `--no-restore` or restore off, so a malformed one is moved aside in
+  those cases too, before any write could rotate it into the backups. Cost: a file the user
+  did not ask to restore can be renamed to `.invalid-<n>`, with a notice.
+- **A terminal whose saved cwd is gone keeps that cwd in its saved kind.** It starts in
+  home with a notice, and the next launch tries the path again (an unmounted drive comes
+  back). Cost: the notice repeats until the panel is closed or the path returns.
+- **Placeholders are an app-side mark, not a new kind.** The saved `PanelKind` stays as
+  loaded, so every save writes it back unchanged and an install brings the panel back at
+  the next launch. The plugin version is not restamped on restore.
+
+## Session restore review rulings (2026-11-01, PR #41)
+
+These shipped with #41, next to "Restore at launch" above.
 
 - **A failed launch read closes the autosave gate for the whole launch**
   (`AutosaveStart::launch_gate`). A Settings toggle cannot start the writer afterwards.
