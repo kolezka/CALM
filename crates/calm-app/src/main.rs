@@ -1622,7 +1622,14 @@ async fn smoke_panel_settings(
 ) {
     use calm_core::settings_form::FieldValue;
     const TITLE: &str = "Second";
-    let title = crate::panel_settings::window_title(TITLE);
+    let title = crate::panel_settings::window_title(
+        TITLE,
+        &PanelKind::Terminal {
+            command: None,
+            cwd: None,
+            profile: None,
+        },
+    );
     let count = |title: &str| {
         calm_native::settings_window_count(title)
             .unwrap_or_else(|err| smoke_fail(&format!("panel settings count: {err}")))

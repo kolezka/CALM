@@ -2,7 +2,7 @@
 
 use calm_core::panel_form::{apply_panel_field, panel_effective, panel_form};
 use calm_core::panel_icons::import_icon;
-use calm_core::scene::PanelId;
+use calm_core::scene::{PanelId, PanelKind};
 use calm_core::settings_form::{FieldValue, FormCommand, FormOutcome};
 use calm_native::{SettingsWindow, WindowLayout, choose_image_file};
 use gpui::{AppContext as _, Context, Window};
@@ -10,8 +10,15 @@ use gpui::{AppContext as _, Context, Window};
 use crate::canvas_view::CanvasView;
 
 /// The window title for a panel whose effective title is `title`.
-pub fn window_title(title: &str) -> String {
-    format!("{title} Settings")
+pub fn window_title(title: &str, kind: &PanelKind) -> String {
+    let kind = match kind {
+        PanelKind::Terminal { .. } => "Terminal",
+        PanelKind::Browser { .. } => "Browser",
+        PanelKind::Plugin { .. } => "Plugin",
+        PanelKind::Tui { .. } => "TUI",
+        PanelKind::Unsupported { .. } => "Unsupported",
+    };
+    format!("{title} Settings ({kind})")
 }
 
 impl CanvasView {
@@ -27,7 +34,10 @@ impl CanvasView {
             return;
         };
         if !self.panel_settings_windows.contains_key(&id) {
-            let title = window_title(&panel_effective(panel, &self.settings.settings).title);
+            let title = window_title(
+                &panel_effective(panel, &self.settings.settings).title,
+                &panel.kind,
+            );
             let this = cx.entity().downgrade();
             let handle = window.window_handle();
             let async_cx = cx.to_async();
@@ -75,7 +85,7 @@ impl CanvasView {
         effective.live_theme = self
             .terminal_meta(id)
             .is_some_and(|meta| meta.applied_colors.is_some());
-        settings_window.set_title(&window_title(&effective.title));
+        settings_window.set_title(&window_title(&effective.title, &panel.kind));
         settings_window.set_form(&panel_form(panel, &effective));
     }
 
@@ -118,7 +128,7 @@ impl CanvasView {
                     (self.panel_settings_windows.get(&id), self.scene.get(id))
                 {
                     let effective = panel_effective(panel, &self.settings.settings);
-                    settings_window.set_title(&window_title(&effective.title));
+                    settings_window.set_title(&window_title(&effective.title, &panel.kind));
                 }
                 if rebuild {
                     self.refresh_panel_settings(id);
@@ -169,5 +179,40 @@ impl CanvasView {
             .ok();
         })
         .detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_title_names_the_panel_kind() {
+        let terminal = PanelKind::Terminal {
+            command: None,
+            cwd: None,
+            profile: None,
+        };
+        let browser = PanelKind::Browser {
+            url: "https://example.com".into(),
+            page_zoom: None,
+        };
+        let plugin = PanelKind::Plugin {
+            plugin_id: "hello-world".into(),
+            plugin_version: None,
+            settings: serde_json::Value::Null,
+        };
+        let tui = PanelKind::Tui {
+            plugin_id: "top-example".into(),
+            plugin_version: None,
+        };
+        for (kind, expected) in [
+            (terminal, "Logs Settings (Terminal)"),
+            (browser, "Logs Settings (Browser)"),
+            (plugin, "Logs Settings (Plugin)"),
+            (tui, "Logs Settings (TUI)"),
+        ] {
+            assert_eq!(window_title("Logs", &kind), expected);
+        }
     }
 }
