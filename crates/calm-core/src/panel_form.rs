@@ -350,9 +350,15 @@ fn edit(
             Ok(flipped(was, overrides.title.is_some()))
         }
         ("panel.icon", FieldValue::Text(text)) => {
-            let was = overrides.icon.is_some();
+            let old = overrides.icon.clone();
             overrides.icon = text_value(&text);
-            Ok(flipped(was, overrides.icon.is_some()))
+            let kind = |icon: &Option<String>| {
+                icon.as_deref()
+                    .map(|value| value.starts_with(BUILTIN_ICON_PREFIX))
+            };
+            Ok(FormOutcome::Changed {
+                rebuild: kind(&old) != kind(&overrides.icon),
+            })
         }
         ("panel.title" | "panel.icon" | "panel.icon.builtin", FieldValue::Reset) => {
             if field == "panel.title" {
@@ -626,6 +632,44 @@ mod tests {
         );
         assert!(result.is_err(), "{result:?}");
         assert_eq!(scene.get(id).unwrap(), &before);
+    }
+
+    #[test]
+    fn builtin_to_text_icon_requests_rebuild_and_flips_both_controls() {
+        let settings = Settings::default();
+        let (mut scene, id) = scene_with(terminal());
+        scene.get_mut(id).unwrap().overrides.icon = Some("builtin:terminal".into());
+
+        assert_eq!(
+            apply(
+                &mut scene,
+                id,
+                &settings,
+                "panel.icon",
+                FieldValue::Text("🚀".into()),
+            ),
+            Ok(FormOutcome::Changed { rebuild: true })
+        );
+        let (sections, _) = form(&scene, id, &settings);
+        assert_eq!(find(&sections, "panel.icon").state, FieldState::Set);
+        let builtin = find(&sections, "panel.icon.builtin");
+        assert_eq!(builtin.state, FieldState::Inherited);
+        assert!(matches!(
+            builtin.control,
+            Control::Choice { selected: 0, .. }
+        ));
+
+        scene.get_mut(id).unwrap().overrides.icon = Some("ab".into());
+        assert_eq!(
+            apply(
+                &mut scene,
+                id,
+                &settings,
+                "panel.icon",
+                FieldValue::Text("cd".into()),
+            ),
+            Ok(FormOutcome::Changed { rebuild: false })
+        );
     }
 
     #[test]
