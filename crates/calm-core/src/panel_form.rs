@@ -24,6 +24,15 @@ pub struct PanelEffective {
     pub live_colors_note: bool,
 }
 
+/// What a terminal's color wells start from when nothing sets a palette.
+pub fn ghostty_default_colors() -> TerminalColors {
+    PALETTE_PRESETS
+        .iter()
+        .find(|preset| preset.id == "ghostty-default")
+        .map(|preset| preset.colors)
+        .expect("PALETTE_PRESETS has ghostty-default")
+}
+
 pub fn panel_effective(panel: &Panel, settings: &Settings) -> PanelEffective {
     let overrides = &panel.overrides;
     let title = overrides
@@ -163,7 +172,10 @@ pub fn panel_form(panel: &Panel, effective: &PanelEffective) -> Vec<Section> {
 
         let set = overrides.terminal_colors.is_some();
         let mut colors = Vec::new();
-        if let Some(effective_colors) = &effective.colors {
+        // With no palette set anywhere, show the seed a one-well edit keeps.
+        let shown = effective.colors.unwrap_or_else(ghostty_default_colors);
+        {
+            let effective_colors = &shown;
             colors.push(with_state(
                 color(
                     "panel.colors.background",
@@ -315,9 +327,9 @@ fn edit(
                     .terminal_colors
                     .as_ref()
                     .and_then(|colors| colors.parse("overrides.terminal_colors").ok());
-                let mut colors = own.or(inherited_colors.copied()).ok_or_else(|| {
-                    format!("panel field {field:?}: no colors to edit, load a theme first")
-                })?;
+                let mut colors = own
+                    .or(inherited_colors.copied())
+                    .unwrap_or_else(ghostty_default_colors);
                 match (part, slot) {
                     ("background", _) => colors.background = rgb.0,
                     ("foreground", _) => colors.foreground = rgb.0,
@@ -745,22 +757,42 @@ mod tests {
     }
 
     #[test]
+    fn single_well_edit_with_nothing_set_seeds_from_ghostty_default() {
+        let (mut scene, id) = scene_with(terminal());
+        let ghostty = PALETTE_PRESETS
+            .iter()
+            .find(|preset| preset.label == "Ghostty Default")
+            .unwrap()
+            .colors;
+        apply_panel_field(
+            &mut scene,
+            id,
+            "panel.colors.3",
+            FieldValue::Color(Rgb(0xabcdef)),
+            None,
+        )
+        .unwrap();
+        let stored = scene.get(id).unwrap().overrides.terminal_colors.clone();
+        let colors = stored.unwrap().parse("test").unwrap();
+        let mut expected = ghostty;
+        expected.palette[3] = 0xabcdef;
+        assert_ne!(ghostty.palette[3], 0xabcdef);
+        assert_eq!(colors, expected);
+    }
+
+    #[test]
     fn reset_with_no_global_colors_gives_none_and_the_live_note() {
         let settings = Settings::default();
         let (mut scene, id) = scene_with(terminal());
         let (sections, effective) = form(&scene, id, &settings);
         assert!(effective.live_colors_note);
-        // No palette to edit one color of until a theme sets one.
-        assert!(!ids(&sections).contains(&"panel.colors.background".to_string()));
-        assert!(
-            apply(
-                &mut scene,
-                id,
-                &settings,
-                "panel.colors.0",
-                FieldValue::Color(Rgb(1))
-            )
-            .is_err()
+        assert_eq!(effective.colors, None);
+        // The wells show the seed a one-well edit would keep.
+        let well = find(&sections, "panel.colors.background");
+        assert_eq!(well.state, FieldState::Inherited);
+        assert_eq!(
+            well.control,
+            Control::Color(Rgb(ghostty_default_colors().background))
         );
 
         apply(
