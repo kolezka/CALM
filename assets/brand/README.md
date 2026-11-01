@@ -22,6 +22,29 @@ From the repository root:
 ```sh
 uv run --with pillow python3 assets/brand/build.py
 iconutil -c icns assets/brand/CALM.iconset -o assets/brand/CALM.icns
+python3 assets/brand/animate.py
 ```
 
 `CALM.iconset/` contains every macOS required size (16 through 1024 pixels). The bundle script copies `CALM.icns` into `Contents/Resources`.
+
+## Animated wordmark
+
+`animate.py` emits two SVG files from the same glyphs and palette as `build.py`:
+
+- `logo-animated.svg`: same 356x132 frame as `logo.svg`, night background.
+- `logo-animated-transparent.svg`: no background plate, so it sits on any surface.
+
+The letters are static, a neon sign already lit. Motion lives around them: a scan wave
+across the dot grid, pixel rain behind the word, a scrolling data tape under it, blinking
+corner brackets, a terminal cursor block, and flickering debris. CSS keyframes inside the
+file, no JavaScript. `prefers-reduced-motion` stops every animation.
+
+The script imports `build.py` with a stub for `PIL`, so it needs no third-party packages:
+
+```sh
+python3 assets/brand/animate.py
+```
+
+GitHub does not play SVG animation in a README, so a README banner needs a GIF or MP4
+rendered from these files.
+
