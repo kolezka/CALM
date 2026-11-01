@@ -13,6 +13,12 @@ pub const ADD_TUI_PREFIX: &str = "add.tui.";
 /// A plain terminal opened with the named profile from `terminal.profiles`.
 pub const ADD_TERMINAL_PROFILE_PREFIX: &str = "add.terminal_profile.";
 pub const TERMINAL_PROFILES_LABEL: &str = "Terminal Profiles";
+/// Section header above Terminal and Browser in the Add menu.
+pub const NATIVE_SECTION_LABEL: &str = "Native";
+/// Section header above the plugin entries in the Add menu.
+pub const PLUGINS_SECTION_LABEL: &str = "Plugins";
+/// Opens the global Settings window, as `cmd-,` does.
+pub const OPEN_SETTINGS: &str = "app.settings";
 /// Starts a TUI panel's command again after it exited.
 pub const PANEL_RESTART: &str = "panel.restart";
 pub const PANEL_MINIMIZE: &str = "panel.minimize";
@@ -37,6 +43,10 @@ pub enum MenuItem {
     Disabled {
         label: String,
     },
+    /// A non-interactive title that names the group of items below it.
+    Header {
+        label: String,
+    },
     Separator,
 }
 
@@ -50,6 +60,7 @@ pub enum MenuCommand {
     Duplicate,
     Delete,
     Restart,
+    OpenSettings,
 }
 
 fn action(id: &str, label: &str) -> MenuItem {
@@ -66,8 +77,8 @@ fn disabled(label: &str) -> MenuItem {
 }
 
 /// Right click on empty canvas. `plugins` is (id, name) per installed web plugin and
-/// `apps` the same per TUI plugin. Apps sit next to Terminal: they are terminals too.
-/// `searched_dirs` is shown when no plugin of either kind was found, so the user knows
+/// `apps` the same per TUI plugin. Terminal and Browser sit under a "Native" header; apps
+/// and plugins share one section under a "Plugins" header, apps first. `searched_dirs` is shown when no plugin of either kind was found, so the user knows
 /// where to put one.
 pub fn canvas_menu(
     plugins: &[(String, String)],
@@ -75,9 +86,15 @@ pub fn canvas_menu(
     searched_dirs: &[String],
 ) -> Vec<MenuItem> {
     let mut items = vec![
+        MenuItem::Header {
+            label: NATIVE_SECTION_LABEL.to_string(),
+        },
         action(ADD_TERMINAL, "Terminal"),
         action(ADD_BROWSER, "Browser"),
         MenuItem::Separator,
+        MenuItem::Header {
+            label: PLUGINS_SECTION_LABEL.to_string(),
+        },
     ];
     for (plugin_id, name) in apps {
         items.push(action(&format!("{ADD_TUI_PREFIX}{plugin_id}"), name));
@@ -93,9 +110,6 @@ pub fn canvas_menu(
             label: "Searched Folders".to_string(),
             items: searched,
         });
-    }
-    if !apps.is_empty() && !plugins.is_empty() {
-        items.push(MenuItem::Separator);
     }
     for (plugin_id, name) in plugins {
         items.push(action(&format!("{ADD_PLUGIN_PREFIX}{plugin_id}"), name));
@@ -133,6 +147,12 @@ pub fn with_terminal_profiles(
             }
         }
     }
+    items
+}
+
+/// Adds "Settings…" below the Add menu, split off by a separator.
+pub fn with_settings(mut items: Vec<MenuItem>) -> Vec<MenuItem> {
+    items.extend([MenuItem::Separator, action(OPEN_SETTINGS, "Settings…")]);
     items
 }
 
@@ -216,6 +236,7 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
         PANEL_DUPLICATE => Some(MenuCommand::Duplicate),
         PANEL_DELETE => Some(MenuCommand::Delete),
         PANEL_RESTART => Some(MenuCommand::Restart),
+        OPEN_SETTINGS => Some(MenuCommand::OpenSettings),
         _ if id.starts_with(ADD_TUI_PREFIX) => {
             let plugin_id = &id[ADD_TUI_PREFIX.len()..];
             let (_, size) = plugin_sizes.iter().find(|(known, _)| known == plugin_id)?;
@@ -254,13 +275,16 @@ mod tests {
         let [MenuItem::Submenu { items, .. }] = &with_terminal_profiles(base, &profiles)[..] else {
             panic!("expected the Add submenu");
         };
-        assert!(matches!(&items[0], MenuItem::Action { id, .. } if id == ADD_TERMINAL));
+        assert!(matches!(&items[1], MenuItem::Action { id, .. } if id == ADD_TERMINAL));
         let MenuItem::Submenu {
             label,
             items: entries,
-        } = &items[1]
+        } = &items[2]
         else {
-            panic!("expected the profiles submenu second, got {:?}", items[1]);
+            panic!(
+                "expected the profiles submenu after Terminal, got {:?}",
+                items[2]
+            );
         };
         assert_eq!(label, TERMINAL_PROFILES_LABEL);
         assert_eq!(entries, &vec![action("add.terminal_profile.neon", "Neon")]);
@@ -272,6 +296,21 @@ mod tests {
         assert_eq!(
             menu_action("add.terminal_profile.neon", Point::new(0.0, 0.0), &[]),
             menu_action(ADD_TERMINAL, Point::new(0.0, 0.0), &[])
+        );
+    }
+
+    #[test]
+    fn settings_sits_below_add_and_opens_settings() {
+        let base = canvas_menu(&plugins(), &[], &[]);
+        let items = with_settings(base.clone());
+        assert_eq!(&items[..base.len()], &base[..]);
+        assert_eq!(
+            &items[base.len()..],
+            &[MenuItem::Separator, action("app.settings", "Settings…")]
+        );
+        assert_eq!(
+            menu_action("app.settings", Point::new(3.0, 4.0), &[]),
+            Some(MenuCommand::OpenSettings)
         );
     }
 
@@ -289,9 +328,15 @@ mod tests {
             vec![MenuItem::Submenu {
                 label: "Add".to_string(),
                 items: vec![
+                    MenuItem::Header {
+                        label: "Native".to_string(),
+                    },
                     action("add.terminal", "Terminal"),
                     action("add.browser", "Browser"),
                     MenuItem::Separator,
+                    MenuItem::Header {
+                        label: "Plugins".to_string(),
+                    },
                     action("add.plugin.hello-world", "Hello World"),
                     action("add.plugin.github-prs", "GitHub PRs"),
                 ],
@@ -307,9 +352,15 @@ mod tests {
             vec![MenuItem::Submenu {
                 label: "Add".to_string(),
                 items: vec![
+                    MenuItem::Header {
+                        label: "Native".to_string(),
+                    },
                     action("add.terminal", "Terminal"),
                     action("add.browser", "Browser"),
                     MenuItem::Separator,
+                    MenuItem::Header {
+                        label: "Plugins".to_string(),
+                    },
                     disabled("No plugins found"),
                     MenuItem::Submenu {
                         label: "Searched Folders".to_string(),
@@ -463,14 +514,24 @@ mod tests {
     }
 
     #[test]
-    fn tui_apps_sit_next_to_terminal_and_add_a_tui_panel() {
+    fn tui_apps_and_web_plugins_share_the_plugins_section() {
         let apps = vec![("slack".to_string(), "Slack".to_string())];
         let [MenuItem::Submenu { items, .. }] = &canvas_menu(&plugins(), &apps, &[])[..] else {
             panic!("expected one Add submenu");
         };
-        assert_eq!(items[2], MenuItem::Separator);
-        assert_eq!(items[3], action("add.tui.slack", "Slack"));
-        assert_eq!(items[4], MenuItem::Separator);
+        // One "Plugins" section: TUI apps, then web plugins, no divider between them.
+        assert_eq!(
+            &items[3..],
+            &[
+                MenuItem::Separator,
+                MenuItem::Header {
+                    label: "Plugins".to_string()
+                },
+                action("add.tui.slack", "Slack"),
+                action("add.plugin.hello-world", "Hello World"),
+                action("add.plugin.github-prs", "GitHub PRs"),
+            ]
+        );
         let sizes = vec![("slack".to_string(), Size::new(900.0, 600.0))];
         let world = Point::new(5.0, 6.0);
         assert_eq!(

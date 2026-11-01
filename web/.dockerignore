@@ -1,0 +1,5 @@
+# Keep the build context to sources. A local node_modules or dist copied in
+# would shadow what the image installs and builds.
+node_modules
+dist
+.astro

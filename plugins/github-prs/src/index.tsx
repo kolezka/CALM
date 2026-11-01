@@ -89,7 +89,7 @@ function App({ calm }: { calm: Calm }) {
   const [inputError, setInputError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
 
-  // Menu items from contributes.menus. "new-panel" needs no code: CALM opens the panel.
+  // Menu items from contributes.menus.
   useEffect(
     () =>
       calm.events.on("command", (command) => {

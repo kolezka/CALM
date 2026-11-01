@@ -314,8 +314,9 @@ fn main() {
     let menu = ContextMenu::build(&sample).unwrap_or_else(|e| fail(&e.to_string()));
     let (items, submenus) = menu.counts();
     println!("native_smoke: menu items={items} submenus={submenus}");
-    // Add, then Terminal, Browser, a separator and Hello World inside it.
-    if (items, submenus) != (5, 1) {
+    // Add, then inside it the Native header, Terminal, Browser, a separator, the Plugins
+    // header and Hello World. Headers are real menu items.
+    if (items, submenus) != (7, 1) {
         fail("menu tree does not match the sample spec");
     }
 
