@@ -19,7 +19,9 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
     NSWindowStyleMask,
 };
+use objc2_core_graphics::CGPath;
 use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize};
+use objc2_quartz_core::CAShapeLayer;
 use raw_window_handle::{
     AppKitWindowHandle, HandleError, HasWindowHandle, RawWindowHandle, WindowHandle,
 };
@@ -225,6 +227,82 @@ fn main() {
     println!("native_smoke: bridge message={first}");
     if first != "ping:prelude-ok" {
         fail("bridge message or document-start script did not match");
+    }
+
+    // A panel in front covers the top 40 points: that strip must neither paint nor hit.
+    let mut covered = placement.clone();
+    let c = covered.container;
+    covered.visible = vec![Rect::new(
+        c.origin.x,
+        c.origin.y + 40.0,
+        c.size.width,
+        c.size.height - 40.0,
+    )];
+    child.apply(&covered, HEIGHT, scale);
+    let layer = clip
+        .layer()
+        .unwrap_or_else(|| fail("clip view has no layer"));
+    // The mask is one shape layer with one path and no sublayers: per-piece layers left a
+    // hairline where two pieces meet.
+    let mask = layer.mask();
+    // SAFETY: plain property read on the main thread.
+    let mask_sublayers = mask
+        .as_ref()
+        .and_then(|mask| unsafe { mask.sublayers() })
+        .map_or(0, |sublayers| sublayers.count());
+    let path = mask
+        .and_then(|mask| mask.downcast::<CAShapeLayer>().ok())
+        .and_then(|shape| shape.path());
+    let mask_pieces = path.as_ref().map(|_| 1 + mask_sublayers);
+    let piece_frame = path.map(|path| CGPath::bounding_box(Some(&path)));
+    // The strip is the clip's top 40 points: off the far end of y in an unflipped layer.
+    let flipped = layer.isGeometryFlipped();
+    let expected_piece = if flipped {
+        NSRect::new(
+            NSPoint::new(0.0, 40.0),
+            NSSize::new(frame.size.width, frame.size.height - 40.0),
+        )
+    } else {
+        NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(frame.size.width, frame.size.height - 40.0),
+        )
+    };
+    println!(
+        "native_smoke: occlusion layer_flipped={flipped} piece={:?}",
+        piece_frame.map(fmt_rect)
+    );
+    if piece_frame != Some(expected_piece) {
+        fail("mask piece is not the uncovered part of the clip view");
+    }
+    let hits = |y: f64| {
+        content_view
+            .hitTest(NSPoint::new(frame.origin.x + 100.0, y))
+            .is_some_and(|hit| hit.isDescendantOf(&clip))
+    };
+    let top = frame.origin.y + frame.size.height;
+    let (covered_hit, visible_hit) = (hits(top - 20.0), hits(top - 60.0));
+    println!(
+        "native_smoke: occlusion mask_pieces={mask_pieces:?} covered_hit={covered_hit} \
+         visible_hit={visible_hit}"
+    );
+    if mask_pieces != Some(1) || covered_hit || !visible_hit {
+        fail("covered strip is not masked out of paint and hit testing");
+    }
+    covered.visible.clear();
+    child.apply(&covered, HEIGHT, scale);
+    let hidden = clip.isHidden();
+    child.set_visible(true);
+    let stays_hidden = clip.isHidden();
+    child.apply(&placement, HEIGHT, scale);
+    let unmasked = clip.layer().is_some_and(|layer| layer.mask().is_none());
+    println!(
+        "native_smoke: occlusion full_cover_hidden={hidden} stays_hidden={stays_hidden} \
+         unmasked_after={unmasked} shown_after={}",
+        !clip.isHidden()
+    );
+    if !hidden || !stays_hidden || !unmasked || clip.isHidden() {
+        fail("full cover does not hide, or uncovering does not restore the view");
     }
 
     // Built and read back, never popped up: popping up would block on user input.

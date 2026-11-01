@@ -15,9 +15,10 @@ use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
     Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool, ZoomStep,
 };
-use calm_core::join::{Axis, JoinLayout, JoinedEdges, Side};
+use calm_core::join::{Axis, Join, JoinLayout, JoinedEdges, Side};
 use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
 use calm_core::menu::{self, MenuCommand, MenuItem};
+use calm_core::occlusion::native_visible_region;
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
@@ -84,7 +85,7 @@ const TITLE_FONT_SIZE: f64 = 12.0;
 /// Below this the title is unreadable, so it is skipped.
 const MIN_TITLE_FONT_PX: f64 = 6.0;
 /// Width of the ring around a panel, in screen pixels at any zoom.
-const BORDER_PX: f64 = 1.0;
+const BORDER_PX: f64 = calm_core::chrome::RING_PX;
 /// Width of the `preview stale` label in the chrome strip, in world units.
 const STALE_LABEL_WIDTH: f64 = 96.0;
 const STALE_LABEL: &str = "preview stale";
@@ -1439,7 +1440,7 @@ impl CanvasView {
     ) {
         for (id, mode, placement) in modes {
             if let Some((_, plugin)) = self.plugin_panels.iter_mut().find(|(p, _)| p == id) {
-                plugin.apply_mode(*mode, *placement, window);
+                plugin.apply_mode(*mode, placement.clone(), window);
             }
         }
     }
@@ -1806,6 +1807,7 @@ impl CanvasView {
         modal_open: bool,
         window: &Window,
     ) -> Vec<(PanelId, TerminalContent)> {
+        let joins = JoinLayout::compute(&self.scene.panels).joins;
         let mut contents = Vec::new();
         for (id, browser) in &mut self.browsers {
             let Some(panel) = self.scene.get(*id) else {
@@ -1818,7 +1820,7 @@ impl CanvasView {
                 modal_open,
                 self.settings.settings.panels.preview_below_zoom,
             );
-            let placement = terminal_placement(panel, &self.scene, viewport);
+            let placement = terminal_placement(panel, &self.scene, &joins, viewport);
             browser.apply_mode(mode, placement, window);
             match browser.mode() {
                 PanelMode::Live => contents.push((*id, TerminalContent::Live)),
@@ -2192,8 +2194,15 @@ fn terminal_mode(
 }
 
 /// A panel's native placement in window points, or `None` when minimized or off screen.
-/// `viewport` is the canvas area in window points.
-fn terminal_placement(panel: &Panel, scene: &Scene, viewport: Rect) -> Option<NativePlacement> {
+/// `viewport` is the canvas area in window points. `visible` leaves out every panel in
+/// front and every join divider painted above it, since native views draw over all GPUI
+/// chrome.
+fn terminal_placement(
+    panel: &Panel,
+    scene: &Scene,
+    joins: &[Join],
+    viewport: Rect,
+) -> Option<NativePlacement> {
     if panel.minimized {
         return None;
     }
@@ -2201,6 +2210,8 @@ fn terminal_placement(panel: &Panel, scene: &Scene, viewport: Rect) -> Option<Na
     let mut placement = place_native(content_rect(panel), &scene.camera, local)?;
     placement.container.origin.x += viewport.origin.x;
     placement.container.origin.y += viewport.origin.y;
+    placement.visible =
+        native_visible_region(scene, joins, panel.id, placement.container, viewport.origin);
     Some(placement)
 }
 
@@ -2360,7 +2371,7 @@ impl PaintSnapshot {
                 (
                     panel.id,
                     mode,
-                    terminal_placement(panel, &self.scene, viewport),
+                    terminal_placement(panel, &self.scene, &self.joins.joins, viewport),
                 )
             })
             .collect()
@@ -2387,7 +2398,7 @@ impl PaintSnapshot {
                 self.modal_open,
                 self.settings.panels.preview_below_zoom,
             );
-            let placement = terminal_placement(panel, &self.scene, viewport);
+            let placement = terminal_placement(panel, &self.scene, &self.joins.joins, viewport);
             let content = terminal.update(cx, |terminal, _| {
                 changed |= terminal.mode() != mode;
                 terminal.apply_mode(mode, placement, window);
@@ -2970,7 +2981,9 @@ impl Render for CanvasView {
                             snapshot.settings.panels.preview_below_zoom,
                         ) == PanelMode::Live
                     })
-                    .and_then(|panel| terminal_placement(panel, &self.scene, viewport))
+                    .and_then(|panel| {
+                        terminal_placement(panel, &self.scene, &snapshot.joins.joins, viewport)
+                    })
             })
             .collect();
         snapshot.input_targets = self

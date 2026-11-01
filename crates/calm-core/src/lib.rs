@@ -12,6 +12,7 @@ pub mod interaction;
 pub mod join;
 pub mod layout;
 pub mod menu;
+pub mod occlusion;
 pub mod plugin_menu;
 pub mod preview;
 pub mod process_stats;

@@ -625,3 +625,31 @@ These shipped with #41, next to "Restore at launch" above.
   label adds validation and docs for little gain. Cost: a user cannot rename them. If that
   is wanted, add one `menus.labels` settings block for all built-in menu labels rather than
   one setting per label.
+
+## Native occlusion (2026-11-01, `fix/native-occlusion`)
+
+- **Native views are masked by the panels above them.** Native views are subviews of the
+  GPUI host, so they draw over all GPUI paint, and a back panel's content covered a front
+  panel's title bar. Each placement now carries the visible pieces of its container
+  (`calm_core::occlusion`, the container minus each higher panel's rect or chip plus the
+  1 px ring, shadows ignored). The clip view gets a mask of those pieces, one
+  `CAShapeLayer` path (one layer per piece left a hairline where two pieces meet), with
+  implicit animations off, and a `hitTest:` override so masked areas take no clicks. No
+  mask when nothing covers it; hidden when everything does. Rejected: drawing chrome as
+  native views (a second chrome implementation and a native view per panel), and hiding
+  overlapped panels (a partly covered terminal would vanish). Cost if wrong: a mask layer
+  per overlapped panel per paint while it moves.
+- **A join divider is an occluder.** Paint fills the whole gap of a join right after the
+  later of its two panels, and the 1 px rings do not close a gap wider than 2 px on screen
+  (a 1 unit gap at zoom 4 left a 2 px strip of a rear native view over the divider). So the
+  screen rect of `join.divider` occludes every panel behind either joined panel. A panel's
+  own dividers lie outside its content, so they never cut into it. The thin title bar seam
+  of a near-zero gap is not added: it sits inside the two panels' own occluders.
+- **Rounded corners stay a known limitation.** Occluders are rectangles, so at a front
+  panel's rounded corner a rear native view is cut square, so the small notch outside the
+  rounding shows the GPUI paint under the rear view instead of its content. Exact cutouts would need a curved mask path per corner.
+- **Pointer input follows the mask.** A partly covered terminal takes a press only on its
+  visible part. Motion and the release follow a press it took, so a drag that starts inside
+  keeps tracking over the panel in front, and Ghostty never gets a release without its
+  press (`calm_core::occlusion::PointerGate`). A move event with no button held drops any
+  remembered press, since GPUI only sends a release to hovered views.
