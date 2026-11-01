@@ -10,7 +10,9 @@ use crate::background::{
 use crate::browser_url::BrowserQueryMode;
 use crate::chrome::parse_hex_color;
 use crate::grid::GridKind;
+use crate::interaction::MoveModifier;
 use crate::process_stats::{INTERVAL_MS_RANGE, MemoryUnit, clamp_interval_ms};
+use crate::scene::PanelId;
 use crate::settings::{
     GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
     RestoreOnLaunch, SESSION_BACKUP_COUNT_RANGE, SESSION_DEBOUNCE_MS_RANGE, SNAP_EDGE_RANGE,
@@ -36,6 +38,21 @@ pub enum Control {
     Button(String),
     /// Read-only text.
     Note(String),
+    /// One line of editable text. An empty `value` shows `placeholder`.
+    Text {
+        value: String,
+        placeholder: String,
+    },
+}
+
+/// Whether a field follows a lower layer. The global form uses `Plain` only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldState {
+    Plain,
+    /// Shows the value the panel inherits.
+    Inherited,
+    /// The panel sets its own value.
+    Set,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -43,6 +60,7 @@ pub struct Field {
     pub id: String,
     pub label: String,
     pub control: Control,
+    pub state: FieldState,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,13 +70,16 @@ pub struct Section {
 }
 
 /// What a control reports when the user changes it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum FieldValue {
     Bool(bool),
     Number(f64),
     Color(Rgb),
     Index(usize),
     Pressed,
+    Text(String),
+    /// Back to the inherited value.
+    Reset,
 }
 
 /// State shown in the form that does not live in `Settings`.
@@ -76,6 +97,8 @@ pub struct FormContext {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FormCommand {
     ChooseImage,
+    /// Pick an icon image for this panel.
+    ChoosePanelIcon(PanelId),
     SetShowStats(bool),
     OpenConfigFolder,
 }
@@ -89,7 +112,7 @@ pub enum FormOutcome {
     Command(FormCommand),
 }
 
-fn checkbox(id: &str, label: &str, value: bool) -> Field {
+pub(crate) fn checkbox(id: &str, label: &str, value: bool) -> Field {
     field(id, label, Control::Checkbox(value))
 }
 
@@ -106,31 +129,32 @@ fn slider(id: &str, label: &str, value: f64, range: RangeInclusive<f64>, decimal
     )
 }
 
-fn color(id: &str, label: &str, value: Rgb) -> Field {
+pub(crate) fn color(id: &str, label: &str, value: Rgb) -> Field {
     field(id, label, Control::Color(value))
 }
 
-fn choice(id: &str, label: &str, options: Vec<String>, selected: usize) -> Field {
+pub(crate) fn choice(id: &str, label: &str, options: Vec<String>, selected: usize) -> Field {
     field(id, label, Control::Choice { options, selected })
 }
 
-fn button(id: &str, label: &str, title: &str) -> Field {
+pub(crate) fn button(id: &str, label: &str, title: &str) -> Field {
     field(id, label, Control::Button(title.to_string()))
 }
 
-fn note(id: &str, label: &str, text: String) -> Field {
+pub(crate) fn note(id: &str, label: &str, text: String) -> Field {
     field(id, label, Control::Note(text))
 }
 
-fn field(id: &str, label: &str, control: Control) -> Field {
+pub(crate) fn field(id: &str, label: &str, control: Control) -> Field {
     Field {
         id: id.to_string(),
         label: label.to_string(),
         control,
+        state: FieldState::Plain,
     }
 }
 
-fn section(title: &str, fields: Vec<Field>) -> Section {
+pub(crate) fn section(title: &str, fields: Vec<Field>) -> Section {
     Section {
         title: title.to_string(),
         fields,
@@ -210,6 +234,18 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                 "canvas.click_empty_clears_focus",
                 "Click on empty canvas clears focus",
                 settings.canvas.click_empty_clears_focus,
+            ),
+            choice(
+                "canvas.move_modifier",
+                "Move panel by dragging content with",
+                MoveModifier::ALL
+                    .iter()
+                    .map(|value| value.label().to_string())
+                    .collect(),
+                MoveModifier::ALL
+                    .iter()
+                    .position(|value| *value == settings.canvas.move_modifier)
+                    .unwrap_or(0),
             ),
             checkbox("snap.enabled", "Snap panels", snap.enabled),
             choice("snap.grid", "Snap grid", steps, selected),
@@ -506,7 +542,7 @@ pub fn apply_field(
         if index >= stops.len() {
             return Err(format!("settings field {id:?}: no stop {index}"));
         }
-        return match (part, value) {
+        return match (part, value.clone()) {
             ("color", FieldValue::Color(color)) => {
                 stops[index].color = color;
                 changed
@@ -527,7 +563,7 @@ pub fn apply_field(
         };
     }
 
-    match (id, value) {
+    match (id, value.clone()) {
         ("background.kind", FieldValue::Index(index)) => {
             background.kind = *BackgroundKind::ALL
                 .get(index)
@@ -632,6 +668,11 @@ pub fn apply_field(
         }
         ("canvas.click_empty_clears_focus", FieldValue::Bool(on)) => {
             settings.canvas.click_empty_clears_focus = on;
+            changed
+        }
+        ("canvas.move_modifier", FieldValue::Index(index)) => {
+            settings.canvas.move_modifier =
+                *MoveModifier::ALL.get(index).ok_or("bad move modifier")?;
             changed
         }
         ("panels.confirm_close", FieldValue::Bool(on)) => {
@@ -741,6 +782,7 @@ pub fn apply_field(
             | "grid.major_every"
             | "grid.major_opacity"
             | "canvas.click_empty_clears_focus"
+            | "canvas.move_modifier"
             | "snap.enabled"
             | "snap.grid"
             | "snap.edge"
@@ -783,9 +825,9 @@ fn interval_range() -> RangeInclusive<f64> {
 
 /// Chrome colors a "Custom title bar colors" switch starts from: the brand cyan accent on
 /// the theme's dark bar and light title.
-const CHROME_SEED: [&str; 3] = ["#48f5e7", "#1e1e1e", "#e8e8e8"];
+pub(crate) const CHROME_SEED: [&str; 3] = ["#48f5e7", "#1e1e1e", "#e8e8e8"];
 
-fn rgb_of(text: Option<&str>) -> Rgb {
+pub(crate) fn rgb_of(text: Option<&str>) -> Rgb {
     Rgb(text.and_then(parse_hex_color).map_or(0, |rgba| rgba >> 8))
 }
 
@@ -926,7 +968,7 @@ fn apply_terminal_field(
             .ok()
             .filter(|index| *index < 16)
             .ok_or_else(|| format!("unknown settings field \"terminal.{id}\""))?;
-        return match (value, current) {
+        return match (value.clone(), current) {
             (FieldValue::Color(rgb), Some(mut colors)) => {
                 colors.palette[index] = rgb.0;
                 set_colors(colors);
@@ -935,7 +977,7 @@ fn apply_terminal_field(
             _ => Err(format!("settings field \"terminal.{id}\" got {value:?}")),
         };
     }
-    match (id, value) {
+    match (id, value.clone()) {
         ("custom_chrome", FieldValue::Bool(on)) => {
             let seed = |text: &str| on.then(|| text.to_string());
             defaults.accent_color = seed(CHROME_SEED[0]);
@@ -1101,7 +1143,7 @@ mod tests {
             Control::Color(_) => Some(FieldValue::Color(Rgb(0x123456))),
             Control::Choice { options, .. } => Some(FieldValue::Index(options.len() - 1)),
             Control::Button(_) => Some(FieldValue::Pressed),
-            Control::Note(_) => None,
+            Control::Note(_) | Control::Text { .. } => None,
         }
     }
 
@@ -1276,6 +1318,38 @@ mod tests {
         apply_field(&mut settings, "image.blur", FieldValue::Number(f64::NAN)).unwrap();
         assert_eq!(settings.background.image.filters.blur, 0.0);
         assert_eq!(settings.validate(), Ok(()));
+    }
+
+    #[test]
+    fn move_modifier_choice_shows_option_labels_and_applies_strictly() {
+        let mut settings = Settings::default();
+        let sections = settings_form(&settings, &FormContext::default());
+        let field = sections
+            .iter()
+            .flat_map(|s| s.fields.iter())
+            .find(|f| f.id == "canvas.move_modifier")
+            .unwrap();
+        let Control::Choice { options, selected } = &field.control else {
+            panic!("expected a choice, got {:?}", field.control);
+        };
+        assert_eq!(
+            options,
+            &[
+                "Cmd",
+                "Ctrl",
+                "Option",
+                "Cmd+Ctrl",
+                "Cmd+Option",
+                "Ctrl+Option"
+            ]
+        );
+        assert_eq!(*selected, 0);
+        let id = "canvas.move_modifier";
+        apply_field(&mut settings, id, FieldValue::Index(5)).unwrap();
+        assert_eq!(settings.canvas.move_modifier, MoveModifier::CtrlAlt);
+        assert!(apply_field(&mut settings, id, FieldValue::Index(6)).is_err());
+        assert!(apply_field(&mut settings, id, FieldValue::Bool(true)).is_err());
+        assert_eq!(settings.canvas.move_modifier, MoveModifier::CtrlAlt);
     }
 
     #[test]

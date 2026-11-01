@@ -6,9 +6,9 @@ use calm_core::autosave::{
 };
 use calm_core::camera::FIT_MARGIN;
 use calm_core::chrome::{
-    CORNER_RADIUS, ChromeButton, ChromeOverrides, ChromePalette, ChromeState, PanelIcon,
-    TITLE_BAR_HEIGHT, button_dot, button_strokes, chrome_colors, details_visible, divider_color,
-    hover_target, icon_strokes, icon_tint, title_bar_layout,
+    BUILTIN_ICON_PREFIX, CORNER_RADIUS, ChromeButton, ChromeOverrides, ChromePalette, ChromeState,
+    PanelIcon, TITLE_BAR_HEIGHT, button_dot, button_strokes, chrome_colors, details_visible,
+    divider_color, hover_target, icon_strokes, icon_tint, lay_overrides, title_bar_layout,
 };
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
@@ -23,11 +23,14 @@ use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_m
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
 use calm_core::restore::{
-    AutosaveStart, CWD_MISSING_NOTE, RestorePlan, placeholder_reason, restored_cwd, version_note,
+    AutosaveStart, CWD_MISSING_NOTE, RestorePlan, placeholder_reason, restored_cwd,
+    restored_profile, version_note,
 };
-use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
+use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, chrome_height, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
-use calm_core::terminal_profile::{ResolvedTerminal, TerminalIcon, display_cwd, render_title};
+use calm_core::terminal_profile::{
+    ResolvedTerminal, TerminalIcon, display_cwd, is_image_icon, render_title,
+};
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{
     BrowserEvent, HostView, NativeChild, ProcessSample, ProcessSampler, StatusBar,
@@ -45,13 +48,14 @@ use gpui::{
 
 use calm_plugins::{BridgeRequest, InstalledPlugin, PluginContent};
 use futures::StreamExt as _;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::background::{self, BackgroundRenderer, BackgroundTexture};
 use crate::browser_panel::{BrowserEvents, BrowserPanel};
+use crate::content_move::ContentMove;
 use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::grid_paint::{self, GridFrame, GridTextures};
 use crate::plugin_host::{self, BridgeSender, PluginPanel, Route};
@@ -204,6 +208,10 @@ pub struct CanvasView {
     pub settings: SettingsState,
     /// Created on first `cmd-,`, then hidden and shown.
     pub settings_window: Option<calm_native::SettingsWindow>,
+    /// At most one Settings window per panel, closed with the panel.
+    pub panel_settings_windows: HashMap<PanelId, calm_native::SettingsWindow>,
+    /// Closed panels a late Settings change was already logged for.
+    pub gone_panel_changes: HashSet<PanelId>,
     pub background: BackgroundRenderer,
     pub grid: GridTextures,
     /// Native bar floating over the bottom of the canvas. Created on the first paint.
@@ -233,6 +241,11 @@ pub struct CanvasView {
     restore_notice: Option<String>,
     /// The named layout this canvas came from, kept for a later save.
     pub layout_name: Option<String>,
+    /// Watches move-modifier presses on native panels. Installed on the first paint.
+    pub(crate) content_monitor: Option<calm_native::ContentGestureMonitor>,
+    /// Set when the monitor could not be installed, so paint stops retrying.
+    pub(crate) content_monitor_error: Option<String>,
+    pub(crate) content_move: ContentMove,
 }
 
 impl CanvasView {
@@ -301,6 +314,8 @@ impl CanvasView {
                 notice: None,
             },
             settings_window: None,
+            panel_settings_windows: HashMap::new(),
+            gone_panel_changes: HashSet::new(),
             background: BackgroundRenderer::default(),
             grid: GridTextures::default(),
             status_bar: None,
@@ -316,6 +331,9 @@ impl CanvasView {
             title_notes: HashMap::new(),
             restore_notice: None,
             layout_name: None,
+            content_monitor: None,
+            content_monitor_error: None,
+            content_move: ContentMove::default(),
         }
     }
 
@@ -374,13 +392,15 @@ impl CanvasView {
     ) -> Vec<String> {
         let mut notices = Vec::new();
         for saved in layout.panels {
-            let id = self.scene.add(saved.kind.clone(), saved.rect);
+            let id = self
+                .scene
+                .add_with_overrides(saved.kind.clone(), saved.rect, saved.overrides);
             let saved_title = saved.title.clone();
             if let Some(panel) = self.scene.get_mut(id) {
                 panel.title = saved.title;
                 panel.minimized = saved.minimized;
-                panel.overrides = saved.overrides;
             }
+            self.cache_override_icon(id);
             let reason = placeholder_reason(
                 &saved.kind,
                 |plugin_id| self.plugin_installed(plugin_id, false),
@@ -392,7 +412,16 @@ impl CanvasView {
                 continue;
             }
             match &saved.kind {
-                PanelKind::Terminal { command, cwd } => {
+                PanelKind::Terminal {
+                    command,
+                    cwd,
+                    profile,
+                } => {
+                    // An unknown id opens with the defaults; the saved kind keeps it.
+                    let (profile, notice) = restored_profile(profile.as_deref(), |profile| {
+                        self.settings.settings.terminal.profile(profile).is_some()
+                    });
+                    notices.extend(notice);
                     let home = terminal_profiles::home_dir();
                     let (cwd, notice) =
                         restored_cwd(cwd.as_deref(), std::path::Path::is_dir, &home);
@@ -401,7 +430,7 @@ impl CanvasView {
                     }
                     notices.extend(notice);
                     let opened =
-                        self.open_plain_terminal(id, None, command.as_deref(), cwd, window, cx);
+                        self.open_plain_terminal(id, profile, command.as_deref(), cwd, window, cx);
                     if let Err(err) = opened {
                         notices.push(format!("a restored terminal failed to start: {err}"));
                     }
@@ -675,6 +704,7 @@ impl CanvasView {
         self.input.snap = self.settings.settings.snap.config();
         self.input.click_empty_clears_focus =
             self.settings.settings.canvas.click_empty_clears_focus;
+        self.input.move_modifier = self.settings.settings.canvas.move_modifier;
     }
 
     pub fn set_show_stats(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -778,6 +808,7 @@ impl CanvasView {
                     self.placeholders.remove(&id);
                     self.title_notes.remove(&id);
                     self.scene.remove(id);
+                    self.close_panel_settings(id);
                     if self.focused == Some(id) {
                         self.focused = None;
                     }
@@ -869,6 +900,10 @@ impl CanvasView {
                 window.dispatch_action(Box::new(crate::settings_menu::OpenSettings), cx);
                 return;
             }
+            (Some(MenuCommand::PanelSettings), MenuTarget::Panel(id)) => {
+                self.open_panel_settings(id, window, cx);
+                return;
+            }
             (Some(MenuCommand::Restart), MenuTarget::Panel(id)) => {
                 self.restart_tui(id, true, window, cx);
                 vec![Effect::Redraw]
@@ -900,13 +935,11 @@ impl CanvasView {
             (Some(MenuCommand::Duplicate), MenuTarget::Panel(id)) => {
                 let installed =
                     |plugin_id: &str| installed_version(&self.installed_plugins, plugin_id);
+                // The kind carries a terminal's profile; the scene copies the overrides.
                 let Some(copy) = self.scene.duplicate(id, installed) else {
                     return;
                 };
-                if let Some(profile) = self.terminal_meta(id).and_then(|meta| meta.profile.clone())
-                {
-                    self.requested_profiles.insert(copy, profile);
-                }
+                self.cache_override_icon(copy);
                 let Some(panel) = self.scene.get(copy) else {
                     return;
                 };
@@ -931,8 +964,21 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) {
         match kind {
-            PanelKind::Terminal { command, cwd } => {
-                let profile = self.requested_profiles.remove(&id);
+            PanelKind::Terminal {
+                command,
+                cwd,
+                profile: saved,
+            } => {
+                let profile = self
+                    .requested_profiles
+                    .remove(&id)
+                    .or_else(|| saved.clone());
+                // Saved with the panel, so a restore and a duplicate open the same profile.
+                if let Some(PanelKind::Terminal { profile: kept, .. }) =
+                    self.scene.get_mut(id).map(|panel| &mut panel.kind)
+                {
+                    kept.clone_from(&profile);
+                }
                 let opened = self.open_plain_terminal(
                     id,
                     profile,
@@ -987,7 +1033,7 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let resolved = self.resolve_terminal(profile.as_deref());
+        let resolved = self.resolve_terminal(id, profile.as_deref());
         if let Some(asked) = &profile
             && resolved.profile.as_ref() != Some(asked)
         {
@@ -1025,14 +1071,21 @@ impl CanvasView {
             .map(|(_, meta)| meta)
     }
 
-    fn resolve_terminal(&self, profile: Option<&str>) -> ResolvedTerminal {
+    /// The panel's profile over the defaults, with its overrides on top.
+    fn resolve_terminal(&self, id: PanelId, profile: Option<&str>) -> ResolvedTerminal {
         let settings = &self.settings.settings;
-        settings
-            .terminal
-            .resolve(profile, settings.panels.terminal_user_config)
+        let user_config = settings.panels.terminal_user_config;
+        match self.scene.get(id) {
+            Some(panel) => {
+                settings
+                    .terminal
+                    .resolve_for_panel(profile, user_config, &panel.overrides)
+            }
+            None => settings.terminal.resolve(profile, user_config),
+        }
     }
 
-    fn settings_dir(&self) -> std::path::PathBuf {
+    pub(crate) fn settings_dir(&self) -> std::path::PathBuf {
         self.settings
             .path
             .parent()
@@ -1046,7 +1099,12 @@ impl CanvasView {
             return;
         };
         let cwd = display_cwd(&meta.cwd, &terminal_profiles::home_dir());
-        let title = render_title(&resolved.title_template, meta.index, &cwd);
+        // An override title is shown as typed, `{n}` and all.
+        let title = if resolved.title_is_literal {
+            resolved.title_template.clone()
+        } else {
+            render_title(&resolved.title_template, meta.index, &cwd)
+        };
         self.scene.set_title(id, title);
         if let Some(TerminalIcon::Image(relative)) = &resolved.icon {
             let dir = self.settings_dir();
@@ -1065,28 +1123,72 @@ impl CanvasView {
     pub fn terminal_settings_changed(&mut self, cx: &mut Context<Self>) {
         let ids: Vec<PanelId> = self.terminal_meta.iter().map(|(id, _)| *id).collect();
         for id in ids {
-            let Some(meta) = self.terminal_meta(id) else {
-                continue;
-            };
-            let applied = meta.applied_colors;
-            let resolved = self.resolve_terminal(meta.profile.clone().as_deref());
-            self.refresh_terminal_chrome(id, &resolved);
-            let Some(colors) = resolved.colors.filter(|colors| Some(*colors) != applied) else {
-                continue;
-            };
-            let Some(terminal) = self.terminal(id) else {
-                continue;
-            };
-            let theme = terminal_profiles::theme(&colors);
-            match terminal.update(cx, |terminal, _| terminal.apply_theme(&theme)) {
-                Ok(()) => {
-                    if let Some((_, meta)) = self.terminal_meta.iter_mut().find(|(p, _)| *p == id) {
-                        meta.applied_colors = Some(colors);
-                    }
-                }
-                Err(err) => eprintln!("calm: terminal recolor failed: {err}"),
-            }
+            self.refresh_terminal(id, cx);
         }
+    }
+
+    /// Re-resolves one plain terminal: title, chrome, and a live recolor when the palette
+    /// changed. The process keeps running.
+    fn refresh_terminal(&mut self, id: PanelId, cx: &mut Context<Self>) {
+        let Some(meta) = self.terminal_meta(id) else {
+            return;
+        };
+        let applied = meta.applied_colors;
+        let resolved = self.resolve_terminal(id, meta.profile.clone().as_deref());
+        self.refresh_terminal_chrome(id, &resolved);
+        let Some(colors) = resolved.colors.filter(|colors| Some(*colors) != applied) else {
+            return;
+        };
+        let Some(terminal) = self.terminal(id) else {
+            return;
+        };
+        let theme = terminal_profiles::theme(&colors);
+        match terminal.update(cx, |terminal, _| terminal.apply_theme(&theme)) {
+            Ok(()) => {
+                if let Some((_, meta)) = self.terminal_meta.iter_mut().find(|(p, _)| *p == id) {
+                    meta.applied_colors = Some(colors);
+                }
+            }
+            Err(err) => eprintln!("calm: terminal recolor failed: {err}"),
+        }
+    }
+
+    /// After a panel's overrides changed: its look follows at once, and a terminal is
+    /// recolored live. Nothing is restarted.
+    pub fn apply_panel_overrides(&mut self, id: PanelId, cx: &mut Context<Self>) {
+        self.cache_override_icon(id);
+        self.refresh_terminal(id, cx);
+        cx.notify();
+    }
+
+    /// Decodes an override image icon once, like a terminal profile icon.
+    fn cache_override_icon(&mut self, id: PanelId) {
+        let Some(relative) = self
+            .scene
+            .get(id)
+            .and_then(|panel| panel.overrides.icon.clone())
+            .filter(|icon| is_image_icon(icon))
+        else {
+            return;
+        };
+        let dir = self.settings_dir();
+        self.tui_icons
+            .entry(dir.join(&relative))
+            .or_insert_with(|| {
+                terminal_profiles::icon_file(&dir, std::path::Path::new(&relative))
+                    .and_then(|path| crate::icon_image::load(&path))
+                    .inspect_err(|err| eprintln!("calm: {err}"))
+                    .ok()
+            });
+    }
+
+    /// A decoded icon under the settings folder, if it loaded.
+    fn settings_icon(&self, relative: &std::path::Path) -> Option<IconLook> {
+        self.tui_icons
+            .get(&self.settings_dir().join(relative))
+            .cloned()
+            .flatten()
+            .map(IconLook::Image)
     }
 
     /// Starts a TUI plugin's command in a terminal for a panel already in the scene.
@@ -1233,41 +1335,48 @@ impl CanvasView {
     }
 
     /// The chrome look paint uses for a panel. Read by the smoke.
+    /// The panel's overrides win over its profile, manifest or the theme.
     pub fn panel_look(&self, id: PanelId) -> PanelLook {
         if let Some(meta) = self.terminal_meta(id) {
-            let resolved = self.resolve_terminal(meta.profile.as_deref());
+            let resolved = self.resolve_terminal(id, meta.profile.as_deref());
             let icon = match resolved.icon {
-                Some(TerminalIcon::Text(text)) => Some(IconLook::Text(text)),
-                Some(TerminalIcon::Image(relative)) => self
-                    .tui_icons
-                    .get(&self.settings_dir().join(relative))
-                    .cloned()
-                    .flatten()
-                    .map(IconLook::Image),
+                Some(TerminalIcon::Text(text)) => text_icon(text),
+                Some(TerminalIcon::Image(relative)) => self.settings_icon(&relative),
                 None => None,
             };
             return PanelLook {
                 overrides: resolved.overrides,
                 icon,
+                title: resolved.title_is_literal.then_some(resolved.title_template),
             };
         }
-        let Some(run) = self.tui_run(id) else {
-            return PanelLook::default();
+        let overrides = self
+            .scene
+            .get(id)
+            .map(|panel| panel.overrides.clone())
+            .unwrap_or_default();
+        let (base, own_icon) = match self.tui_run(id) {
+            Some(run) => {
+                let icon = match (run.glyph(), run.icon_path()) {
+                    (Some(text), _) => Some(IconLook::Text(text.to_string())),
+                    (None, Some(path)) => self
+                        .tui_icons
+                        .get(&path)
+                        .cloned()
+                        .flatten()
+                        .map(IconLook::Image),
+                    (None, None) => None,
+                };
+                (run.chrome_overrides(), icon)
+            }
+            None => (ChromeOverrides::default(), None),
         };
-        let icon = match (run.glyph(), run.icon_path()) {
-            (Some(text), _) => Some(IconLook::Text(text.to_string())),
-            (None, Some(path)) => self
-                .tui_icons
-                .get(&path)
-                .cloned()
-                .flatten()
-                .map(IconLook::Image),
-            (None, None) => None,
-        };
-        PanelLook {
-            overrides: run.chrome_overrides(),
-            icon,
-        }
+        override_look(overrides, base, own_icon, |path| self.settings_icon(path))
+    }
+
+    /// The looks the paint snapshot carries. Read by the smoke so it checks what paint sees.
+    pub fn paint_looks(&self) -> HashMap<PanelId, PanelLook> {
+        snapshot_looks(&self.scene, |id| self.panel_look(id))
     }
 
     /// Per TUI panel in creation order: chrome title, state, Restart offered, launches.
@@ -2109,12 +2218,57 @@ pub(crate) enum MenuTarget {
 pub struct PanelLook {
     pub overrides: ChromeOverrides,
     pub icon: Option<IconLook>,
+    /// An override title, shown as typed instead of the panel's own title.
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub enum IconLook {
     Text(String),
     Image(Arc<RenderImage>),
+    /// Drawn stroked, like the kind icons.
+    Builtin(PanelIcon),
+}
+
+/// A text icon, or the built-in icon `builtin:<name>` names. An unknown built-in name draws
+/// the kind icon rather than the literal text.
+/// A panel's overrides laid over its base look and own icon.
+fn override_look(
+    overrides: calm_core::scene::PanelOverrides,
+    base: ChromeOverrides,
+    own_icon: Option<IconLook>,
+    image_icon: impl Fn(&std::path::Path) -> Option<IconLook>,
+) -> PanelLook {
+    let icon = match overrides.icon.as_deref() {
+        Some(icon) if is_image_icon(icon) => image_icon(std::path::Path::new(icon)),
+        Some(icon) => text_icon(icon.to_string()),
+        None => own_icon,
+    };
+    PanelLook {
+        overrides: lay_overrides(base, &overrides),
+        icon,
+        title: overrides.title,
+    }
+}
+
+/// The looks paint reads: one entry for every panel in the scene, whatever its kind.
+fn snapshot_looks(
+    scene: &Scene,
+    look: impl Fn(PanelId) -> PanelLook,
+) -> HashMap<PanelId, PanelLook> {
+    scene
+        .panels
+        .iter()
+        .map(|panel| (panel.id, look(panel.id)))
+        .collect()
+}
+
+fn text_icon(text: String) -> Option<IconLook> {
+    if text.starts_with(BUILTIN_ICON_PREFIX) {
+        PanelIcon::from_override(&text).map(IconLook::Builtin)
+    } else {
+        Some(IconLook::Text(text))
+    }
 }
 
 /// A theme 0xRRGGBB color as 0xRRGGBBAA.
@@ -2146,7 +2300,7 @@ struct PaintSnapshot {
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Panels with a plugin web view.
     plugin_ids: Vec<PanelId>,
-    /// Panels with custom chrome colors or icon. Others use the theme.
+    /// Resolved chrome look of every panel.
     looks: HashMap<PanelId, PanelLook>,
     /// Close confirmation or context menu up: native views must not cover it.
     modal_open: bool,
@@ -2330,6 +2484,7 @@ impl PaintSnapshot {
             view.apply_plugin_modes(&plugin_modes, window);
             view.sync_native_order(cx);
             view.sync_status_bar(window);
+            view.ensure_content_monitor(window, cx);
             view.sync_preview_timer(previewing, cx);
             view.preview_input_targets += preview_targets;
             // Render picks input targets from the mode; rebuild them if paint disagreed.
@@ -2558,6 +2713,11 @@ impl PaintSnapshot {
         };
         let layout = title_bar_layout(panel);
         let look = self.looks.get(&panel.id);
+        // A borderless panel has no bar; its minimized chip still draws.
+        let bar_shown = panel.minimized || chrome_height(panel) > 0.0;
+        let own_title = look
+            .and_then(|look| look.title.as_deref())
+            .unwrap_or(&panel.title);
         let overrides = self.overrides(panel.id);
         let colors = chrome_colors(
             ChromeState::of(focused, confirming),
@@ -2611,7 +2771,9 @@ impl PaintSnapshot {
                 content_screen.size.width,
                 BORDER_PX,
             );
-            window.paint_quad(fill(to_bounds(divider, origin), rgb(theme::PANEL_DIVIDER)));
+            if bar_shown {
+                window.paint_quad(fill(to_bounds(divider, origin), rgb(theme::PANEL_DIVIDER)));
+            }
             window.paint_quad(fill(content_bounds, rgb(theme::CONTENT_PLACEHOLDER)));
             match content {
                 Some(TerminalContent::Preview(
@@ -2639,7 +2801,7 @@ impl PaintSnapshot {
                         TITLE_BAR_HEIGHT * zoom,
                     );
                     paint_text(
-                        &panel.title,
+                        own_title,
                         line,
                         TextLook {
                             align: TextAlign::Left,
@@ -2670,7 +2832,27 @@ impl PaintSnapshot {
             }
         }
 
-        if !details_visible(zoom) {
+        if let Some(ConfirmPrompt::Strip(strip)) = confirm_prompt(panel, confirming) {
+            // While a close is confirmed the native view is a preview (`modal_open`), so
+            // this strip covers no live native rect.
+            let strip_screen = camera.world_rect_to_screen(strip);
+            window.paint_quad(fill(to_bounds(strip_screen, origin), rgba(colors.bar)));
+            if details_visible(zoom) {
+                let padding = 8.0 * zoom;
+                let line = Rect::new(
+                    strip_screen.origin.x + padding,
+                    strip_screen.origin.y,
+                    (strip_screen.size.width - 2.0 * padding).max(0.0),
+                    strip_screen.size.height,
+                );
+                let look = TextLook {
+                    align: TextAlign::Left,
+                    color: colors.title,
+                };
+                paint_text(CONFIRM_TITLE, line, look, zoom, origin, window, cx);
+            }
+        }
+        if !bar_shown || !details_visible(zoom) {
             return;
         }
         let kind_color = match PanelIcon::for_kind(&panel.kind) {
@@ -2702,8 +2884,12 @@ impl PaintSnapshot {
                 cx,
             );
         } else {
+            let icon = match look.and_then(|look| look.icon.as_ref()) {
+                Some(IconLook::Builtin(icon)) => *icon,
+                _ => PanelIcon::for_kind(&panel.kind),
+            };
             paint_strokes(
-                &icon_strokes(PanelIcon::for_kind(&panel.kind)),
+                &icon_strokes(icon),
                 icon_rect,
                 stroke,
                 icon_color,
@@ -2776,10 +2962,10 @@ impl PaintSnapshot {
         let title = match self.title_notes.get(&panel.id) {
             _ if confirming => CONFIRM_TITLE,
             Some(note) => {
-                noted = format!("{} ({note})", panel.title);
+                noted = format!("{own_title} ({note})");
                 noted.as_str()
             }
-            None => panel.title.as_str(),
+            None => own_title,
         };
         paint_text(
             title,
@@ -2794,6 +2980,31 @@ impl PaintSnapshot {
             cx,
         );
     }
+}
+
+/// Where a panel's close confirmation prompt draws.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ConfirmPrompt {
+    /// The title bar or chip shows it in place of the title.
+    InTitleBar,
+    /// A borderless panel has no bar: a strip at the top of its content, in world units.
+    Strip(Rect),
+}
+
+fn confirm_prompt(panel: &Panel, confirming: bool) -> Option<ConfirmPrompt> {
+    if !confirming {
+        return None;
+    }
+    if panel.minimized || chrome_height(panel) > 0.0 {
+        return Some(ConfirmPrompt::InTitleBar);
+    }
+    let content = content_rect(panel);
+    Some(ConfirmPrompt::Strip(Rect::new(
+        content.origin.x,
+        content.origin.y,
+        content.size.width,
+        calm_core::scene::CHROME_HEIGHT.min(content.size.height),
+    )))
 }
 
 /// What a panel's chrome outlines: the chip when minimized, else the whole panel.
@@ -2943,11 +3154,7 @@ impl Render for CanvasView {
             hover: self.hover,
             terminals: self.terminals.clone(),
             plugin_ids: self.plugin_panels.iter().map(|(id, _)| *id).collect(),
-            looks: self
-                .tui_runs
-                .iter()
-                .map(|(id, _)| (*id, self.panel_look(*id)))
-                .collect(),
+            looks: self.paint_looks(),
             modal_open: self.input.confirming.is_some() || self.menu_open,
             input_targets: Vec::new(),
             settings: self.settings.settings.clone(),
@@ -3128,4 +3335,101 @@ fn installed_version(plugins: &[InstalledPlugin], plugin_id: &str) -> Option<Str
         .iter()
         .find(|plugin| plugin.manifest.id == plugin_id)
         .map(|plugin| plugin.manifest.version.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_builtin_override_draws_the_builtin_icon_not_its_text() {
+        let icon = text_icon("builtin:browser".to_string());
+        assert!(matches!(icon, Some(IconLook::Builtin(PanelIcon::Browser))));
+        assert!(text_icon("builtin:nope".to_string()).is_none());
+        let icon = text_icon("AB".to_string());
+        assert!(matches!(icon, Some(IconLook::Text(text)) if text == "AB"));
+    }
+
+    #[test]
+    fn paint_gets_a_look_for_every_panel_kind() {
+        let mut scene = Scene::default();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let terminal = scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+            },
+            rect,
+        );
+        let browser = scene.add(
+            PanelKind::Browser {
+                url: "https://example.com".to_string(),
+                page_zoom: None,
+            },
+            rect,
+        );
+        let plugin = scene.add(
+            PanelKind::Plugin {
+                plugin_id: "hello-world".to_string(),
+                plugin_version: None,
+                settings: serde_json::Value::Null,
+            },
+            rect,
+        );
+        let tui = scene.add(
+            PanelKind::Tui {
+                plugin_id: "top-example".to_string(),
+                plugin_version: None,
+            },
+            rect,
+        );
+        if let Some(panel) = scene.get_mut(browser) {
+            panel.overrides.accent_color = Some("#12ab34".to_string());
+            panel.overrides.title = Some("docs".to_string());
+        }
+        let looks = snapshot_looks(&scene, |id| {
+            let overrides = scene
+                .get(id)
+                .map(|p| p.overrides.clone())
+                .unwrap_or_default();
+            override_look(overrides, ChromeOverrides::default(), None, |_| None)
+        });
+        for id in [terminal, browser, plugin, tui] {
+            assert!(looks.contains_key(&id), "no look for {id:?}");
+        }
+        let look = &looks[&browser];
+        assert_eq!(look.overrides.accent, Some(0x12ab34ff));
+        assert_eq!(look.title.as_deref(), Some("docs"));
+    }
+
+    #[test]
+    fn close_confirmation_draws_on_bar_and_borderless_panels() {
+        let mut scene = Scene::default();
+        let kind = PanelKind::Browser {
+            url: "https://example.com".to_string(),
+            page_zoom: None,
+        };
+        let bar = scene.add(kind.clone(), Rect::new(0.0, 0.0, 300.0, 200.0));
+        let borderless = scene.add(kind, Rect::new(400.0, 0.0, 300.0, 200.0));
+        calm_core::scene::set_borderless(scene.get_mut(borderless).unwrap(), true);
+        let bar = scene.get(bar).unwrap();
+        assert_eq!(confirm_prompt(bar, false), None);
+        assert_eq!(confirm_prompt(bar, true), Some(ConfirmPrompt::InTitleBar));
+        let panel = scene.get(borderless).unwrap().clone();
+        assert_eq!(confirm_prompt(&panel, false), None);
+        let content = content_rect(&panel);
+        assert_eq!(
+            confirm_prompt(&panel, true),
+            Some(ConfirmPrompt::Strip(Rect::new(
+                content.origin.x,
+                content.origin.y,
+                content.size.width,
+                calm_core::scene::CHROME_HEIGHT,
+            )))
+        );
+        let mut chip = panel;
+        chip.minimized = true;
+        assert_eq!(confirm_prompt(&chip, true), Some(ConfirmPrompt::InTitleBar));
+    }
 }

@@ -223,6 +223,23 @@ pub fn restored_cwd(
     }
 }
 
+/// The profile a restored terminal opens with. A saved id that `known` rejects opens with
+/// the defaults, plus a notice that names it.
+pub fn restored_profile(
+    saved: Option<&str>,
+    known: impl Fn(&str) -> bool,
+) -> (Option<String>, Option<String>) {
+    match saved {
+        Some(id) if !known(id) => (
+            None,
+            Some(format!(
+                "terminal profile {id:?} not found, using the defaults"
+            )),
+        ),
+        other => (other.map(str::to_string), None),
+    }
+}
+
 /// A log line when a plugin panel was saved by another version of its plugin. Versions
 /// only: the panel settings are never logged.
 pub fn version_note(
@@ -248,6 +265,22 @@ mod tests {
     use crate::scene::Scene;
     use std::time::Duration;
 
+    #[test]
+    fn restored_terminal_uses_its_saved_profile() {
+        let known = |id: &str| id == "neon";
+        assert_eq!(
+            restored_profile(Some("neon"), known),
+            (Some("neon".to_string()), None)
+        );
+        assert_eq!(restored_profile(None, known), (None, None));
+        let (profile, notice) = restored_profile(Some("gone"), known);
+        assert_eq!(profile, None);
+        assert_eq!(
+            notice.as_deref(),
+            Some("terminal profile \"gone\" not found, using the defaults")
+        );
+    }
+
     fn flags(layout: Option<&str>, no_restore: bool) -> LaunchFlags {
         LaunchFlags {
             layout: layout.map(str::to_string),
@@ -261,6 +294,7 @@ mod tests {
             PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             },
             Rect::new(0.0, 0.0, 300.0, 200.0),
         );
@@ -540,6 +574,7 @@ mod tests {
         let terminal = PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         };
         assert_eq!(placeholder_reason(&terminal, web, tui), None);
     }

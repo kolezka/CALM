@@ -653,3 +653,50 @@ These shipped with #41, next to "Restore at launch" above.
   keeps tracking over the panel in front, and Ghostty never gets a release without its
   press (`calm_core::occlusion::PointerGate`). A move event with no button held drops any
   remembered press, since GPUI only sends a release to hovered views.
+
+## Per-panel settings (2026-11-01, `feat/panel-settings`)
+
+- **Each field is inherited or set.** The panel Settings window shows every field with its
+  inherited value until the user sets it. Clearing a field puts it back to inherited, and
+  Reset to global clears every override. Only set fields are saved in `overrides`.
+- **Order: panel, then profile, then defaults, then theme.** A panel override wins over its
+  terminal profile, which wins over the `terminal` defaults, which win over the Ghostty
+  theme.
+- **An override title is literal.** It is shown as typed; `{n}` and `{cwd}` are not
+  expanded, unlike a profile title template.
+- **Icon files are copied into the settings folder.** A chosen image goes to
+  `panel-icons/<hash>.<ext>` under the settings folder, so the layout never points outside
+  it. Symlinks are refused. Built-in icons are stored as `builtin:<name>`.
+- **Move modifier is a setting.** `canvas.move_modifier`, default `cmd`, with no `off`
+  value: a drag on content without it always goes to the native view.
+- **Content gesture: topmost panel only, never on chrome.** The monitor takes a press only
+  over the content of the topmost panel at that point (`content_gesture_target`); chrome
+  and chips keep their own handling.
+- **Click replay posts the up, then sends the down.** A modifier click within the slop is
+  replayed to the native view: the later events go to the front of the queue first, then
+  the press is sent, so a view that tracks the mouse in its own loop still gets its up. At
+  the up the app answers exactly what `ContentGesture::release` gives, never Hold, which
+  would drop the click.
+- **Borderless keeps the content rect.** A borderless panel loses its title bar and ring,
+  but its content keeps the same world rect, so a native view does not jump.
+- **One Settings window per panel.** Opening it again brings the open one to the front; it
+  closes with the panel. A global settings change rebuilds every open panel window so
+  inherited values stay current.
+- **Duplicate copies overrides.** The copy gets the same overrides and terminal profile, so
+  it looks like the original; borderless geometry stays consistent.
+- **A one-well color edit seeds from Ghostty Default.** Setting one terminal color when
+  nothing is set yet fills the other wells from the Ghostty Default palette.
+- **Terminal colors are inherited and reset one by one.** A panel stores only the colors it
+  sets (each of background, foreground and color 0 to 15 is optional); a session file with a
+  full palette loads as every color set. Reason: the spec says each field is inherited or set,
+  and the window has a Reset per color. Cost: builds before fa8ab43 cannot read the partial form.
+- **Untouched colors fall back to Ghostty Default on a live terminal when nothing else defines a palette.**
+  libghostty takes a full theme only, so the panel's colors are merged over Ghostty Default,
+  not over the user's Ghostty config. The form does not say so yet. Cost: a user with Ghostty
+  config colors sees the other colors change after a one-color edit.
+- **Cmd on panel content wins over a resize handle inside the content rect,** in both the
+  native and the GPUI paths. Plain drag still resizes. Reason: the spec gives Cmd+drag anywhere
+  on content to moving.
+- **A restored terminal opens its saved profile.** `PanelKind::Terminal.profile` is saved
+  with the session. An unknown profile id opens with the defaults and one notice; the saved
+  kind keeps the id, so it comes back if the profile does.

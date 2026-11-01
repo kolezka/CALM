@@ -4,8 +4,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::value::RawValue;
 
 use crate::camera::Camera;
+use crate::chrome::{BUILTIN_ICON_PREFIX, PanelIcon};
 use crate::geometry::{Point, Rect, Size};
 use crate::resize::ResizePolicy;
+use crate::terminal_profile::{
+    MAX_TITLE_CHARS, PanelTerminalColors, check_color, check_icon, check_text,
+};
 
 pub const MIN_PANEL_SIZE: Size = Size::new(120.0, 80.0);
 /// Height of the title strip at the top of every panel, in world units.
@@ -24,6 +28,8 @@ pub enum PanelKind {
     Terminal {
         command: Option<String>,
         cwd: Option<PathBuf>,
+        /// Settings profile id the terminal was opened with. `None` means the defaults.
+        profile: Option<String>,
     },
     Browser {
         url: String,
@@ -79,6 +85,8 @@ enum KnownKind {
     Terminal {
         command: Option<String>,
         cwd: Option<PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
     },
     Browser {
         url: String,
@@ -107,7 +115,15 @@ struct KindTypeProbe {
 impl Serialize for PanelKind {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let known = match self.clone() {
-            PanelKind::Terminal { command, cwd } => KnownKind::Terminal { command, cwd },
+            PanelKind::Terminal {
+                command,
+                cwd,
+                profile,
+            } => KnownKind::Terminal {
+                command,
+                cwd,
+                profile,
+            },
             PanelKind::Browser { url, page_zoom } => KnownKind::Browser { url, page_zoom },
             PanelKind::Plugin {
                 plugin_id,
@@ -147,7 +163,15 @@ impl<'de> Deserialize<'de> for PanelKind {
         // A known type with a bad shape stays an error.
         let known: KnownKind = serde_json::from_str(raw.get()).map_err(de::Error::custom)?;
         Ok(match known {
-            KnownKind::Terminal { command, cwd } => PanelKind::Terminal { command, cwd },
+            KnownKind::Terminal {
+                command,
+                cwd,
+                profile,
+            } => PanelKind::Terminal {
+                command,
+                cwd,
+                profile,
+            },
             KnownKind::Browser { url, page_zoom } => PanelKind::Browser { url, page_zoom },
             KnownKind::Plugin {
                 plugin_id,
@@ -170,24 +194,67 @@ impl<'de> Deserialize<'de> for PanelKind {
 }
 
 /// What the user chose for a panel's look. Always wins over what the panel sets.
-/// Applying and validating them is the plugin API's job; files only need the types.
+/// Loading never validates them; `validate` is for whoever writes them.
 /// Unknown keys are ignored so an older CALM opens a file with more override fields.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PanelOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// 1 to 4 characters, or a relative .png or .svg path inside the plugin folder.
+    /// 1 to 4 characters, `builtin:<name>` for a `chrome::PanelIcon`, or a .png or .svg
+    /// path relative to the settings folder, such as `panel-icons/<hash>.png`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// "#rrggbb" or "#rrggbbaa".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accent_color: Option<String>,
+    /// "#rrggbb" or "#rrggbbaa".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_bar_color: Option<String>,
+    /// "#rrggbb" or "#rrggbbaa".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_color: Option<String>,
+    /// Terminals only. Each color is set or inherited on its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_colors: Option<PanelTerminalColors>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub borderless: Option<bool>,
 }
 
 impl PanelOverrides {
     pub fn is_empty(&self) -> bool {
         *self == PanelOverrides::default()
+    }
+
+    /// The first bad field, named as `overrides.<field>`. Terminal-only fields on another
+    /// kind are an error.
+    pub fn validate(&self, kind: &PanelKind) -> Result<(), String> {
+        if let Some(title) = &self.title {
+            check_text("overrides.title", title, MAX_TITLE_CHARS)?;
+        }
+        if let Some(icon) = &self.icon {
+            if icon.starts_with(BUILTIN_ICON_PREFIX) {
+                if PanelIcon::from_override(icon).is_none() {
+                    return Err(format!(
+                        "\"overrides.icon\" is {icon:?}: no such built-in icon"
+                    ));
+                }
+            } else {
+                check_icon("overrides.icon", icon)?;
+            }
+        }
+        check_color("overrides.accent_color", &self.accent_color)?;
+        check_color("overrides.title_bar_color", &self.title_bar_color)?;
+        check_color("overrides.title_color", &self.title_color)?;
+        if let Some(colors) = &self.terminal_colors {
+            if !matches!(kind, PanelKind::Terminal { .. }) {
+                return Err(
+                    "\"overrides.terminal_colors\" applies only to terminal panels".to_string(),
+                );
+            }
+            colors.validate("overrides.terminal_colors")?;
+        }
+        Ok(())
     }
 }
 
@@ -311,14 +378,30 @@ impl Scene {
 
     /// Adds a panel on top. Ids are never reused, even after a remove.
     pub fn add(&mut self, kind: PanelKind, rect: Rect) -> PanelId {
+        self.add_with_overrides(kind, rect, PanelOverrides::default())
+    }
+
+    /// `add` with saved overrides installed, for restore and duplicate. A borderless
+    /// panel has no chrome strip, so its height minimum is the content minimum.
+    pub fn add_with_overrides(
+        &mut self,
+        kind: PanelKind,
+        rect: Rect,
+        overrides: PanelOverrides,
+    ) -> PanelId {
         self.bump();
         let id = PanelId(self.next_id);
         self.next_id += 1;
+        let min_height = if overrides.borderless == Some(true) {
+            MIN_PANEL_SIZE.height - CHROME_HEIGHT
+        } else {
+            MIN_PANEL_SIZE.height
+        };
         let rect = Rect {
             origin: rect.origin,
             size: Size::new(
                 rect.size.width.max(MIN_PANEL_SIZE.width),
-                rect.size.height.max(MIN_PANEL_SIZE.height),
+                rect.size.height.max(min_height),
             ),
         };
         let title = kind.default_title();
@@ -329,7 +412,7 @@ impl Scene {
             rect,
             title,
             minimized: false,
-            overrides: PanelOverrides::default(),
+            overrides,
             resize,
         });
         id
@@ -386,7 +469,7 @@ impl Scene {
     }
 
     /// Adds a copy of `id` on top, shifted by `DUPLICATE_OFFSET`, never minimized.
-    /// Only the kind and size are copied, so a duplicated terminal gets a fresh process.
+    /// The kind, size and overrides are copied; a duplicated terminal gets a fresh process.
     /// `installed` gives a plugin's installed manifest version, stamped on the copy.
     pub fn duplicate(
         &mut self,
@@ -402,7 +485,8 @@ impl Scene {
             ),
             size: source.rect.size,
         };
-        Some(self.add(kind, rect))
+        let overrides = source.overrides.clone();
+        Some(self.add_with_overrides(kind, rect, overrides))
     }
 
     /// Topmost panel under `world`. A minimized panel only hits its chip.
@@ -448,12 +532,36 @@ pub fn chip_rect(panel: &Panel) -> Rect {
     }
 }
 
+/// Height of the strip above the content: 0 for a borderless panel.
+pub fn chrome_height(panel: &Panel) -> f64 {
+    if panel.overrides.borderless == Some(true) {
+        0.0
+    } else {
+        CHROME_HEIGHT
+    }
+}
+
+/// Turns borderless on or off, moving the outer rect so `content_rect` stays put.
+/// Off clears the field rather than storing `false`.
+pub fn set_borderless(panel: &mut Panel, on: bool) {
+    let was = chrome_height(panel) == 0.0;
+    panel.overrides.borderless = on.then_some(true);
+    if on && !was {
+        panel.rect.origin.y += CHROME_HEIGHT;
+        panel.rect.size.height = (panel.rect.size.height - CHROME_HEIGHT).max(0.0);
+    } else if !on && was {
+        panel.rect.origin.y -= CHROME_HEIGHT;
+        panel.rect.size.height += CHROME_HEIGHT;
+    }
+}
+
 pub fn content_rect(panel: &Panel) -> Rect {
+    let bar = chrome_height(panel);
     Rect::new(
         panel.rect.origin.x,
-        panel.rect.origin.y + CHROME_HEIGHT,
+        panel.rect.origin.y + bar,
         panel.rect.size.width,
-        (panel.rect.size.height - CHROME_HEIGHT).max(0.0),
+        (panel.rect.size.height - bar).max(0.0),
     )
 }
 
@@ -471,6 +579,23 @@ mod tests {
         let before = scene.sync_revision();
         change(&mut scene, back, front);
         scene.sync_revision() != before
+    }
+
+    #[test]
+    fn toggling_borderless_keeps_the_content_rect() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(10.0, 20.0, 300.0, 200.0));
+        let panel = scene.get_mut(id).unwrap();
+        let before = content_rect(panel);
+        set_borderless(panel, true);
+        assert_eq!(panel.overrides.borderless, Some(true));
+        assert_eq!(chrome_height(panel), 0.0);
+        assert_eq!(content_rect(panel), before);
+        set_borderless(panel, false);
+        assert_eq!(panel.overrides.borderless, None);
+        assert_eq!(chrome_height(panel), CHROME_HEIGHT);
+        assert_eq!(content_rect(panel), before);
+        assert_eq!(panel.rect, Rect::new(10.0, 20.0, 300.0, 200.0));
     }
 
     #[test]
@@ -686,7 +811,110 @@ mod tests {
         PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         }
+    }
+
+    #[test]
+    fn terminal_profile_roundtrips_and_is_omitted_when_none() {
+        let with = PanelKind::Terminal {
+            command: None,
+            cwd: None,
+            profile: Some("neon".into()),
+        };
+        let json = serde_json::to_value(&with).unwrap();
+        assert_eq!(json["profile"], "neon", "{json}");
+        let back: PanelKind = serde_json::from_str(&json.to_string()).unwrap();
+        assert_eq!(back, with);
+
+        let json = serde_json::to_value(terminal()).unwrap();
+        assert!(json.get("profile").is_none(), "{json}");
+        let back: PanelKind = serde_json::from_str(&json.to_string()).unwrap();
+        assert_eq!(back, terminal());
+    }
+
+    #[test]
+    fn validate_rejects_a_malformed_single_terminal_color() {
+        use crate::terminal_profile::{ColorSlot, PanelTerminalColors};
+        let mut colors = PanelTerminalColors::default();
+        colors.set(ColorSlot::Palette(5), Some(0x123456));
+        let good = PanelOverrides {
+            terminal_colors: Some(colors.clone()),
+            ..PanelOverrides::default()
+        };
+        assert_eq!(good.validate(&terminal()), Ok(()));
+        colors.palette[5] = Some("#12345".into());
+        let bad = PanelOverrides {
+            terminal_colors: Some(colors),
+            ..PanelOverrides::default()
+        };
+        let error = bad.validate(&terminal()).unwrap_err();
+        assert!(error.contains("palette[5]"), "{error}");
+        let bad_background = PanelOverrides {
+            terminal_colors: Some(PanelTerminalColors {
+                background: Some("red".into()),
+                ..PanelTerminalColors::default()
+            }),
+            ..PanelOverrides::default()
+        };
+        let error = bad_background.validate(&terminal()).unwrap_err();
+        assert!(error.contains("background"), "{error}");
+    }
+
+    #[test]
+    fn validate_rejects_terminal_fields_on_a_browser() {
+        let browser = PanelKind::Browser {
+            url: "https://example.com".into(),
+            page_zoom: None,
+        };
+        let colors = PanelOverrides {
+            terminal_colors: Some(crate::terminal_profile::PanelTerminalColors::from_colors(
+                &crate::terminal_profile::PALETTE_PRESETS[0].colors,
+            )),
+            ..PanelOverrides::default()
+        };
+        // Positive control: the same overrides are fine on a terminal.
+        assert_eq!(colors.validate(&terminal()), Ok(()));
+        let error = colors.validate(&browser).unwrap_err();
+        assert!(error.contains("terminal_colors"), "{error}");
+
+        let shared = PanelOverrides {
+            title: Some("Docs".into()),
+            borderless: Some(true),
+            title_bar_color: Some("#000000".into()),
+            ..PanelOverrides::default()
+        };
+        assert_eq!(shared.validate(&browser), Ok(()));
+    }
+
+    #[test]
+    fn validate_rejects_bad_color_and_long_icon() {
+        let good = PanelOverrides {
+            icon: Some("abcd".into()),
+            title_color: Some("#123456".into()),
+            ..PanelOverrides::default()
+        };
+        assert_eq!(good.validate(&terminal()), Ok(()));
+
+        let bad_color = PanelOverrides {
+            title_color: Some("#12".into()),
+            ..good.clone()
+        };
+        let error = bad_color.validate(&terminal()).unwrap_err();
+        assert!(error.contains("title_color"), "{error}");
+
+        let long_icon = PanelOverrides {
+            icon: Some("abcde".into()),
+            ..good.clone()
+        };
+        let error = long_icon.validate(&terminal()).unwrap_err();
+        assert!(error.contains("icon"), "{error}");
+
+        let image_icon = PanelOverrides {
+            icon: Some("icons/logo.svg".into()),
+            ..good
+        };
+        assert_eq!(image_icon.validate(&terminal()), Ok(()));
     }
 
     #[test]
@@ -734,11 +962,78 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_copies_overrides() {
+        let mut scene = Scene::default();
+        let source = scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: Some("neon".into()),
+            },
+            Rect::new(0.0, 0.0, 300.0, 200.0),
+        );
+        let overrides = PanelOverrides {
+            title: Some("build {n}".into()),
+            accent_color: Some("#ff0000".into()),
+            borderless: Some(true),
+            ..PanelOverrides::default()
+        };
+        scene.get_mut(source).unwrap().overrides = overrides.clone();
+        let copy = scene.duplicate(source, |_| None).unwrap();
+        let panel = scene.get(copy).unwrap();
+        assert_eq!(panel.overrides, overrides);
+        assert!(matches!(
+            &panel.kind,
+            PanelKind::Terminal { profile: Some(id), .. } if id == "neon"
+        ));
+        assert_eq!(panel.rect.size, Size::new(300.0, 200.0));
+    }
+
+    #[test]
+    fn add_with_overrides_keeps_a_small_borderless_size_and_clamps_the_rest() {
+        let borderless = PanelOverrides {
+            borderless: Some(true),
+            ..PanelOverrides::default()
+        };
+        let content_min = MIN_PANEL_SIZE.height - CHROME_HEIGHT;
+        let mut scene = Scene::default();
+        let small = Rect::new(0.0, 0.0, MIN_PANEL_SIZE.width, content_min);
+        let id = scene.add_with_overrides(terminal(), small, borderless.clone());
+        let panel = scene.get(id).unwrap();
+        assert_eq!(panel.rect, small);
+        assert_eq!(panel.overrides, borderless);
+        // Undersized files are still clamped, borderless to the content minimum.
+        let id = scene.add_with_overrides(terminal(), Rect::new(0.0, 0.0, 10.0, 10.0), borderless);
+        assert_eq!(
+            scene.get(id).unwrap().rect.size,
+            Size::new(MIN_PANEL_SIZE.width, content_min)
+        );
+        let id = scene.add_with_overrides(terminal(), small, PanelOverrides::default());
+        assert_eq!(scene.get(id).unwrap().rect.size, MIN_PANEL_SIZE);
+    }
+
+    #[test]
+    fn duplicate_keeps_size_of_a_small_borderless_panel() {
+        let mut scene = Scene::default();
+        let source = scene.add(
+            terminal(),
+            Rect::new(0.0, 0.0, MIN_PANEL_SIZE.width, MIN_PANEL_SIZE.height),
+        );
+        set_borderless(scene.get_mut(source).unwrap(), true);
+        let copy = scene.duplicate(source, |_| None).unwrap();
+        let source = scene.get(source).unwrap();
+        let copy = scene.get(copy).unwrap();
+        assert_eq!(copy.rect.size, source.rect.size);
+        assert_eq!(content_rect(copy).size, content_rect(source).size);
+    }
+
+    #[test]
     fn duplicate_copies_kind_and_size_offset_on_top() {
         let mut scene = Scene::default();
         let kind = PanelKind::Terminal {
             command: Some("htop".into()),
             cwd: Some(PathBuf::from("/tmp")),
+            profile: None,
         };
         let source = scene.add(kind.clone(), Rect::new(10.0, 20.0, 300.0, 200.0));
         let _other = scene.add(terminal(), Rect::new(900.0, 0.0, 200.0, 200.0));

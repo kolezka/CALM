@@ -11,16 +11,17 @@ use std::time::{Duration, Instant};
 use calm_core::camera::Camera;
 use calm_core::geometry::{Point, Rect};
 use calm_core::menu::canvas_menu;
+use calm_core::settings_form::{Control, Field, FieldState, FieldValue, Section};
 use calm_core::viewport::place_native;
-use calm_native::{ContextMenu, NativeChild, WebPanel};
+use calm_native::{ContextMenu, NativeChild, SettingsWindow, WebPanel, WindowLayout};
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton, NSScrollView,
+    NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_core_graphics::CGPath;
-use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize};
+use objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize, NSString};
 use objc2_quartz_core::CAShapeLayer;
 use raw_window_handle::{
     AppKitWindowHandle, HandleError, HasWindowHandle, RawWindowHandle, WindowHandle,
@@ -320,8 +321,177 @@ fn main() {
         fail("menu tree does not match the sample spec");
     }
 
+    settings_window_check();
+
     drop(web);
     drop(child);
     window.close();
     exit(0);
+}
+
+fn smoke_field(id: &str, control: Control, state: FieldState) -> Field {
+    Field {
+        id: id.to_string(),
+        label: id.to_string(),
+        control,
+        state,
+    }
+}
+
+fn smoke_section(title: &str, fields: Vec<Field>) -> Section {
+    Section {
+        title: title.to_string(),
+        fields,
+    }
+}
+
+/// Builds a settings window with text, inherited and set fields and counts what is wired.
+fn settings_window_check() {
+    let text = || {
+        smoke_field(
+            "name",
+            Control::Text {
+                value: String::new(),
+                placeholder: "Untitled".to_string(),
+            },
+            FieldState::Plain,
+        )
+    };
+    let form = vec![
+        smoke_section(
+            "General",
+            vec![
+                text(),
+                smoke_field("pinned", Control::Checkbox(true), FieldState::Set),
+            ],
+        ),
+        smoke_section(
+            "Look",
+            vec![
+                smoke_field(
+                    "hint",
+                    Control::Note("a note".to_string()),
+                    FieldState::Plain,
+                ),
+                smoke_field("dim", Control::Checkbox(false), FieldState::Inherited),
+            ],
+        ),
+    ];
+    let tabs = SettingsWindow::new("Smoke Settings", WindowLayout::Tabs, |_, _| {})
+        .unwrap_or_else(|e| fail(&e.to_string()));
+    tabs.set_form(&form);
+    // Text, the set checkbox and its Reset button, the inherited checkbox. Notes bind nothing.
+    let bound = tabs.bound_controls();
+    let titles = tabs.tab_titles();
+    println!("native_smoke: settings tabs={titles:?} controls={bound}");
+    if bound != 4 || titles != ["General", "Look"] {
+        fail("settings window did not bind text, reset and tab controls");
+    }
+    tabs.select_tab("Look");
+    tabs.set_form(&form);
+    let kept = tabs.selected_tab();
+    tabs.set_form(&form[..1]);
+    let fallback = tabs.selected_tab();
+    println!("native_smoke: settings selected kept={kept:?} fallback={fallback:?}");
+    if kept.as_deref() != Some("Look") || fallback.as_deref() != Some("General") {
+        fail("set_form did not keep the selected tab, or did not fall back to the first");
+    }
+
+    let single = SettingsWindow::new("Smoke Panel", WindowLayout::Single, |_, _| {})
+        .unwrap_or_else(|e| fail(&e.to_string()));
+    single.set_form(&form);
+    let single_bound = single.bound_controls();
+    let single_tabs = single.tab_titles().len();
+    println!("native_smoke: settings single tabs={single_tabs} controls={single_bound}");
+    if single_bound != 4 || single_tabs != 0 {
+        fail("single layout settings window is wrong");
+    }
+
+    let rebuild_form = vec![smoke_section(
+        "General",
+        vec![
+            text(),
+            smoke_field(
+                "switch",
+                Control::Button("Switch".into()),
+                FieldState::Plain,
+            ),
+        ],
+    )];
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&events);
+    let window_slot: Rc<RefCell<Option<Rc<SettingsWindow>>>> = Rc::default();
+    let callback_window = Rc::clone(&window_slot);
+    let callback_form = rebuild_form.clone();
+    let rebuild = Rc::new(
+        SettingsWindow::new("Smoke Rebuild", WindowLayout::Single, move |id, value| {
+            sink.borrow_mut().push((id.clone(), value));
+            if id == "switch" {
+                callback_window
+                    .borrow()
+                    .as_ref()
+                    .unwrap()
+                    .set_form(&callback_form);
+            }
+        })
+        .unwrap_or_else(|e| fail(&e.to_string())),
+    );
+    *window_slot.borrow_mut() = Some(Rc::clone(&rebuild));
+    rebuild.set_form(&rebuild_form);
+    let mtm = MainThreadMarker::new().unwrap();
+    let app = NSApplication::sharedApplication(mtm);
+    let window = app
+        .windows()
+        .iter()
+        .find(|w| w.windowNumber() == rebuild.window_number())
+        .unwrap_or_else(|| fail("rebuild window not found"));
+    let content = window.contentView().unwrap();
+    let scroll = content.downcast_ref::<NSScrollView>().unwrap();
+    let document = scroll.documentView().unwrap();
+    let views = document.subviews();
+    let field = views
+        .iter()
+        .find_map(|view| {
+            view.downcast::<NSTextField>()
+                .ok()
+                .filter(|field| field.isEditable())
+        })
+        .unwrap_or_else(|| fail("text control not found"));
+    let button = views
+        .iter()
+        .find_map(|view| view.downcast::<NSButton>().ok())
+        .unwrap_or_else(|| fail("button control not found"));
+    let edit = |value: &str| {
+        if !window.makeFirstResponder(Some(&field)) {
+            fail("could not focus text control");
+        }
+        let editor = field
+            .currentEditor()
+            .unwrap_or_else(|| fail("text editor not found"));
+        editor.setString(&NSString::from_str(value));
+    };
+    edit("positive-control");
+    window.makeFirstResponder(None);
+    if *events.borrow() != [("name".into(), FieldValue::Text("positive-control".into()))] {
+        fail(&format!(
+            "text edit positive control failed: {:?}",
+            events.borrow()
+        ));
+    }
+    events.borrow_mut().clear();
+    edit("pending-value");
+    // SAFETY: the button is live and its target and action are wired by the form.
+    unsafe { button.performClick(None) };
+    let expected = [
+        ("switch".into(), FieldValue::Pressed),
+        ("name".into(), FieldValue::Text("pending-value".into())),
+    ];
+    println!(
+        "native_smoke: settings rebuild events={:?}",
+        events.borrow()
+    );
+    if *events.borrow() != expected {
+        fail("pending text edit was lost during form rebuild");
+    }
+    window_slot.borrow_mut().take();
 }

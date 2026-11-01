@@ -62,6 +62,8 @@ objc2-app-kit = { workspace = true, default-features = false, features = [
     "NSScreen",
     "NSScrollView",
     "NSSlider",
+    "NSTabView",
+    "NSTabViewItem",
     "NSText",
     "NSTextField",
     "NSView",

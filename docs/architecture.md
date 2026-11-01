@@ -70,6 +70,14 @@ view applies. Ghostty's view returns nil from `hitTest`, so clicks over a termin
 GPUI; a WKWebView keeps its clicks. That is why resize handles reach 8 screen px outside
 the right and bottom edges.
 
+A move-modifier press on a native view's content (Cmd by default, `canvas.move_modifier`)
+is taken by `calm_native::ContentGestureMonitor`, an NSEvent local mouse monitor. It asks
+the app whether it wants the press, holds it, and reports each event; the app's
+`content_move` module feeds `calm_core::gesture::ContentGesture`. Past the click slop the
+gesture becomes `InputHandler::begin_content_move` and the usual drag; released inside the
+slop it is a click, and the monitor replays the held events to the native view.
+Cmd+right-click opens the panel menu. Only the topmost panel's content counts, never chrome.
+
 Inside a terminal, keys stop propagating and `t`, `b`, `escape`, `enter` are bound to
 `NoAction` in the `Terminal` key context, so canvas shortcuts do not steal them. Browser
 pages get editing and navigation shortcuts through an NSEvent local monitor, since GPUI

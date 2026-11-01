@@ -6,7 +6,7 @@ use calm_core::settings::{Settings, save_settings_to};
 use calm_core::settings_form::{
     FieldValue, FormCommand, FormContext, FormOutcome, apply_field, settings_form,
 };
-use calm_native::{SettingsWindow, choose_image_file};
+use calm_native::{SettingsWindow, WindowLayout, choose_image_file};
 use gpui::{
     App, AppContext as _, Context, InteractiveElement, KeyBinding, Menu, MenuItem, Window,
     WindowHandle, actions,
@@ -128,6 +128,7 @@ impl CanvasView {
         self.reconcile_autosave(&old_session, cx);
         self.terminal_settings_changed(cx);
         self.sync_stats_timer(cx);
+        self.refresh_all_panel_settings();
         let show_stats = self.show_stats;
         let settings = self.settings.settings.clone();
         cx.defer(move |cx| cx.set_menus(menus(show_stats, &settings)));
@@ -154,7 +155,7 @@ impl CanvasView {
             let executor = cx.foreground_executor().clone();
             // AppKit calls this inside the control's action. Hop onto GPUI's executor so
             // the view is never updated while GPUI itself is mid-update.
-            SettingsWindow::new(move |id, value| {
+            SettingsWindow::new("CALM Settings", WindowLayout::Tabs, move |id, value| {
                 let this = this.clone();
                 let mut cx = async_cx.clone();
                 executor
@@ -213,7 +214,7 @@ impl CanvasView {
             Ok(FormOutcome::Command(FormCommand::ChooseImage)) => {
                 // The open panel runs its own modal loop, so it runs outside this update.
                 cx.spawn_in(window, async move |this, cx| {
-                    let chosen = match choose_image_file() {
+                    let chosen = match choose_image_file("Choose a Background Image") {
                         Ok(chosen) => chosen,
                         Err(err) => {
                             eprintln!("calm: image chooser unavailable: {err}");
@@ -236,6 +237,10 @@ impl CanvasView {
                     .ok();
                 })
                 .detach();
+            }
+            // Only the per-panel form sends this.
+            Ok(FormOutcome::Command(command @ FormCommand::ChoosePanelIcon(_))) => {
+                eprintln!("calm: settings window: unexpected {command:?}");
             }
             // The form and `apply_field` disagree: a bug, so say so instead of guessing.
             Err(err) => eprintln!("calm: settings window: {err}"),

@@ -628,6 +628,7 @@ mod tests {
         let terminal = PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         };
         let older = scene_with(std::slice::from_ref(&terminal)).to_layout();
         let newer = scene_with(&[terminal.clone(), terminal]).to_layout();

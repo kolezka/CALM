@@ -258,6 +258,7 @@ mod tests {
                         crate::scene::PanelKind::Terminal {
                             command: None,
                             cwd: None,
+                            profile: None,
                         },
                         r,
                     );

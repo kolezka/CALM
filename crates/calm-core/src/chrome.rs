@@ -2,7 +2,9 @@
 //! and the window buttons. Paint and hit testing both read this, so they cannot drift.
 
 use crate::geometry::{Point, Rect};
-use crate::scene::{CHROME_HEIGHT, Panel, PanelId, PanelKind, Scene, chip_rect};
+use crate::scene::{
+    CHROME_HEIGHT, Panel, PanelId, PanelKind, PanelOverrides, Scene, chip_rect, chrome_height,
+};
 
 /// Height of the title bar. Same as the strip `content_rect` leaves above the content.
 pub const TITLE_BAR_HEIGHT: f64 = CHROME_HEIGHT;
@@ -37,7 +39,37 @@ pub enum PanelIcon {
     Plugin,
 }
 
+/// How `PanelOverrides.icon` names a built-in icon: `builtin:<name>`.
+pub const BUILTIN_ICON_PREFIX: &str = "builtin:";
+
 impl PanelIcon {
+    pub const ALL: [PanelIcon; 3] = [PanelIcon::Terminal, PanelIcon::Browser, PanelIcon::Plugin];
+
+    /// The `<name>` in `builtin:<name>`.
+    pub fn name(self) -> &'static str {
+        match self {
+            PanelIcon::Terminal => "terminal",
+            PanelIcon::Browser => "browser",
+            PanelIcon::Plugin => "plugin",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PanelIcon::Terminal => "Terminal",
+            PanelIcon::Browser => "Browser",
+            PanelIcon::Plugin => "Plugin",
+        }
+    }
+
+    /// The icon an override names with `builtin:<name>`, if it names one.
+    pub fn from_override(icon: &str) -> Option<Self> {
+        let name = icon.strip_prefix(BUILTIN_ICON_PREFIX)?;
+        PanelIcon::ALL
+            .into_iter()
+            .find(|known| known.name() == name)
+    }
+
     pub fn for_kind(kind: &PanelKind) -> Self {
         match kind {
             PanelKind::Terminal { .. } | PanelKind::Tui { .. } => PanelIcon::Terminal,
@@ -56,7 +88,7 @@ pub struct TitleBarLayout {
     pub icon: Rect,
     /// Between the icon and the buttons: the title today, room for an address field later.
     pub middle: Rect,
-    /// `None` on a minimized chip, which has no buttons.
+    /// `None` on a minimized chip and on a borderless panel, which have no buttons.
     pub minimize: Option<Rect>,
     pub close: Option<Rect>,
 }
@@ -69,16 +101,21 @@ pub fn title_bar_layout(panel: &Panel) -> TitleBarLayout {
             panel.rect.origin.x,
             panel.rect.origin.y,
             panel.rect.size.width,
-            TITLE_BAR_HEIGHT,
+            chrome_height(panel),
         )
     };
-    let icon = Rect::new(
-        bar.origin.x + LEADING_PADDING,
-        bar.origin.y + (bar.size.height - ICON_SIZE) / 2.0,
-        ICON_SIZE,
-        ICON_SIZE,
-    );
-    let (minimize, close, trailing_edge) = if panel.minimized {
+    let borderless = !panel.minimized && bar.size.height == 0.0;
+    let icon = if borderless {
+        Rect::new(bar.origin.x, bar.origin.y, 0.0, 0.0)
+    } else {
+        Rect::new(
+            bar.origin.x + LEADING_PADDING,
+            bar.origin.y + (bar.size.height - ICON_SIZE) / 2.0,
+            ICON_SIZE,
+            ICON_SIZE,
+        )
+    };
+    let (minimize, close, trailing_edge) = if panel.minimized || borderless {
         (None, None, bar.right() - LEADING_PADDING)
     } else {
         let top = bar.origin.y + BUTTON_MARGIN;
@@ -215,6 +252,18 @@ pub struct ChromeOverrides {
     pub accent: Option<u32>,
     pub title_bar: Option<u32>,
     pub title: Option<u32>,
+}
+
+/// `base` with each color the panel overrides set replaced. For TUI, browser and plugin
+/// looks; terminals get this through `TerminalSettings::resolve_for_panel`.
+/// A color that does not parse leaves the base color.
+pub fn lay_overrides(base: ChromeOverrides, overrides: &PanelOverrides) -> ChromeOverrides {
+    let color = |text: &Option<String>| text.as_deref().and_then(parse_hex_color);
+    ChromeOverrides {
+        accent: color(&overrides.accent_color).or(base.accent),
+        title_bar: color(&overrides.title_bar_color).or(base.title_bar),
+        title: color(&overrides.title_color).or(base.title),
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -452,6 +501,7 @@ mod tests {
         PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         }
     }
 
@@ -459,6 +509,41 @@ mod tests {
         let mut scene = Scene::default();
         let id = scene.add(terminal(), Rect::new(100.0, 50.0, 400.0, 300.0));
         (scene, id)
+    }
+
+    #[test]
+    fn lay_overrides_replaces_only_the_set_colors() {
+        let base = ChromeOverrides {
+            accent: Some(0x111111ff),
+            title_bar: Some(0x222222ff),
+            title: None,
+        };
+        assert_eq!(lay_overrides(base, &PanelOverrides::default()), base);
+        let overrides = PanelOverrides {
+            title_bar_color: Some("#333333".into()),
+            title_color: Some("#44444480".into()),
+            ..PanelOverrides::default()
+        };
+        assert_eq!(
+            lay_overrides(base, &overrides),
+            ChromeOverrides {
+                accent: Some(0x111111ff),
+                title_bar: Some(0x333333ff),
+                title: Some(0x44444480),
+            }
+        );
+    }
+
+    #[test]
+    fn borderless_layout_has_no_icon_and_no_middle() {
+        let (mut scene, id) = scene_with_panel();
+        crate::scene::set_borderless(scene.get_mut(id).unwrap(), true);
+        let layout = title_bar_layout(scene.get(id).unwrap());
+        assert_eq!(layout.icon.size.width, 0.0);
+        assert_eq!(layout.icon.size.height, 0.0);
+        assert_eq!(layout.middle.size.height, 0.0);
+        assert!(layout.minimize.is_none());
+        assert!(layout.close.is_none());
     }
 
     #[test]

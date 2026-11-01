@@ -145,17 +145,20 @@ impl Scene {
         }
     }
 
-    /// Panels get fresh ids and keep their order. Rects below `MIN_PANEL_SIZE`
-    /// are enlarged, the same rule `Scene::add` applies.
+    /// Panels get fresh ids and keep their order. Rects below the minimum are
+    /// enlarged, the same rule `Scene::add_with_overrides` applies.
     pub fn from_layout(layout: LayoutFile) -> Scene {
         let mut scene = Scene::default();
         scene.camera = layout.camera;
         for layout_panel in layout.panels {
-            let id = scene.add(layout_panel.kind, layout_panel.rect);
+            let id = scene.add_with_overrides(
+                layout_panel.kind,
+                layout_panel.rect,
+                layout_panel.overrides,
+            );
             if let Some(panel) = scene.get_mut(id) {
                 panel.title = layout_panel.title;
                 panel.minimized = layout_panel.minimized;
-                panel.overrides = layout_panel.overrides;
             }
         }
         scene
@@ -543,6 +546,26 @@ mod tests {
     use crate::scene::{PanelKind, Scene};
     use std::path::PathBuf;
 
+    #[test]
+    fn layout_roundtrip_keeps_small_borderless_size() {
+        use crate::scene::{MIN_PANEL_SIZE, content_rect, set_borderless};
+        let mut scene = Scene::default();
+        let id = scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+            },
+            Rect::new(0.0, 0.0, MIN_PANEL_SIZE.width, MIN_PANEL_SIZE.height),
+        );
+        set_borderless(scene.get_mut(id).unwrap(), true);
+        let restored = Scene::from_layout(scene.to_layout());
+        let before = scene.get(id).unwrap();
+        let after = &restored.panels[0];
+        assert_eq!(after.rect, before.rect);
+        assert_eq!(content_rect(after), content_rect(before));
+    }
+
     fn sample_scene() -> Scene {
         let mut scene = Scene::default();
         scene.camera = Camera {
@@ -553,6 +576,7 @@ mod tests {
             PanelKind::Terminal {
                 command: Some("htop".into()),
                 cwd: Some(PathBuf::from("/tmp")),
+                profile: None,
             },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
@@ -614,6 +638,7 @@ mod tests {
             PanelKind::Terminal {
                 command: Some("zsh".into()),
                 cwd: None,
+                profile: None,
             },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
@@ -1113,6 +1138,7 @@ mod tests {
             PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
@@ -1396,6 +1422,7 @@ mod tests {
                 PanelKind::Terminal {
                     command: command.map(String::from),
                     cwd: cwd.map(PathBuf::from),
+                    profile: None,
                 },
                 Rect::new(index as f64 * 500.0, 0.0, 400.0, 300.0),
             );
@@ -1437,6 +1464,7 @@ mod tests {
                 title: Some("Top".into()),
                 icon: Some("terminal".into()),
                 accent_color: Some("#ff8800".into()),
+                ..PanelOverrides::default()
             };
             panel.title = "top".into();
         }
@@ -1466,6 +1494,7 @@ mod tests {
                 PanelKind::Terminal {
                     command: None,
                     cwd: None,
+                    profile: None,
                 },
                 Rect::new(0.0, 0.0, 400.0, 300.0),
             );
@@ -1551,6 +1580,7 @@ mod tests {
                 &PanelKind::Terminal {
                     command: Some("htop".into()),
                     cwd: Some(PathBuf::from("/tmp")),
+                    profile: None,
                 },
                 &PanelKind::Plugin {
                     plugin_id: "github-prs".into(),
@@ -1762,6 +1792,7 @@ mod tests {
             PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
@@ -1788,7 +1819,7 @@ mod tests {
 
         let with_overrides = text.replacen(
             r#""minimized": false"#,
-            r##""minimized": false, "overrides": {"accent_color": "#11223344", "title_bar_color": "#000000"}"##,
+            r##""minimized": false, "overrides": {"accent_color": "#11223344", "not_a_field_yet": "#000000"}"##,
             1,
         );
         assert_ne!(with_overrides, text);
@@ -1801,6 +1832,123 @@ mod tests {
                 ..PanelOverrides::default()
             }
         );
+    }
+
+    #[test]
+    fn new_override_fields_roundtrip_through_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut scene = Scene::default();
+        let id = scene.add(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+            },
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        let overrides = PanelOverrides {
+            title: Some("Logs".into()),
+            icon: Some("L".into()),
+            accent_color: Some("#ff8800".into()),
+            title_bar_color: Some("#101010cc".into()),
+            title_color: Some("#eeeeee".into()),
+            terminal_colors: Some(crate::terminal_profile::PanelTerminalColors::from_colors(
+                &crate::terminal_profile::PALETTE_PRESETS[0].colors,
+            )),
+            borderless: Some(true),
+        };
+        scene.get_mut(id).unwrap().overrides = overrides.clone();
+        save_layout_in(
+            dir.path(),
+            "styled",
+            &scene.to_layout(),
+            BrowserQueryMode::Keep,
+        )
+        .unwrap();
+        let loaded = load_layout_from(dir.path(), "styled").unwrap();
+        assert_eq!(loaded.panels[0].overrides, overrides);
+    }
+
+    #[test]
+    fn full_palette_override_loads_as_every_color_set() {
+        use crate::terminal_profile::{ColorSlot, PALETTE_PRESETS, TerminalColorsSetting};
+        let colors = PALETTE_PRESETS[0].colors;
+        // The shape files had before colors were set one by one.
+        let old = serde_json::to_string(&TerminalColorsSetting::from_colors(&colors)).unwrap();
+        let text = v2_json_with_kinds(&[r#"{"type": "terminal", "command": null, "cwd": null}"#])
+            .replacen(
+                r#""minimized": false"#,
+                &format!(r#""minimized": false, "overrides": {{"terminal_colors": {old}}}"#),
+                1,
+            );
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("full.json"), &text).unwrap();
+        let loaded = load_layout_from(dir.path(), "full").unwrap();
+        let own = loaded.panels[0].overrides.terminal_colors.clone().unwrap();
+        let mut slots = vec![ColorSlot::Background, ColorSlot::Foreground];
+        slots.extend((0..16).map(ColorSlot::Palette));
+        for slot in slots {
+            assert!(own.text(slot).is_some(), "{slot:?} not set");
+        }
+        assert_eq!(own.over(&PALETTE_PRESETS[1].colors), Some(colors));
+    }
+
+    #[test]
+    fn partial_terminal_colors_round_trip() {
+        use crate::terminal_profile::{ColorSlot, PanelTerminalColors};
+        let mut own = PanelTerminalColors::default();
+        own.set(ColorSlot::Palette(3), Some(0xabcdef));
+        own.set(ColorSlot::Foreground, Some(0x010203));
+        let json = serde_json::to_value(&own).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"foreground": "#010203", "palette": [null, null, null, "#abcdef"]})
+        );
+        let back: PanelTerminalColors = serde_json::from_value(json).unwrap();
+        assert_eq!(back, own);
+        assert_eq!(back.text(ColorSlot::Background), None);
+        assert_eq!(back.text(ColorSlot::Palette(4)), None);
+    }
+
+    #[test]
+    fn file_without_new_fields_loads_with_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = v2_json_with_kinds(&[r#"{"type": "terminal", "command": null, "cwd": null}"#])
+            .replacen(
+                r#""minimized": false"#,
+                r##""minimized": false, "overrides": {"title": "Old", "icon": "O", "accent_color": "#112233"}"##,
+                1,
+            );
+        std::fs::write(dir.path().join("old.json"), &text).unwrap();
+        let loaded = load_layout_from(dir.path(), "old").unwrap();
+        let overrides = &loaded.panels[0].overrides;
+        assert_eq!(overrides.title.as_deref(), Some("Old"));
+        assert_eq!(overrides.title_bar_color, None);
+        assert_eq!(overrides.title_color, None);
+        assert_eq!(overrides.terminal_colors, None);
+        assert_eq!(overrides.borderless, None);
+        assert_eq!(
+            loaded.panels[0].kind,
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+            }
+        );
+    }
+
+    #[test]
+    fn unknown_override_field_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = v2_json_with_kinds(&[r#"{"type": "terminal", "command": null, "cwd": null}"#])
+            .replacen(
+                r#""minimized": false"#,
+                r#""minimized": false, "overrides": {"title": "x", "future": 1}"#,
+                1,
+            );
+        std::fs::write(dir.path().join("future.json"), &text).unwrap();
+        let loaded = load_layout_from(dir.path(), "future").unwrap();
+        assert_eq!(loaded.panels[0].overrides.title.as_deref(), Some("x"));
     }
 
     #[test]

@@ -1,9 +1,11 @@
 mod background;
 mod browser_panel;
 mod canvas_view;
+mod content_move;
 mod dev_menu;
 mod grid_paint;
 mod icon_image;
+mod panel_settings;
 mod plugin_host;
 mod plugin_services;
 mod settings_menu;
@@ -118,6 +120,7 @@ fn add_smoke_panels(
         let kind = PanelKind::Terminal {
             command: None,
             cwd: None,
+            profile: None,
         };
         let id = view.scene.add(kind, rect);
         view.spawn_terminal(id, terminal::options(None, None), window, cx)?;
@@ -687,6 +690,16 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         .await;
         smoke_step(&mut run, "github_api", smoke_github_api(&view, window, cx)).await;
         smoke_step(&mut run, "plugin_menus", smoke_plugin_menus(&view, window, cx)).await;
+        smoke_step(&mut run, "panel_overrides", async {
+            smoke_panel_overrides(&view, window, cx)
+        })
+        .await;
+        smoke_step(
+            &mut run,
+            "panel_settings",
+            smoke_panel_settings(&view, window, cx),
+        )
+        .await;
         // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
         smoke_step(&mut run, "session", async {
             smoke_autosave(&view, window, cx).await;
@@ -812,6 +825,7 @@ fn smoke_terminal_profile(
             let kind = PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             };
             let id = view.scene.add(kind, Rect::new(720.0, 660.0, 300.0, 160.0));
             view.open_plain_terminal(id, chosen, None, None, window, cx)?;
@@ -1168,7 +1182,10 @@ async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &m
             .await;
         let (rect, page, locked_rect) = cx.update(|cx| {
             let view = view.read(cx);
-            let rect = view.scene.get(browser).map(|panel| panel.rect);
+            let rect = view
+                .scene
+                .get(browser)
+                .map(|panel| (panel.rect, calm_core::scene::content_rect(panel).size));
             let page = view
                 .browser_page_sizes()
                 .into_iter()
@@ -1176,7 +1193,7 @@ async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &m
                 .map(|(_, size)| size);
             (rect, page, view.scene.get(locked).map(|panel| panel.rect))
         });
-        let Some(rect) = rect else {
+        let Some((rect, content)) = rect else {
             smoke_fail("browser left the scene during resize");
         };
         if rect.size != want {
@@ -1188,10 +1205,6 @@ async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &m
             ));
         }
         // The web view fills the content below the address bar.
-        let content = Size::new(
-            rect.size.width,
-            rect.size.height - calm_core::scene::CHROME_HEIGHT,
-        );
         let want_page = Size::new(
             content.width,
             content.height - calm_native::BROWSER_BAR_HEIGHT,
@@ -1512,6 +1525,192 @@ async fn wait_for_title(
 /// the plugin's own panels. The canvas item runs through the real menu choice path with no
 /// panel open, so CALM opens one at the click point and delivers after load; the panel
 /// item then reuses that panel.
+/// Opens a plain terminal, gives it a literal title, an accent, a palette and borderless,
+/// then reads back the look and the content rect paint and placement use. The content (the
+/// terminal's logical size) must not move and the palette is applied live. Clearing the
+/// overrides brings the bar and the rendered title back.
+fn smoke_panel_overrides(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::scene::{chrome_height, content_rect, set_borderless};
+    use calm_core::terminal_profile::{PALETTE_PRESETS, PanelTerminalColors};
+    const TITLE: &str = "smoke {n} literal";
+    const ACCENT: u32 = 0x12ab34ff;
+    let palette = PALETTE_PRESETS[1].colors;
+    let checked = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let kind = PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+            };
+            let id = view.scene.add(kind, Rect::new(720.0, 860.0, 300.0, 160.0));
+            view.open_plain_terminal(id, None, None, None, window, cx)?;
+            let before = view.scene.get(id).map(content_rect).ok_or("no panel")?;
+            if let Some(panel) = view.scene.get_mut(id) {
+                panel.overrides.title = Some(TITLE.to_string());
+                panel.overrides.accent_color = Some("#12ab34".to_string());
+                panel.overrides.terminal_colors = Some(PanelTerminalColors::from_colors(&palette));
+                set_borderless(panel, true);
+            }
+            view.apply_panel_overrides(id, cx);
+            let ids: Vec<PanelId> = view.scene.panels.iter().map(|panel| panel.id).collect();
+            let looks = view.paint_looks();
+            let styled = ids
+                .iter()
+                .filter(|id| {
+                    let Some(look) = looks.get(*id) else {
+                        return false;
+                    };
+                    look.title.as_deref() == Some(TITLE) && look.overrides.accent == Some(ACCENT)
+                })
+                .count();
+            let borderless = view
+                .scene
+                .panels
+                .iter()
+                .filter(|panel| chrome_height(panel) == 0.0 && content_rect(panel) == panel.rect)
+                .count();
+            let after = view.scene.get(id).map(content_rect).ok_or("no panel")?;
+            let scene_title = view.scene.get(id).map(|panel| panel.title.clone());
+            let recolored =
+                view.terminal_meta(id).and_then(|meta| meta.applied_colors) == Some(palette);
+            if let Some(panel) = view.scene.get_mut(id) {
+                set_borderless(panel, false);
+                panel.overrides = Default::default();
+            }
+            view.apply_panel_overrides(id, cx);
+            let cleared = view.scene.get(id).map(content_rect) == Some(before)
+                && view.scene.get(id).map(chrome_height) == Some(calm_core::scene::CHROME_HEIGHT)
+                && view.panel_look(id).title.is_none()
+                && view.scene.get(id).is_some_and(|panel| panel.title != TITLE);
+            // The shell is still running: close as if the user confirmed.
+            view.apply_effects(
+                vec![calm_core::interaction::Effect::ClosePanel(id)],
+                window,
+                cx,
+            );
+            Ok::<_, String>((
+                styled,
+                borderless,
+                before == after,
+                scene_title,
+                recolored,
+                cleared,
+            ))
+        })
+    });
+    match checked {
+        Ok(Ok((1, 1, true, Some(title), true, true))) if title == TITLE => println!(
+            "smoke: panel_overrides styled=1 borderless=1 size=unchanged title={title:?} recolor=ok cleared=ok"
+        ),
+        other => smoke_fail(&format!(
+            "panel_overrides: expected styled=1 borderless=1, size unchanged, literal title, recolor, cleared, got {other:?}"
+        )),
+    }
+}
+
+/// Opens a panel's Settings window twice, renames the panel through it, closes the panel,
+/// then sends a late change. One window while open, none after, and the late change is
+/// ignored without touching the scene.
+async fn smoke_panel_settings(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::settings_form::FieldValue;
+    const TITLE: &str = "Second";
+    let title = crate::panel_settings::window_title(
+        TITLE,
+        &PanelKind::Terminal {
+            command: None,
+            cwd: None,
+            profile: None,
+        },
+    );
+    let count = |title: &str| {
+        calm_native::settings_window_count(title)
+            .unwrap_or_else(|err| smoke_fail(&format!("panel settings count: {err}")))
+    };
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let kind = PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+            };
+            let id = view.scene.add(kind, Rect::new(760.0, 1080.0, 300.0, 160.0));
+            view.open_panel_settings(id, window, cx);
+            view.open_panel_settings(id, window, cx);
+            view.panel_settings_changed(
+                id,
+                "panel.title",
+                FieldValue::Text("First".into()),
+                window,
+                cx,
+            );
+            view.panel_settings_changed(
+                id,
+                "panel.title",
+                FieldValue::Text(TITLE.to_string()),
+                window,
+                cx,
+            );
+            let renamed = view.scene.get(id).and_then(|p| p.overrides.title.clone());
+            let open = count(&title);
+            let mapped = view.panel_settings_windows.len();
+            view.apply_effects(
+                vec![calm_core::interaction::Effect::ClosePanel(id)],
+                window,
+                cx,
+            );
+            (id, renamed, open, mapped)
+        })
+    });
+    let Ok((id, renamed, open, mapped)) = opened else {
+        smoke_fail("panel_settings: canvas window unavailable");
+    };
+    // Let AppKit finish closing before counting.
+    cx.background_executor()
+        .timer(Duration::from_millis(200))
+        .await;
+    let late = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let before = view.scene.revision();
+            view.panel_settings_changed(
+                id,
+                "panel.title",
+                FieldValue::Text("late".into()),
+                window,
+                cx,
+            );
+            (
+                view.scene.revision() == before && view.scene.get(id).is_none(),
+                view.panel_settings_windows.len(),
+            )
+        })
+    });
+    let after = count(&title);
+    println!(
+        "smoke: panel_settings windows_open={open} after_close={after} renamed={} renamed_twice={} late_ignored={}",
+        renamed.as_deref() == Some(TITLE),
+        open == 1,
+        matches!(late, Ok((true, 0)))
+    );
+    if open != 1 || mapped != 1 || after != 0 || renamed.as_deref() != Some(TITLE) {
+        smoke_fail(&format!(
+            "panel_settings: expected windows_open=1 after_close=0, got open={open} mapped={mapped} after={after} renamed={renamed:?}"
+        ));
+    }
+    if !matches!(late, Ok((true, 0))) {
+        smoke_fail(&format!(
+            "panel_settings: late change was not ignored: {late:?}"
+        ));
+    }
+}
+
 async fn smoke_plugin_menus(
     view: &Entity<CanvasView>,
     window: AnyWindowHandle,
@@ -1943,7 +2142,7 @@ async fn smoke_settings_from_canvas_menu(
 fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<CanvasView>) {
     use calm_core::background::BackgroundKind;
     use calm_core::settings::read_settings_from;
-    use calm_core::settings_form::{Control, settings_form};
+    use calm_core::settings_form::{Control, FieldState, settings_form};
     let grid_kind = smoke_grid_kind();
     view.update_settings(
         |s| {
@@ -1975,7 +2174,7 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
     // A second open, as from another entry point, must reuse the same window.
     view.open_settings(window, cx);
     let second = view.settings_window.as_ref().map(|w| w.window_number());
-    let count = calm_native::settings_window_count()
+    let count = calm_native::settings_window_count("CALM Settings")
         .unwrap_or_else(|err| smoke_fail(&format!("settings window count: {err}")));
     println!(
         "smoke: settings_window opens=2 windows={count} same={}",
@@ -1984,11 +2183,15 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
     if count != 1 || first.is_none() || first != second {
         smoke_fail("opening Settings twice did not reuse one window");
     }
+    // One binding per non-note control, plus a Reset button per field with its own value.
     let expected = settings_form(&view.settings.settings, &view.form_context())
         .iter()
         .flat_map(|section| &section.fields)
-        .filter(|field| !matches!(field.control, Control::Note(_)))
-        .count();
+        .map(|field| {
+            usize::from(!matches!(field.control, Control::Note(_)))
+                + usize::from(field.state == FieldState::Set)
+        })
+        .sum::<usize>();
     let Some(settings_window) = &view.settings_window else {
         smoke_fail("settings window was not created");
     };
@@ -2428,6 +2631,7 @@ fn smoke_session_edges(
         PanelKind::Terminal {
             command: None,
             cwd: Some(gone.clone()),
+            profile: None,
         },
         PanelKind::Plugin {
             plugin_id: "smoke-plugin".to_string(),
@@ -2558,6 +2762,7 @@ async fn smoke_session(
         PanelKind::Terminal {
             command: None,
             cwd: Some(cwd.path().to_path_buf()),
+            profile: None,
         },
         PanelKind::Browser {
             url: SMOKE_SESSION_PAGE.to_string(),
@@ -2776,6 +2981,7 @@ mod tests {
             PanelKind::Terminal {
                 command: None,
                 cwd: None,
+                profile: None,
             },
             Rect::new(0.0, 0.0, 300.0, 200.0),
         );
