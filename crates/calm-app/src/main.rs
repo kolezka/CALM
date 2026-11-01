@@ -2485,10 +2485,21 @@ async fn smoke_session(
             .and_then(|panel| view.terminal(panel.id))
             .map(|terminal| terminal.entity_id());
         let frames = view.terminal_status(cx);
-        (restored, kinds, new_terminal, frames)
+        (
+            restored,
+            kinds,
+            new_terminal,
+            frames,
+            view.native_zorder(cx),
+        )
     });
     view.update(cx, |view, _| view.stop_autosave());
-    let (restored, kinds, new_terminal, frames) = report;
+    let (restored, kinds, new_terminal, frames, (scene_order, native_order)) = report;
+    if scene_order != native_order {
+        smoke_fail(&format!(
+            "session: native order after restore: zorder={native_order:?} scene={scene_order:?}"
+        ));
+    }
     let kind_json = |layout: &LayoutFile| -> Vec<String> {
         layout
             .panels
@@ -2518,7 +2529,7 @@ async fn smoke_session(
         ));
     }
     let line = format!(
-        "smoke: session saved={saved} restored={} kinds={} order={} settings={}",
+        "smoke: session saved={saved} restored={} kinds={} order={} settings={} zorder=match",
         restored.panels.len(),
         kinds.join(","),
         if order { "match" } else { "mismatch" },

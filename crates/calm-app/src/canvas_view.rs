@@ -436,6 +436,8 @@ impl CanvasView {
         }
         // Last, so placement runs once with the saved zoom.
         self.scene.camera = layout.camera;
+        // Restack once all panels exist, without waiting for paint.
+        self.sync_native_order(cx);
         notices
     }
 
