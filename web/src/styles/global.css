@@ -261,8 +261,16 @@ a {
   }
 }
 
-.hero-wordmark {
-  filter: drop-shadow(0 0 18px rgb(72 245 231 / 25%));
+/* Animated wordmark from assets/brand/logo-animated-transparent.svg. It brings
+   its own tagline and data tape, so the HTML tagline that used to sit here is
+   gone to avoid saying it twice. The file honours prefers-reduced-motion. */
+.hero-banner {
+  display: block;
+  width: 100%;
+  max-width: 456px;
+  height: auto;
+  margin-top: -8px;
+  filter: drop-shadow(0 0 18px rgb(72 245 231 / 22%));
 }
 
 .hero-underline {
@@ -275,15 +283,6 @@ a {
     var(--magenta) 60% 78%,
     var(--edge) 78% 100%
   );
-}
-
-.hero-tagline {
-  font-family: var(--mono);
-  font-size: clamp(0.85rem, 2vw, 1rem);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--white);
-  margin-bottom: 0.9rem;
 }
 
 .hero-sub {
