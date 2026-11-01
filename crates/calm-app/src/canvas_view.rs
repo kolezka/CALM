@@ -401,6 +401,15 @@ impl CanvasView {
                         notices.push(format!("a restored terminal failed to start: {err}"));
                     }
                 }
+                PanelKind::Browser { url, .. } => {
+                    let url = calm_core::browser_url::restored_url(url).unwrap_or_else(|notice| {
+                        notices.push(notice);
+                        calm_core::browser_url::RESTORE_FALLBACK_URL.to_string()
+                    });
+                    if let Err(err) = self.spawn_browser(id, &url, window, cx) {
+                        notices.push(format!("a restored browser failed to start: {err}"));
+                    }
+                }
                 kind => {
                     if let PanelKind::Plugin {
                         plugin_id,
