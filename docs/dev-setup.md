@@ -30,6 +30,39 @@ launches. Settings live in `~/.config/calm/settings.json` (`$CALM_HOME/settings.
 `CALM_HOME=$(mktemp -d) cargo run -p calm-app -- --smoke`, so they never touch your real
 settings.
 
+### Smoke steps and the summary
+
+The smoke runs a fixed list of named steps (`terminals`, `zorder`, `join`, `app_icon`,
+`native_reorder`, `plugins`, `tui`, `show_stats`, `fps`, `stats`, `preview`,
+`preview_cadence`, `grid`, `preview_input_targets`, `live`, `background`, `browser`,
+`resize`, `blur`, `settings_dispatch`, `github_api`, `plugin_menus`, `session`). The list
+lives in `crates/calm-app/src/smoke_runner.rs`. A failed step does not stop the run. Each
+step prints `smoke: step <name> PASS`, `FAIL <label> <reason>` or `SKIPPED <reason>`. A step
+is skipped only when a step it needs failed (for example `preview_cadence` needs `preview`).
+Window, settings and panel setup still stop the smoke at once when they fail.
+
+The run ends with a summary:
+
+```text
+smoke: summary pass=16 fail=4 skipped=3
+smoke: summary labels known-flake:few-frames=1 known-flake:stats-pill=1 new=2
+smoke: summary FAIL fps known-flake:few-frames only 4 frames with show_stats on
+smoke: summary SKIPPED grid needs preview, which failed
+```
+
+The exit code is 0 only when every selected step passed. Each failure is labeled
+`known-flake:<id>` when it matches a flake listed in `.ai/conventions.md` ("Smoke flakes"),
+otherwise `new`. The label is a hint for reading the log, nothing more: a known flake is
+still a failure and still exits 1. A failed step can leave panels or zoom behind, so read
+the failures in order; a `new` failure right after another failure may be a follow-on.
+
+Run only some steps with `CALM_SMOKE_ONLY` (comma separated names). The steps they need run
+too, and the smoke prints the final list first. An unknown name stops the smoke with exit 1.
+
+```sh
+CALM_HOME=$(mktemp -d) CALM_SMOKE_ONLY=session,zorder cargo run -p calm-app -- --smoke; echo rc=$?
+```
+
 For the GitHub PRs plugin, `gh auth login` is enough. Or put `GITHUB_TOKEN=<your token>` in
 `~/.config/calm/.env` (`chmod 600`); a dev build also reads `.env` at the checkout root,
 which `.gitignore` covers. See [plugins.md](plugins.md#github-access).

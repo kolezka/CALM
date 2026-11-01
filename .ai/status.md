@@ -161,6 +161,12 @@ Pull requests:
   can stop when a window is occluded. The branch syncs after scene and native-view changes
   and checks both reorder directions in smoke without waiting for a paint. Other paint-based
   smoke flakes remain open in `.ai/backlog.md` item 6.
+- `test/smoke-continue`: the smoke runs every step, prints PASS, FAIL or SKIPPED per step
+  and a summary, labels known flakes, and takes `CALM_SMOKE_ONLY`. rc stays 1 on any
+  failure. Two full runs on 1584575 (2026-11-01): fps, stats and preview failed in both;
+  run 1 also failed tui, live (window hidden), resize and blur, run 2 resize. Both runs
+  reached `session`, which passed. A failed `tui` step left its panels open, so the
+  following preview counts saw 4 terminals.
 - No PR yet: a Linux port plan.
 
 ## Not wired yet

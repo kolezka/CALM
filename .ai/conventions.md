@@ -21,9 +21,31 @@ How work on CALM is done. `CLAUDE.md` repeats the ones that are easiest to break
 - Before a merge: `gmake ci` (clippy `-D warnings`, fmt check, workspace tests, smoke,
   plugin type checks). The GUI gate is `cargo run -p calm-app -- --smoke; echo rc=$?` and
   must exit 0 with all its lines printed. A green build is not a running window.
+- The smoke runs every step and ends with `smoke: summary pass=N fail=M skipped=K`, the
+  failure count per label, and one line per failure or skip. `CALM_SMOKE_ONLY=a,b` runs
+  only those steps plus what they need; unknown names exit 1. The gate needs the full run
+  (no filter) at rc=0. A filtered run is for diagnosis only. Details: `docs/dev-setup.md`.
+- A failure labeled `known-flake:<id>` is still a failure: rc stays 1 and the gate is not
+  met. Never report a known flake as a pass, and never add a flake to the list below to make
+  a run look green. A new entry needs a seen message and a backlog item.
 - Capture each command's own exit code. Never read a status through a pipe to `tail` or
   `grep`.
 - Benchmarks are recorded with hardware and method. No number is quoted without a run.
+
+## Smoke flakes
+
+Failures seen before (`.ai/backlog.md` item 6). `crates/calm-app/src/smoke_runner.rs`
+(`KNOWN_FLAKES`) matches failure messages against this list; keep the two in step.
+Checked in this order:
+
+- `stats-pill`: "stats: sampler has CPU but the status bar does not show it".
+- `few-frames`: "only N frames with show_stats on".
+- `tui-exit`: "tui: ran=... status=...", the TUI exit waits timing out.
+- `preview-cadence`: "preview refresh outside 1..=3 snapshots".
+- `window-hidden`: any other message with `window_visible=Some(false)`.
+
+Everything else is `new`, including "no preview snapshots at zoom 0.4" and "terminals not
+live at zoom 1.5" while the window is visible.
 
 ## Tests
 
