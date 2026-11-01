@@ -201,17 +201,21 @@ pub fn placeholder_reason(
     }
 }
 
+/// Shown after a restored terminal's title in its chrome. Never saved with the title.
+pub const CWD_MISSING_NOTE: &str = "cwd missing, started in ~";
+
 /// The cwd a restored terminal starts in. A saved cwd that is gone or not a directory
-/// starts in home (`None`), with a notice that names the path.
+/// starts in `home` (not the profile's cwd), with a notice that names the path.
 pub fn restored_cwd(
     cwd: Option<&Path>,
     is_dir: impl Fn(&Path) -> bool,
+    home: &Path,
 ) -> (Option<PathBuf>, Option<String>) {
     match cwd {
         Some(path) if !is_dir(path) => (
-            None,
+            Some(home.to_path_buf()),
             Some(format!(
-                "terminal cwd {} is missing or not a directory: started in home",
+                "terminal cwd {} missing or not a directory, started in ~",
                 path.display()
             )),
         ),
@@ -545,16 +549,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("file");
         std::fs::write(&file, "x").unwrap();
+        let home = Path::new("/Users/someone");
         let is_dir = |p: &Path| p.is_dir();
         assert_eq!(
-            restored_cwd(Some(dir.path()), is_dir),
+            restored_cwd(Some(dir.path()), is_dir, home),
             (Some(dir.path().to_path_buf()), None)
         );
-        assert_eq!(restored_cwd(None, is_dir), (None, None));
+        assert_eq!(restored_cwd(None, is_dir, home), (None, None));
         for gone in [file.as_path(), Path::new("/no/such/calm/dir")] {
-            let (cwd, notice) = restored_cwd(Some(gone), is_dir);
-            assert_eq!(cwd, None);
-            assert!(notice.unwrap().contains(&gone.display().to_string()));
+            let (cwd, notice) = restored_cwd(Some(gone), is_dir, home);
+            assert_eq!(cwd.as_deref(), Some(home));
+            let notice = notice.unwrap();
+            assert!(notice.contains(&gone.display().to_string()), "{notice}");
+            assert!(notice.contains("started in ~"), "{notice}");
         }
     }
 

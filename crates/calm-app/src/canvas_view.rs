@@ -22,7 +22,7 @@ use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_m
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
 use calm_core::restore::{
-    AutosaveStart, RestorePlan, placeholder_reason, restored_cwd, version_note,
+    AutosaveStart, CWD_MISSING_NOTE, RestorePlan, placeholder_reason, restored_cwd, version_note,
 };
 use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, content_rect};
 use calm_core::status_bar::{status_bar_rect, status_text};
@@ -226,6 +226,8 @@ pub struct CanvasView {
     /// Restored panels that cannot run, with the line they show. GPUI-only: no native
     /// view, and their saved kind is kept unchanged for the next save.
     placeholders: HashMap<PanelId, String>,
+    /// A short note drawn after a panel's title in its chrome, never saved with it.
+    title_notes: HashMap<PanelId, &'static str>,
     /// What the launch restore reported, shown in the status pill.
     restore_notice: Option<String>,
     /// The named layout this canvas came from, kept for a later save.
@@ -307,6 +309,7 @@ impl CanvasView {
             autosave_gate: APP_AUTOSAVE_ACTIVE,
             autosave_path: None,
             placeholders: HashMap::new(),
+            title_notes: HashMap::new(),
             restore_notice: None,
             layout_name: None,
         }
@@ -385,7 +388,12 @@ impl CanvasView {
             }
             match &saved.kind {
                 PanelKind::Terminal { command, cwd } => {
-                    let (cwd, notice) = restored_cwd(cwd.as_deref(), std::path::Path::is_dir);
+                    let home = terminal_profiles::home_dir();
+                    let (cwd, notice) =
+                        restored_cwd(cwd.as_deref(), std::path::Path::is_dir, &home);
+                    if notice.is_some() {
+                        self.title_notes.insert(id, CWD_MISSING_NOTE);
+                    }
                     notices.extend(notice);
                     let opened =
                         self.open_plain_terminal(id, None, command.as_deref(), cwd, window, cx);
@@ -414,6 +422,11 @@ impl CanvasView {
         // Last, so placement runs once with the saved zoom.
         self.scene.camera = layout.camera;
         notices
+    }
+
+    /// The note drawn after `id`'s title, if it has one.
+    pub fn title_note(&self, id: PanelId) -> Option<&'static str> {
+        self.title_notes.get(&id).copied()
     }
 
     /// The line a placeholder panel shows, if `id` is one.
@@ -729,6 +742,7 @@ impl CanvasView {
                     self.browsers.retain(|(panel, _)| *panel != id);
                     self.plugin_panels.retain(|(panel, _)| *panel != id);
                     self.placeholders.remove(&id);
+                    self.title_notes.remove(&id);
                     self.scene.remove(id);
                     if self.focused == Some(id) {
                         self.focused = None;
@@ -943,9 +957,8 @@ impl CanvasView {
             .focused
             .and_then(|focused| self.terminal_meta(focused))
             .map(|meta| meta.cwd.clone());
-        let start = cwd.unwrap_or_else(|| {
-            terminal_profiles::start_dir(&resolved.cwd, inherited.as_deref(), &home)
-        });
+        let start =
+            terminal_profiles::terminal_start(cwd, &resolved.cwd, inherited.as_deref(), &home);
         let options = terminal_profiles::options(&resolved, command, start.clone());
         let configuration = terminal_profiles::configuration_name(&options.configuration);
         self.spawn_terminal(id, options, window, cx)?;
@@ -2057,6 +2070,7 @@ struct PaintSnapshot {
     joins: JoinLayout,
     /// Restored panels that cannot run, with their line.
     placeholders: HashMap<PanelId, String>,
+    title_notes: HashMap<PanelId, &'static str>,
 }
 
 /// How a terminal or plugin panel's content is drawn this paint. A plugin in Preview has
@@ -2659,10 +2673,14 @@ impl PaintSnapshot {
             );
             middle.size.width = (middle.size.width - width - 8.0 * zoom).max(0.0);
         }
-        let title = if confirming {
-            CONFIRM_TITLE
-        } else {
-            panel.title.as_str()
+        let noted;
+        let title = match self.title_notes.get(&panel.id) {
+            _ if confirming => CONFIRM_TITLE,
+            Some(note) => {
+                noted = format!("{} ({note})", panel.title);
+                noted.as_str()
+            }
+            None => panel.title.as_str(),
         };
         paint_text(
             title,
@@ -2838,6 +2856,7 @@ impl Render for CanvasView {
             grid,
             joins: JoinLayout::compute(&self.scene.panels),
             placeholders: self.placeholders.clone(),
+            title_notes: self.title_notes.clone(),
         };
         self.join_counts = (
             snapshot.joins.joins.len(),
