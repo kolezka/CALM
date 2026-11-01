@@ -334,6 +334,7 @@ impl CanvasView {
             1 => notices.pop(),
             n => Some(format!("{} (+{} more on stderr)", notices[0], n - 1)),
         };
+        self.autosave_gate = plan.autosave.launch_gate(self.autosave_gate);
         match plan.autosave {
             AutosaveStart::On => {
                 if autosave_active(self.autosave_gate, self.settings.settings.session.autosave)

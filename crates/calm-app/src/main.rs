@@ -2256,7 +2256,10 @@ async fn smoke_session(
                 autosave: calm_core::restore::AutosaveStart::Off("smoke fixture".to_string()),
                 notices: Vec::new(),
             };
+            // The fixture plan closes the launch gate; later steps run their own launches.
+            let gate = view.autosave_gate;
             view.apply_restore_plan(plan, session.clone(), window, cx);
+            view.autosave_gate = gate;
             let saved = view.scene.to_layout();
             let first = view.scene.panels.first().map(|panel| panel.id);
             let old = first

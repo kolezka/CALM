@@ -54,6 +54,15 @@ pub enum AutosaveStart {
     Off(String),
 }
 
+impl AutosaveStart {
+    /// The autosave gate for the rest of this launch. Off closes it, so a later Settings
+    /// toggle or reset cannot start a writer over a session file this launch could not
+    /// read or move aside.
+    pub fn launch_gate(&self, gate: bool) -> bool {
+        gate && *self == AutosaveStart::On
+    }
+}
+
 /// The launch, decided. The app moves `quarantine` aside first (then calls
 /// `after_quarantine`), builds `layout` back to front, and starts autosave on the
 /// resulting scene, so an untouched start never writes the session file.
@@ -547,6 +556,29 @@ mod tests {
             assert_eq!(cwd, None);
             assert!(notice.unwrap().contains(&gone.display().to_string()));
         }
+    }
+
+    #[test]
+    fn unreadable_session_keeps_autosave_off_for_the_launch() {
+        use crate::autosave::{AutosaveChange, autosave_change};
+        use crate::settings::SessionSettings;
+        let io = LayoutError::Io {
+            path: PathBuf::from("/s/session.json"),
+            source: io::Error::from(io::ErrorKind::PermissionDenied),
+        };
+        let plan = plan_restore(&Source::Session, None, Err(io), None).unwrap();
+        let gate = plan.autosave.launch_gate(true);
+        let on = SessionSettings::default();
+        let off = SessionSettings {
+            autosave: false,
+            ..SessionSettings::default()
+        };
+        // Toggle off then on, and a reset to defaults: both flip the setting on.
+        assert_eq!(autosave_change(gate, false, &off, &on), AutosaveChange::Keep);
+        // Positive control: a readable session lets the same toggle start the writer.
+        let gate = AutosaveStart::On.launch_gate(true);
+        assert_eq!(autosave_change(gate, false, &off, &on), AutosaveChange::Start);
+        assert!(!AutosaveStart::On.launch_gate(false));
     }
 
     #[test]
