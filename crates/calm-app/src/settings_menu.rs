@@ -6,7 +6,7 @@ use calm_core::settings::{Settings, save_settings_to};
 use calm_core::settings_form::{
     FieldValue, FormCommand, FormContext, FormOutcome, apply_field, settings_form,
 };
-use calm_native::{SettingsWindow, choose_image_file};
+use calm_native::{SettingsWindow, WindowLayout, choose_image_file};
 use gpui::{
     App, AppContext as _, Context, InteractiveElement, KeyBinding, Menu, MenuItem, Window,
     WindowHandle, actions,
@@ -154,7 +154,7 @@ impl CanvasView {
             let executor = cx.foreground_executor().clone();
             // AppKit calls this inside the control's action. Hop onto GPUI's executor so
             // the view is never updated while GPUI itself is mid-update.
-            SettingsWindow::new(move |id, value| {
+            SettingsWindow::new("Settings", WindowLayout::Tabs, move |id, value| {
                 let this = this.clone();
                 let mut cx = async_cx.clone();
                 executor

@@ -1945,7 +1945,7 @@ async fn smoke_settings_from_canvas_menu(
 fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<CanvasView>) {
     use calm_core::background::BackgroundKind;
     use calm_core::settings::read_settings_from;
-    use calm_core::settings_form::{Control, settings_form};
+    use calm_core::settings_form::{Control, FieldState, settings_form};
     let grid_kind = smoke_grid_kind();
     view.update_settings(
         |s| {
@@ -1977,7 +1977,7 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
     // A second open, as from another entry point, must reuse the same window.
     view.open_settings(window, cx);
     let second = view.settings_window.as_ref().map(|w| w.window_number());
-    let count = calm_native::settings_window_count()
+    let count = calm_native::settings_window_count("Settings")
         .unwrap_or_else(|err| smoke_fail(&format!("settings window count: {err}")));
     println!(
         "smoke: settings_window opens=2 windows={count} same={}",
@@ -1986,11 +1986,15 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
     if count != 1 || first.is_none() || first != second {
         smoke_fail("opening Settings twice did not reuse one window");
     }
+    // One binding per non-note control, plus a Reset button per field with its own value.
     let expected = settings_form(&view.settings.settings, &view.form_context())
         .iter()
         .flat_map(|section| &section.fields)
-        .filter(|field| !matches!(field.control, Control::Note(_)))
-        .count();
+        .map(|field| {
+            usize::from(!matches!(field.control, Control::Note(_)))
+                + usize::from(field.state == FieldState::Set)
+        })
+        .sum::<usize>();
     let Some(settings_window) = &view.settings_window else {
         smoke_fail("settings window was not created");
     };

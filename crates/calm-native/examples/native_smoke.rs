@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 use calm_core::camera::Camera;
 use calm_core::geometry::{Point, Rect};
 use calm_core::menu::canvas_menu;
+use calm_core::settings_form::{Control, Field, FieldState, Section};
 use calm_core::viewport::place_native;
-use calm_native::{ContextMenu, NativeChild, WebPanel};
+use calm_native::{ContextMenu, NativeChild, SettingsWindow, WebPanel, WindowLayout};
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
@@ -320,8 +321,89 @@ fn main() {
         fail("menu tree does not match the sample spec");
     }
 
+    settings_window_check();
+
     drop(web);
     drop(child);
     window.close();
     exit(0);
+}
+
+fn smoke_field(id: &str, control: Control, state: FieldState) -> Field {
+    Field {
+        id: id.to_string(),
+        label: id.to_string(),
+        control,
+        state,
+    }
+}
+
+fn smoke_section(title: &str, fields: Vec<Field>) -> Section {
+    Section {
+        title: title.to_string(),
+        fields,
+    }
+}
+
+/// Builds a settings window with text, inherited and set fields and counts what is wired.
+fn settings_window_check() {
+    let text = || {
+        smoke_field(
+            "name",
+            Control::Text {
+                value: String::new(),
+                placeholder: "Untitled".to_string(),
+            },
+            FieldState::Plain,
+        )
+    };
+    let form = vec![
+        smoke_section(
+            "General",
+            vec![
+                text(),
+                smoke_field("pinned", Control::Checkbox(true), FieldState::Set),
+            ],
+        ),
+        smoke_section(
+            "Look",
+            vec![
+                smoke_field(
+                    "hint",
+                    Control::Note("a note".to_string()),
+                    FieldState::Plain,
+                ),
+                smoke_field("dim", Control::Checkbox(false), FieldState::Inherited),
+            ],
+        ),
+    ];
+    let tabs = SettingsWindow::new("Smoke Settings", WindowLayout::Tabs, |_, _| {})
+        .unwrap_or_else(|e| fail(&e.to_string()));
+    tabs.set_form(&form);
+    // Text, the set checkbox and its Reset button, the inherited checkbox. Notes bind nothing.
+    let bound = tabs.bound_controls();
+    let titles = tabs.tab_titles();
+    println!("native_smoke: settings tabs={titles:?} controls={bound}");
+    if bound != 4 || titles != ["General", "Look"] {
+        fail("settings window did not bind text, reset and tab controls");
+    }
+    tabs.select_tab("Look");
+    tabs.set_form(&form);
+    let kept = tabs.selected_tab();
+    tabs.set_form(&form[..1]);
+    let fallback = tabs.selected_tab();
+    println!("native_smoke: settings selected kept={kept:?} fallback={fallback:?}");
+    if kept.as_deref() != Some("Look") || fallback.as_deref() != Some("General") {
+        fail("set_form did not keep the selected tab, or did not fall back to the first");
+    }
+
+    let single = SettingsWindow::new("Smoke Panel", WindowLayout::Single, |_, _| {})
+        .unwrap_or_else(|e| fail(&e.to_string()));
+    single.set_form(&form);
+    let single_bound = single.bound_controls();
+    let single_tabs = single.tab_titles().len();
+    println!("native_smoke: settings single tabs={single_tabs} controls={single_bound}");
+    if single_bound != 4 || single_tabs != 0 {
+        fail("single layout settings window is wrong");
+    }
 }

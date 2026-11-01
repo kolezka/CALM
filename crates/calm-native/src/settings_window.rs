@@ -2,6 +2,9 @@
 //! with AppKit controls. Native, so it never sits under a Ghostty or WKWebView view, and
 //! the color wells bring the system color picker for free.
 //!
+//! `WindowLayout::Tabs` puts each section in its own scrolling tab; `Single` stacks them in
+//! one scroll view.
+//!
 //! Every control targets one helper object. Its tag indexes the bindings list, which says
 //! which field id it edits and how to read its value.
 
@@ -9,21 +12,20 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use calm_core::background::Rgb;
-use calm_core::settings_form::{Control, FieldValue, Section};
+use calm_core::settings_form::{Control, Field, FieldState, FieldValue, Section};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor, NSColorSpace,
     NSColorWell, NSControl, NSFont, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSScrollView,
-    NSSlider, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSSlider, NSTabView, NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{NSInteger, NSPoint, NSRect, NSSize, NSString};
 
 use crate::NativeError;
 
-const WINDOW_TITLE: &str = "CALM Settings";
-const WINDOW_WIDTH: f64 = 560.0;
+const WINDOW_WIDTH: f64 = 680.0;
 const WINDOW_HEIGHT: f64 = 640.0;
 const MARGIN: f64 = 20.0;
 const ROW_HEIGHT: f64 = 30.0;
@@ -33,6 +35,19 @@ const CONTROL_X: f64 = MARGIN + LABEL_WIDTH + 10.0;
 const CONTROL_WIDTH: f64 = 230.0;
 const VALUE_X: f64 = CONTROL_X + CONTROL_WIDTH + 8.0;
 const VALUE_WIDTH: f64 = 70.0;
+const STATE_X: f64 = VALUE_X + VALUE_WIDTH;
+const STATE_WIDTH: f64 = 76.0;
+const INHERITED_LABEL: &str = "inherited";
+const RESET_TITLE: &str = "Reset";
+
+/// How a settings window arranges its sections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowLayout {
+    /// One tab per section, each scrolling on its own.
+    Tabs,
+    /// Every section in one scroll view.
+    Single,
+}
 
 type ChangeCallback = Box<dyn FnMut(String, FieldValue)>;
 
@@ -45,6 +60,8 @@ enum BindingKind {
     Color,
     Choice,
     Button,
+    Text,
+    Reset,
 }
 
 struct Binding {
@@ -133,6 +150,8 @@ impl FormTarget {
                 FieldValue::Index(usize::try_from(popup.indexOfSelectedItem()).ok()?)
             }
             BindingKind::Button => FieldValue::Pressed,
+            BindingKind::Text => FieldValue::Text(sender.stringValue().to_string()),
+            BindingKind::Reset => FieldValue::Reset,
         };
         Some((binding.id.clone(), value))
     }
@@ -166,17 +185,33 @@ fn label(mtm: MainThreadMarker, text: &str, frame: NSRect) -> Retained<NSTextFie
     field
 }
 
-/// The Settings window. Hidden, not destroyed, when the user closes it.
+enum Body {
+    Single(Retained<NSScrollView>),
+    Tabs(Retained<NSTabView>),
+}
+
+fn make_scroll(mtm: MainThreadMarker, frame: NSRect) -> Retained<NSScrollView> {
+    let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), frame);
+    scroll.setHasVerticalScroller(true);
+    scroll.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    scroll
+}
+
+/// A settings window. Hidden, not destroyed, when the user closes it.
 pub struct SettingsWindow {
     mtm: MainThreadMarker,
     window: Retained<NSWindow>,
-    scroll: Retained<NSScrollView>,
+    body: Body,
     target: Retained<FormTarget>,
 }
 
 impl SettingsWindow {
     /// `on_change` runs on the main thread inside the AppKit action. Do not block in it.
     pub fn new(
+        title: &str,
+        layout: WindowLayout,
         on_change: impl FnMut(String, FieldValue) + 'static,
     ) -> Result<SettingsWindow, NativeError> {
         let mtm = MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
@@ -184,11 +219,12 @@ impl SettingsWindow {
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable
             | NSWindowStyleMask::Resizable;
+        let frame = rect(0.0, 0.0, WINDOW_WIDTH, WINDOW_HEIGHT);
         // SAFETY: standard designated initializer with a valid rect, mask and backing.
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
-                rect(0.0, 0.0, WINDOW_WIDTH, WINDOW_HEIGHT),
+                frame,
                 style,
                 NSBackingStoreType::Buffered,
                 false,
@@ -196,19 +232,25 @@ impl SettingsWindow {
         };
         // SAFETY: we keep the window retained, so AppKit must not release it on close.
         unsafe { window.setReleasedWhenClosed(false) };
-        window.setTitle(&NSString::from_str(WINDOW_TITLE));
+        window.setTitle(&NSString::from_str(title));
         window.setMinSize(NSSize::new(WINDOW_WIDTH, 320.0));
 
-        let scroll = NSScrollView::initWithFrame(
-            NSScrollView::alloc(mtm),
-            rect(0.0, 0.0, WINDOW_WIDTH, WINDOW_HEIGHT),
-        );
-        scroll.setHasVerticalScroller(true);
-        scroll.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewWidthSizable
-                | NSAutoresizingMaskOptions::ViewHeightSizable,
-        );
-        window.setContentView(Some(&scroll));
+        let body = match layout {
+            WindowLayout::Single => {
+                let scroll = make_scroll(mtm, frame);
+                window.setContentView(Some(&scroll));
+                Body::Single(scroll)
+            }
+            WindowLayout::Tabs => {
+                let tabs = NSTabView::initWithFrame(NSTabView::alloc(mtm), frame);
+                tabs.setAutoresizingMask(
+                    NSAutoresizingMaskOptions::ViewWidthSizable
+                        | NSAutoresizingMaskOptions::ViewHeightSizable,
+                );
+                window.setContentView(Some(&tabs));
+                Body::Tabs(tabs)
+            }
+        };
         window.center();
 
         let target = FormTarget::new(mtm);
@@ -216,25 +258,87 @@ impl SettingsWindow {
         Ok(SettingsWindow {
             mtm,
             window,
-            scroll,
+            body,
             target,
         })
     }
 
-    /// Replaces every control with a fresh build of `sections`.
+    /// Replaces every control with a fresh build of `sections`. In tabs mode the selected
+    /// tab stays selected by title, else the first tab is selected.
     pub fn set_form(&self, sections: &[Section]) {
-        let mtm = self.mtm;
-        if let Some(old) = self.scroll.documentView() {
-            for view in old.subviews().iter() {
+        // Commit an edit in progress while the old bindings still match its tag.
+        self.window.makeFirstResponder(None);
+        for document in self.documents() {
+            for view in document.subviews().iter() {
                 // An active well keeps feeding the shared color panel after removal.
                 if let Some(well) = view.downcast_ref::<NSColorWell>() {
                     well.deactivate();
                 }
             }
         }
+        let mut bindings = Vec::new();
+        match &self.body {
+            Body::Single(scroll) => {
+                let document = self.build_document(sections, true, &mut bindings);
+                *self.target.ivars().bindings.borrow_mut() = bindings;
+                scroll.setDocumentView(Some(&document));
+            }
+            Body::Tabs(tabs) => {
+                let selected = self.selected_tab();
+                let mut items = Vec::new();
+                for section in sections {
+                    let document =
+                        self.build_document(std::slice::from_ref(section), false, &mut bindings);
+                    let scroll = make_scroll(self.mtm, tabs.contentRect());
+                    scroll.setDocumentView(Some(&document));
+                    let item = NSTabViewItem::new();
+                    item.setLabel(&NSString::from_str(&section.title));
+                    item.setView(Some(&scroll));
+                    items.push(item);
+                }
+                *self.target.ivars().bindings.borrow_mut() = bindings;
+                for old in tabs.tabViewItems().iter() {
+                    tabs.removeTabViewItem(&old);
+                }
+                for item in &items {
+                    tabs.addTabViewItem(item);
+                }
+                let index = selected
+                    .and_then(|title| sections.iter().position(|s| s.title == title))
+                    .unwrap_or(0);
+                if !items.is_empty() {
+                    tabs.selectTabViewItemAtIndex(index as NSInteger);
+                }
+            }
+        }
+    }
+
+    /// The document views now shown, one per tab in tabs mode.
+    fn documents(&self) -> Vec<Retained<NSView>> {
+        match &self.body {
+            Body::Single(scroll) => scroll.documentView().into_iter().collect(),
+            Body::Tabs(tabs) => tabs
+                .tabViewItems()
+                .iter()
+                .filter_map(|item| item.view(self.mtm))
+                .filter_map(|view| {
+                    view.downcast_ref::<NSScrollView>()
+                        .and_then(|scroll| scroll.documentView())
+                })
+                .collect(),
+        }
+    }
+
+    fn build_document(
+        &self,
+        sections: &[Section],
+        headers: bool,
+        bindings: &mut Vec<Binding>,
+    ) -> Retained<FlippedView> {
+        let mtm = self.mtm;
         let rows: usize = sections.iter().map(|s| s.fields.len()).sum();
-        let height =
-            MARGIN * 2.0 + sections.len() as f64 * HEADER_HEIGHT + rows as f64 * ROW_HEIGHT;
+        let header_rows = if headers { sections.len() } else { 0 };
+        let height = MARGIN * 2.0 + header_rows as f64 * HEADER_HEIGHT + rows as f64 * ROW_HEIGHT;
         let document = FlippedView::alloc(mtm).set_ivars(());
         // SAFETY: NSView's designated initializer on a fresh instance.
         let document: Retained<FlippedView> = unsafe {
@@ -242,37 +346,82 @@ impl SettingsWindow {
         };
         document.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
 
-        let mut bindings = Vec::new();
         let mut y = MARGIN;
         for section in sections {
-            let header = label(mtm, &section.title, rect(MARGIN, y + 8.0, 400.0, 20.0));
-            header.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
-            document.addSubview(&header);
-            y += HEADER_HEIGHT;
+            if headers {
+                let header = label(mtm, &section.title, rect(MARGIN, y + 8.0, 400.0, 20.0));
+                header.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
+                document.addSubview(&header);
+                y += HEADER_HEIGHT;
+            }
             for field in &section.fields {
-                if !field.label.is_empty() {
-                    let name = label(mtm, &field.label, rect(MARGIN, y + 5.0, LABEL_WIDTH, 18.0));
-                    document.addSubview(&name);
-                }
-                if let Some((control, kind)) = self.build_control(&field.control, y, &document) {
-                    control.setTag(bindings.len() as NSInteger);
-                    // SAFETY: `calmChanged:` is defined on FormTarget and takes the sender.
-                    // Controls hold their target weakly; SettingsWindow keeps it alive.
-                    unsafe {
-                        control.setTarget(Some(self.target.as_ref() as &AnyObject));
-                        control.setAction(Some(sel!(calmChanged:)));
-                    }
-                    document.addSubview(&control);
-                    bindings.push(Binding {
-                        id: field.id.clone(),
-                        kind,
-                    });
-                }
+                self.build_row(field, y, &document, bindings);
                 y += ROW_HEIGHT;
             }
         }
-        *self.target.ivars().bindings.borrow_mut() = bindings;
-        self.scroll.setDocumentView(Some(&document));
+        document
+    }
+
+    fn build_row(&self, field: &Field, y: f64, document: &NSView, bindings: &mut Vec<Binding>) {
+        let mtm = self.mtm;
+        if !field.label.is_empty() {
+            let name = label(mtm, &field.label, rect(MARGIN, y + 5.0, LABEL_WIDTH, 18.0));
+            document.addSubview(&name);
+        }
+        if let Some((control, kind)) = self.build_control(&field.control, y, document) {
+            self.bind(&control, &field.id, kind, document, bindings);
+        }
+        match field.state {
+            FieldState::Plain => {}
+            FieldState::Inherited => {
+                let note = label(
+                    mtm,
+                    INHERITED_LABEL,
+                    rect(STATE_X, y + 6.0, STATE_WIDTH, 16.0),
+                );
+                note.setFont(Some(&NSFont::systemFontOfSize(
+                    NSFont::smallSystemFontSize(),
+                )));
+                note.setTextColor(Some(&NSColor::secondaryLabelColor()));
+                document.addSubview(&note);
+            }
+            FieldState::Set => {
+                // SAFETY: nil target and action are set right after by `bind`.
+                let button = unsafe {
+                    NSButton::buttonWithTitle_target_action(
+                        &NSString::from_str(RESET_TITLE),
+                        None,
+                        None,
+                        mtm,
+                    )
+                };
+                button.setFrame(rect(STATE_X, y + 2.0, STATE_WIDTH, 24.0));
+                let control: Retained<NSControl> = Retained::into_super(button);
+                self.bind(&control, &field.id, BindingKind::Reset, document, bindings);
+            }
+        }
+    }
+
+    fn bind(
+        &self,
+        control: &NSControl,
+        id: &str,
+        kind: BindingKind,
+        document: &NSView,
+        bindings: &mut Vec<Binding>,
+    ) {
+        control.setTag(bindings.len() as NSInteger);
+        // SAFETY: `calmChanged:` is defined on FormTarget and takes the sender.
+        // Controls hold their target weakly; SettingsWindow keeps it alive.
+        unsafe {
+            control.setTarget(Some(self.target.as_ref() as &AnyObject));
+            control.setAction(Some(sel!(calmChanged:)));
+        }
+        document.addSubview(control);
+        bindings.push(Binding {
+            id: id.to_string(),
+            kind,
+        });
     }
 
     fn build_control(
@@ -359,10 +508,15 @@ impl SettingsWindow {
                 button.setFrame(frame);
                 (Retained::into_super(button), BindingKind::Button)
             }
-            // Read-only until text input is drawn: shows the value, else the placeholder.
             Control::Text { value, placeholder } => {
-                let shown = if value.is_empty() { placeholder } else { value };
-                return self.build_control(&Control::Note(shown.clone()), y, document);
+                let field = NSTextField::textFieldWithString(&NSString::from_str(value), mtm);
+                field.setFrame(frame);
+                field.setPlaceholderString(Some(&NSString::from_str(placeholder)));
+                // Report on Return and on focus loss, not on every keystroke.
+                if let Some(cell) = field.cell() {
+                    cell.setSendsActionOnEndEditing(true);
+                }
+                (Retained::into_super(field), BindingKind::Text)
             }
             Control::Note(text) => {
                 let note = NSTextField::wrappingLabelWithString(&NSString::from_str(text), mtm);
@@ -403,12 +557,43 @@ impl SettingsWindow {
     pub fn bound_controls(&self) -> usize {
         self.target.ivars().bindings.borrow().len()
     }
+
+    /// Tab labels in order. Empty for the single layout.
+    pub fn tab_titles(&self) -> Vec<String> {
+        match &self.body {
+            Body::Single(_) => Vec::new(),
+            Body::Tabs(tabs) => tabs
+                .tabViewItems()
+                .iter()
+                .map(|item| item.label().to_string())
+                .collect(),
+        }
+    }
+
+    /// The selected tab's label. `None` for the single layout or with no tabs.
+    pub fn selected_tab(&self) -> Option<String> {
+        match &self.body {
+            Body::Single(_) => None,
+            Body::Tabs(tabs) => tabs
+                .selectedTabViewItem()
+                .map(|item| item.label().to_string()),
+        }
+    }
+
+    /// Selects the tab with this label. Does nothing when there is none.
+    pub fn select_tab(&self, title: &str) {
+        if let Body::Tabs(tabs) = &self.body
+            && let Some(index) = self.tab_titles().iter().position(|t| t == title)
+        {
+            tabs.selectTabViewItemAtIndex(index as NSInteger);
+        }
+    }
 }
 
-/// How many app windows carry the Settings title, for the smoke's one-window check.
-pub fn settings_window_count() -> Result<usize, NativeError> {
+/// How many app windows carry `title`, for the smoke's one-window check.
+pub fn settings_window_count(title: &str) -> Result<usize, NativeError> {
     let mtm = MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
-    let title = NSString::from_str(WINDOW_TITLE);
+    let title = NSString::from_str(title);
     Ok(NSApplication::sharedApplication(mtm)
         .windows()
         .iter()
