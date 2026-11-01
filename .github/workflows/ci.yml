@@ -1,9 +1,12 @@
 name: ci
 
+# Branch commits run through pull_request only; a push trigger on every branch ran each PR
+# commit twice. For a branch without a PR, start the workflow by hand (workflow_dispatch).
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
