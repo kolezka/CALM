@@ -118,6 +118,7 @@ impl RestoreOnLaunch {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SessionSettings {
+    pub first_launch_preset: String,
     pub restore_on_launch: RestoreOnLaunch,
     pub autosave: bool,
     /// Quiet time after the last change before an autosave.
@@ -130,6 +131,7 @@ pub struct SessionSettings {
 impl Default for SessionSettings {
     fn default() -> Self {
         SessionSettings {
+            first_launch_preset: "welcome".into(),
             restore_on_launch: RestoreOnLaunch::On,
             autosave: true,
             debounce_ms: 1000,
@@ -141,6 +143,14 @@ impl Default for SessionSettings {
 
 impl SessionSettings {
     fn validate(&self) -> Result<(), String> {
+        if !self.first_launch_preset.is_empty()
+            && !crate::layout::valid_layout_name(&self.first_launch_preset)
+        {
+            return Err(format!(
+                "\"session.first_launch_preset\" is {:?}, expected an empty value or a name matching ^[A-Za-z0-9_-]+$",
+                self.first_launch_preset
+            ));
+        }
         if !SESSION_DEBOUNCE_MS_RANGE.contains(&self.debounce_ms) {
             return Err(format!(
                 "\"session.debounce_ms\" is {}, expected {} to {}",
@@ -793,6 +803,7 @@ mod tests {
         assert_eq!(
             valid,
             SessionSettings {
+                first_launch_preset: "welcome".into(),
                 restore_on_launch: RestoreOnLaunch::Ask,
                 autosave: false,
                 debounce_ms: 10_000,
@@ -1301,5 +1312,29 @@ mod tests {
         assert!(grid_line_offsets(0.0, 64.0, 0.1, 1280.0).is_empty());
         assert!(grid_line_offsets(f64::NAN, 64.0, 1.0, 1280.0).is_empty());
         assert!(grid_line_offsets(0.0, 64.0, 1.0, 0.0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod first_launch_preset_tests {
+    use super::*;
+    #[test]
+    fn first_launch_preset_defaults_to_welcome() {
+        assert_eq!(SessionSettings::default().first_launch_preset, "welcome");
+    }
+    #[test]
+    fn first_launch_preset_rejects_unsafe_name() {
+        let mut session = SessionSettings {
+            first_launch_preset: "../x".into(),
+            ..SessionSettings::default()
+        };
+        assert!(
+            session
+                .validate()
+                .unwrap_err()
+                .contains("session.first_launch_preset")
+        );
+        session.first_launch_preset.clear();
+        assert!(session.validate().is_ok());
     }
 }
