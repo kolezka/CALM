@@ -682,6 +682,12 @@ These shipped with #41, next to "Restore at launch" above.
 - **One Settings window per panel.** Opening it again brings the open one to the front; it
   closes with the panel. A global settings change rebuilds every open panel window so
   inherited values stay current.
+- **Settings windows are child windows of the canvas.** Both the global and the panel
+  Settings windows are added to the canvas NSWindow with `addChildWindow:ordered:Above`
+  when shown, so a click on the canvas, a panel taking focus or fullscreen never buries
+  them. They also follow the canvas into its fullscreen Space and move with it. Hide and
+  close detach first; the title bar close detaches through AppKit (smoke checks both).
+  Not a setting: a Settings window under its canvas has no use.
 - **Duplicate copies overrides.** The copy gets the same overrides and terminal profile, so
   it looks like the original; borderless geometry stays consistent.
 - **A one-well color edit seeds from Ghostty Default.** Setting one terminal color when

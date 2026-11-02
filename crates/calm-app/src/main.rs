@@ -1644,6 +1644,10 @@ async fn smoke_panel_settings(
             let id = view.scene.add(kind, Rect::new(760.0, 1080.0, 300.0, 160.0));
             view.open_panel_settings(id, window, cx);
             view.open_panel_settings(id, window, cx);
+            let above = view
+                .panel_settings_windows
+                .get(&id)
+                .is_some_and(|w| w.is_child_of(window));
             view.panel_settings_changed(
                 id,
                 "panel.title",
@@ -1666,10 +1670,10 @@ async fn smoke_panel_settings(
                 window,
                 cx,
             );
-            (id, renamed, open, mapped)
+            (id, renamed, open, mapped, above)
         })
     });
-    let Ok((id, renamed, open, mapped)) = opened else {
+    let Ok((id, renamed, open, mapped, above)) = opened else {
         smoke_fail("panel_settings: canvas window unavailable");
     };
     // Let AppKit finish closing before counting.
@@ -1708,6 +1712,10 @@ async fn smoke_panel_settings(
         smoke_fail(&format!(
             "panel_settings: late change was not ignored: {late:?}"
         ));
+    }
+    println!("smoke: panel_settings above_canvas={above}");
+    if !above {
+        smoke_fail("panel_settings: window is not kept above the canvas");
     }
 }
 
@@ -2205,7 +2213,15 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
             "settings window bound {bound} of {expected} controls"
         ));
     }
-    settings_window.hide();
+    // A child of the canvas window stays above it, so the canvas cannot cover Settings.
+    let above = settings_window.is_child_of(window);
+    // The title bar close button must detach it, or ordering the canvas front brings it back.
+    settings_window.perform_close();
+    let detached = !settings_window.has_parent() && !settings_window.is_visible();
+    println!("smoke: settings_window above_canvas={above} detached_on_close={detached}");
+    if !above || !detached {
+        smoke_fail("settings window is not kept above the canvas");
+    }
     // Give focus back to the canvas, as a user closing Settings would.
     window.activate_window();
 }

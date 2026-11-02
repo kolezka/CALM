@@ -70,7 +70,7 @@ impl CanvasView {
         }
         self.refresh_panel_settings(id);
         if let Some(settings_window) = self.panel_settings_windows.get(&id) {
-            settings_window.show();
+            settings_window.show_above(window);
         }
     }
 

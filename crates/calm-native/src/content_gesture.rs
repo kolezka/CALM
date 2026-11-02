@@ -114,7 +114,7 @@ impl ContentGestureMonitor {
 }
 
 /// The NSWindow behind an AppKit window handle, retained.
-fn ns_window(window: &impl HasWindowHandle) -> Result<Retained<NSWindow>, NativeError> {
+pub(crate) fn ns_window(window: &impl HasWindowHandle) -> Result<Retained<NSWindow>, NativeError> {
     MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
     let handle = window
         .window_handle()
