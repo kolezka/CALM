@@ -2,6 +2,8 @@
 name = "calm-native"
 version.workspace = true
 edition = "2024"
+license-file.workspace = true
+publish = false
 
 [dependencies]
 calm-core = { path = "../calm-core" }

@@ -11,5 +11,6 @@
   },
   "devDependencies": {
     "typescript": "7.0.2"
-  }
+  },
+  "license": "UNLICENSED"
 }

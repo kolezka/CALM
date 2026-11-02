@@ -206,3 +206,9 @@ dialog, a benchmark mode, and about half of the plugin bridge.
 Set up with [docs/dev-setup.md](docs/dev-setup.md). Work on a branch, run
 `cargo test -p <crate>` while iterating, and pass `gmake ci` (clippy, fmt, tests, smoke and
 plugin type checks) before opening a pull request.
+
+## License
+
+Copyright (c) 2026 Mariusz Rakus. All rights reserved. CALM is proprietary software; see
+[LICENSE](LICENSE). The plugin SDK (`packages/calm-plugin-sdk`) and the plugin templates
+(`templates/`) are MIT licensed, so plugins built from them can use any license.

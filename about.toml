@@ -1,0 +1,26 @@
+# Config for `cargo about`, which generates THIRD_PARTY_NOTICES (see `gmake notices`).
+# Copyleft licenses are left out on purpose, so dual-licensed crates resolve to a permissive one.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "Unicode-3.0",
+    "NCSA",
+    "bzip2-1.0.6",
+    "MPL-2.0",
+]
+# Only what ships in the macOS arm64 app.
+targets = ["aarch64-apple-darwin"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+workarounds = ["ring"]
+private = { ignore = true }

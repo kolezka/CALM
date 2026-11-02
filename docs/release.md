@@ -83,6 +83,11 @@ be built on Linux, so you build it on a Mac and attach it with `scripts/release-
    `.sha256` with `gh release upload --clobber` (so a rerun replaces them), and prints the release
    URL. It needs `gh` (authenticated) and `codesign` from the Xcode command line tools.
 
+The bundle ships `LICENSE` and `THIRD_PARTY_NOTICES` in `Contents/Resources`. After any change
+to `Cargo.lock`, run `gmake notices` (needs `cargo install --locked cargo-about --features cli`)
+and commit the regenerated file before cutting the release. After a gpui-libghostty, Zig or plugin
+dependency upgrade, also refresh `third_party/notices` as described in `third_party/README.md`.
+
 The workflow refuses to run from any branch other than `main`. Only one release runs at a time
 (concurrency group `release`). Both jobs check out the commit the run was dispatched on
 (`github.sha`). `linux-arch` runs the portable-crate tests in Arch first, and `release` only
