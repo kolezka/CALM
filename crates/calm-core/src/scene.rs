@@ -6,6 +6,7 @@ use serde_json::value::RawValue;
 use crate::camera::Camera;
 use crate::chrome::{BUILTIN_ICON_PREFIX, PanelIcon};
 use crate::geometry::{Point, Rect, Size};
+use crate::markdown::PanelMarkdownStyle;
 use crate::resize::ResizePolicy;
 use crate::terminal_profile::{
     MAX_TITLE_CHARS, PanelTerminalColors, check_color, check_content_opacity, check_icon,
@@ -48,6 +49,9 @@ pub enum PanelKind {
         plugin_version: Option<String>,
         settings: serde_json::Value,
     },
+    /// Markdown text rendered to a page. The text is the panel's content, so it lives in
+    /// the kind and a duplicate or a restore brings it back.
+    Markdown { text: String },
     /// Drawn as a placeholder and saved back unchanged.
     Unsupported { raw: RawKind },
 }
@@ -83,7 +87,7 @@ impl PartialEq for RawKind {
     }
 }
 
-const KNOWN_KIND_TYPES: [&str; 4] = ["terminal", "browser", "plugin", "tui"];
+const KNOWN_KIND_TYPES: [&str; 5] = ["terminal", "browser", "plugin", "tui", "markdown"];
 
 /// The serde shape of the known kinds. Kept private so `PanelKind` can route unknown
 /// types to `Unsupported` without going through `serde_json::Value`.
@@ -113,6 +117,10 @@ enum KnownKind {
         plugin_version: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         profile: Option<String>,
+    },
+    Markdown {
+        #[serde(default)]
+        text: String,
     },
 }
 
@@ -154,6 +162,7 @@ impl Serialize for PanelKind {
                 plugin_version,
                 settings,
             },
+            PanelKind::Markdown { text } => KnownKind::Markdown { text },
             PanelKind::Unsupported { raw } => return raw.raw.serialize(serializer),
         };
         known.serialize(serializer)
@@ -196,6 +205,7 @@ impl<'de> Deserialize<'de> for PanelKind {
                 plugin_version,
                 settings,
             },
+            KnownKind::Markdown { text } => PanelKind::Markdown { text },
             KnownKind::Tui {
                 plugin_id,
                 plugin_version,
@@ -245,6 +255,13 @@ pub struct PanelOverrides {
     pub content_opacity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub borderless: Option<bool>,
+    /// Markdown panels only. Each style field is set or inherited on its own. A bad field
+    /// is dropped at load, so this only ever holds valid values.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::markdown::deserialize_panel_style"
+    )]
+    pub markdown: Option<PanelMarkdownStyle>,
 }
 
 impl PanelOverrides {
@@ -279,6 +296,12 @@ impl PanelOverrides {
                 );
             }
             colors.validate("overrides.terminal_colors")?;
+        }
+        if let Some(style) = &self.markdown {
+            if !matches!(kind, PanelKind::Markdown { .. }) {
+                return Err("\"overrides.markdown\" applies only to markdown panels".to_string());
+            }
+            style.validate("overrides.markdown")?;
         }
         self.validate_content_opacity(kind)
     }
@@ -331,6 +354,13 @@ impl PanelKind {
         }
     }
 
+    /// A markdown panel with the starter text.
+    pub fn markdown() -> Self {
+        PanelKind::Markdown {
+            text: crate::markdown::DEFAULT_MARKDOWN_TEXT.to_string(),
+        }
+    }
+
     /// Every terminal, apps included.
     pub fn is_terminal(&self) -> bool {
         matches!(self, PanelKind::Terminal { .. })
@@ -350,6 +380,7 @@ impl PanelKind {
             PanelKind::Terminal { .. } => "Terminal".to_string(),
             PanelKind::Browser { url, .. } => url.clone(),
             PanelKind::Plugin { plugin_id, .. } => plugin_id.clone(),
+            PanelKind::Markdown { .. } => "Markdown".to_string(),
             PanelKind::Unsupported { raw } => format!("Unsupported: {}", raw.type_name()),
         }
     }

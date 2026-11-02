@@ -20,7 +20,7 @@ use calm_core::settings_form::{
     Control, Field, FieldState, FieldValue, Section, WINDOW_CLOSED_FIELD,
 };
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor, NSColorSpace,
@@ -49,6 +49,8 @@ const VALUE_X: f64 = CONTROL_X + CONTROL_WIDTH + 8.0;
 const VALUE_WIDTH: f64 = 70.0;
 const STATE_X: f64 = VALUE_X + VALUE_WIDTH;
 const STATE_WIDTH: f64 = 76.0;
+/// A text area is this many rows tall.
+const TEXT_AREA_ROWS: f64 = 12.0;
 const INHERITED_LABEL: &str = "inherited";
 const RESET_TITLE: &str = "Reset";
 /// The recorder's title while it waits for a key.
@@ -220,8 +222,27 @@ define_class!(
             self.ivars().pending.borrow_mut().push_back((id, value));
             self.flush();
         }
+
+        /// Text area delegate: Return types a newline instead of ending the edit.
+        #[unsafe(method(control:textView:doCommandBySelector:))]
+        fn do_command(&self, _control: &NSControl, text_view: &AnyObject, command: Sel) -> Bool {
+            if command != sel!(insertNewline:) {
+                return Bool::NO;
+            }
+            // SAFETY: the field editor is an NSTextView, which has this NSText method.
+            let _: () = unsafe { msg_send![text_view, insertNewlineIgnoringFieldEditor: None::<&AnyObject>] };
+            Bool::YES
+        }
     }
 );
+
+/// How tall `field`'s row is.
+fn row_height(field: &Field) -> f64 {
+    match field.control {
+        Control::TextArea(_) => ROW_HEIGHT * TEXT_AREA_ROWS,
+        _ => ROW_HEIGHT,
+    }
+}
 
 impl FormTarget {
     /// Hands every queued change to the callback.
@@ -705,9 +726,13 @@ impl SettingsWindow {
         bindings: &mut Vec<Binding>,
     ) -> Retained<FlippedView> {
         let mtm = self.mtm;
-        let rows: usize = sections.iter().map(|s| s.fields.len()).sum();
+        let rows: f64 = sections
+            .iter()
+            .flat_map(|s| &s.fields)
+            .map(row_height)
+            .sum();
         let header_rows = if headers { sections.len() } else { 0 };
-        let height = MARGIN * 2.0 + header_rows as f64 * HEADER_HEIGHT + rows as f64 * ROW_HEIGHT;
+        let height = MARGIN * 2.0 + header_rows as f64 * HEADER_HEIGHT + rows;
         let document = FlippedView::alloc(mtm).set_ivars(());
         // SAFETY: NSView's designated initializer on a fresh instance.
         let document: Retained<FlippedView> = unsafe {
@@ -725,7 +750,7 @@ impl SettingsWindow {
             }
             for field in &section.fields {
                 self.build_row(field, y, &document, bindings);
-                y += ROW_HEIGHT;
+                y += row_height(field);
             }
         }
         document
@@ -930,6 +955,29 @@ impl SettingsWindow {
                 if let Some(cell) = field.cell() {
                     cell.setSendsActionOnEndEditing(true);
                 }
+                (Retained::into_super(field), BindingKind::Text)
+            }
+            Control::TextArea(value) => {
+                let field = NSTextField::textFieldWithString(&NSString::from_str(value), mtm);
+                field.setFrame(rect(
+                    CONTROL_X,
+                    y + 2.0,
+                    STATE_X + STATE_WIDTH - CONTROL_X,
+                    ROW_HEIGHT * TEXT_AREA_ROWS - 4.0,
+                ));
+                field.setUsesSingleLineMode(false);
+                field.setFont(Some(
+                    &NSFont::userFixedPitchFontOfSize(12.0)
+                        .unwrap_or_else(|| NSFont::systemFontOfSize(12.0)),
+                ));
+                if let Some(cell) = field.cell() {
+                    cell.setWraps(true);
+                    cell.setScrollable(false);
+                    cell.setSendsActionOnEndEditing(true);
+                }
+                // SAFETY: FormTarget answers the one delegate method it is asked for, and
+                // the window keeps it alive as long as the field.
+                let _: () = unsafe { msg_send![&field, setDelegate: &*self.target] };
                 (Retained::into_super(field), BindingKind::Text)
             }
             Control::Note(text) => {

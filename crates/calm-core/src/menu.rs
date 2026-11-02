@@ -11,6 +11,7 @@ pub const ADD_TERMINAL: &str = "add.terminal";
 pub const RUN_COMMAND: &str = "add.run_command";
 pub const RUN_COMMAND_LABEL: &str = "Run Command\u{2026}";
 pub const ADD_BROWSER: &str = "add.browser";
+pub const ADD_MARKDOWN: &str = "add.markdown";
 pub const ADD_PLUGIN_PREFIX: &str = "add.plugin.";
 pub const ADD_TUI_PREFIX: &str = "add.tui.";
 /// A plain terminal opened with the named profile from `terminal.profiles`.
@@ -108,6 +109,7 @@ pub fn canvas_menu(
         action(ADD_TERMINAL, "Terminal"),
         action(RUN_COMMAND, RUN_COMMAND_LABEL),
         action(ADD_BROWSER, "Browser"),
+        action(ADD_MARKDOWN, "Markdown"),
         MenuItem::Separator,
         MenuItem::Header {
             label: PLUGINS_SECTION_LABEL.to_string(),
@@ -180,8 +182,7 @@ pub fn terminal_profile_choice(id: &str) -> Option<&str> {
 
 /// Right click on a panel's chrome strip or minimized chip.
 /// Zoom to Fit needs the full panel on the canvas, so a minimized or pinned panel omits it.
-/// Duplicate is offered for terminals only: browser and plugin panels have no native view
-/// in the app yet.
+/// Duplicate is offered for terminals and markdown panels only.
 /// `can_restart` adds Restart on top, for an app or typed command whose process exited.
 pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
     let minimize = if panel.minimized {
@@ -205,7 +206,7 @@ pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
         action(PANEL_PIN, pin),
     ]);
     items.extend([MenuItem::Separator, action(PANEL_SETTINGS, "Settings…")]);
-    if panel.kind.is_terminal() {
+    if panel.kind.is_terminal() || matches!(panel.kind, PanelKind::Markdown { .. }) {
         items.extend([MenuItem::Separator, action(PANEL_DUPLICATE, "Duplicate")]);
     }
     items.extend([MenuItem::Separator, action(PANEL_DELETE, "Delete")]);
@@ -252,6 +253,10 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
                 page_zoom: None,
             },
             DEFAULT_BROWSER_SIZE,
+        ),
+        ADD_MARKDOWN => add(
+            PanelKind::markdown(),
+            crate::markdown::DEFAULT_MARKDOWN_SIZE,
         ),
         PANEL_MINIMIZE => Some(MenuCommand::Minimize),
         PANEL_ZOOM_TO_FIT => Some(MenuCommand::ZoomToFit),
@@ -354,6 +359,7 @@ mod tests {
                     action("add.terminal", "Terminal"),
                     action("add.run_command", "Run Command\u{2026}"),
                     action("add.browser", "Browser"),
+                    action("add.markdown", "Markdown"),
                     MenuItem::Separator,
                     MenuItem::Header {
                         label: "Plugins".to_string(),
@@ -379,6 +385,7 @@ mod tests {
                     action("add.terminal", "Terminal"),
                     action("add.run_command", "Run Command\u{2026}"),
                     action("add.browser", "Browser"),
+                    action("add.markdown", "Markdown"),
                     MenuItem::Separator,
                     MenuItem::Header {
                         label: "Plugins".to_string(),
@@ -651,6 +658,19 @@ mod tests {
     }
 
     #[test]
+    fn add_markdown_makes_a_markdown_panel_that_can_be_duplicated() {
+        let world = Point::new(5.0, 6.0);
+        let Some(MenuCommand::AddPanel { kind, rect }) = menu_action(ADD_MARKDOWN, world, &[])
+        else {
+            panic!("expected AddPanel");
+        };
+        assert_eq!(kind, PanelKind::markdown());
+        assert_eq!(rect.origin, world);
+        let items = panel_menu(&panel(kind, false), false);
+        assert!(items.contains(&action(PANEL_DUPLICATE, "Duplicate")));
+    }
+
+    #[test]
     fn tui_apps_and_web_plugins_share_the_plugins_section() {
         let apps = vec![("slack".to_string(), "Slack".to_string())];
         let [MenuItem::Submenu { items, .. }] = &canvas_menu(&plugins(), &apps, &[])[..] else {
@@ -658,7 +678,7 @@ mod tests {
         };
         // One "Plugins" section: TUI apps, then web plugins, no divider between them.
         assert_eq!(
-            &items[4..],
+            &items[5..],
             &[
                 MenuItem::Separator,
                 MenuItem::Header {

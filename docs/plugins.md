@@ -521,7 +521,7 @@ does not parse makes every call reject and is left as it is, never replaced by `
 `PanelInfo` is `{ id, kind, title, rect, minimized, pinned, z, focused, pluginId?, url?, resize }`.
 `pinned` is true for a panel fixed to the screen; its `rect` is in its pin space, as for a
 menu command's panel above.
-`kind` is `"terminal"`, `"browser"`, `"plugin"`, `"tui"` or `"unsupported"` (a panel from a
+`kind` is `"terminal"`, `"browser"`, `"plugin"`, `"tui"`, `"markdown"` or `"unsupported"` (a panel from a
 layout of a newer CALM). `z` is 0 for the backmost panel. `pluginId` is set for plugin and TUI
 panels, `url` for browsers. `resize` is `{ resizable, minSize, maxSize }`, `maxSize` `null`
 when there is no limit.

@@ -71,6 +71,7 @@ pub const STEPS: &[StepSpec] = &[
     step("plugin_menus", &[], &[]),
     step("panel_overrides", &["terminals"], &[]),
     step("panel_settings", &[], &[]),
+    step("markdown", &[], &[]),
     step("session", &[], &[]),
     step("presets", &[], &["session"]),
     step("pin_restore", &[], &["presets"]),

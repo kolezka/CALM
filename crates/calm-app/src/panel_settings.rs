@@ -16,6 +16,7 @@ pub fn window_title(title: &str, kind: &PanelKind) -> String {
         PanelKind::Terminal { .. } => "Terminal",
         PanelKind::Browser { .. } => "Browser",
         PanelKind::Plugin { .. } => "Plugin",
+        PanelKind::Markdown { .. } => "Markdown",
         PanelKind::Unsupported { .. } => "Unsupported",
     };
     format!("{title} Settings ({kind})")

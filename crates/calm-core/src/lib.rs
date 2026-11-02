@@ -15,6 +15,7 @@ pub mod interaction;
 pub mod join;
 pub mod keymap;
 pub mod layout;
+pub mod markdown;
 pub mod menu;
 pub mod occlusion;
 pub mod panel_form;
