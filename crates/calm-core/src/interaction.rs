@@ -691,34 +691,22 @@ fn panel_point(scene: &Scene, id: PanelId, screen: Point) -> Point {
         .screen_to_world(screen)
 }
 
-/// Rects that snapping lines up against, in the space of the panel `moving` (a new,
-/// unpinned panel when `None`). Only panels of its tier count: pinned panels snap to
-/// pinned ones, unpinned to unpinned. Minimized panels count as their chip.
+/// Rects that snapping lines up against: the panels with the same `pin` as panel
+/// `moving` (unpinned when `None`, a new panel being drawn). Pinned at another zoom is
+/// another space, so not a neighbor. Minimized panels count as their chip.
 fn neighbor_rects(scene: &Scene, moving: Option<PanelId>) -> Vec<Rect> {
-    let mover = moving.and_then(|id| scene.get(id));
-    let pin = mover.and_then(|panel| panel.pin);
-    let camera = mover.map_or(scene.camera, |panel| scene.camera_of(panel));
+    let pin = moving
+        .and_then(|id| scene.get(id))
+        .and_then(|panel| panel.pin);
     scene
         .panels
         .iter()
-        .filter(|panel| Some(panel.id) != moving && panel.is_pinned() == pin.is_some())
+        .filter(|panel| Some(panel.id) != moving && panel.pin == pin)
         .map(|panel| {
-            let rect = if panel.minimized {
+            if panel.minimized {
                 chip_rect(panel)
             } else {
                 panel.rect
-            };
-            if panel.pin == pin {
-                return rect;
-            }
-            // A pinned panel at another pin zoom: through the screen into the mover's space.
-            let screen = scene.camera_of(panel).world_rect_to_screen(rect);
-            Rect {
-                origin: camera.screen_to_world(screen.origin),
-                size: Size::new(
-                    screen.size.width / camera.zoom,
-                    screen.size.height / camera.zoom,
-                ),
             }
         })
         .collect()
@@ -2395,6 +2383,92 @@ mod tests {
             "{:?}",
             joins.joins
         );
-        assert!(!joins.joins.is_empty() || scene.get(anchor).is_some());
+        // Control: the mover sits 1 unit left of the unpinned anchor, so those two join.
+        assert!(
+            joins
+                .joins
+                .iter()
+                .any(|join| join.first == mover && join.second == anchor),
+            "{:?}",
+            joins.joins
+        );
+    }
+
+    /// A scene with a mover pinned at zoom 1 and an anchor pinned at `anchor_pin`, whose
+    /// screen rect is `anchor_screen`. Grid snapping is off.
+    fn pinned_pair(
+        mover_rect: Rect,
+        anchor_pin: f64,
+        anchor_screen: Rect,
+    ) -> (Scene, InputHandler, PanelId) {
+        let mut scene = Scene::default();
+        scene.camera.zoom = anchor_pin;
+        let anchor = scene.add(
+            terminal(),
+            Rect::new(
+                anchor_screen.origin.x / anchor_pin,
+                anchor_screen.origin.y / anchor_pin,
+                anchor_screen.size.width / anchor_pin,
+                anchor_screen.size.height / anchor_pin,
+            ),
+        );
+        assert!(scene.set_pinned(anchor, true));
+        scene.camera.zoom = 1.0;
+        let mover = scene.add(terminal(), mover_rect);
+        assert!(scene.set_pinned(mover, true));
+        let input = InputHandler {
+            snap: SnapConfig {
+                grid: None,
+                edge_distance: 8.0,
+            },
+            ..InputHandler::default()
+        };
+        (scene, input, mover)
+    }
+
+    #[test]
+    fn drag_snaps_only_to_panels_with_the_same_pin() {
+        // Right edge right edge 4 px off the anchor's join spot on screen, top 3 px off its top.
+        for (anchor_pin, want) in [
+            (2.0, Rect::new(475.0, 3.0, 120.0, 100.0)),
+            (1.0, Rect::new(479.0, 0.0, 120.0, 100.0)),
+        ] {
+            let (mut scene, mut input, mover) = pinned_pair(
+                Rect::new(0.0, 300.0, 120.0, 100.0),
+                anchor_pin,
+                Rect::new(600.0, 0.0, 400.0, 300.0),
+            );
+            let to = Point::new(495.0, 13.0);
+            input.mouse_down(Point::new(20.0, 310.0), Button::Left, no_mods(), &mut scene);
+            input.mouse_move(to, no_mods(), &mut scene);
+            input.mouse_up(to, no_mods(), &mut scene);
+            assert_eq!(
+                scene.get(mover).unwrap().rect,
+                want,
+                "drag, pin {anchor_pin}"
+            );
+        }
+    }
+
+    #[test]
+    fn resize_snaps_only_to_panels_with_the_same_pin() {
+        // The right edge to 4 px off the anchor's join spot.
+        for (anchor_pin, want_width) in [(2.0, 296.0), (1.0, 299.0)] {
+            let (mut scene, mut input, mover) = pinned_pair(
+                Rect::new(0.0, 0.0, 120.0, 100.0),
+                anchor_pin,
+                Rect::new(300.0, 0.0, 400.0, 300.0),
+            );
+            let press = Point::new(118.0, 50.0);
+            assert!(input.begin_resize_at(press, &mut scene).is_some());
+            let to = Point::new(294.0, 50.0);
+            input.mouse_move(to, no_mods(), &mut scene);
+            input.mouse_up(to, no_mods(), &mut scene);
+            assert_eq!(
+                scene.get(mover).unwrap().rect.size.width,
+                want_width,
+                "resize, pin {anchor_pin}"
+            );
+        }
     }
 }
