@@ -65,6 +65,7 @@ Every plugin folder holds a `calm-plugin.json`:
 | `entry`       | HTML file to load, relative to the plugin folder. No `..`, no `/` start. |
 | `defaultSize` | Size of a new panel in canvas points.                                    |
 | `resizable`   | Optional. `false` keeps the panel at the size it was created with.       |
+| `addMenu`     | Optional, default `true`. `false` hides the plugin from Add; presets and sessions still open it. |
 | `minSize`     | Optional `{ "width", "height" }`. Smallest size a resize may reach.      |
 | `maxSize`     | Optional `{ "width", "height" }`. Largest size a resize may reach.       |
 | `contributes` | Optional. Context menu items, see Context menu contributions.            |
@@ -79,10 +80,10 @@ Every panel can be resized by default, plugins included. Drag the right edge, th
 edge or the corner. The handle reaches a few pixels outside the panel, so it works over a
 web view too. Sizes include the 28 point title bar.
 
-The resize fields are checked when CALM loads the plugin. A bad value is a manifest error,
+These manifest fields are checked when CALM loads the plugin. A bad value is a manifest error,
 and the plugin is skipped with a message on stderr; CALM never guesses a default. Errors:
 
-- `resizable` that is not `true` or `false`, or any field set to `null`;
+- `resizable` or `addMenu` that is not `true` or `false`, or any field set to `null`;
 - a size that is not an object with exactly `width` and `height` as positive numbers;
 - a `minSize` or `maxSize` below the smallest panel, 120 by 80;
 - a `maxSize` smaller than `minSize` on either axis;
@@ -134,6 +135,7 @@ a terminal panel titled "Slack" that runs `slk`.
 | `cwd`         | no       | Working directory, absolute or starting with `~/`. Default: home.    |
 | `env`         | no       | Object of string values, set for the command only.                   |
 | `defaultSize` | no       | `{ "width", "height" }` in canvas points. Default 640 by 400.        |
+| `addMenu`     | no       | Default `true`. `false` hides the plugin from Add; presets and sessions still open it. |
 | `icon`        | no       | 1 to 4 characters, or a `.png` or `.svg` file in the plugin folder.  |
 | `title`       | no       | Title bar text. `{name}` is replaced by `name`. Default: `name`.     |
 | `accentColor` | no       | Focus ring, join divider and text icon color. Hex, see below.        |
@@ -274,6 +276,7 @@ This Slack panel uses every field:
   "version": "1.0.0",
   "apiVersion": 2,
   "capabilities": ["terminal.read"],
+  "addMenu": true,
   "description": "Slack in the terminal, through slk.",
   "command": "slk",
   "args": ["--workspace", "my team"],

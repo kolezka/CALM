@@ -105,11 +105,13 @@ pub fn menu_entries(plugins: &[InstalledPlugin]) -> MenuEntries {
     let mut entries = MenuEntries::default();
     for plugin in plugins {
         let manifest = &plugin.manifest;
-        let name = (manifest.id.clone(), manifest.name.clone());
-        if manifest.tui().is_some() {
-            entries.apps.push(name);
-        } else {
-            entries.web.push(name);
+        if manifest.add_menu {
+            let name = (manifest.id.clone(), manifest.name.clone());
+            if manifest.tui().is_some() {
+                entries.apps.push(name);
+            } else {
+                entries.web.push(name);
+            }
         }
         let size = Size::new(manifest.default_size.width, manifest.default_size.height);
         entries.sizes.push((manifest.id.clone(), size));
@@ -1650,6 +1652,38 @@ fi"#
         );
         assert!(body.contains("A%26lt%3Bb%26gt%3B"), "{body}");
         assert!(body.contains("x%20%26amp%3B%20y"), "{body}");
+    }
+
+    #[test]
+    fn menu_entries_skip_add_menu_false() {
+        let plugins = vec![
+            manifest(
+                r#"{"id":"hello-world","name":"Hello World","version":"0.1.0",
+                "entry":"index.html","defaultSize":{"width":320,"height":200}}"#,
+            ),
+            manifest(
+                r#"{"id":"locked","name":"Locked","version":"1.0.0",
+                "entry":"index.html","defaultSize":{"width":300,"height":160},"addMenu":false}"#,
+            ),
+            manifest(
+                r#"{"id":"top","name":"Top","kind":"tui","command":"top",
+                "defaultSize":{"width":640,"height":400},"addMenu":false}"#,
+            ),
+        ];
+        let entries = menu_entries(&plugins);
+        assert_eq!(
+            entries.web,
+            vec![("hello-world".into(), "Hello World".into())]
+        );
+        assert!(entries.apps.is_empty());
+        assert_eq!(
+            entries.sizes,
+            vec![
+                ("hello-world".into(), Size::new(320.0, 200.0)),
+                ("locked".into(), Size::new(300.0, 160.0)),
+                ("top".into(), Size::new(640.0, 400.0)),
+            ]
+        );
     }
 
     #[test]

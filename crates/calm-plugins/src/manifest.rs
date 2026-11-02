@@ -42,6 +42,8 @@ pub struct PluginManifest {
     pub version: String,
     pub default_size: Size,
     pub content: PluginContent,
+    /// Whether the plugin appears in the Add menu.
+    pub add_menu: bool,
     /// `false` locks the panel at the size it was created with. Absent means true.
     pub resizable: Option<bool>,
     /// Smallest size a user resize may reach, chrome included.
@@ -95,6 +97,7 @@ pub struct Engines {
 
 /// The v2 manifest fields, shared by both kinds where they apply.
 struct ApiFields {
+    add_menu: bool,
     api_version: u32,
     capabilities: Vec<String>,
     main: Option<PathBuf>,
@@ -116,9 +119,19 @@ fn json_kind(value: &serde_json::Value) -> &'static str {
 }
 
 /// Parses the v2 fields by hand so each error names its field. A TUI manifest stops after
-/// `capabilities`: `tui::parse` refuses the web-only fields with its own message.
+/// the shared fields: `tui::parse` refuses the web-only fields with its own message.
 fn parse_api_fields(value: &serde_json::Value, is_tui: bool) -> Result<ApiFields, String> {
     use serde_json::Value;
+    let add_menu = match value.get("addMenu") {
+        None => true,
+        Some(Value::Bool(value)) => *value,
+        Some(other) => {
+            return Err(format!(
+                "addMenu must be a boolean, got {}",
+                json_kind(other)
+            ));
+        }
+    };
     let api_version = match value.get("apiVersion") {
         None => 1,
         Some(v) => v
@@ -155,6 +168,7 @@ fn parse_api_fields(value: &serde_json::Value, is_tui: bool) -> Result<ApiFields
     };
     if is_tui {
         return Ok(ApiFields {
+            add_menu,
             api_version,
             capabilities,
             main: None,
@@ -203,6 +217,7 @@ fn parse_api_fields(value: &serde_json::Value, is_tui: bool) -> Result<ApiFields
         }
     };
     Ok(ApiFields {
+        add_menu,
         api_version,
         capabilities,
         main,
@@ -381,6 +396,7 @@ impl PluginManifest {
                     version: web.version,
                     default_size: web.default_size,
                     content: PluginContent::Web { entry: web.entry },
+                    add_menu: api.add_menu,
                     resizable: web.resizable,
                     min_size: web.min_size,
                     max_size: web.max_size,
@@ -402,6 +418,7 @@ impl PluginManifest {
                     version: tui.version,
                     default_size: tui.default_size,
                     content: PluginContent::Tui(tui.spec),
+                    add_menu: api.add_menu,
                     // TUI panels resize freely, like terminals.
                     resizable: None,
                     min_size: None,
@@ -925,6 +942,7 @@ mod tests {
                     content: PluginContent::Web {
                         entry: PathBuf::from("index.html")
                     },
+                    add_menu: true,
                     resizable: None,
                     min_size: None,
                     max_size: None,
@@ -952,6 +970,46 @@ mod tests {
         PluginManifest::from_json(&format!(
             r#"{{ "kind": "tui", "id": "t", "name": "T", "command": "top"{extra} }}"#
         ))
+    }
+
+    #[test]
+    fn add_menu_defaults_to_true() {
+        assert!(
+            PluginManifest::from_json(&with_fields(""))
+                .unwrap()
+                .add_menu
+        );
+        assert!(tui_with("").unwrap().add_menu);
+        assert!(
+            PluginManifest::from_json(&with_fields(r#", "addMenu": true"#))
+                .unwrap()
+                .add_menu
+        );
+        assert!(tui_with(r#", "addMenu": true"#).unwrap().add_menu);
+    }
+
+    #[test]
+    fn add_menu_false_parses_for_web_and_tui() {
+        assert!(
+            !PluginManifest::from_json(&with_fields(r#", "addMenu": false"#))
+                .unwrap()
+                .add_menu
+        );
+        assert!(!tui_with(r#", "addMenu": false"#).unwrap().add_menu);
+    }
+
+    #[test]
+    fn add_menu_rejects_non_bool() {
+        for value in [r#""no""#, "null", "0", "[]", "{}"] {
+            let field = format!(r#", "addMenu": {value}"#);
+            for result in [
+                PluginManifest::from_json(&with_fields(&field)),
+                tui_with(&field),
+            ] {
+                let error = result.unwrap_err();
+                assert!(error.contains("addMenu must be a boolean"), "{error}");
+            }
+        }
     }
 
     #[test]

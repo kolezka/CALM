@@ -100,6 +100,7 @@ mod tests {
                 content: PluginContent::Web {
                     entry: "index.html".into(),
                 },
+                add_menu: true,
                 resizable: None,
                 min_size: None,
                 max_size: None,
