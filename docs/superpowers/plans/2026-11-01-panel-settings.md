@@ -151,7 +151,7 @@ Integration branch `feat/panel-settings` from `origin/main`. Each lane works in 
   - `InputHandler::content_menu(&self, id: PanelId, screen: Point) -> Vec<Effect>`: `[ShowPanelMenu { id, screen }]`.
   - `fn content_gesture_target(scene: &Scene, screen: Point) -> Option<PanelId>`: the topmost non-minimized panel whose `content_rect` holds the point; `None` on empty canvas and on chips.
 
-- [ ] **Step 1: Write failing tests:** `release_within_slop_is_a_click`, `move_past_slop_starts_once`, `cmd_matches_with_shift_but_not_with_ctrl`, `unknown_move_modifier_is_a_settings_error` (`"off"` rejected), `begin_content_move_then_mouse_move_moves_the_panel` (snapping on, `alt` disables it), `no_target_on_empty_canvas_or_chip`.
+- [ ] **Step 1: Write failing tests:** `release_within_slop_is_a_click`, `move_past_slop_starts_once`, `cmd_matches_with_shift_but_not_with_ctrl`, `unknown_move_modifier_is_a_settings_error` (`"off"` rejected), `begin_content_move_then_mouse_move_moves_the_panel` (snapping on, `cmd-shift` disables it), `no_target_on_empty_canvas_or_chip`.
 - [ ] **Step 2:** Run, confirm failures.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** `cargo test -p calm-core` passes.

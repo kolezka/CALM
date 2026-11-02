@@ -121,7 +121,7 @@ launch right-click it and pick Open. See [docs/release.md](docs/release.md).
 | Zoom in, out, reset             | `cmd-=`, `cmd--`, `cmd-0`                 |
 | Center on origin                | `cmd-shift-h`                             |
 | Fit all panels                  | `cmd-shift-0`                             |
-| Move or resize without snapping | Hold `alt` while dragging                 |
+| Move or resize without snapping | Hold `cmd-shift` while dragging                 |
 | Settings                        | `cmd-,`                                   |
 | Fullscreen                      | `cmd-ctrl-f`                              |
 | Show FPS, CPU and memory        | `cmd-shift-f`                             |

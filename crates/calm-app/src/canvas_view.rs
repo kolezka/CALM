@@ -250,6 +250,7 @@ pub struct CanvasView {
     /// Set when the monitor could not be installed, so paint stops retrying.
     pub(crate) content_monitor_error: Option<String>,
     pub(crate) content_move: ContentMove,
+    pub(crate) content_press_mods: Option<calm_core::interaction::Modifiers>,
 }
 
 impl CanvasView {
@@ -338,6 +339,7 @@ impl CanvasView {
             content_monitor: None,
             content_monitor_error: None,
             content_move: ContentMove::default(),
+            content_press_mods: None,
         }
     }
 
@@ -2018,8 +2020,8 @@ impl CanvasView {
     }
 
     /// Drives a press, a move by `delta` canvas pixels and a release through the real
-    /// mouse handlers, starting at `from_world`. Alt is held so snapping stays out of the
-    /// numbers. Only the smoke uses it.
+    /// mouse handlers, starting at `from_world`. Cmd and Shift keep snapping out of the
+    /// numbers after the press. Only the smoke uses it.
     pub fn smoke_drag(
         &mut self,
         from_world: Point,
@@ -2035,7 +2037,8 @@ impl CanvasView {
             )
         };
         let modifiers = gpui::Modifiers {
-            alt: true,
+            platform: true,
+            shift: true,
             ..gpui::Modifiers::default()
         };
         let from = position(start.x, start.y);
@@ -2043,7 +2046,7 @@ impl CanvasView {
         let down = MouseDownEvent {
             button: MouseButton::Left,
             position: from,
-            modifiers,
+            modifiers: gpui::Modifiers::default(),
             click_count: 1,
             first_mouse: false,
         };

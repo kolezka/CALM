@@ -29,15 +29,36 @@ pub fn to_canvas(window_point: Point, canvas_origin: Point) -> Point {
     )
 }
 
-/// The monitor takes a press only with the move modifier, over the topmost panel's content.
-pub fn wants(settings: &Settings, scene: &Scene, screen: Point, mods: Modifiers) -> bool {
-    settings.canvas.move_modifier.matches(mods) && content_gesture_target(scene, screen).is_some()
+/// The monitor takes modifier gestures over content or resize handles.
+pub fn wants(
+    settings: &Settings,
+    input: &InputHandler,
+    scene: &Scene,
+    screen: Point,
+    mods: Modifiers,
+) -> bool {
+    (settings.canvas.move_modifier.matches(mods) || mods.snap_off())
+        && (input.resize_target_at(screen, scene).is_some()
+            || content_gesture_target(scene, screen).is_some())
+}
+
+fn event_modifiers(
+    event: ContentEvent,
+    press_mods: &mut Option<Modifiers>,
+    held: Modifiers,
+) -> Modifiers {
+    if matches!(event, ContentEvent::Down(_)) {
+        press_mods.take().unwrap_or(held)
+    } else {
+        held
+    }
 }
 
 /// The gesture in progress, from a taken press to its release.
 #[derive(Debug, Default)]
 pub struct ContentMove {
     gesture: Option<(PanelId, ContentGesture)>,
+    resizing: bool,
 }
 
 impl ContentMove {
@@ -51,17 +72,28 @@ impl ContentMove {
         scene: &mut Scene,
     ) -> (ContentDecision, Vec<Effect>) {
         match event {
-            ContentEvent::Down(screen) => match content_gesture_target(scene, screen) {
-                Some(id) => {
-                    self.gesture = Some((id, ContentGesture::press(screen)));
-                    (ContentDecision::Hold, Vec::new())
-                }
-                // The scene changed since `wants`: hand the press back.
-                None => {
+            ContentEvent::Down(screen) => {
+                self.resizing = false;
+                if let Some(effects) = input.begin_resize_at(screen, scene) {
                     self.gesture = None;
-                    (ContentDecision::Click, Vec::new())
+                    self.resizing = true;
+                    return (ContentDecision::Moving, effects);
                 }
-            },
+                match content_gesture_target(scene, screen) {
+                    Some(id) => {
+                        self.gesture = Some((id, ContentGesture::press(screen)));
+                        (ContentDecision::Hold, Vec::new())
+                    }
+                    None => {
+                        self.gesture = None;
+                        (ContentDecision::Click, Vec::new())
+                    }
+                }
+            }
+            ContentEvent::Dragged(screen) if self.resizing => (
+                ContentDecision::Moving,
+                input.mouse_move(screen, mods, scene),
+            ),
             ContentEvent::Dragged(screen) => {
                 let Some((id, gesture)) = self.gesture.as_mut() else {
                     return (ContentDecision::Click, Vec::new());
@@ -82,6 +114,10 @@ impl ContentMove {
                 }
             }
             // Exactly what `release` says: Hold here would drop the click.
+            ContentEvent::Up(screen) if self.resizing => {
+                self.resizing = false;
+                (ContentDecision::Moving, input.mouse_up(screen, mods, scene))
+            }
             ContentEvent::Up(screen) => match self.gesture.take() {
                 Some((_, gesture)) if gesture.release() == GestureStep::Moving => {
                     (ContentDecision::Moving, input.mouse_up(screen, mods, scene))
@@ -146,13 +182,17 @@ impl CanvasView {
         }
     }
 
-    fn wants_content_gesture(&self, point: Point, mods: GestureMods) -> bool {
+    fn wants_content_gesture(&mut self, point: Point, mods: GestureMods) -> bool {
         let screen = to_canvas(point, self.viewport.origin);
+        let mods = to_modifiers(mods);
+        // Wants and Down come from the same NSEvent in one call.
+        self.content_press_mods = Some(mods);
         wants(
             &self.settings.settings,
+            &self.input,
             &self.scene,
             screen,
-            to_modifiers(mods),
+            mods,
         )
     }
 
@@ -163,7 +203,8 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) -> ContentDecision {
         let event = in_canvas(event, self.viewport.origin);
-        let mods = to_modifiers(calm_native::held_mods());
+        let held = to_modifiers(calm_native::held_mods());
+        let mods = event_modifiers(event, &mut self.content_press_mods, held);
         let (decision, effects) =
             self.content_move
                 .event(event, mods, &mut self.input, &mut self.scene);
@@ -187,11 +228,11 @@ mod tests {
         alt: false,
         platform: true,
     };
-    /// Alt keeps snapping out of the numbers.
-    const CMD_ALT: Modifiers = Modifiers {
-        shift: false,
+    /// Cmd and Shift keep snapping out of the numbers.
+    const CMD_SHIFT: Modifiers = Modifiers {
+        shift: true,
         control: false,
-        alt: true,
+        alt: false,
         platform: true,
     };
 
@@ -218,6 +259,25 @@ mod tests {
     }
 
     #[test]
+    fn down_uses_press_modifiers_and_drag_uses_held_modifiers() {
+        let pressed = Modifiers { shift: true, ..CMD };
+        let mut stored = Some(pressed);
+        assert_eq!(
+            event_modifiers(ContentEvent::Down(Point::new(0.0, 0.0)), &mut stored, CMD),
+            pressed
+        );
+        assert_eq!(stored, None);
+        assert_eq!(
+            event_modifiers(
+                ContentEvent::Dragged(Point::new(1.0, 0.0)),
+                &mut stored,
+                CMD
+            ),
+            CMD
+        );
+    }
+
+    #[test]
     fn window_points_shift_by_the_canvas_origin() {
         assert_eq!(
             to_canvas(Point::new(300.0, 340.0), Point::new(0.0, 40.0)),
@@ -239,20 +299,168 @@ mod tests {
         let (scene, id) = scene_with_terminal();
         let mut settings = Settings::default();
         let on_content = content_point(&scene, id);
-        assert!(wants(&settings, &scene, on_content, CMD));
-        assert!(!wants(&settings, &scene, on_content, Modifiers::default()));
-        assert!(!wants(&settings, &scene, on_content, CMD_ALT));
+        assert!(wants(
+            &settings,
+            &InputHandler::default(),
+            &scene,
+            on_content,
+            CMD
+        ));
+        assert!(!wants(
+            &settings,
+            &InputHandler::default(),
+            &scene,
+            on_content,
+            Modifiers::default()
+        ));
+        assert!(wants(
+            &settings,
+            &InputHandler::default(),
+            &scene,
+            on_content,
+            CMD_SHIFT
+        ));
         // The title bar is chrome, not content.
         let panel = scene.get(id).unwrap();
         let chrome = scene.camera.world_to_screen(Point::new(
             panel.rect.origin.x + 50.0,
             panel.rect.origin.y + 2.0,
         ));
-        assert!(!wants(&settings, &scene, chrome, CMD));
-        assert!(!wants(&settings, &scene, Point::new(5.0, 5.0), CMD));
-        settings.canvas.move_modifier = MoveModifier::CmdAlt;
-        assert!(wants(&settings, &scene, on_content, CMD_ALT));
-        assert!(!wants(&settings, &scene, on_content, CMD));
+        assert!(!wants(
+            &settings,
+            &InputHandler::default(),
+            &scene,
+            chrome,
+            CMD
+        ));
+        assert!(!wants(
+            &settings,
+            &InputHandler::default(),
+            &scene,
+            Point::new(5.0, 5.0),
+            CMD
+        ));
+        settings.canvas.move_modifier = MoveModifier::Ctrl;
+        assert!(wants(
+            &settings,
+            &InputHandler::default(),
+            &scene,
+            on_content,
+            CMD_SHIFT
+        ));
+        assert!(!wants(
+            &settings,
+            &InputHandler::default(),
+            &scene,
+            on_content,
+            CMD
+        ));
+    }
+
+    #[test]
+    fn cmd_shift_inner_band_starts_unsnapped_resize() {
+        let (mut scene, id) = scene_with_terminal();
+        let mut input = InputHandler::default();
+        let mut gesture = ContentMove::default();
+        let at = Point::new(499.0, 250.0);
+        let mods = Modifiers { shift: true, ..CMD };
+        let mut settings = Settings::default();
+        settings.canvas.move_modifier = MoveModifier::Ctrl;
+        assert!(wants(&settings, &InputHandler::default(), &scene, at, mods));
+        let (down, _) = gesture.event(ContentEvent::Down(at), mods, &mut input, &mut scene);
+        assert_eq!(down, ContentDecision::Moving);
+        let to = Point::new(512.0, 250.0);
+        let (drag, _) = gesture.event(ContentEvent::Dragged(to), mods, &mut input, &mut scene);
+        assert_eq!(drag, ContentDecision::Moving);
+        assert_eq!(scene.get(id).unwrap().rect.size.width, 413.0);
+        let (up, _) = gesture.event(ContentEvent::Up(to), mods, &mut input, &mut scene);
+        assert_eq!(up, ContentDecision::Moving);
+    }
+
+    #[test]
+    fn cmd_shift_middle_moves_without_snapping() {
+        let (mut scene, id) = scene_with_terminal();
+        let mut input = InputHandler::default();
+        let mut gesture = ContentMove::default();
+        let at = content_point(&scene, id);
+        let mods = Modifiers { shift: true, ..CMD };
+        assert_eq!(
+            gesture
+                .event(ContentEvent::Down(at), mods, &mut input, &mut scene)
+                .0,
+            ContentDecision::Hold
+        );
+        let to = Point::new(at.x + 13.0, at.y + 5.0);
+        assert_eq!(
+            gesture
+                .event(ContentEvent::Dragged(to), mods, &mut input, &mut scene)
+                .0,
+            ContentDecision::Moving
+        );
+        assert_eq!(scene.get(id).unwrap().rect.origin, Point::new(113.0, 105.0));
+    }
+
+    #[test]
+    fn unmodified_inner_band_is_not_captured() {
+        let (scene, _) = scene_with_terminal();
+        assert!(!wants(
+            &Settings::default(),
+            &InputHandler::default(),
+            &scene,
+            Point::new(499.0, 250.0),
+            Modifiers::default()
+        ));
+    }
+
+    #[test]
+    fn cmd_inner_band_resizes_with_snapping() {
+        let (mut scene, id) = scene_with_terminal();
+        let mut input = InputHandler::default();
+        let mut gesture = ContentMove::default();
+        let at = Point::new(499.0, 250.0);
+        assert!(wants(&Settings::default(), &input, &scene, at, CMD));
+        assert_eq!(
+            gesture
+                .event(ContentEvent::Down(at), CMD, &mut input, &mut scene)
+                .0,
+            ContentDecision::Moving
+        );
+        let to = Point::new(512.0, 250.0);
+        assert_eq!(
+            gesture
+                .event(ContentEvent::Dragged(to), CMD, &mut input, &mut scene)
+                .0,
+            ContentDecision::Moving
+        );
+        assert_eq!(scene.get(id).unwrap().rect.size.width, 412.0);
+        assert_eq!(
+            gesture
+                .event(ContentEvent::Up(to), CMD, &mut input, &mut scene)
+                .0,
+            ContentDecision::Moving
+        );
+    }
+
+    #[test]
+    fn cmd_middle_content_moves_with_snapping() {
+        let (mut scene, id) = scene_with_terminal();
+        let mut input = InputHandler::default();
+        let mut gesture = ContentMove::default();
+        let at = content_point(&scene, id);
+        assert_eq!(
+            gesture
+                .event(ContentEvent::Down(at), CMD, &mut input, &mut scene)
+                .0,
+            ContentDecision::Hold
+        );
+        let to = Point::new(at.x + 13.0, at.y + 5.0);
+        assert_eq!(
+            gesture
+                .event(ContentEvent::Dragged(to), CMD, &mut input, &mut scene)
+                .0,
+            ContentDecision::Moving
+        );
+        assert_eq!(scene.get(id).unwrap().rect.origin, Point::new(112.0, 104.0));
     }
 
     #[test]
@@ -280,21 +488,25 @@ mod tests {
         let mut gesture = ContentMove::default();
         let at = content_point(&scene, id);
         let before = scene.get(id).unwrap().rect;
-        gesture.event(ContentEvent::Down(at), CMD_ALT, &mut input, &mut scene);
+        gesture.event(ContentEvent::Down(at), CMD_SHIFT, &mut input, &mut scene);
         let far = Point::new(at.x + 60.0, at.y + 20.0);
-        let (decision, effects) =
-            gesture.event(ContentEvent::Dragged(far), CMD_ALT, &mut input, &mut scene);
+        let (decision, effects) = gesture.event(
+            ContentEvent::Dragged(far),
+            CMD_SHIFT,
+            &mut input,
+            &mut scene,
+        );
         assert_eq!(decision, ContentDecision::Moving);
         assert!(effects.contains(&Effect::FocusPanel(id)), "{effects:?}");
         let farther = Point::new(at.x + 80.0, at.y + 30.0);
         let (decision, _) = gesture.event(
             ContentEvent::Dragged(farther),
-            CMD_ALT,
+            CMD_SHIFT,
             &mut input,
             &mut scene,
         );
         assert_eq!(decision, ContentDecision::Moving);
-        let (up, _) = gesture.event(ContentEvent::Up(farther), CMD_ALT, &mut input, &mut scene);
+        let (up, _) = gesture.event(ContentEvent::Up(farther), CMD_SHIFT, &mut input, &mut scene);
         assert_eq!(up, ContentDecision::Moving);
         let after = scene.get(id).unwrap().rect;
         assert_eq!(
@@ -305,7 +517,7 @@ mod tests {
         // The handler is idle again: a later plain move changes nothing.
         let (decision, _) = gesture.event(
             ContentEvent::Dragged(Point::new(at.x + 200.0, at.y)),
-            CMD_ALT,
+            CMD_SHIFT,
             &mut input,
             &mut scene,
         );

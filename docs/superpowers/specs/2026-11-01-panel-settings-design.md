@@ -165,7 +165,7 @@ What exists:
 - Cmd+left-down on a panel's content starts an undecided gesture. Nothing is sent to
   the panel yet.
 - Movement past `CLICK_SLOP` turns it into a move of that panel. The panel never sees
-  the press. The move follows the same rules as a title bar drag: snapping, `alt`
+  the press. The move follows the same rules as a title bar drag: snapping, `cmd-shift`
   disables snapping, joins.
 - Release before the threshold is a click: the held press and the release are both
   delivered to the panel, so Cmd+click on a link still opens it. A long Cmd+press with
