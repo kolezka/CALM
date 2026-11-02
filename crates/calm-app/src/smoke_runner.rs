@@ -32,6 +32,7 @@ pub const STEPS: &[StepSpec] = &[
     step("zorder", &["terminals"], &[]),
     step("join", &["terminals"], &[]),
     step("app_icon", &[], &[]),
+    step("terminal_env", &[], &[]),
     step("native_reorder", &[], &[]),
     step("plugins", &[], &[]),
     step("tui", &[], &[]),

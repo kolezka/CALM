@@ -755,3 +755,19 @@ These shipped with #41, next to "Restore at launch" above.
   saved terminals with a `command`. Their exit now shows "[calm] <name> exited with code N"
   and follows `terminal.command_restart`. Plugin API kind `tui` and `PanelInfo.kind` "tui"
   are unchanged.
+
+## Launching terminal's env is scrubbed (2026-11-02, `fix/terminal-env-scrub`)
+
+- **`main` unsets the launching terminal's identity before any thread starts.** Started from
+  iTerm2, every canvas terminal inherited `ITERM_SESSION_ID`, `TERM_PROGRAM=iTerm.app` and
+  `LC_TERMINAL`. Claude Code 2.1.316 treats either of the first two as "inside iTerm2", so
+  agent teams split the iTerm2 tab CALM was launched from. The list is in
+  `calm_core::host_env` (iTerm2, Terminal.app, tmux, screen, kitty, WezTerm, Alacritty,
+  Zellij); `GHOSTTY_*`, `TERM`, `LC_ALL`/`LC_CTYPE` stay.
+- Hard-coded on purpose: it is a correctness fix, not a look or behavior choice. A user who
+  wants one of these names in a terminal can set it in a terminal profile's env.
+- Done in CALM's own environment, not per spawn: `gpui-libghostty` 0.3.1 has no env option,
+  and one place then covers every child (terminals, TUI apps, plugins, `gh`) instead of each
+  argv builder growing `env -u` flags.
+- Smoke step `terminal_env` spawns `/usr/bin/env` and fails on any listed name. It only
+  discriminates when smoke runs from a terminal that sets them (iTerm2, tmux).

@@ -465,6 +465,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         })
         .await;
         smoke_step(&mut run, "app_icon", async { smoke_app_icon() }).await;
+        smoke_step(&mut run, "terminal_env", async { smoke_terminal_env() }).await;
         smoke_step(&mut run, "native_reorder", async {
             smoke_native_reorder(&view, window, cx)
         })
@@ -2421,7 +2422,35 @@ fn smoke_app_icon() {
     }
 }
 
+/// A spawned child must not inherit the launching terminal's identity. Run from iTerm2
+/// or tmux, this fails without the scrub in `main`.
+fn smoke_terminal_env() {
+    let output = match std::process::Command::new("/usr/bin/env").output() {
+        Ok(output) => output,
+        Err(err) => smoke_fail(&format!("terminal env: spawn /usr/bin/env: {err}")),
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let names: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(n, _)| n)
+        .collect();
+    let leaked = calm_core::host_env::inherited_terminal_vars(&names);
+    println!(
+        "smoke: terminal_env child_vars={} leaked={leaked:?}",
+        names.len()
+    );
+    if names.is_empty() {
+        smoke_fail("terminal env: child printed no variables");
+    }
+    if !leaked.is_empty() {
+        smoke_fail(&format!("terminal env: child inherited {leaked:?}"));
+    }
+}
+
 fn main() {
+    // Before any thread starts: a terminal launched from iTerm2 must not look like iTerm2.
+    calm_native::host_env::scrub_inherited_terminal_env();
     let args = parse_args();
     gpui_platform::application().run(move |cx: &mut App| {
         cx.bind_keys(canvas_view::key_bindings());
