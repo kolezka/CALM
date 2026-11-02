@@ -2708,6 +2708,9 @@ async fn smoke_perf_sweep(
     (frames, p50, p95)
 }
 
+/// How long the Settings window's close flush may take to report back.
+const SMOKE_CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Opt-in numbers for the settings path: `CALM_SMOKE_ONLY=settings_perf`. Prints lines,
 /// fails only when the path itself errors.
 async fn smoke_settings_perf(
@@ -2794,8 +2797,21 @@ async fn smoke_settings_perf(
                 .map_err(|err| err.to_string())
         })
     };
-    // Before the quiet time ends the file may lag; closing the window must catch it up.
+    // Positive control: the last tick is still held by the debounce, so only the close flush
+    // can write it before the quiet time ends.
+    let (pending, acked) = cx.update(|cx| {
+        let view = view.read(cx);
+        (
+            view.settings.save.is_pending(),
+            view.settings_close_ack.generation,
+        )
+    });
     let before_close = saved(cx);
+    if !pending {
+        smoke_fail(&format!(
+            "settings_perf: the last change is not pending before close (file matches: {before_close:?}), so the close flush is untested"
+        ));
+    }
     let drag_frames = cx.update(|cx| {
         view.update(cx, |view, _| {
             if let Some(settings_window) = &view.settings_window {
@@ -2807,16 +2823,34 @@ async fn smoke_settings_perf(
                 .unwrap_or_default()
         })
     });
-    cx.background_executor()
-        .timer(Duration::from_millis(100))
-        .await;
+    let started = Instant::now();
+    let flush_error = loop {
+        let ack = cx.update(|cx| view.read(cx).settings_close_ack.clone());
+        if ack.generation > acked {
+            break ack.error;
+        }
+        if started.elapsed() > SMOKE_CLOSE_FLUSH_TIMEOUT {
+            smoke_fail(&format!(
+                "settings_perf: no close flush finished within {SMOKE_CLOSE_FLUSH_TIMEOUT:?}"
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(10))
+            .await;
+    };
+    let flush_ms = started.elapsed().as_secs_f64() * 1000.0;
+    if let Some(err) = flush_error {
+        smoke_fail(&format!(
+            "settings_perf: close flush failed to write: {err}"
+        ));
+    }
     let after_close = saved(cx);
     println!(
-        "smoke: settings_perf saved before_close={before_close:?} after_close={after_close:?}"
+        "smoke: settings_perf saved pending_before_close={pending} before_close={before_close:?} after_close={after_close:?} close_flush_ms={flush_ms:.1}"
     );
     if after_close != Ok(true) {
         smoke_fail(&format!(
-            "settings_perf: settings.json lacks the last change after close: {after_close:?}"
+            "settings_perf: settings.json lacks the last change after the close flush: {after_close:?}"
         ));
     }
     let total: f64 = change_ms.iter().sum();

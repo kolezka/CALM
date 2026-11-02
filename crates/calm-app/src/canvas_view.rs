@@ -194,6 +194,8 @@ pub struct CanvasView {
     focus_handle: FocusHandle,
     /// The stats readout (cmd-shift-f). Which items it shows is `developer.stats`.
     pub show_stats: bool,
+    /// Counts finished close flushes of the Settings window, so smoke can wait for one.
+    pub settings_close_ack: crate::settings_menu::SettingsCloseAck,
     pub frame_stats: FrameStats,
     /// Cameras the zoom bench applies, one per frame. Empty outside the bench.
     pub camera_script: VecDeque<calm_core::camera::Camera>,
@@ -317,6 +319,7 @@ impl CanvasView {
             native_order: Vec::new(),
             focus_handle: cx.focus_handle(),
             show_stats: false,
+            settings_close_ack: Default::default(),
             frame_stats: FrameStats::default(),
             camera_script: VecDeque::new(),
             frame_probe: None,

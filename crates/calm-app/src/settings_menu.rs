@@ -27,6 +27,13 @@ actions!(
 const KEY_MESSAGE_SECS: u64 = 3;
 
 /// Settings plus the file they persist to. The smoke points `path` at a temp dir.
+/// The Settings window's close flushes that have finished, and the last one's write error.
+#[derive(Clone, Debug, Default)]
+pub struct SettingsCloseAck {
+    pub generation: u64,
+    pub error: Option<String>,
+}
+
 pub struct SettingsState {
     pub settings: Settings,
     pub path: PathBuf,
@@ -152,9 +159,15 @@ impl CanvasView {
     }
 
     fn write_settings(&self) {
-        if let Err(err) = save_settings_to(&self.settings.path, &self.settings.settings) {
+        if let Err(err) = self.try_write_settings() {
             eprintln!("calm: {err}");
         }
+    }
+
+    fn try_write_settings(&self) -> Result<(), String> {
+        save_settings_to(&self.settings.path, &self.settings.settings)
+            .map(|_| ())
+            .map_err(|err| err.to_string())
     }
 
     fn settings_save_delay(&self) -> Duration {
@@ -190,6 +203,20 @@ impl CanvasView {
         }
     }
 
+    /// The Settings window closed: writes a held change and records that the flush finished.
+    fn flush_settings_on_close(&mut self) {
+        let result = if self.settings.save.take_pending() {
+            self.try_write_settings()
+        } else {
+            Ok(())
+        };
+        if let Err(err) = &result {
+            eprintln!("calm: {err}");
+        }
+        self.settings_close_ack.generation += 1;
+        self.settings_close_ack.error = result.err();
+    }
+
     pub fn form_context(&self) -> FormContext {
         FormContext {
             show_stats: self.show_stats,
@@ -214,12 +241,14 @@ impl CanvasView {
                 let mut cx = async_cx.clone();
                 executor
                     .spawn(async move {
-                        cx.update_window(handle, |_, window, cx| {
+                        let applied = cx.update_window(handle, |_, window, cx| {
                             this.update(cx, |view, cx| {
                                 view.settings_field_changed(&id, value, window, cx);
                             })
-                        })
-                        .ok();
+                        });
+                        if let Err(err) = applied {
+                            eprintln!("calm: settings change {id} not applied: {err:#}");
+                        }
                     })
                     .detach();
             })
@@ -252,7 +281,7 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) {
         if id == WINDOW_CLOSED_FIELD {
-            self.flush_settings_save();
+            self.flush_settings_on_close();
             return;
         }
         let mut next = self.settings.settings.clone();
