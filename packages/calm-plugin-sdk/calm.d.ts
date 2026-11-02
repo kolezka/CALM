@@ -22,10 +22,16 @@ export interface Size {
 }
 
 /**
- * The shape of `calm-plugin.json`. CALM rejects a manifest with a bad value; it never
+ * The shape of `calm-plugin.json`. `kind` picks the shape: absent or `"web"` is a web
+ * plugin, `"tui"` a terminal app. CALM rejects a manifest with a bad value; it never
  * falls back to a default. Sizes include the panel's title bar.
  */
-export interface CalmPluginManifest {
+export type CalmPluginManifest = CalmWebPluginManifest | CalmTuiPluginManifest;
+
+/** A web plugin: an HTML page in a WKWebView panel. */
+export interface CalmWebPluginManifest {
+  /** Absent means `"web"`. */
+  kind?: "web";
   id: string;
   name: string;
   version: string;
@@ -41,6 +47,8 @@ export interface CalmPluginManifest {
   apiVersion?: number;
   /** What the plugin does, shown to the user. Declarative, never checked. Unknown words warn. */
   capabilities?: Capability[];
+  /** Context menu items. Does not need `apiVersion` 2. */
+  contributes?: PluginContributes;
   /** Backend entry run under bun, relative to the plugin folder. Parsed, not run yet. */
   main?: string;
   /** Needs `main`. */
@@ -49,6 +57,94 @@ export interface CalmPluginManifest {
   engines?: { bun?: string };
   /** Opt-in hidden page. Parsed, not served yet. */
   background?: boolean;
+}
+
+/**
+ * A TUI app: a terminal panel that runs one command. It has no `entry`, `main`, `backend`,
+ * `engines` or `background`; those and any unknown field are errors. `fontSize`,
+ * `fontFamily` and `padding` are planned and rejected for now.
+ */
+export interface CalmTuiPluginManifest {
+  kind: "tui";
+  id: string;
+  /** Must not be empty. */
+  name: string;
+  /** Absent means an empty string. */
+  version?: string;
+  /** Must not be empty, start with `-`, or contain `=`. */
+  command: string;
+  /** Passed before a menu item's `run`. */
+  args?: string[];
+  /** Absolute, `~` or starting with `~/`. */
+  cwd?: string;
+  /** Keys match `[A-Za-z_][A-Za-z0-9_]*`. */
+  env?: Record<string, string>;
+  /** Absent means 640x400. TUI panels always resize freely. */
+  defaultSize?: Size;
+  /** 1 to 4 characters without spaces, or a relative `.png` or `.svg` path inside the plugin folder. */
+  icon?: string;
+  description?: string;
+  /** What happens when the command exits. Absent means `"prompt"`. */
+  restart?: "never" | "on-exit" | "prompt";
+  /** Run through the user's login shell, so its PATH applies. Absent means `true`. */
+  shell?: boolean;
+  /** Title bar text, at most 120 characters. `{name}` is the only placeholder. Absent shows `name`. */
+  title?: string;
+  /** "#rrggbb" or "#rrggbbaa". Focus ring, join divider and icon tint. */
+  accentColor?: string;
+  /** "#rrggbb" or "#rrggbbaa". */
+  titleBarColor?: string;
+  /** "#rrggbb" or "#rrggbbaa". */
+  titleColor?: string;
+  terminalColors?: TerminalColors;
+  contributes?: PluginContributes;
+  /** As on a web plugin. */
+  apiVersion?: number;
+  capabilities?: Capability[];
+}
+
+/** Terminal surface colors. All three are required and take "#rrggbb" only, no alpha. */
+export interface TerminalColors {
+  background: string;
+  foreground: string;
+  /** Exactly 16 colors. */
+  palette: string[];
+}
+
+/** `contributes` in the manifest. Any other key is an error. */
+export interface PluginContributes {
+  /** At most 32 items. */
+  menus?: MenuContribution[];
+}
+
+/** One context menu item. Choosing it sends a `command` event (web) or opens the app (TUI). */
+export interface MenuContribution {
+  /** `[a-z0-9-]+`, unique in the manifest. Sent back as `MenuCommand.id`. */
+  id: string;
+  /** 1 to 80 characters. */
+  title: string;
+  /** `"canvas"`: right-click on empty canvas. `"panel"`: on a title bar or minimized chip. */
+  location: "canvas" | "panel";
+  /** Panel items only. Absent means every panel. */
+  when?: MenuWhen;
+  /** Items in one group sit together. Absent means no group, listed first. */
+  group?: string;
+  /** Integer, sorts items inside a group. Absent means 0; ties keep manifest order. */
+  order?: number;
+  /** 1 to 4 characters drawn before the title. */
+  icon?: string;
+  /** Web plugins only. `"reuse"` (default) sends to an open panel of the plugin, `"new"` opens one. */
+  open?: "reuse" | "new";
+  /** TUI plugins only. Arguments appended to the manifest's `args`. */
+  run?: string[];
+}
+
+/** Every key set must match. Lists must not be empty. */
+export interface MenuWhen {
+  kind?: Array<"terminal" | "browser" | "plugin" | "tui">;
+  /** Plugin ids. Matches plugin and TUI panels of those plugins. */
+  plugin?: string[];
+  minimized?: boolean;
 }
 
 /** The capability words. Declarative only. */
@@ -188,13 +284,13 @@ export interface CalmEventPayloads {
 
 /** The panel a panel menu item was chosen on. */
 export interface MenuCommandPanel {
-  id: number;
-  kind: "terminal" | "browser" | "plugin" | "tui";
+  id: PanelId;
+  kind: PanelKind;
   /** Set for plugin and TUI panels. */
   pluginId: string | null;
   title: string;
   /** World coordinates, chrome included. */
-  rect: { x: number; y: number; width: number; height: number };
+  rect: Rect;
   minimized: boolean;
 }
 
