@@ -287,6 +287,9 @@ Open questions: `.ai/open-questions.md`.
   profile. Policy is unit tested (`calm_core::gesture`, `calm-app` `content_move`); the
   AppKit monitor is tested on its state machine only.
 - No PR yet: a Linux port plan.
+- `fix/tui-quick-exit-banner`, not merged: a typed command or TUI app that exits in under
+  250 ms (say `echo hello`) no longer gets Ghostty's "failed to launch" screen. The status
+  wrapper stays alive at least 0.4 s. Unit tested on the real wrapper; not yet seen in the app.
 - `feat/tui-extends-terminal`, PR #63, not merged: a TUI app is a terminal with an app
   attached (`PanelKind::app_terminal`, `.app()`), still saved as `type=tui`. One spawn,
   refresh, recolor and exit path for shells, typed commands and apps. App panels get the
