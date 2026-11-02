@@ -789,11 +789,28 @@ impl TerminalSettings {
 }
 
 /// The title for terminal number `index` that started in `cwd`, running `name`.
+/// One pass over the template, so inserted values are never read as placeholders.
 pub fn render_title(template: &str, index: u64, cwd: &str, name: &str) -> String {
-    template
-        .replace(PLACEHOLDER_INDEX, &index.to_string())
-        .replace(PLACEHOLDER_CWD, cwd)
-        .replace(PLACEHOLDER_NAME, name)
+    let index = index.to_string();
+    let tokens = [
+        (PLACEHOLDER_INDEX, index.as_str()),
+        (PLACEHOLDER_CWD, cwd),
+        (PLACEHOLDER_NAME, name),
+    ];
+    let mut title = String::with_capacity(template.len());
+    let mut rest = template;
+    'scan: while let Some(c) = rest.chars().next() {
+        for (token, value) in tokens {
+            if let Some(after) = rest.strip_prefix(token) {
+                title.push_str(value);
+                rest = after;
+                continue 'scan;
+            }
+        }
+        title.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    title
 }
 
 /// `path` with a leading `home` shown as `~`.
@@ -1094,6 +1111,21 @@ mod tests {
             settings.resolve(Some("gone"), true).profile.as_deref(),
             Some("plain")
         );
+    }
+
+    #[test]
+    fn title_values_stay_literal_even_when_they_look_like_placeholders() {
+        assert_eq!(
+            render_title("{cwd}", 1, "/tmp/{name}", "top"),
+            "/tmp/{name}"
+        );
+        assert_eq!(
+            render_title("{name} in {cwd}", 1, "~", "{cwd}"),
+            "{cwd} in ~"
+        );
+        assert_eq!(render_title("{n} {name}", 4, "~", "{n}"), "4 {n}");
+        // Unknown or unclosed braces are copied as they are.
+        assert_eq!(render_title("{x} {n", 2, "~", "a"), "{x} {n");
     }
 
     #[test]
