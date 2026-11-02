@@ -176,7 +176,7 @@ impl CanvasView {
         }
         self.refresh_settings_form();
         if let Some(settings_window) = &self.settings_window {
-            settings_window.show();
+            settings_window.show_above(window);
         }
     }
 
