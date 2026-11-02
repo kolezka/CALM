@@ -1973,7 +1973,7 @@ impl CanvasView {
             .and_then(|(_, terminal)| terminal.read(cx).native_frame())
     }
 
-    /// Records the canvas area. A size change clamps pinned panels back on screen.
+    /// Records the canvas area. A size change keeps pinned panels' title bars on screen.
     fn set_viewport(&mut self, viewport: Rect, cx: &mut Context<Self>) {
         let resized = viewport.size != self.viewport.size;
         self.viewport = viewport;
@@ -2737,6 +2737,7 @@ fn terminal_mode(
         local,
         panel.minimized,
         modal_open,
+        panel.is_pinned(),
     )
 }
 

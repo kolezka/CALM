@@ -367,14 +367,15 @@ Pull requests:
   - `plugins/calm-welcome` and `presets/welcome.json` (browser on `https://calm.raqz.link`,
     key bindings, welcome), all inside the first view with no overlap (unit test). No font
     files ship. By eye: see "Unverified".
-- Pinned panels (branch `feat/pinned-panels`, PR number at merge). Spec
+- Pinned panels (#83, branch `feat/pinned-panels`). Spec
   `docs/superpowers/specs/2026-11-02-pinned-panels-design.md`.
   - `Panel.pin: Option<f64>` holds the canvas zoom at pin time; a pinned panel's `rect` is in
     that pin space (`rect.origin * pin` is its screen origin). `Scene::camera_of` gives the
     per-panel camera for hit test, chrome, resize, placement, paint, occlusion and joins.
     `Scene::hit_test_screen` replaced `Scene::hit_test`.
   - A pinned panel keeps its screen position and size through pan, zoom, fit-all,
-    `cmd-shift-h` and arrow pan, and is never previewed. Pinned panels are always above
+    `cmd-shift-h` and arrow pan. Zoom never makes it a preview (`decide_mode` takes
+    `pinned`); an open modal still does. Pinned panels are always above
     unpinned ones in scene order, so native z-order follows. Move and resize still work.
     Snapping and joins happen only between panels with the same `pin` value. Unpin keeps
     the screen origin; the size then follows the canvas zoom again. Fit-all ignores pinned
@@ -382,8 +383,8 @@ Pull requests:
   - Action `panel.pin` ("Pin / unpin focused panel", default `cmd-shift-p`) and a Pin/Unpin
     item after Send to Back in the panel menu. A pinned panel's menu has no Zoom to Fit.
   - Layout version 3 with `pin` per panel (omitted when unpinned); versions 1 and 2 still
-    load. Restore keeps the tier order and clamps pinned panels back on screen, and so does
-    a window resize.
+    load. Restore and a window resize keep the tier order and move pinned panels so their
+    title bar (or minimized chip) stays reachable; part of the body may stay off screen.
   - Plugins: panel info has `pinned`, `contributes.menus` takes `when.pinned`.
   - Smoke steps `pin` and `pin_restore` (31 steps).
 
@@ -545,7 +546,7 @@ Open questions: `.ai/open-questions.md`.
   image), a terminal switching from live to preview and back keeps the same look.
 - Pinned panels, by eye: `cmd-shift-p` and the Pin/Unpin menu item in the running app
   (with a terminal focused the key must pin, not open Ghostty's palette), the look while
-  pinning and unpinning, a pinned panel clamped back on screen after a window resize, a
+  pinning and unpinning, a pinned panel's title bar still reachable after a window resize, a
   pinned browser and a pinned plugin panel.
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.

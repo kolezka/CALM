@@ -15,6 +15,7 @@ pub enum PanelMode {
 }
 
 /// `preview_below_zoom` comes from settings; `PREVIEW_ZOOM_THRESHOLD` is its default.
+/// A pinned panel ignores the zoom threshold, but a modal still forces a preview.
 pub fn decide_mode(
     zoom: f64,
     preview_below_zoom: f64,
@@ -22,10 +23,11 @@ pub fn decide_mode(
     viewport: Rect,
     minimized: bool,
     modal_open: bool,
+    pinned: bool,
 ) -> PanelMode {
     if minimized || screen_rect.intersect(&viewport).is_none() {
         PanelMode::Hidden
-    } else if modal_open || zoom < preview_below_zoom {
+    } else if modal_open || (!pinned && zoom < preview_below_zoom) {
         // A modal must not sit under a native view, which would draw on top of it.
         PanelMode::Preview
     } else {
@@ -180,6 +182,7 @@ mod tests {
                 ON_SCREEN,
                 VIEWPORT,
                 false,
+                false,
                 false
             ),
             PanelMode::Preview
@@ -189,11 +192,11 @@ mod tests {
     #[test]
     fn threshold_comes_from_the_caller() {
         assert_eq!(
-            decide_mode(0.7, 0.8, ON_SCREEN, VIEWPORT, false, false),
+            decide_mode(0.7, 0.8, ON_SCREEN, VIEWPORT, false, false, false),
             PanelMode::Preview
         );
         assert_eq!(
-            decide_mode(0.3, 0.2, ON_SCREEN, VIEWPORT, false, false),
+            decide_mode(0.3, 0.2, ON_SCREEN, VIEWPORT, false, false, false),
             PanelMode::Live
         );
     }
@@ -208,6 +211,7 @@ mod tests {
                 offscreen,
                 VIEWPORT,
                 false,
+                false,
                 false
             ),
             PanelMode::Hidden
@@ -219,7 +223,8 @@ mod tests {
                 offscreen,
                 VIEWPORT,
                 false,
-                true
+                true,
+                false
             ),
             PanelMode::Hidden
         );
@@ -234,6 +239,7 @@ mod tests {
                 ON_SCREEN,
                 VIEWPORT,
                 true,
+                false,
                 false
             ),
             PanelMode::Hidden
@@ -249,7 +255,8 @@ mod tests {
                 ON_SCREEN,
                 VIEWPORT,
                 false,
-                true
+                true,
+                false
             ),
             PanelMode::Preview
         );
@@ -266,9 +273,47 @@ mod tests {
                 ON_SCREEN,
                 VIEWPORT,
                 false,
+                false,
                 false
             ),
             PanelMode::Live
+        );
+    }
+
+    #[test]
+    fn pinned_ignores_zoom_threshold() {
+        assert_eq!(
+            decide_mode(0.3, 0.5, ON_SCREEN, VIEWPORT, false, false, true),
+            PanelMode::Live
+        );
+        assert_eq!(
+            decide_mode(0.3, 0.5, ON_SCREEN, VIEWPORT, false, false, false),
+            PanelMode::Preview
+        );
+    }
+
+    #[test]
+    fn pinned_still_preview_under_modal() {
+        assert_eq!(
+            decide_mode(1.0, 0.5, ON_SCREEN, VIEWPORT, false, true, true),
+            PanelMode::Preview
+        );
+        assert_eq!(
+            decide_mode(0.3, 0.5, ON_SCREEN, VIEWPORT, false, true, true),
+            PanelMode::Preview
+        );
+    }
+
+    #[test]
+    fn pinned_offscreen_or_minimized_is_hidden() {
+        let offscreen = Rect::new(5000.0, 5000.0, 400.0, 300.0);
+        assert_eq!(
+            decide_mode(0.3, 0.5, offscreen, VIEWPORT, false, false, true),
+            PanelMode::Hidden
+        );
+        assert_eq!(
+            decide_mode(1.0, 0.5, ON_SCREEN, VIEWPORT, true, false, true),
+            PanelMode::Hidden
         );
     }
 
