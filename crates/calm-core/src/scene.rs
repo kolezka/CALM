@@ -212,7 +212,7 @@ impl<'de> Deserialize<'de> for PanelKind {
 }
 
 /// What the user chose for a panel's look. Always wins over what the panel sets.
-/// Loading never validates them; `validate` is for whoever writes them.
+/// Loading checks only `content_opacity`; `validate` is for whoever writes them.
 /// Unknown keys are ignored so an older CALM opens a file with more override fields.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -236,7 +236,10 @@ pub struct PanelOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_colors: Option<PanelTerminalColors>,
     /// Terminals only. 0.2 to 1: how opaque the terminal's content is.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::terminal_profile::deserialize_content_opacity"
+    )]
     pub content_opacity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub borderless: Option<bool>,
@@ -275,6 +278,11 @@ impl PanelOverrides {
             }
             colors.validate("overrides.terminal_colors")?;
         }
+        self.validate_content_opacity(kind)
+    }
+
+    /// The `content_opacity` part of `validate`. Loading a layout runs this one alone.
+    pub(crate) fn validate_content_opacity(&self, kind: &PanelKind) -> Result<(), String> {
         if self.content_opacity.is_some() {
             if !kind.is_terminal() {
                 return Err(

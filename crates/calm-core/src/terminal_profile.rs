@@ -298,7 +298,10 @@ pub struct TerminalFields {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_colors: Option<TerminalColorsSetting>,
     /// 0.2 to 1: how opaque the terminal's content is.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_content_opacity"
+    )]
     pub content_opacity: Option<f64>,
     /// Profiles only. The global switch is `panels.terminal_user_config`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -531,6 +534,15 @@ pub(crate) fn check_color(path: &str, value: &Option<String>) -> Result<(), Stri
         )),
         _ => Ok(()),
     }
+}
+
+/// serde's own type error does not name the field.
+pub(crate) fn deserialize_content_opacity<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<f64>::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("\"content_opacity\": {error}")))
 }
 
 /// Also rejects NaN, which no range contains.
@@ -1556,5 +1568,20 @@ mod tests {
                 .contains("terminal.profiles[0].content_opacity")
         );
         assert!(parse(r#"{"content_opacity": 0.2}"#).is_ok());
+    }
+
+    #[test]
+    fn content_opacity_of_the_wrong_type_names_the_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 2, "terminal": {"content_opacity": "0.5"}}"#,
+        )
+        .unwrap();
+        let error = crate::settings::read_settings_from(&path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("content_opacity"), "{error}");
     }
 }
