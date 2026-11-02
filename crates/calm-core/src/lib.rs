@@ -11,6 +11,7 @@ pub mod gesture;
 pub mod grid;
 pub mod interaction;
 pub mod join;
+pub mod keymap;
 pub mod layout;
 pub mod menu;
 pub mod occlusion;

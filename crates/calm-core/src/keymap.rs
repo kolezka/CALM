@@ -1,0 +1,818 @@
+//! Key bindings as data: every action CALM binds, its default key and the key rules.
+//!
+//! The rules mirror how `gpui-pre-macos 0.3.4` turns a key press into a keystroke
+//! (`events.rs`), so a key accepted here is one GPUI can actually report.
+
+use std::collections::BTreeMap;
+
+/// Changed bindings by action id. `None` means unbound.
+pub type KeyOverrides = BTreeMap<String, Option<String>>;
+
+/// Where a binding applies: the canvas key context, or the whole app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Canvas,
+    Global,
+}
+
+impl Scope {
+    /// Whether one key may not be used in both scopes. A new scope must decide here.
+    pub fn overlaps(self, other: Scope) -> bool {
+        match (self, other) {
+            (Scope::Canvas, Scope::Canvas)
+            | (Scope::Global, Scope::Global)
+            | (Scope::Canvas, Scope::Global)
+            | (Scope::Global, Scope::Canvas) => true,
+        }
+    }
+}
+
+/// Where a row sits in the Keys tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Group {
+    Canvas,
+    Panels,
+    View,
+    Developer,
+    App,
+}
+
+impl Group {
+    pub fn title(self) -> &'static str {
+        match self {
+            Group::Canvas => "Canvas",
+            Group::Panels => "Panels",
+            Group::View => "View",
+            Group::Developer => "Developer",
+            Group::App => "App",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ActionSpec {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub group: Group,
+    pub scope: Scope,
+    pub default: Option<&'static str>,
+    /// Listed in a menu bar menu, so its key shows there.
+    pub in_menu: bool,
+}
+
+const fn row(
+    id: &'static str,
+    label: &'static str,
+    group: Group,
+    scope: Scope,
+    default: Option<&'static str>,
+    in_menu: bool,
+) -> ActionSpec {
+    ActionSpec {
+        id,
+        label,
+        group,
+        scope,
+        default,
+        in_menu,
+    }
+}
+
+/// Every action, in the row order of the Keys tab.
+pub const ACTIONS: &[ActionSpec] = &[
+    row(
+        "canvas.draw_terminal",
+        "Draw a terminal",
+        Group::Canvas,
+        Scope::Canvas,
+        Some("t"),
+        false,
+    ),
+    row(
+        "canvas.draw_browser",
+        "Draw a browser",
+        Group::Canvas,
+        Scope::Canvas,
+        Some("b"),
+        false,
+    ),
+    row(
+        "canvas.cancel",
+        "Cancel / answer No",
+        Group::Canvas,
+        Scope::Canvas,
+        Some("escape"),
+        false,
+    ),
+    row(
+        "canvas.confirm",
+        "Confirm close",
+        Group::Canvas,
+        Scope::Canvas,
+        Some("enter"),
+        false,
+    ),
+    row(
+        "panel.delete",
+        "Delete focused panel",
+        Group::Panels,
+        Scope::Canvas,
+        Some("cmd-shift-backspace"),
+        false,
+    ),
+    row(
+        "panel.settings",
+        "Focused panel Settings",
+        Group::Panels,
+        Scope::Canvas,
+        Some("cmd-<"),
+        false,
+    ),
+    row(
+        "canvas.zoom_in",
+        "Zoom in",
+        Group::View,
+        Scope::Canvas,
+        Some("cmd-="),
+        false,
+    ),
+    row(
+        "canvas.zoom_out",
+        "Zoom out",
+        Group::View,
+        Scope::Canvas,
+        Some("cmd--"),
+        false,
+    ),
+    row(
+        "canvas.zoom_reset",
+        "Reset zoom",
+        Group::View,
+        Scope::Canvas,
+        Some("cmd-0"),
+        false,
+    ),
+    row(
+        "canvas.center_origin",
+        "Center on origin",
+        Group::View,
+        Scope::Canvas,
+        Some("cmd-shift-h"),
+        true,
+    ),
+    // GPUI reports Cmd+Shift+0 on a US layout as cmd-); cmd-shift-0 never matched.
+    row(
+        "canvas.fit_all",
+        "Fit all panels",
+        Group::View,
+        Scope::Canvas,
+        Some("cmd-)"),
+        true,
+    ),
+    row(
+        "view.fullscreen",
+        "Toggle fullscreen",
+        Group::View,
+        Scope::Canvas,
+        Some("cmd-ctrl-f"),
+        false,
+    ),
+    row(
+        "view.show_grid",
+        "Show grid",
+        Group::View,
+        Scope::Global,
+        None,
+        true,
+    ),
+    row(
+        "developer.toggle_stats",
+        "Show stats",
+        Group::Developer,
+        Scope::Global,
+        Some("cmd-shift-f"),
+        true,
+    ),
+    row(
+        "developer.reset_fps",
+        "Reset FPS stats",
+        Group::Developer,
+        Scope::Global,
+        None,
+        true,
+    ),
+    row(
+        "app.settings",
+        "Open Settings",
+        Group::App,
+        Scope::Global,
+        Some("cmd-,"),
+        true,
+    ),
+    row(
+        "app.open_config_folder",
+        "Open config folder",
+        Group::App,
+        Scope::Global,
+        None,
+        true,
+    ),
+    row(
+        "app.reset_settings",
+        "Reset settings to defaults",
+        Group::App,
+        Scope::Global,
+        None,
+        true,
+    ),
+    row(
+        "app.about",
+        "About CALM",
+        Group::App,
+        Scope::Global,
+        None,
+        true,
+    ),
+    row(
+        "app.quit",
+        "Quit",
+        Group::App,
+        Scope::Global,
+        Some("cmd-q"),
+        true,
+    ),
+];
+
+pub fn action(id: &str) -> Option<&'static ActionSpec> {
+    ACTIONS.iter().find(|a| a.id == id)
+}
+
+/// A parsed key: which modifiers are held, then one key name or character.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeySpec {
+    pub cmd: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub function: bool,
+    pub key: String,
+}
+
+impl KeySpec {
+    /// One spelling per key, so equal keys compare equal as text too.
+    pub fn canonical(&self) -> String {
+        let mut parts = Vec::new();
+        for (on, name) in [
+            (self.cmd, "cmd"),
+            (self.ctrl, "ctrl"),
+            (self.alt, "alt"),
+            (self.shift, "shift"),
+            (self.function, "fn"),
+        ] {
+            if on {
+                parts.push(name);
+            }
+        }
+        parts.push(&self.key);
+        parts.join("-")
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyError {
+    Syntax,
+    BareModifier,
+    UppercaseLetter,
+    ShiftedSymbol,
+    FnNeverFires,
+    Reserved(&'static str),
+    Space,
+    UsedBy(&'static str),
+}
+
+impl KeyError {
+    pub fn message(self) -> String {
+        match self {
+            KeyError::Syntax => "not a key; write modifiers (cmd, ctrl, alt, shift, fn) and one key joined by \"-\", like \"cmd-shift-h\"".into(),
+            KeyError::BareModifier => "only modifiers; add a key, like \"cmd-k\"".into(),
+            KeyError::UppercaseLetter => "write \"shift-\" and the lowercase letter, like \"cmd-shift-k\"".into(),
+            KeyError::ShiftedSymbol => "shift with this key never fires, because macOS reports the shifted character; write that character, like \"cmd-<\" for Cmd+Shift+comma on a US layout".into(),
+            KeyError::FnNeverFires => "fn with this key never fires; macOS sets fn on it already".into(),
+            KeyError::Reserved(label) => format!("a fixed browser key ({label})"),
+            KeyError::Space => "space alone is the hold-to-pan key".into(),
+            KeyError::UsedBy(label) => format!("Used by {label}"),
+        }
+    }
+}
+
+/// CALM's own browser shortcuts (`calm-native/src/browser.rs`). Shown, never bindable.
+pub const BROWSER_KEYS: &[(&str, &str)] = &[
+    ("cmd-[", "Back"),
+    ("cmd-]", "Forward"),
+    ("cmd-r", "Reload"),
+    ("cmd-l", "Address bar"),
+    ("cmd-c", "Copy"),
+    ("cmd-x", "Cut"),
+    ("cmd-v", "Paste"),
+    ("cmd-a", "Select all"),
+    ("cmd-z", "Undo"),
+    ("cmd-shift-z", "Redo"),
+];
+
+/// The key an exited terminal restarts on (`terminal/adapter.rs`). Shown, never bindable.
+pub const RESTART_KEY: (&str, &str) = ("enter", "Restart an exited terminal");
+
+const MODIFIERS: [&str; 5] = ["cmd", "ctrl", "alt", "shift", "fn"];
+const NAMED_KEYS: [&str; 15] = [
+    "space",
+    "tab",
+    "enter",
+    "backspace",
+    "escape",
+    "up",
+    "down",
+    "left",
+    "right",
+    "pageup",
+    "pagedown",
+    "home",
+    "end",
+    "delete",
+    "insert",
+];
+/// Keys macOS already marks with fn, so GPUI clears it (`events.rs:354-357`).
+const FN_KEYS: [&str; 10] = [
+    "up", "down", "left", "right", "pageup", "pagedown", "home", "end", "delete", "insert",
+];
+
+fn is_function_key(key: &str) -> bool {
+    key.strip_prefix('f')
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (1..=35).contains(&n) && !key.starts_with("f0"))
+}
+
+fn is_named(key: &str) -> bool {
+    NAMED_KEYS.contains(&key) || is_function_key(key)
+}
+
+/// The grammar and the never-fires rules.
+pub fn parse_key(text: &str) -> Result<KeySpec, KeyError> {
+    if text.is_empty() || text.chars().any(char::is_whitespace) {
+        return Err(KeyError::Syntax);
+    }
+    let (mods, key): (Vec<&str>, &str) = if text == "-" {
+        (Vec::new(), "-")
+    } else if let Some(rest) = text.strip_suffix("--") {
+        (rest.split('-').collect(), "-")
+    } else {
+        let mut parts: Vec<&str> = text.split('-').collect();
+        let key = parts.pop().unwrap_or_default();
+        (parts, key)
+    };
+    let mut spec = KeySpec {
+        cmd: false,
+        ctrl: false,
+        alt: false,
+        shift: false,
+        function: false,
+        key: key.to_string(),
+    };
+    for part in mods {
+        let slot = match part {
+            "cmd" => &mut spec.cmd,
+            "ctrl" => &mut spec.ctrl,
+            "alt" => &mut spec.alt,
+            "shift" => &mut spec.shift,
+            "fn" => &mut spec.function,
+            _ => return Err(KeyError::Syntax),
+        };
+        if *slot {
+            return Err(KeyError::Syntax);
+        }
+        *slot = true;
+    }
+    if MODIFIERS.contains(&key) {
+        return Err(KeyError::BareModifier);
+    }
+    let mut chars = key.chars();
+    let single = match (chars.next(), chars.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    };
+    match single {
+        _ if is_named(key) => {}
+        Some(c) if !c.is_control() => {
+            if c.is_ascii_uppercase() {
+                return Err(KeyError::UppercaseLetter);
+            }
+            // GPUI keeps shift only for a-z; otherwise it reports the shifted character.
+            if spec.shift && !c.is_ascii_lowercase() {
+                return Err(KeyError::ShiftedSymbol);
+            }
+        }
+        _ => return Err(KeyError::Syntax),
+    }
+    if spec.function && (FN_KEYS.contains(&key) || is_function_key(key)) {
+        return Err(KeyError::FnNeverFires);
+    }
+    Ok(spec)
+}
+
+/// `parse_key` plus the keys CALM keeps for itself.
+pub fn check_key(text: &str) -> Result<KeySpec, KeyError> {
+    let spec = parse_key(text)?;
+    for (key, label) in BROWSER_KEYS {
+        if parse_key(key).as_ref() == Ok(&spec) {
+            return Err(KeyError::Reserved(label));
+        }
+    }
+    if spec.key == "space" && !spec.cmd && !spec.ctrl && !spec.alt {
+        return Err(KeyError::Space);
+    }
+    Ok(spec)
+}
+
+pub fn effective_key(overrides: &KeyOverrides, action: &ActionSpec) -> Option<String> {
+    match overrides.get(action.id) {
+        Some(value) => value.clone(),
+        None => action.default.map(str::to_string),
+    }
+}
+
+/// Every bound action with its key, in `ACTIONS` order.
+pub fn bound_keys(overrides: &KeyOverrides) -> Vec<(&'static ActionSpec, String)> {
+    ACTIONS
+        .iter()
+        .filter_map(|a| effective_key(overrides, a).map(|key| (a, key)))
+        .collect()
+}
+
+/// Whether `action` may take `key`, given every other action's current key.
+pub fn check_rebind(
+    overrides: &KeyOverrides,
+    action: &ActionSpec,
+    key: &str,
+) -> Result<KeySpec, KeyError> {
+    let spec = check_key(key)?;
+    for (other, other_key) in bound_keys(overrides) {
+        if other.id != action.id
+            && other.scope.overlaps(action.scope)
+            && parse_key(&other_key).as_ref() == Ok(&spec)
+        {
+            return Err(KeyError::UsedBy(other.label));
+        }
+    }
+    Ok(spec)
+}
+
+/// The first problem in a `keybindings` section, naming the field.
+pub fn validate_overrides(overrides: &KeyOverrides) -> Result<(), String> {
+    let mut seen: Vec<(&ActionSpec, KeySpec)> = Vec::new();
+    for action in ACTIONS {
+        let overridden = overrides.contains_key(action.id);
+        let Some(key) = effective_key(overrides, action) else {
+            continue;
+        };
+        let spec = check_key(&key).map_err(|e| {
+            format!(
+                "\"keybindings.{}\" is \"{key}\": {}",
+                action.id,
+                e.message()
+            )
+        })?;
+        if let Some((earlier, _)) = seen
+            .iter()
+            .find(|(o, s)| *s == spec && o.scope.overlaps(action.scope))
+        {
+            // Blame the overridden side; if both are, the later one.
+            let (blamed, other) = if overridden || !overrides.contains_key(earlier.id) {
+                (action, *earlier)
+            } else {
+                (*earlier, action)
+            };
+            let blamed_key = effective_key(overrides, blamed).unwrap_or_default();
+            return Err(format!(
+                "\"keybindings.{}\" is \"{blamed_key}\": {}",
+                blamed.id,
+                KeyError::UsedBy(other.label).message()
+            ));
+        }
+        seen.push((action, spec));
+    }
+    match overrides.keys().find(|id| action(id).is_none()) {
+        Some(id) => Err(format!("\"keybindings.{id}\": unknown action")),
+        None => Ok(()),
+    }
+}
+
+/// A key without Cmd or Ctrl is typing; a focused terminal keeps it.
+pub fn passes_to_terminal(key: &KeySpec) -> bool {
+    !key.cmd && !key.ctrl
+}
+
+/// GPUI's menu builder cannot show fn, and passes enter and tab through unconverted.
+pub fn shows_in_menu(key: &KeySpec) -> bool {
+    !key.function && key.key != "enter" && key.key != "tab"
+}
+
+/// A key as macOS writes it, like `⇧⌘⌫`. Text that does not parse is shown as written.
+pub fn display_key(text: &str) -> String {
+    let Ok(spec) = parse_key(text) else {
+        return text.to_string();
+    };
+    let mut out = String::new();
+    for (on, glyph) in [
+        (spec.ctrl, "⌃"),
+        (spec.alt, "⌥"),
+        (spec.shift, "⇧"),
+        (spec.cmd, "⌘"),
+    ] {
+        if on {
+            out.push_str(glyph);
+        }
+    }
+    if spec.function {
+        out.push_str("fn ");
+    }
+    let key = match spec.key.as_str() {
+        "backspace" => "⌫".to_string(),
+        "delete" => "⌦".to_string(),
+        "enter" => "↩".to_string(),
+        "tab" => "⇥".to_string(),
+        "escape" => "⎋".to_string(),
+        "space" => "Space".to_string(),
+        "up" => "↑".to_string(),
+        "down" => "↓".to_string(),
+        "left" => "←".to_string(),
+        "right" => "→".to_string(),
+        "pageup" => "⇞".to_string(),
+        "pagedown" => "⇟".to_string(),
+        "home" => "↖".to_string(),
+        "end" => "↘".to_string(),
+        "insert" => "Ins".to_string(),
+        other => other.to_uppercase(),
+    };
+    out.push_str(&key);
+    out
+}
+
+/// The close confirmation, naming the keys in words, like `Close? enter / esc`.
+pub fn confirm_prompt(overrides: &KeyOverrides) -> String {
+    let word = |id: &str| {
+        let key = action(id).and_then(|a| effective_key(overrides, a))?;
+        Some(match parse_key(&key) {
+            Ok(mut spec) => {
+                if spec.key == "escape" {
+                    spec.key = "esc".into();
+                }
+                spec.canonical()
+            }
+            Err(_) => key,
+        })
+    };
+    let keys: Vec<String> = [word("canvas.confirm"), word("canvas.cancel")]
+        .into_iter()
+        .flatten()
+        .collect();
+    if keys.is_empty() {
+        "Close?".to_string()
+    } else {
+        format!("Close? {}", keys.join(" / "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_has_every_action_once() {
+        let ids: Vec<&str> = ACTIONS.iter().map(|a| a.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "canvas.draw_terminal",
+                "canvas.draw_browser",
+                "canvas.cancel",
+                "canvas.confirm",
+                "panel.delete",
+                "panel.settings",
+                "canvas.zoom_in",
+                "canvas.zoom_out",
+                "canvas.zoom_reset",
+                "canvas.center_origin",
+                "canvas.fit_all",
+                "view.fullscreen",
+                "view.show_grid",
+                "developer.toggle_stats",
+                "developer.reset_fps",
+                "app.settings",
+                "app.open_config_folder",
+                "app.reset_settings",
+                "app.about",
+                "app.quit",
+            ]
+        );
+        assert_eq!(
+            action("panel.delete").unwrap().label,
+            "Delete focused panel"
+        );
+        assert!(action("nope").is_none());
+    }
+
+    #[test]
+    fn defaults_are_todays_keys_except_fit_all() {
+        let defaults: Vec<(&str, Option<&str>)> =
+            ACTIONS.iter().map(|a| (a.id, a.default)).collect();
+        // Spec table; fit_all moves from cmd-shift-0, which GPUI never reports.
+        assert!(defaults.contains(&("canvas.fit_all", Some("cmd-)"))));
+        assert!(defaults.contains(&("panel.settings", Some("cmd-<"))));
+        assert!(defaults.contains(&("app.about", None)));
+        assert_eq!(defaults.iter().filter(|(_, d)| d.is_some()).count(), 15);
+    }
+
+    #[test]
+    fn every_default_is_valid_and_conflict_free() {
+        for a in ACTIONS {
+            if let Some(key) = a.default {
+                assert_eq!(check_key(key).map(|_| ()), Ok(()), "{}", a.id);
+            }
+        }
+        assert_eq!(validate_overrides(&KeyOverrides::new()), Ok(()));
+    }
+
+    #[test]
+    fn grammar_accepts_what_gpui_reports() {
+        for ok in [
+            "cmd-=",
+            "cmd--",
+            "-",
+            "cmd-0",
+            "cmd-<",
+            "cmd-)",
+            "cmd-shift-backspace",
+            "shift-tab",
+            "cmd-shift-enter",
+            "shift-f5",
+            "alt-up",
+            "f12",
+            "t",
+            "shift-t",
+            "cmd-Ö",
+            "cmd-ý",
+            "fn-a",
+            "ctrl-alt-space",
+        ] {
+            assert!(parse_key(ok).is_ok(), "{ok}");
+        }
+        assert_eq!(
+            parse_key("shift-cmd-backspace").unwrap().canonical(),
+            "cmd-shift-backspace"
+        );
+    }
+
+    #[test]
+    fn grammar_rejects_keys_gpui_never_reports() {
+        for (text, error) in [
+            ("", KeyError::Syntax),
+            ("cmd-", KeyError::Syntax),
+            ("Cmd-d", KeyError::Syntax),
+            ("cmd-cmd-x", KeyError::Syntax),
+            ("hyper-x", KeyError::Syntax),
+            ("cmd-xy", KeyError::Syntax),
+            ("cmd-k cmd-s", KeyError::Syntax),
+            ("cmd", KeyError::BareModifier),
+            ("cmd-shift", KeyError::BareModifier),
+            ("cmd-D", KeyError::UppercaseLetter),
+            ("cmd-shift-,", KeyError::ShiftedSymbol),
+            ("cmd-shift-0", KeyError::ShiftedSymbol),
+            ("shift-1", KeyError::ShiftedSymbol),
+            ("shift--", KeyError::ShiftedSymbol),
+            ("fn-up", KeyError::FnNeverFires),
+            ("fn-f1", KeyError::FnNeverFires),
+        ] {
+            assert_eq!(parse_key(text), Err(error), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn reserved_browser_keys_and_bare_space_are_refused() {
+        assert_eq!(check_key("cmd-r"), Err(KeyError::Reserved("Reload")));
+        assert_eq!(check_key("cmd-shift-z"), Err(KeyError::Reserved("Redo")));
+        assert_eq!(BROWSER_KEYS.len(), 10);
+        assert_eq!(check_key("space"), Err(KeyError::Space));
+        assert_eq!(check_key("shift-space"), Err(KeyError::Space));
+        assert!(check_key("cmd-space").is_ok());
+        assert!(check_key("cmd-shift-r").is_ok());
+    }
+
+    #[test]
+    fn conflicts_use_effective_keys_not_defaults() {
+        let delete = action("panel.delete").unwrap();
+        let mut overrides = KeyOverrides::new();
+        assert_eq!(
+            check_rebind(&overrides, delete, "cmd-="),
+            Err(KeyError::UsedBy("Zoom in"))
+        );
+        // Canvas and global overlap.
+        assert_eq!(
+            check_rebind(&overrides, action("app.quit").unwrap(), "cmd-="),
+            Err(KeyError::UsedBy("Zoom in"))
+        );
+        overrides.insert("panel.delete".into(), Some("cmd-=".into()));
+        let error = validate_overrides(&overrides).unwrap_err();
+        assert!(
+            error.contains("keybindings.panel.delete") && error.contains("Used by Zoom in"),
+            "{error}"
+        );
+        overrides.insert("canvas.zoom_in".into(), Some("cmd-k".into()));
+        overrides.insert("panel.delete".into(), Some("cmd-=".into()));
+        assert_eq!(validate_overrides(&overrides), Ok(()));
+        overrides.insert("canvas.zoom_in".into(), None);
+        assert_eq!(validate_overrides(&overrides), Ok(()));
+    }
+
+    #[test]
+    fn modifier_order_does_not_hide_a_conflict() {
+        let quit = action("app.quit").unwrap();
+        assert_eq!(
+            check_rebind(&KeyOverrides::new(), quit, "shift-cmd-h"),
+            Err(KeyError::UsedBy("Center on origin"))
+        );
+        let mut overrides = KeyOverrides::new();
+        overrides.insert("app.quit".into(), Some("shift-cmd-h".into()));
+        let error = validate_overrides(&overrides).unwrap_err();
+        assert!(
+            error.contains("keybindings.app.quit") && error.contains("Used by Center on origin"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_overrides_names_the_field() {
+        let mut overrides = KeyOverrides::new();
+        overrides.insert("canvas.nope".into(), Some("cmd-k".into()));
+        assert_eq!(
+            validate_overrides(&overrides),
+            Err("\"keybindings.canvas.nope\": unknown action".into())
+        );
+        let mut overrides = KeyOverrides::new();
+        overrides.insert("panel.delete".into(), Some("cmd-shift-,".into()));
+        let error = validate_overrides(&overrides).unwrap_err();
+        assert!(
+            error.starts_with(
+                "\"keybindings.panel.delete\" is \"cmd-shift-,\": shift with this key never fires"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn only_keys_without_cmd_or_ctrl_pass_to_the_terminal() {
+        for key in ["t", "escape", "enter", "f5", "alt-x", "shift-tab"] {
+            assert!(passes_to_terminal(&parse_key(key).unwrap()), "{key}");
+        }
+        for key in ["cmd-x", "ctrl-x", "cmd-ctrl-f", "ctrl-alt-space"] {
+            assert!(!passes_to_terminal(&parse_key(key).unwrap()), "{key}");
+        }
+    }
+
+    #[test]
+    fn keys_show_with_macos_symbols() {
+        for (text, shown) in [
+            ("cmd-shift-backspace", "⇧⌘⌫"),
+            ("cmd-<", "⌘<"),
+            ("cmd-ctrl-f", "⌃⌘F"),
+            ("enter", "↩"),
+            ("escape", "⎋"),
+            ("cmd-=", "⌘="),
+            ("alt-up", "⌥↑"),
+            ("f5", "F5"),
+            ("cmd-)", "⌘)"),
+            ("t", "T"),
+            ("fn-a", "fn A"),
+        ] {
+            assert_eq!(display_key(text), shown, "{text}");
+        }
+    }
+
+    #[test]
+    fn menu_cannot_show_fn_enter_or_tab() {
+        for key in ["fn-a", "cmd-enter", "cmd-tab"] {
+            assert!(!shows_in_menu(&parse_key(key).unwrap()), "{key}");
+        }
+        assert!(shows_in_menu(&parse_key("cmd-shift-h").unwrap()));
+    }
+
+    #[test]
+    fn confirm_prompt_follows_the_bindings() {
+        let mut overrides = KeyOverrides::new();
+        assert_eq!(confirm_prompt(&overrides), "Close? enter / esc");
+        overrides.insert("canvas.confirm".into(), Some("y".into()));
+        assert_eq!(confirm_prompt(&overrides), "Close? y / esc");
+        overrides.insert("canvas.cancel".into(), None);
+        assert_eq!(confirm_prompt(&overrides), "Close? y");
+        overrides.insert("canvas.confirm".into(), None);
+        assert_eq!(confirm_prompt(&overrides), "Close?");
+    }
+}
