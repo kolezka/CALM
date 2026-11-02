@@ -13,6 +13,7 @@ use crate::browser_url::{BrowserQueryMode, scrub_for_save, scrub_text_for_save};
 use crate::camera::{Camera, MAX_ZOOM, MIN_ZOOM};
 use crate::geometry::Rect;
 use crate::scene::{PanelKind, PanelOverrides, Scene};
+use crate::terminal_profile::check_content_opacity;
 
 pub const LAYOUT_VERSION: u32 = 2;
 /// The oldest version `load_layout_from` migrates.
@@ -491,7 +492,8 @@ pub fn load_layout_from(dir: &Path, name: &str) -> Result<LayoutFile, LayoutErro
 /// Rejects numbers that would break camera or hit-test math. JSON cannot carry
 /// NaN or infinity (serde_json refuses them), so the non-finite checks guard
 /// in-memory values; the zoom range check is what file input actually hits.
-/// Of the overrides, only `content_opacity` is checked here.
+/// Of the overrides, only `content_opacity` is checked here, and on an unknown kind only
+/// its range.
 fn validate_layout(layout: &LayoutFile) -> Result<(), String> {
     let zoom = layout.camera.zoom;
     if !zoom.is_finite() || !(MIN_ZOOM..=MAX_ZOOM).contains(&zoom) {
@@ -519,10 +521,14 @@ fn validate_layout(layout: &LayoutFile) -> Result<(), String> {
                 "panels[{index}].rect is {rect:?}, expected finite numbers"
             ));
         }
-        panel
-            .overrides
-            .validate_content_opacity(&panel.kind)
-            .map_err(|error| format!("panels[{index}]: {error}"))?;
+        // A kind from a newer CALM may allow the field, so only the range is checked.
+        let checked = match &panel.kind {
+            PanelKind::Unsupported { .. } => {
+                check_content_opacity("overrides.content_opacity", panel.overrides.content_opacity)
+            }
+            kind => panel.overrides.validate_content_opacity(kind),
+        };
+        checked.map_err(|error| format!("panels[{index}]: {error}"))?;
     }
     Ok(())
 }
@@ -2010,6 +2016,21 @@ mod tests {
             Err(LayoutError::Malformed { message, .. }) => Err(message),
             Err(other) => panic!("expected Malformed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn load_range_checks_content_opacity_on_an_unknown_kind_but_allows_it() {
+        let loaded = content_opacity_load(UNKNOWN_KIND, "0.5").unwrap();
+        assert!(matches!(
+            loaded.panels[0].kind,
+            PanelKind::Unsupported { .. }
+        ));
+        assert_eq!(loaded.panels[0].overrides.content_opacity, Some(0.5));
+        let message = content_opacity_load(UNKNOWN_KIND, "0.05").expect_err("0.05");
+        assert!(
+            message.contains("panels[0]") && message.contains("overrides.content_opacity"),
+            "{message}"
+        );
     }
 
     #[test]
