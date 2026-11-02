@@ -71,6 +71,73 @@ pub fn list_presets(user_dir: &Path, builtin_dirs: &[PathBuf]) -> Vec<PresetEntr
         .collect()
 }
 
+/// What a panel is, for the Load Preset confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosingKind {
+    Terminal,
+    App,
+    Browser,
+    Plugin,
+}
+
+/// A panel that loading a preset would close. `confirms` is what a normal close asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosingPanel {
+    pub kind: ClosingKind,
+    pub confirms: bool,
+}
+
+/// The Load Preset question, or `None` when loading needs no confirmation: `confirm_close`
+/// is off or no closing panel would confirm on its own close.
+pub fn load_confirmation(
+    preset: &str,
+    closing: &[ClosingPanel],
+    confirm_close: bool,
+) -> Option<String> {
+    if !confirm_close || !closing.iter().any(|panel| panel.confirms) {
+        return None;
+    }
+    let nouns = [
+        (ClosingKind::Terminal, "terminal"),
+        (ClosingKind::App, "app"),
+        (ClosingKind::Browser, "browser"),
+        (ClosingKind::Plugin, "plugin"),
+    ];
+    let parts: Vec<String> = nouns
+        .iter()
+        .filter_map(|(kind, noun)| {
+            let count = closing.iter().filter(|panel| panel.kind == *kind).count();
+            match count {
+                0 => None,
+                1 => Some(format!("1 {noun}")),
+                n => Some(format!("{n} {noun}s")),
+            }
+        })
+        .collect();
+    let list = match parts.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => return None,
+    };
+    Some(format!("Load preset {preset}? This closes {list}."))
+}
+
+/// Whether to go on with a load: no question was needed, or the user said OK to it.
+pub fn decide_load(confirmation: Option<&str>, user_said_ok: bool) -> bool {
+    confirmation.is_none() || user_said_ok
+}
+
+/// The trimmed name a preset is saved under, or the message for a name that is not a safe
+/// file name.
+pub fn save_name(input: &str) -> Result<String, String> {
+    let name = input.trim();
+    if valid_layout_name(name) {
+        Ok(name.to_string())
+    } else {
+        Err("Preset names use letters, digits, - and _.".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +286,69 @@ mod tests {
                 ("d", PresetOrigin::Builtin),
             ]
         );
+    }
+
+    fn closing(kind: ClosingKind, n: usize, confirms: bool) -> Vec<ClosingPanel> {
+        vec![ClosingPanel { kind, confirms }; n]
+    }
+
+    #[test]
+    fn load_confirmation_counts_and_plurals() {
+        let mut panels = closing(ClosingKind::Browser, 1, true);
+        panels.extend(closing(ClosingKind::Terminal, 3, true));
+        assert_eq!(
+            load_confirmation("welcome", &panels, true).as_deref(),
+            Some("Load preset welcome? This closes 3 terminals and 1 browser.")
+        );
+        let mut panels = closing(ClosingKind::Plugin, 1, false);
+        panels.extend(closing(ClosingKind::Browser, 2, true));
+        panels.extend(closing(ClosingKind::App, 1, true));
+        panels.extend(closing(ClosingKind::Terminal, 1, false));
+        assert_eq!(
+            load_confirmation("x", &panels, true).as_deref(),
+            Some("Load preset x? This closes 1 terminal, 1 app, 2 browsers and 1 plugin.")
+        );
+        assert_eq!(
+            load_confirmation("x", &closing(ClosingKind::App, 2, true), true).as_deref(),
+            Some("Load preset x? This closes 2 apps.")
+        );
+    }
+
+    #[test]
+    fn load_confirmation_none_when_nothing_confirms() {
+        let mut panels = closing(ClosingKind::Plugin, 2, false);
+        panels.extend(closing(ClosingKind::Terminal, 1, false));
+        assert_eq!(load_confirmation("x", &panels, true), None);
+        assert_eq!(load_confirmation("x", &[], true), None);
+    }
+
+    #[test]
+    fn load_confirmation_none_when_confirm_close_off() {
+        let panels = closing(ClosingKind::Terminal, 2, true);
+        assert_eq!(load_confirmation("x", &panels, false), None);
+    }
+
+    #[test]
+    fn load_preset_cancel_changes_nothing() {
+        assert!(!decide_load(
+            Some("Load preset x? This closes 1 terminal."),
+            false
+        ));
+        assert!(decide_load(
+            Some("Load preset x? This closes 1 terminal."),
+            true
+        ));
+        assert!(decide_load(None, false));
+        assert!(decide_load(None, true));
+    }
+
+    #[test]
+    fn preset_name_rejects_unsafe_names() {
+        let error = Err("Preset names use letters, digits, - and _.".to_string());
+        for bad in ["", "   ", "my preset", "../x", "a/b", "x.json"] {
+            assert_eq!(save_name(bad), error, "{bad:?}");
+        }
+        assert_eq!(save_name(" demo "), Ok("demo".to_string()));
+        assert_eq!(save_name("my_layout-2"), Ok("my_layout-2".to_string()));
     }
 }

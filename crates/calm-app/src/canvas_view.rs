@@ -19,6 +19,7 @@ use calm_core::join::{Axis, Join, JoinLayout, JoinedEdges, Side};
 use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::occlusion::native_visible_region;
+use calm_core::preset::{ClosingKind, ClosingPanel};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
@@ -363,14 +364,7 @@ impl CanvasView {
             notices.extend(self.restore_layout(layout, window, cx));
         }
         self.layout_name = plan.layout_name;
-        for notice in &notices {
-            eprintln!("calm: {notice}");
-        }
-        self.restore_notice = match notices.len() {
-            0 => None,
-            1 => notices.pop(),
-            n => Some(format!("{} (+{} more on stderr)", notices[0], n - 1)),
-        };
+        self.show_restore_notices(notices);
         self.autosave_gate = plan.autosave.launch_gate(self.autosave_gate);
         match plan.autosave {
             AutosaveStart::On => {
@@ -389,6 +383,75 @@ impl CanvasView {
         }
         window.refresh();
         cx.notify();
+    }
+
+    /// Logs every restore notice and puts the first in the status pill.
+    fn show_restore_notices(&mut self, mut notices: Vec<String>) {
+        for notice in &notices {
+            eprintln!("calm: {notice}");
+        }
+        self.restore_notice = match notices.len() {
+            0 => None,
+            1 => notices.pop(),
+            n => Some(format!("{} (+{} more on stderr)", notices[0], n - 1)),
+        };
+    }
+
+    /// Replaces the canvas with `layout`: closes every panel through the confirmed close
+    /// path, ending its process, then builds the preset. Asks nothing; the caller has
+    /// already confirmed. The next autosave tick records the result.
+    pub fn apply_preset(
+        &mut self,
+        layout: LayoutFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut effects: Vec<Effect> = self
+            .scene
+            .panels
+            .iter()
+            .map(|panel| Effect::ClosePanel(panel.id))
+            .collect();
+        effects.push(Effect::ClearFocus);
+        // A pending inline close prompt would point at a panel that is gone.
+        self.input.confirming = None;
+        self.apply_effects(effects, window, cx);
+        let notices = self.restore_layout(layout, window, cx);
+        self.layout_name = None;
+        self.show_restore_notices(notices);
+        self.sync_native_order(cx);
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Whether closing `id` asks first when `panels.confirm_close` is on. A browser's
+    /// page is state too, so it confirms like a running terminal or app.
+    pub(crate) fn close_confirms(&self, id: PanelId, cx: &App) -> bool {
+        self.terminal(id)
+            .is_some_and(|terminal| terminal.read(cx).is_alive())
+            || self.browser(id).is_some()
+    }
+
+    /// Every panel a preset load would close, for its confirmation. A panel whose kind
+    /// this build cannot read is closed too but never confirms, so it is not counted.
+    pub(crate) fn closing_panels(&self, cx: &App) -> Vec<ClosingPanel> {
+        self.scene
+            .panels
+            .iter()
+            .filter_map(|panel| {
+                let kind = match &panel.kind {
+                    PanelKind::Terminal { app: Some(_), .. } => ClosingKind::App,
+                    PanelKind::Terminal { app: None, .. } => ClosingKind::Terminal,
+                    PanelKind::Browser { .. } => ClosingKind::Browser,
+                    PanelKind::Plugin { .. } => ClosingKind::Plugin,
+                    PanelKind::Unsupported { .. } => return None,
+                };
+                Some(ClosingPanel {
+                    kind,
+                    confirms: self.close_confirms(panel.id, cx),
+                })
+            })
+            .collect()
     }
 
     fn plugin_installed(&self, plugin_id: &str, tui: bool) -> bool {
@@ -801,12 +864,8 @@ impl CanvasView {
                     self.focus_handle.focus(window, cx);
                 }
                 Effect::ClosePanelRequested(id) => {
-                    // A browser's page is state too, so it confirms like a running terminal.
-                    let alive = self
-                        .terminal(id)
-                        .is_some_and(|terminal| terminal.read(cx).is_alive())
-                        || self.browser(id).is_some();
-                    let confirm = alive && self.settings.settings.panels.confirm_close;
+                    let confirm =
+                        self.close_confirms(id, cx) && self.settings.settings.panels.confirm_close;
                     queue.push_back(self.input.request_close(id, confirm));
                 }
                 Effect::ConfirmClose(_) => {

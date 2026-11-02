@@ -8,6 +8,7 @@ mod icon_image;
 mod panel_settings;
 mod plugin_host;
 mod plugin_services;
+mod preset_menu;
 mod settings_menu;
 mod smoke_runner;
 mod terminal;
@@ -723,6 +724,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             smoke_session_edges(&view, window, cx);
         })
         .await;
+        smoke_step(&mut run, "presets", smoke_presets(&view, window, cx)).await;
 
         for line in run.summary() {
             println!("{line}");
@@ -2549,6 +2551,7 @@ fn main() {
         });
         if let Ok(canvas) = &opened {
             settings_menu::install_open_handler(cx, *canvas);
+            preset_menu::install(cx, *canvas);
         }
         if let Err(err) = opened {
             if smoke {
@@ -3253,6 +3256,131 @@ async fn smoke_session(
     if let Err(err) = cwd.close() {
         eprintln!("smoke: could not remove the cwd temp dir: {err}");
     }
+}
+
+/// Child exit is asynchronous, so a closed terminal gets this long to end.
+const SMOKE_PRESET_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn smoke_panel(kind: PanelKind, n: usize) -> calm_core::layout::LayoutPanel {
+    calm_core::layout::LayoutPanel {
+        kind,
+        rect: Rect::new(40.0 + 340.0 * n as f64, 40.0, 320.0, 200.0),
+        title: format!("preset panel {n}"),
+        minimized: false,
+        overrides: Default::default(),
+    }
+}
+
+/// Loads a one-panel preset over two live terminals through `apply_preset`, where Load
+/// Preset ends once the user agreed (the dialogs are skipped). The scene must then hold
+/// only the preset's panel, and the closed terminals' processes must end.
+async fn smoke_presets(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let menus = settings_menu::menus(false, &calm_core::settings::Settings::default());
+    if let Some(missing) = preset_menu::missing_menu_items(&menus) {
+        smoke_fail(&format!("presets: menu bar lacks {missing}"));
+    }
+    view.update(cx, |view, _| view.stop_autosave());
+    let mut terminals = calm_core::scene::Scene::default().to_layout();
+    for n in 0..2 {
+        terminals.panels.push(smoke_panel(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+                app: None,
+            },
+            n,
+        ));
+    }
+    let mut preset = calm_core::scene::Scene::default().to_layout();
+    preset.panels.push(smoke_panel(
+        PanelKind::Browser {
+            url: "about:blank".to_string(),
+            page_zoom: None,
+        },
+        0,
+    ));
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| view.apply_preset(terminals, window, cx))
+    });
+    if let Err(err) = opened {
+        smoke_fail(&format!("presets: open terminals: {err}"));
+    }
+    let started = Instant::now();
+    let old = loop {
+        let state = view.update(cx, |view, cx| {
+            let alive = view.terminal_status(cx);
+            let handles: Vec<_> = view
+                .scene
+                .panels
+                .iter()
+                .filter_map(|panel| view.terminal(panel.id))
+                .map(|terminal| terminal.downgrade())
+                .collect();
+            (alive, handles)
+        });
+        if state.0.len() == 2 && state.0.iter().all(|(_, alive)| *alive) && state.1.len() == 2 {
+            break state.1;
+        }
+        if started.elapsed() > SMOKE_PRESET_EXIT_TIMEOUT {
+            smoke_fail(&format!("presets: terminals did not start: {:?}", state.0));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    };
+    let applied = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.apply_preset(preset, window, cx);
+            let kinds = layout_kinds(&view.scene.to_layout());
+            (
+                kinds,
+                view.terminal_status(cx).len(),
+                view.focused(),
+                view.layout_name.clone(),
+            )
+        })
+    });
+    let (kinds, terminals_left, focused, layout_name) = match applied {
+        Ok(state) => state,
+        Err(err) => smoke_fail(&format!("presets: apply: {err}")),
+    };
+    if kinds != ["browser"] || terminals_left != 0 || focused.is_some() || layout_name.is_some() {
+        smoke_fail(&format!(
+            "presets: scene {kinds:?} terminals={terminals_left} focused={focused:?} layout_name={layout_name:?}"
+        ));
+    }
+    // A released entity has dropped its surface, which ends the process; one still held
+    // must report its process gone.
+    let started = Instant::now();
+    loop {
+        let alive = cx.update(|cx| {
+            old.iter()
+                .filter(|weak| weak.upgrade().is_some_and(|t| t.read(cx).is_alive()))
+                .count()
+        });
+        if alive == 0 {
+            break;
+        }
+        if started.elapsed() > SMOKE_PRESET_EXIT_TIMEOUT {
+            smoke_fail(&format!(
+                "presets: {alive} closed terminal(s) still running after 5 s"
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    println!(
+        "smoke: presets applied={} closed={}",
+        kinds.len(),
+        old.len()
+    );
+    smoke_close_all(view, window, cx);
 }
 
 #[cfg(test)]
