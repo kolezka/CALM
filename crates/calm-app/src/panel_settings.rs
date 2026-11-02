@@ -152,6 +152,10 @@ impl CanvasView {
             Ok(FormOutcome::Command(command)) => {
                 eprintln!("calm: panel settings: unexpected {command:?}");
             }
+            // Panel forms have no key rows.
+            Ok(FormOutcome::KeyRefused { .. }) => {
+                eprintln!("calm: panel settings: unexpected key refusal");
+            }
             // Bad input changes nothing; the window keeps the last good state.
             Err(err) => eprintln!("calm: panel settings: {err}"),
         }
