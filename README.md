@@ -3,9 +3,7 @@
 **One pan and zoom canvas on macOS. Ghostty terminals, a live browser and your own plugins
 side by side, all of them still running while you move around.**
 
-**[calm.raqz.link](https://calm.raqz.link)**
-
-[Website](https://calm.raqz.link) · [Docs](#documentation) · [Plugins](https://calm.raqz.link/plugins/)
+**[calm.raqz.link](https://calm.raqz.link)** · [Docs](#documentation) · [Plugins](https://calm.raqz.link/plugins/)
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)
 ![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-arm64-555555)
@@ -191,8 +189,9 @@ install yourself, with full access, so only install plugins you have read or who
 trust.
 
 The host answers all 17 bridge methods of the v1 API, including opening, focusing and listing
-panels and `process.exec`. Of the plugin events, only `command` is delivered today. The wider
-v2 API (events, camera, terminal and browser control, plugin backends) is design only.
+panels and `process.exec`. Of the plugin events, only `command` is delivered today. From the
+v2 API, error codes and `calm.has` are built; the rest (events, camera, terminal and browser
+control, plugin backends) is design only.
 
 From a clone, `gmake plugins && cargo run -p calm-app` builds the first-party plugins and shows
 them under right-click > Add. A development build reads the repository's `plugins/` folder
@@ -238,7 +237,7 @@ testing.
 
 Session restore and autosave work. Not built yet: saving named layouts and the File menu
 (`--layout` only opens an existing layout), the `ask` restore dialog, a benchmark mode, and
-the plugin API v2 (all 17 v1 bridge methods answer).
+most of the plugin API v2 (all 17 v1 bridge methods answer).
 
 ## Documentation
 
@@ -250,7 +249,7 @@ the plugin API v2 (all 17 v1 bridge methods answer).
 - [Design spec](docs/superpowers/specs/2026-10-31-calm-design.md) and
   [prototype plan](docs/superpowers/plans/2026-10-31-calm-prototype.md).
 - [Plugin API v2 design](docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md)
-  (phase 1 built, the rest is design).
+  (phase 1, error codes and `calm.has`, is built; the rest is design).
 - [Canvas persistence plan](docs/superpowers/plans/2026-10-31-canvas-persistence.md)
   (Tasks 1 to 5 merged: storage, autosave and restore at launch).
 - [Claude Code mods integration](docs/superpowers/specs/2026-10-31-claude-code-mods-integration.md)
