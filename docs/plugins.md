@@ -162,7 +162,8 @@ absolute `command`.
 With `"shell": false` the command runs directly, with the `PATH` CALM itself has.
 
 `env` values are set with `/usr/bin/env` right before the command, after your profile ran, so
-they win over it. They are visible in the process list (`ps`) to other programs, so never put a
+they win over it. The panel also gets the `env` from the `terminal` settings and from its
+terminal profile, merged key by key: settings defaults, then the profile, then the manifest. They are visible in the process list (`ps`) to other programs, so never put a
 token or password in `env`. Let the app keep its own credentials, as `slk` and most TUIs do.
 
 ### When the program exits
@@ -184,7 +185,9 @@ install the program or fix `PATH`, then use Restart.
 
 A TUI panel is a terminal in every other way: it moves, resizes, minimizes and turns into a
 preview like one, and closing it while the program runs asks first. Layouts store only the
-plugin `id`, never the command, `args` or `env`.
+plugin `id` and version, plus the terminal profile if it has one, never the command, `args`,
+`cwd` or `env`. The command, `args`, `cwd`, `shell` and `restart` always come from the
+manifest; a profile never changes them.
 
 `plugins/top-example` runs macOS `top` with its own accent, title and SVG icon.
 `templates/plugin-tui` is a starting point.
@@ -253,8 +256,13 @@ backend or a background page yet.
 
 ### Customizing TUI apps
 
-Every part of a TUI panel's look can come from its manifest. Each field is optional and falls
-back to the theme. A bad value is an error that names the field, never a silent default.
+Every part of a TUI panel's look can come from its manifest. Each field is optional. A bad
+value is an error that names the field, never a silent default.
+
+The look is stacked in layers, the later one winning for each field: the `terminal`
+settings defaults, the terminal profile, the manifest, then the panel's own Settings
+window. A field none of them sets comes from the theme. See
+[Terminals](configuration.md#terminals) for the first two.
 
 This Slack panel uses every field:
 
@@ -321,8 +329,11 @@ only colors per terminal; fonts and padding come from your Ghostty config for al
 They need the planned libghostty shim patch. Until then these three fields are rejected with
 an error that says so, rather than being ignored.
 
-Per-panel edits after a panel is added (rename, change icon, pick an accent from the
-right-click menu) are not built yet.
+After a panel is added, Settings… in its right-click menu opens its own Settings window. A TUI
+panel has the same sections as any terminal: Panel, "Title bar colors" (accent, title bar,
+title) and "Terminal colors" with the built-in presets. A color set there wins over the
+manifest and recolors the running panel. Reset falls back to the manifest's value when the
+manifest sets one, and only then to the profile's.
 
 ## Context menu contributions
 
@@ -488,7 +499,10 @@ does not parse makes every call reject and is left as it is, never replaced by `
   manifest `defaultSize` for a plugin or TUI app.
 - The size is held within the panel's resize limits, as a drag is. A plugin with
   `"resizable": false` rejects a `rect` of any other size with `invalid_params`.
-- `command` is a shell line, as in a terminal profile. `cwd` must be an absolute path to a
+- `command` is a shell line, as in a terminal profile. It runs like Add > Run Command…:
+  in your login shell, with an exit line such as `[calm] htop exited with code 0`, a restart
+  that follows `terminal.command_restart`, and `{name}` as the default title. It is saved in
+  the session file, so do not put secrets in it. `cwd` must be an absolute path to a
   directory. `url` goes through the address bar rules, so `example.com` opens
   `https://example.com`.
 - `focus` defaults to `true`, as for a panel from the Add menu.

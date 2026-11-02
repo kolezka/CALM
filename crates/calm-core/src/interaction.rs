@@ -586,6 +586,7 @@ impl InputHandler {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             }),
             Tool::DrawBrowser => Some(PanelKind::Browser {
                 url: "about:blank".to_string(),
@@ -662,6 +663,7 @@ mod tests {
             command: None,
             cwd: None,
             profile: None,
+            app: None,
         }
     }
 

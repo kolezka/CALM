@@ -10,6 +10,7 @@ pub mod child;
 pub mod content_gesture;
 pub mod menu;
 pub mod process_stats;
+pub mod prompt;
 pub mod settings_window;
 pub mod status_bar;
 pub mod webview;
@@ -24,6 +25,7 @@ pub use content_gesture::{
 };
 pub use menu::{ContextMenu, HostView, show_context_menu};
 pub use process_stats::{ProcessSample, ProcessSampler};
+pub use prompt::{prompt_text, prompt_value};
 pub use settings_window::{SettingsWindow, WindowLayout, choose_image_file, settings_window_count};
 pub use status_bar::StatusBar;
 pub use webview::{DEFAULT_BROWSER_URL, WebPanel};

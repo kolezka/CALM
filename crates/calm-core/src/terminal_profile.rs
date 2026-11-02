@@ -18,6 +18,8 @@ pub const DEFAULT_TITLE_TEMPLATE: &str = "Terminal";
 pub const PLACEHOLDER_INDEX: &str = "{n}";
 /// Becomes the directory the terminal started in, with the home folder shown as `~`.
 pub const PLACEHOLDER_CWD: &str = "{cwd}";
+/// Becomes the app's name, or the first word of the terminal's command.
+pub const PLACEHOLDER_NAME: &str = "{name}";
 pub const MAX_TITLE_CHARS: usize = 120;
 pub const MAX_ICON_CHARS: usize = 4;
 pub const MAX_PROFILE_ID_CHARS: usize = 64;
@@ -276,7 +278,7 @@ impl TerminalColorsSetting {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TerminalFields {
-    /// Title bar text. `{n}` and `{cwd}` are the only placeholders.
+    /// Title bar text. `{n}`, `{cwd}` and `{name}` are the only placeholders.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title_template: Option<String>,
     /// 1 to 4 characters, or a `.png` or `.svg` path relative to the settings folder.
@@ -330,8 +332,57 @@ pub struct TerminalSettings {
     /// Used by the `t` tool and the plain Terminal menu item.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
+    /// Exit handling for terminals running a typed command. Apps use their manifest.
+    #[serde(
+        skip_serializing_if = "CommandRestart::is_default",
+        deserialize_with = "CommandRestart::deserialize_named"
+    )]
+    pub command_restart: CommandRestart,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, Value>,
+}
+
+/// What a terminal running a typed command does when the command exits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandRestart {
+    Never,
+    OnExit,
+    #[default]
+    Prompt,
+}
+
+impl CommandRestart {
+    pub const ALL: [CommandRestart; 3] = [
+        CommandRestart::Never,
+        CommandRestart::OnExit,
+        CommandRestart::Prompt,
+    ];
+
+    fn is_default(&self) -> bool {
+        *self == CommandRestart::default()
+    }
+
+    /// Serde's own error would not name the field.
+    fn deserialize_named<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        serde_json::from_value(value.clone()).map_err(|_| {
+            serde::de::Error::custom(format!(
+                "\"terminal.command_restart\" is {value}, expected \"never\", \"on_exit\" or \
+                 \"prompt\""
+            ))
+        })
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CommandRestart::Never => "Never",
+            CommandRestart::OnExit => "When it exits",
+            CommandRestart::Prompt => "On Enter",
+        }
+    }
 }
 
 /// Where a terminal starts.
@@ -349,6 +400,31 @@ pub enum TerminalIcon {
     Text(String),
     /// Relative to the settings folder.
     Image(PathBuf),
+    /// An app's image icon: an absolute path inside its plugin folder.
+    AppImage(PathBuf),
+}
+
+/// What a TUI app's manifest sets, laid between the profile and the panel overrides.
+/// The app fills it from the manifest; calm-core never reads manifests.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AppLayer {
+    /// The manifest's title template. `{name}` is the app's name.
+    pub title_template: Option<String>,
+    pub icon: Option<TerminalIcon>,
+    pub chrome: ChromeOverrides,
+    pub colors: Option<TerminalColors>,
+    /// Merged key by key over the defaults and the profile.
+    pub env: BTreeMap<String, String>,
+}
+
+impl AppLayer {
+    /// A typed command's layer: it sets only the title.
+    pub fn typed_command() -> Self {
+        AppLayer {
+            title_template: Some(PLACEHOLDER_NAME.to_string()),
+            ..AppLayer::default()
+        }
+    }
 }
 
 /// Everything one terminal is opened and drawn with.
@@ -411,11 +487,12 @@ fn check_title_template(path: &str, template: &str) -> Result<(), String> {
     check_text(path, template, MAX_TITLE_CHARS)?;
     let stripped = template
         .replace(PLACEHOLDER_INDEX, "")
-        .replace(PLACEHOLDER_CWD, "");
+        .replace(PLACEHOLDER_CWD, "")
+        .replace(PLACEHOLDER_NAME, "");
     if stripped.contains(['{', '}']) {
         return Err(format!(
-            "\"{path}\" is {template:?}: only {PLACEHOLDER_INDEX} and {PLACEHOLDER_CWD} may \
-             use braces"
+            "\"{path}\" is {template:?}: only {PLACEHOLDER_INDEX}, {PLACEHOLDER_CWD} and \
+             {PLACEHOLDER_NAME} may use braces"
         ));
     }
     Ok(())
@@ -659,14 +736,34 @@ impl TerminalSettings {
         }
     }
 
-    /// `resolve`, then each panel override that is set replaces the resolved field.
+    /// `resolve`, then an app's manifest layer, then each panel override that is set.
+    /// Later layers win field by field; terminal colors per color.
     pub fn resolve_for_panel(
         &self,
         profile: Option<&str>,
         user_config: bool,
+        app: Option<&AppLayer>,
         overrides: &PanelOverrides,
     ) -> ResolvedTerminal {
         let mut resolved = self.resolve(profile, user_config);
+        if let Some(app) = app {
+            if let Some(title) = &app.title_template {
+                resolved.title_template = title.clone();
+            }
+            if let Some(icon) = &app.icon {
+                resolved.icon = Some(icon.clone());
+            }
+            let chrome = &mut resolved.overrides;
+            chrome.accent = app.chrome.accent.or(chrome.accent);
+            chrome.title_bar = app.chrome.title_bar.or(chrome.title_bar);
+            chrome.title = app.chrome.title.or(chrome.title);
+            if app.colors.is_some() {
+                resolved.colors = app.colors;
+            }
+            resolved
+                .env
+                .extend(app.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
         if let Some(title) = &overrides.title {
             resolved.title_template = title.clone();
             resolved.title_is_literal = true;
@@ -691,11 +788,29 @@ impl TerminalSettings {
     }
 }
 
-/// The title for terminal number `index` that started in `cwd`.
-pub fn render_title(template: &str, index: u64, cwd: &str) -> String {
-    template
-        .replace(PLACEHOLDER_INDEX, &index.to_string())
-        .replace(PLACEHOLDER_CWD, cwd)
+/// The title for terminal number `index` that started in `cwd`, running `name`.
+/// One pass over the template, so inserted values are never read as placeholders.
+pub fn render_title(template: &str, index: u64, cwd: &str, name: &str) -> String {
+    let index = index.to_string();
+    let tokens = [
+        (PLACEHOLDER_INDEX, index.as_str()),
+        (PLACEHOLDER_CWD, cwd),
+        (PLACEHOLDER_NAME, name),
+    ];
+    let mut title = String::with_capacity(template.len());
+    let mut rest = template;
+    'scan: while let Some(c) = rest.chars().next() {
+        for (token, value) in tokens {
+            if let Some(after) = rest.strip_prefix(token) {
+                title.push_str(value);
+                rest = after;
+                continue 'scan;
+            }
+        }
+        title.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    title
 }
 
 /// `path` with a leading `home` shown as `~`.
@@ -791,10 +906,10 @@ mod tests {
             title_bar_color: Some("#333333".into()),
             ..PanelOverrides::default()
         };
-        let resolved = settings.resolve_for_panel(Some("p"), false, &overrides);
+        let resolved = settings.resolve_for_panel(Some("p"), false, None, &overrides);
         assert_eq!(resolved.overrides.title_bar, Some(0x333333ff));
         overrides.title_bar_color = None;
-        let resolved = settings.resolve_for_panel(Some("p"), false, &overrides);
+        let resolved = settings.resolve_for_panel(Some("p"), false, None, &overrides);
         assert_eq!(resolved.overrides.title_bar, Some(0x222222ff));
     }
 
@@ -806,7 +921,7 @@ mod tests {
             title: Some("{n} logs".into()),
             ..PanelOverrides::default()
         };
-        let resolved = settings.resolve_for_panel(None, false, &overrides);
+        let resolved = settings.resolve_for_panel(None, false, None, &overrides);
         assert_eq!(resolved.title_template, "{n} logs");
         assert!(resolved.title_is_literal);
     }
@@ -833,7 +948,10 @@ mod tests {
                 r##"{"title_template": ""}"##,
                 "\"terminal.title_template\" must not be empty",
             ),
-            (r##"{"title_template": "{name}"}"##, "only {n} and {cwd}"),
+            (
+                r##"{"title_template": "{title}"}"##,
+                "only {n}, {cwd} and {name}",
+            ),
             (r##"{"title_template": "a\u0007"}"##, "control characters"),
             (
                 r##"{"icon": "abcde"}"##,
@@ -996,9 +1114,27 @@ mod tests {
     }
 
     #[test]
+    fn title_values_stay_literal_even_when_they_look_like_placeholders() {
+        assert_eq!(
+            render_title("{cwd}", 1, "/tmp/{name}", "top"),
+            "/tmp/{name}"
+        );
+        assert_eq!(
+            render_title("{name} in {cwd}", 1, "~", "{cwd}"),
+            "{cwd} in ~"
+        );
+        assert_eq!(render_title("{n} {name}", 4, "~", "{n}"), "4 {n}");
+        // Unknown or unclosed braces are copied as they are.
+        assert_eq!(render_title("{x} {n", 2, "~", "a"), "{x} {n");
+    }
+
+    #[test]
     fn titles_render_both_placeholders() {
-        assert_eq!(render_title("Terminal", 3, "~"), "Terminal");
-        assert_eq!(render_title("{n}: {cwd} ({n})", 7, "~/src"), "7: ~/src (7)");
+        assert_eq!(render_title("Terminal", 3, "~", "zsh"), "Terminal");
+        assert_eq!(
+            render_title("{n}: {cwd} ({n})", 7, "~/src", "zsh"),
+            "7: ~/src (7)"
+        );
         let home = Path::new("/Users/me");
         assert_eq!(display_cwd(home, home), "~");
         assert_eq!(
@@ -1112,6 +1248,243 @@ mod tests {
         assert!(
             error.contains("\"terminal.profiles[0].cwd\" is \"rel\""),
             "{error}"
+        );
+    }
+
+    fn colors(base: u32) -> TerminalColors {
+        TerminalColors {
+            background: base,
+            foreground: base + 1,
+            palette: std::array::from_fn(|index| base + 2 + index as u32),
+        }
+    }
+
+    fn colors_json(colors: &TerminalColors) -> String {
+        serde_json::to_string(&TerminalColorsSetting::from_colors(colors)).unwrap()
+    }
+
+    /// Defaults, profile `p`, an app layer and panel overrides all set the accent, the
+    /// title bar color and the terminal colors.
+    fn four_layers() -> (TerminalSettings, AppLayer) {
+        let settings = parse(&format!(
+            r##"{{"accent_color": "#000001", "title_bar_color": "#000002",
+                 "terminal_colors": {},
+                 "profiles": [{{"id": "p", "name": "P", "accent_color": "#100001",
+                   "title_bar_color": "#100002", "terminal_colors": {}}}]}}"##,
+            colors_json(&colors(0x000100)),
+            colors_json(&colors(0x100100)),
+        ))
+        .unwrap();
+        let app = AppLayer {
+            chrome: ChromeOverrides {
+                accent: Some(0x200001ff),
+                title_bar: Some(0x200002ff),
+                title: None,
+            },
+            colors: Some(colors(0x200100)),
+            ..AppLayer::default()
+        };
+        (settings, app)
+    }
+
+    #[test]
+    fn the_app_layer_sits_between_the_profile_and_the_overrides() {
+        let (settings, app) = four_layers();
+        let none = PanelOverrides::default();
+        // No app: the profile wins over the defaults.
+        let plain = settings.resolve_for_panel(Some("p"), false, None, &none);
+        assert_eq!(plain.overrides.accent, Some(0x100001ff));
+        assert_eq!(plain.colors, Some(colors(0x100100)));
+        // The manifest beats the profile.
+        let app_only = settings.resolve_for_panel(Some("p"), false, Some(&app), &none);
+        assert_eq!(app_only.overrides.accent, Some(0x200001ff));
+        assert_eq!(app_only.overrides.title_bar, Some(0x200002ff));
+        assert_eq!(app_only.colors, Some(colors(0x200100)));
+        // A panel override beats the manifest.
+        let overrides = PanelOverrides {
+            accent_color: Some("#300001".into()),
+            terminal_colors: Some(PanelTerminalColors {
+                background: Some("#300100".into()),
+                ..PanelTerminalColors::default()
+            }),
+            ..PanelOverrides::default()
+        };
+        let all = settings.resolve_for_panel(Some("p"), false, Some(&app), &overrides);
+        assert_eq!(all.overrides.accent, Some(0x300001ff));
+        assert_eq!(all.overrides.title_bar, Some(0x200002ff));
+        let shown = all.colors.unwrap();
+        assert_eq!(shown.background, 0x300100);
+        // The colors the panel does not set come from the manifest, not the profile.
+        assert_eq!(shown.foreground, colors(0x200100).foreground);
+        assert_eq!(shown.palette, colors(0x200100).palette);
+    }
+
+    #[test]
+    fn resetting_a_panel_color_falls_back_to_the_manifest() {
+        let (settings, app) = four_layers();
+        let mut own = PanelTerminalColors::default();
+        own.set(ColorSlot::Palette(3), Some(0x303030));
+        let mut overrides = PanelOverrides {
+            terminal_colors: Some(own.clone()),
+            ..PanelOverrides::default()
+        };
+        let set = settings.resolve_for_panel(Some("p"), false, Some(&app), &overrides);
+        assert_eq!(set.colors.unwrap().palette[3], 0x303030);
+        own.set(ColorSlot::Palette(3), None);
+        overrides.terminal_colors = (!own.is_empty()).then_some(own);
+        let reset = settings.resolve_for_panel(Some("p"), false, Some(&app), &overrides);
+        assert_eq!(
+            reset.colors.unwrap().palette[3],
+            colors(0x200100).palette[3]
+        );
+    }
+
+    #[test]
+    fn app_env_merges_over_the_profile_and_the_defaults() {
+        let settings = parse(
+            r#"{"env": {"A": "defaults", "B": "defaults"},
+                "profiles": [{"id": "p", "name": "P", "env": {"B": "profile", "C": "profile"}}]}"#,
+        )
+        .unwrap();
+        let app = AppLayer {
+            env: [("C", "manifest"), ("D", "manifest")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .into(),
+            ..AppLayer::default()
+        };
+        let resolved =
+            settings.resolve_for_panel(Some("p"), false, Some(&app), &PanelOverrides::default());
+        let env: Vec<(&str, &str)> = resolved
+            .env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            env,
+            [
+                ("A", "defaults"),
+                ("B", "profile"),
+                ("C", "manifest"),
+                ("D", "manifest")
+            ]
+        );
+    }
+
+    #[test]
+    fn the_app_title_and_icon_beat_the_profile_but_not_the_overrides() {
+        let settings = parse(
+            r#"{"profiles": [{"id": "p", "name": "P", "title_template": "{n} shell",
+                "icon": "P"}]}"#,
+        )
+        .unwrap();
+        let app = AppLayer {
+            title_template: Some("{name} app".into()),
+            icon: Some(TerminalIcon::AppImage(PathBuf::from(
+                "/plugins/top/icon.png",
+            ))),
+            ..AppLayer::default()
+        };
+        let none = PanelOverrides::default();
+        let resolved = settings.resolve_for_panel(Some("p"), false, Some(&app), &none);
+        assert_eq!(resolved.title_template, "{name} app");
+        assert!(!resolved.title_is_literal);
+        assert_eq!(resolved.icon, app.icon);
+        let overrides = PanelOverrides {
+            title: Some("Mine".into()),
+            icon: Some("M".into()),
+            ..PanelOverrides::default()
+        };
+        let resolved = settings.resolve_for_panel(Some("p"), false, Some(&app), &overrides);
+        assert_eq!(resolved.title_template, "Mine");
+        assert_eq!(resolved.icon, Some(TerminalIcon::Text("M".into())));
+    }
+
+    #[test]
+    fn titles_render_the_name_placeholder() {
+        assert_eq!(render_title("{name} #{n}", 2, "~", "htop"), "htop #2");
+        assert!(parse(r#"{"title_template": "{name} in {cwd}"}"#).is_ok());
+        assert!(error(r#"{"title_template": "{nam}"}"#).contains("braces"));
+    }
+
+    #[test]
+    fn command_restart_takes_three_values_and_defaults_to_prompt() {
+        assert_eq!(parse("{}").unwrap().command_restart, CommandRestart::Prompt);
+        for (text, value) in [
+            ("never", CommandRestart::Never),
+            ("on_exit", CommandRestart::OnExit),
+            ("prompt", CommandRestart::Prompt),
+        ] {
+            let json = format!(r#"{{"command_restart":"{text}"}}"#);
+            let settings = parse(&json).unwrap();
+            assert_eq!(settings.command_restart, value, "{text}");
+            // The default is not written back.
+            let written = if value == CommandRestart::Prompt {
+                "{}"
+            } else {
+                &json
+            };
+            assert_eq!(serde_json::to_string(&settings).unwrap(), written);
+        }
+    }
+
+    #[test]
+    fn a_bad_command_restart_is_rejected() {
+        for bad in [r#""sometimes""#, r#""on-exit""#, "true", "null"] {
+            let json = format!(r#"{{"command_restart": {bad}}}"#);
+            let error = error(&json);
+            assert!(error.contains("command_restart"), "{json}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_bad_command_restart_rejects_the_settings_file_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 2, "terminal": {"command_restart": "sometimes"}}"#,
+        )
+        .unwrap();
+        let error = crate::settings::read_settings_from(&path)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("\"terminal.command_restart\" is \"sometimes\""),
+            "{error}"
+        );
+        assert!(crate::settings::load_settings_from(&path).is_err());
+    }
+
+    #[test]
+    fn a_typed_command_is_titled_by_its_name_unless_the_panel_overrides_it() {
+        let settings = parse(
+            r#"{"title_template": "{n} shell",
+                "profiles": [{"id": "p", "name": "P", "title_template": "P {n}"}]}"#,
+        )
+        .unwrap();
+        let typed = AppLayer::typed_command();
+        let none = PanelOverrides::default();
+        for profile in [None, Some("p")] {
+            let resolved = settings.resolve_for_panel(profile, false, Some(&typed), &none);
+            assert_eq!(resolved.title_template, "{name}", "{profile:?}");
+            assert_eq!(
+                render_title(&resolved.title_template, 3, "~", "htop"),
+                "htop"
+            );
+        }
+        let overrides = PanelOverrides {
+            title: Some("Mine".into()),
+            ..PanelOverrides::default()
+        };
+        let resolved = settings.resolve_for_panel(Some("p"), false, Some(&typed), &overrides);
+        assert_eq!(resolved.title_template, "Mine");
+        assert!(resolved.title_is_literal);
+        // Only the title: the look and env still come from the profile and defaults.
+        assert_eq!(
+            settings
+                .resolve_for_panel(Some("p"), false, Some(&typed), &none)
+                .env,
+            settings.resolve(Some("p"), false).env
         );
     }
 }

@@ -48,7 +48,7 @@ impl CanvasView {
             return Some(menu::placeholder_menu());
         }
         let can_restart = self
-            .tui_run(id)
+            .command_run(id)
             .is_some_and(|run| run.supervisor.can_restart());
         let section = plugin_menu::plugin_section(
             &self.plugin_menus(),
@@ -111,10 +111,7 @@ impl CanvasView {
 
         if is_tui {
             self.pending_tui_args = Some(item.run.clone().unwrap_or_default());
-            let kind = PanelKind::Tui {
-                plugin_id,
-                plugin_version: None,
-            };
+            let kind = PanelKind::app_terminal(plugin_id, None);
             self.open_panel_for_command(kind, Rect { origin, size }, window, cx);
             self.pending_tui_args = None;
             return true;

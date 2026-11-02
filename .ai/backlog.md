@@ -94,8 +94,9 @@ Seen several times on 2026-10-31:
 - Fix direction for the rest: make their checks independent of window visibility, or bring
   the window to the front before checking paint-dependent state. Until then treat them as
   known flakes (`.ai/conventions.md`, "Smoke flakes").
-- Unconfirmed: a TUI "second exit not reported after restart" failure, seen on branches,
-  0 of 1 runs on `main`.
+- The `tui-exit` flake is fixed on `feat/tui-extends-terminal`: a terminal's tick loop
+  starts at spawn, not first paint. The unconfirmed "second exit not reported after restart"
+  likely had the same cause.
 - Origin: smoke runs during the prototype merges (`status.md`, "Known small issues").
 
 ### 7. Example plugins that use the SDK widely

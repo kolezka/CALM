@@ -457,10 +457,11 @@ pub fn dispatch(host: &mut HostContext, request: &BridgeRequest) -> Route {
 
 fn kind_word(kind: &PanelKind) -> &'static str {
     match kind {
+        // The API keeps "tui" for app panels.
+        PanelKind::Terminal { app: Some(_), .. } => "tui",
         PanelKind::Terminal { .. } => "terminal",
         PanelKind::Browser { .. } => "browser",
         PanelKind::Plugin { .. } => "plugin",
-        PanelKind::Tui { .. } => "tui",
         PanelKind::Unsupported { .. } => "unsupported",
     }
 }
@@ -497,8 +498,11 @@ pub fn list_panels(scene: &Scene, focused: Option<PanelId>) -> Value {
             },
         });
         match &panel.kind {
-            PanelKind::Plugin { plugin_id, .. } | PanelKind::Tui { plugin_id, .. } => {
+            PanelKind::Plugin { plugin_id, .. } => {
                 info["pluginId"] = Value::from(plugin_id.as_str());
+            }
+            PanelKind::Terminal { app: Some(app), .. } => {
+                info["pluginId"] = Value::from(app.plugin_id.as_str());
             }
             PanelKind::Browser { url, .. } => info["url"] = Value::from(url.as_str()),
             PanelKind::Terminal { .. } | PanelKind::Unsupported { .. } => {}
@@ -625,6 +629,7 @@ fn create_panel(
                 command,
                 cwd,
                 profile: None,
+                app: None,
             };
             (kind, host.default_terminal_size, None)
         }
@@ -665,10 +670,7 @@ fn create_panel(
             let plugin_id = optional_string("pluginId")?
                 .ok_or_else(|| ApiError::invalid_params("spec.pluginId", "is required"))?;
             let plugin = installed(&plugin_id, true)?;
-            let kind = PanelKind::Tui {
-                plugin_id,
-                plugin_version: Some(plugin.manifest.version.clone()),
-            };
+            let kind = PanelKind::app_terminal(plugin_id, Some(plugin.manifest.version.clone()));
             (kind, manifest_size(plugin), Some(plugin))
         }
     };
@@ -877,6 +879,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(400.0, 0.0, 320.0, 200.0),
         );
@@ -953,6 +956,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(0.0, 0.0, 320.0, 200.0),
         );
@@ -1084,10 +1088,7 @@ mod tests {
             Rect::new(400.0, 10.0, 500.0, 300.0),
         );
         let tui = scene.add(
-            PanelKind::Tui {
-                plugin_id: "top".into(),
-                plugin_version: None,
-            },
+            PanelKind::app_terminal("top", None),
             Rect::new(0.0, 400.0, 640.0, 400.0),
         );
         scene.get_mut(tui).unwrap().minimized = true;
@@ -1133,6 +1134,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(400.0, 0.0, 320.0, 200.0),
         );
@@ -1204,6 +1206,7 @@ mod tests {
             command: Some("htop".into()),
             cwd: Some(cwd.into()),
             profile: None,
+            app: None,
         };
         assert_eq!(
             effects,

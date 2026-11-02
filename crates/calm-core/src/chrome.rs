@@ -72,7 +72,7 @@ impl PanelIcon {
 
     pub fn for_kind(kind: &PanelKind) -> Self {
         match kind {
-            PanelKind::Terminal { .. } | PanelKind::Tui { .. } => PanelIcon::Terminal,
+            PanelKind::Terminal { .. } => PanelIcon::Terminal,
             PanelKind::Browser { .. } => PanelIcon::Browser,
             // A placeholder for a kind from a newer CALM; a plugin icon is the closest fit.
             PanelKind::Plugin { .. } | PanelKind::Unsupported { .. } => PanelIcon::Plugin,
@@ -502,6 +502,7 @@ mod tests {
             command: None,
             cwd: None,
             profile: None,
+            app: None,
         }
     }
 

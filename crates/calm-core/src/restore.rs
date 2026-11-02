@@ -190,8 +190,8 @@ pub fn placeholder_reason(
         PanelKind::Plugin { plugin_id, .. } if !web(plugin_id) => {
             Some(format!("Plugin {plugin_id} is not installed"))
         }
-        PanelKind::Tui { plugin_id, .. } if !tui(plugin_id) => {
-            Some(format!("TUI app {plugin_id} is not installed"))
+        PanelKind::Terminal { app: Some(app), .. } if !tui(&app.plugin_id) => {
+            Some(format!("TUI app {} is not installed", app.plugin_id))
         }
         PanelKind::Unsupported { raw } => Some(format!(
             "Unknown panel type {}, saved by a newer CALM",
@@ -295,6 +295,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(0.0, 0.0, 300.0, 200.0),
         );
@@ -554,10 +555,7 @@ mod tests {
             plugin_version: None,
             settings: serde_json::json!({}),
         };
-        let app = |id: &str| PanelKind::Tui {
-            plugin_id: id.to_string(),
-            plugin_version: None,
-        };
+        let app = |id: &str| PanelKind::app_terminal(id.to_string(), None);
         assert_eq!(placeholder_reason(&plugin("github-prs"), web, tui), None);
         assert_eq!(
             placeholder_reason(&plugin("gone"), web, tui).as_deref(),
@@ -575,6 +573,7 @@ mod tests {
             command: None,
             cwd: None,
             profile: None,
+            app: None,
         };
         assert_eq!(placeholder_reason(&terminal, web, tui), None);
     }
