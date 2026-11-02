@@ -24,7 +24,8 @@ use crate::settings::{
     SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
 };
 use crate::terminal_profile::{
-    CommandRestart, PALETTE_PRESETS, TerminalColors, TerminalColorsSetting, hex,
+    CommandRestart, DEFAULT_CONTENT_OPACITY, MIN_CONTENT_OPACITY, PALETTE_PRESETS, TerminalColors,
+    TerminalColorsSetting, hex,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -135,7 +136,13 @@ pub(crate) fn checkbox(id: &str, label: &str, value: bool) -> Field {
     field(id, label, Control::Checkbox(value))
 }
 
-fn slider(id: &str, label: &str, value: f64, range: RangeInclusive<f64>, decimals: u8) -> Field {
+pub(crate) fn slider(
+    id: &str,
+    label: &str,
+    value: f64,
+    range: RangeInclusive<f64>,
+    decimals: u8,
+) -> Field {
     field(
         id,
         label,
@@ -146,6 +153,14 @@ fn slider(id: &str, label: &str, value: f64, range: RangeInclusive<f64>, decimal
             decimals,
         },
     )
+}
+
+/// A fade slider value, rounded and clamped like other sliders. NaN goes to the floor.
+pub(crate) fn content_opacity_value(value: f64) -> f64 {
+    if value.is_nan() {
+        return MIN_CONTENT_OPACITY;
+    }
+    ((value * 100.0).round() / 100.0).clamp(MIN_CONTENT_OPACITY, 1.0)
 }
 
 pub(crate) fn color(id: &str, label: &str, value: Rgb) -> Field {
@@ -1077,6 +1092,19 @@ fn terminal_fields(settings: &Settings) -> Vec<Field> {
             ));
         }
     }
+    fields.push(slider(
+        "terminal.content_opacity",
+        "Opacity",
+        defaults.content_opacity.unwrap_or(DEFAULT_CONTENT_OPACITY),
+        MIN_CONTENT_OPACITY..=1.0,
+        2,
+    ));
+    fields.push(note(
+        "terminal.background_opacity_note",
+        "",
+        "Background opacity: set background-opacity in your Ghostty config (Ghostty user config on)."
+            .to_string(),
+    ));
     if !terminal.profiles.is_empty() {
         let mut names = vec!["None".to_string()];
         names.extend(terminal.profiles.iter().map(|profile| profile.name.clone()));
@@ -1204,6 +1232,10 @@ fn apply_terminal_field(
                 colors.foreground = rgb.0;
             }
             set_colors(colors);
+            changed
+        }
+        ("content_opacity", FieldValue::Number(number)) => {
+            defaults.content_opacity = Some(content_opacity_value(number));
             changed
         }
         ("command_restart", FieldValue::Index(index)) => {
@@ -1524,6 +1556,59 @@ mod tests {
                 apply_field(&mut settings, &field.id, value).unwrap();
                 assert_eq!(settings.validate(), Ok(()), "{kind:?} {}", field.id);
             }
+        }
+    }
+
+    #[test]
+    fn global_terminal_tab_has_opacity_and_the_ghostty_note() {
+        let mut settings = Settings::default();
+        let form = settings_form(&settings, &FormContext::default());
+        let ids = ids(&form);
+        assert!(
+            ids.contains(&"terminal.content_opacity".to_string()),
+            "{ids:?}"
+        );
+        assert!(
+            ids.contains(&"terminal.background_opacity_note".to_string()),
+            "{ids:?}"
+        );
+        let fields: Vec<&Field> = form.iter().flat_map(|s| &s.fields).collect();
+        let slider = fields.iter().find(|f| f.id == "terminal.content_opacity");
+        assert_eq!(
+            slider.map(|f| (f.label.as_str(), &f.control)),
+            Some((
+                "Opacity",
+                &Control::Slider {
+                    min: MIN_CONTENT_OPACITY,
+                    max: 1.0,
+                    value: DEFAULT_CONTENT_OPACITY,
+                    decimals: 2,
+                }
+            ))
+        );
+        let note = fields
+            .iter()
+            .find(|f| f.id == "terminal.background_opacity_note");
+        assert_eq!(
+            note.map(|f| &f.control),
+            Some(&Control::Note(
+                "Background opacity: set background-opacity in your Ghostty config (Ghostty user config on)."
+                    .to_string()
+            ))
+        );
+        for (input, expected) in [(0.05, 0.2), (0.456, 0.46), (f64::NAN, 0.2), (3.0, 1.0)] {
+            let result = apply_field(
+                &mut settings,
+                "terminal.content_opacity",
+                FieldValue::Number(input),
+            );
+            assert!(result.is_ok(), "{input}: {result:?}");
+            assert_eq!(
+                settings.terminal.defaults.content_opacity,
+                Some(expected),
+                "{input}"
+            );
+            assert_eq!(settings.validate(), Ok(()));
         }
     }
 

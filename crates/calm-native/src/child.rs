@@ -51,17 +51,25 @@ pub fn zoom_bounds(logical_size: Size) -> Rect {
     Rect::new(0.0, 0.0, logical_size.width, logical_size.height)
 }
 
-/// The visible pieces in the clip view's own coordinates, or `None` when the whole
-/// container is visible and no mask is needed. `flipped` picks a top-left origin (a
-/// geometry flipped layer); otherwise the origin is bottom-left, as in an unflipped NSView.
+/// The paint pieces in the clip view's own coordinates, or `None` when the whole
+/// container paints and no mask is needed. `flipped` picks a top-left origin (a geometry
+/// flipped layer); otherwise the origin is bottom-left, as in an unflipped NSView.
 pub fn mask_pieces(placement: &NativePlacement, flipped: bool) -> Option<Vec<Rect>> {
-    let c = placement.container;
-    if placement.visible.as_slice() == [c] {
+    region_pieces(placement.container, &placement.paint, flipped)
+}
+
+/// The input (`visible`) pieces in the clip view's unflipped coordinates, or `None` when
+/// the whole container takes hits.
+pub fn hit_pieces(placement: &NativePlacement) -> Option<Vec<Rect>> {
+    region_pieces(placement.container, &placement.visible, false)
+}
+
+fn region_pieces(c: Rect, region: &[Rect], flipped: bool) -> Option<Vec<Rect>> {
+    if region == [c] {
         return None;
     }
     Some(
-        placement
-            .visible
+        region
             .iter()
             .map(|piece| {
                 let y = if flipped {
@@ -182,6 +190,8 @@ pub(crate) fn is_in_native_child(view: &NSView) -> bool {
     false
 }
 
+type MaskKey = (Size, Option<Vec<Rect>>, Option<Vec<Rect>>);
+
 /// Two views per panel. `clip` sits in the window at the clipped screen rect and clips;
 /// `zoom` inside it is the logical content scaled by zoom. Ghostty and WKWebView attach to
 /// `zoom` at `(0, 0, logical_size)`. Parts of `clip` under a panel in front are masked out
@@ -189,9 +199,9 @@ pub(crate) fn is_in_native_child(view: &NSView) -> bool {
 pub struct NativeChild {
     clip: Retained<ClipView>,
     zoom: Retained<NSView>,
-    /// Mask applied last, as (clip size, pieces); `None` pieces means unmasked.
-    mask: Option<(Size, Option<Vec<Rect>>)>,
-    /// Nothing is visible: stay hidden even when asked to show.
+    /// Mask applied last, as (clip size, paint pieces, hit pieces); `None` means all.
+    mask: Option<MaskKey>,
+    /// Nothing paints: stay hidden even when asked to show.
     occluded: bool,
     /// What the caller asked for through `set_visible` or `apply`.
     shown: bool,
@@ -231,7 +241,7 @@ impl NativeChild {
         self.zoom.setFrame(ns_rect(zoom_frame(placement)));
         self.zoom
             .setBounds(ns_rect(zoom_bounds(placement.logical_size)));
-        self.occluded = placement.visible.is_empty();
+        self.occluded = placement.paint.is_empty();
         if !self.occluded {
             self.apply_mask(placement);
         }
@@ -239,18 +249,18 @@ impl NativeChild {
         self.clip.setHidden(self.occluded);
     }
 
-    /// Masks paint to the visible pieces and makes hit testing match. Skips work when
-    /// nothing changed, and removes the mask when the whole container is visible.
+    /// Masks paint to the paint pieces and hit testing to the visible (input) pieces.
+    /// Skips work when nothing changed, and removes the mask when the whole container paints.
     fn apply_mask(&mut self, placement: &NativePlacement) {
         let Some(layer) = self.clip.layer() else {
             return;
         };
         let pieces = mask_pieces(placement, layer.isGeometryFlipped());
-        let key = (placement.container.size, pieces);
+        let key = (placement.container.size, pieces, hit_pieces(placement));
         if self.mask.as_ref() == Some(&key) {
             return;
         }
-        let (_, pieces) = &key;
+        let (_, pieces, hit) = &key;
         // No implicit animation, or the mask trails the content during pan and zoom.
         CATransaction::begin();
         CATransaction::setDisableActions(true);
@@ -281,15 +291,25 @@ impl NativeChild {
         }
         CATransaction::commit();
         // Hit testing works in view coordinates, bottom-left for this unflipped view.
-        let hit =
-            mask_pieces(placement, false).map(|pieces| pieces.into_iter().map(ns_rect).collect());
-        *self.clip.ivars().hit_pieces.borrow_mut() = hit;
+        *self.clip.ivars().hit_pieces.borrow_mut() = hit
+            .as_ref()
+            .map(|pieces| pieces.iter().copied().map(ns_rect).collect());
         self.mask = Some(key);
     }
 
     pub fn set_visible(&mut self, visible: bool) {
         self.shown = visible;
         self.clip.setHidden(!visible || self.occluded);
+    }
+
+    /// Fades the whole panel content, Ghostty's surface included, by the clip view's alpha.
+    pub fn set_opacity(&self, opacity: f64) {
+        self.clip.setAlphaValue(opacity);
+    }
+
+    /// The clip view's opacity read back from AppKit.
+    pub fn opacity(&self) -> f64 {
+        self.clip.alphaValue()
     }
 
     /// Moves the clip view above its siblings, so this panel draws over other native panels.
@@ -397,6 +417,7 @@ mod tests {
             logical_size: Size::new(400.0, 300.0),
             zoom: 2.0,
             visible: vec![Rect::new(0.0, 36.0, 300.0, 214.0)],
+            paint: vec![Rect::new(0.0, 36.0, 300.0, 214.0)],
         }
     }
 
@@ -445,6 +466,7 @@ mod tests {
             logical_size: Size::new(400.0, 300.0),
             zoom: 1.5,
             visible: vec![Rect::new(10.0, 20.0, 600.0, 450.0)],
+            paint: vec![Rect::new(10.0, 20.0, 600.0, 450.0)],
         };
         assert_eq!(zoom_frame(&p), Rect::new(0.0, 0.0, 600.0, 450.0));
     }
@@ -455,10 +477,29 @@ mod tests {
     }
 
     #[test]
+    fn mask_follows_paint_and_hits_follow_visible() {
+        let mut p = placement();
+        // A live terminal in front covers the top 28 for input, its bar only the top 8.
+        p.visible = vec![Rect::new(0.0, 64.0, 300.0, 186.0)];
+        p.paint = vec![Rect::new(0.0, 44.0, 300.0, 206.0)];
+        assert_eq!(
+            mask_pieces(&p, true),
+            Some(vec![Rect::new(0.0, 8.0, 300.0, 206.0)])
+        );
+        assert_eq!(
+            hit_pieces(&p),
+            Some(vec![Rect::new(0.0, 0.0, 300.0, 186.0)])
+        );
+        p.paint = vec![p.container];
+        assert_eq!(mask_pieces(&p, false), None);
+        assert!(hit_pieces(&p).is_some());
+    }
+
+    #[test]
     fn mask_pieces_are_clip_local_in_both_origins() {
         let mut p = placement();
         // Container (0,36,300,214); the top 28 points are covered.
-        p.visible = vec![Rect::new(0.0, 64.0, 300.0, 186.0)];
+        p.paint = vec![Rect::new(0.0, 64.0, 300.0, 186.0)];
         // Bottom-left: the piece starts at the clip's bottom and stops 28 below its top.
         assert_eq!(
             mask_pieces(&p, false),
@@ -468,7 +509,7 @@ mod tests {
             mask_pieces(&p, true),
             Some(vec![Rect::new(0.0, 28.0, 300.0, 186.0)])
         );
-        p.visible.clear();
+        p.paint.clear();
         assert_eq!(mask_pieces(&p, false), Some(Vec::new()));
     }
 

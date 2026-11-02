@@ -125,6 +125,12 @@ one means a new entry, not an edit.
   per-launch file and exits 0. 127 means command not found and never auto-restarts. Cost:
   a 127 from the program itself reads as not found; a killed wrapper gives "code unknown".
   The Ghostty fork planned in Plugin API v2 could replace this.
+- **The wrapper runs at least 0.4 s (2026-11-02, `fix/tui-quick-exit-banner`).** On macOS
+  Ghostty treats any child exit under `abnormal-command-exit-runtime` (250 ms) as a failed
+  launch, whatever the exit code, and replaces the output with "Ghostty failed to launch the
+  requested command". gpui-libghostty 0.3.1 cannot set that key, so the wrapper starts a
+  background `sleep 0.4` and waits for it before exiting (`tui::MIN_WRAPPER_RUNTIME`).
+  Longer runs are not delayed. Cost: a quick command's closing line shows up to 0.4 s late.
 - **TUI look comes from the manifest; confirmation colors stay fixed.** `accentColor`,
   `titleBarColor` and `titleColor` override the theme per panel, but a close confirmation
   always paints the theme's warning bar, border and text, so a plugin cannot hide it. The
@@ -851,3 +857,40 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   it was. If what would close changed while a dialog was open, the load is refused with an
   alert. The Load confirmation and a normal panel close share one rule (`close_confirms`):
   a running terminal or app, or a browser, asks first.
+
+## Color wells without opacity (2026-11-02, `feat/terminal-transparency`)
+
+- **Every CALM color well sets `supportsAlpha = false`.** The `Control::Color` builder in
+  `settings_window.rs` (the only `NSColorWell` CALM creates) turns it off, so the picker
+  shows no opacity slider. Why every well: no CALM color well keeps alpha today
+  (`rgb_from_ns`, `BindingKind::Color`), chrome wells included, so a slider anywhere would
+  be a control that does nothing. This replaces the spec's "terminal wells only". Turn it
+  back on per well when chrome alpha is wired (the gap is in `.ai/status.md`). The
+  deprecated app-wide `NSColor::setIgnoresAlpha` was rejected; macOS 14, CALM's floor, has
+  the per-well API.
+- **Previews fade in bytes.** A preview is GPUI-drawn, so the native fade does not reach
+  it. `take_snapshot` scales the snapshot's alpha by `content_opacity` with
+  `preview::fade_pixels`, straight alpha, because gpui's sprite pipeline blends with
+  `SourceAlpha` (`gpui-pre-apple` 0.3.4 `metal_renderer.rs`). Bytes round half away from zero.
+  Ghostty's snapshot bytes are premultiplied, so every snapshot first goes through
+  `preview::unpremultiply_pixels`, then the fade.
+
+## Launching terminal's env is scrubbed (2026-11-02, `fix/terminal-env-scrub`)
+
+- **`main` unsets the launching terminal's identity before CALM starts any thread.** The
+  function is `unsafe` and its caller owns that guarantee. GPUI's pre-main constructors only
+  register classes (source-read in review); system framework start-up is not audited. Started from
+  iTerm2, every canvas terminal inherited `ITERM_SESSION_ID` and `LC_TERMINAL`. Claude Code
+  2.1.316 treats `ITERM_SESSION_ID` alone as "inside iTerm2", so agent teams split the iTerm2
+  tab CALM was launched from. `TERM_PROGRAM` did not leak into Ghostty terminals: the
+  gpui-libghostty shim sets it (`gpui-ghostty`), and since #67 CALM sets `ghostty`. Other
+  children (`gh`, `process.exec`, plugin helpers) did get `TERM_PROGRAM=iTerm.app`. The list is in
+  `calm_core::host_env` (iTerm2, Terminal.app, tmux, screen, kitty, WezTerm, Alacritty,
+  Zellij); `GHOSTTY_*`, `TERM`, `LC_ALL`/`LC_CTYPE` stay.
+- Hard-coded on purpose: it is a correctness fix, not a look or behavior choice. A user who
+  wants one of these names in a terminal can set it in a terminal profile's env.
+- Done in CALM's own environment, not per spawn: `gpui-libghostty` 0.3.1 has no env option,
+  and one place then covers every child (terminals, TUI apps, plugins, `gh`) instead of each
+  argv builder growing `env -u` flags.
+- Smoke step `terminal_env` spawns `/usr/bin/env` and fails on any listed name. It only
+  discriminates when smoke runs from a terminal that sets them (iTerm2, tmux).

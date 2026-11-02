@@ -482,6 +482,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         })
         .await;
         smoke_step(&mut run, "app_icon", async { smoke_app_icon() }).await;
+        smoke_step(&mut run, "terminal_env", async { smoke_terminal_env() }).await;
         smoke_step(&mut run, "native_reorder", async {
             smoke_native_reorder(&view, window, cx)
         })
@@ -1728,6 +1729,9 @@ async fn wait_for_title(
 /// then reads back the look and the content rect paint and placement use. The content (the
 /// terminal's logical size) must not move and the palette is applied live. Clearing the
 /// overrides brings the bar and the rendered title back.
+/// A panel override no default uses, so a faded terminal is ours.
+const SMOKE_CONTENT_OPACITY: f64 = 0.5;
+
 fn smoke_panel_overrides(
     view: &Entity<CanvasView>,
     window: AnyWindowHandle,
@@ -1756,6 +1760,11 @@ fn smoke_panel_overrides(
                 set_borderless(panel, true);
             }
             view.apply_panel_overrides(id, cx);
+            if let Some(panel) = view.scene.get_mut(id) {
+                panel.overrides.content_opacity = Some(SMOKE_CONTENT_OPACITY);
+            }
+            view.apply_panel_overrides(id, cx);
+            let opacity_faded = view.terminal_opacities(cx);
             let ids: Vec<PanelId> = view.scene.panels.iter().map(|panel| panel.id).collect();
             let looks = view.paint_looks();
             let styled = ids
@@ -1782,6 +1791,7 @@ fn smoke_panel_overrides(
                 panel.overrides = Default::default();
             }
             view.apply_panel_overrides(id, cx);
+            let opacity_reset = view.terminal_opacities(cx);
             let cleared = view.scene.get(id).map(content_rect) == Some(before)
                 && view.scene.get(id).map(chrome_height) == Some(calm_core::scene::CHROME_HEIGHT)
                 && view.panel_look(id).title.is_none()
@@ -1799,11 +1809,38 @@ fn smoke_panel_overrides(
                 scene_title,
                 recolored,
                 cleared,
+                id,
+                opacity_faded,
+                opacity_reset,
             ))
         })
     });
+    let opacity_ok = |values: &[(PanelId, f64)], id: PanelId, want: f64| {
+        values.iter().any(|(panel, _)| *panel == id)
+            && values.iter().all(|(panel, value)| {
+                let expected = if *panel == id { want } else { 1.0 };
+                (value - expected).abs() < 0.001
+            })
+    };
+    let opacity_line = |values: &[(PanelId, f64)]| {
+        let values: Vec<String> = values.iter().map(|(_, v)| format!("{v:.3}")).collect();
+        format!("[{}]", values.join(","))
+    };
+    if let Ok(Ok((.., id, faded, reset))) = &checked {
+        println!(
+            "smoke: terminal_opacity={} reset={}",
+            opacity_line(faded),
+            opacity_line(reset)
+        );
+        if !opacity_ok(faded, *id, SMOKE_CONTENT_OPACITY) || !opacity_ok(reset, *id, 1.0) {
+            smoke_fail(&format!(
+                "panel_overrides: terminal_opacity expected {SMOKE_CONTENT_OPACITY} on panel {} then 1.0, others 1.0, got {faded:?} then {reset:?}",
+                id.0
+            ));
+        }
+    }
     match checked {
-        Ok(Ok((1, 1, true, Some(title), true, true))) if title == TITLE => println!(
+        Ok(Ok((1, 1, true, Some(title), true, true, ..))) if title == TITLE => println!(
             "smoke: panel_overrides styled=1 borderless=1 size=unchanged title={title:?} recolor=ok cleared=ok"
         ),
         other => smoke_fail(&format!(
@@ -2580,7 +2617,38 @@ fn smoke_app_icon() {
     }
 }
 
+/// A spawned child must not inherit the launching terminal's identity. Run from iTerm2
+/// or tmux, this fails without the scrub in `main`.
+fn smoke_terminal_env() {
+    let output = match std::process::Command::new("/usr/bin/env").output() {
+        Ok(output) => output,
+        Err(err) => smoke_fail(&format!("terminal env: spawn /usr/bin/env: {err}")),
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let names: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(n, _)| n)
+        .collect();
+    let leaked = calm_core::host_env::inherited_terminal_vars(&names);
+    println!(
+        "smoke: terminal_env child_vars={} leaked={leaked:?}",
+        names.len()
+    );
+    if names.is_empty() {
+        smoke_fail("terminal env: child printed no variables");
+    }
+    if !leaked.is_empty() {
+        smoke_fail(&format!("terminal env: child inherited {leaked:?}"));
+    }
+}
+
 fn main() {
+    // A terminal launched from iTerm2 must not look like iTerm2.
+    // SAFETY: first statement of `main`, before CALM or GPUI starts a thread. GPUI's pre-main
+    // constructors only register classes (source-read); system framework start-up was not
+    // audited.
+    unsafe { calm_native::host_env::scrub_inherited_terminal_env() };
     let args = parse_args();
     gpui_platform::application().run(move |cx: &mut App| {
         dev_menu::install(cx);
