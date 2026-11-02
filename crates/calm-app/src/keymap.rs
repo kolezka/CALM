@@ -15,6 +15,7 @@ use crate::canvas_view::{
     ZoomReset,
 };
 use crate::dev_menu::{About, Quit, ResetFps, ToggleFps};
+use crate::preset_menu::{LoadPreset, SavePreset, ShowWelcome};
 use crate::settings_menu::{self, OpenConfigFolder, OpenSettings, ResetSettings, ToggleGrid};
 use crate::terminal;
 
@@ -51,6 +52,9 @@ pub fn gpui_action(id: &str) -> Option<Box<dyn Action>> {
         "panel.settings" => Box::new(OpenPanelSettings),
         "developer.toggle_stats" => Box::new(ToggleFps),
         "developer.reset_fps" => Box::new(ResetFps),
+        "developer.show_welcome" => Box::new(ShowWelcome),
+        "app.save_preset" => Box::new(SavePreset),
+        "app.load_preset" => Box::new(LoadPreset),
         "view.show_grid" => Box::new(ToggleGrid),
         "app.settings" => Box::new(OpenSettings),
         "app.open_config_folder" => Box::new(OpenConfigFolder),
@@ -148,7 +152,7 @@ mod tests {
                 data.name
             );
         }
-        assert_eq!(ours.len(), 36);
+        assert_eq!(ours.len(), 39);
     }
 
     #[test]
