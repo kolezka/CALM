@@ -19,10 +19,12 @@ use calm_core::geometry::{Point, Rect, Size};
 use calm_core::grid::{GridKind, mark_primitive_bound};
 use calm_core::interaction::{Effect, ResizeEdge};
 use calm_core::join::JOIN_SNAP_GAP;
-use calm_core::layout::{load_layout_from, move_aside};
+use calm_core::layout::{LayoutError, load_layout_from, move_aside};
+use calm_core::preset::find_preset;
 use calm_core::preview::PanelMode;
 use calm_core::restore::{
-    LaunchExit, LaunchFlags, RestorePlan, Source, after_quarantine, pick_source, plan_restore,
+    FirstLaunch, LaunchExit, LaunchFlags, RestorePlan, Source, after_quarantine, pick_source,
+    plan_restore,
 };
 use calm_core::scene::{PanelId, PanelKind};
 use calm_core::settings::RestoreOnLaunch;
@@ -31,7 +33,7 @@ use calm_core::tui::TuiState;
 use std::cell::Cell;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError, TryLockError};
 use std::task::Poll;
 use std::time::{Duration, Instant};
@@ -73,12 +75,15 @@ fn parse_args() -> Args {
 }
 
 /// Reads what the launch needs, moves a session that failed to load aside, and returns
-/// the plan. Reads only `session` and, for `--layout`, `layouts/<name>.json`.
+/// the plan. Reads `session`, `--layout NAME` from `layouts` then `builtin_presets`, and
+/// on a launch with no session file, the first-launch preset from the same places.
 fn launch_plan(
     flags: &LaunchFlags,
     setting: RestoreOnLaunch,
+    first_launch_preset: &str,
     session: &Path,
     layouts: &Path,
+    builtin_presets: &[PathBuf],
 ) -> Result<RestorePlan, LaunchExit> {
     let (source, notice) = pick_source(flags, setting);
     let dir = session.parent().unwrap_or(Path::new("."));
@@ -87,11 +92,20 @@ fn launch_plan(
         .and_then(|stem| stem.to_str())
         .unwrap_or("session");
     let session_read = load_layout_from(dir, stem);
+    let read_preset =
+        |name: &str| find_preset(name, layouts, builtin_presets).map(|(layout, _)| layout);
     let layout_read = match &source {
-        Source::NamedLayout(name) => Some(load_layout_from(layouts, name)),
+        Source::NamedLayout(name) => Some(read_preset(name)),
         _ => None,
     };
-    let mut plan = plan_restore(&source, notice, session_read, layout_read)?;
+    let first_launch = (source == Source::Session
+        && matches!(session_read, Err(LayoutError::NotFound(_)))
+        && !first_launch_preset.is_empty())
+    .then(|| FirstLaunch {
+        name: first_launch_preset.to_string(),
+        read: read_preset(first_launch_preset),
+    });
+    let mut plan = plan_restore(&source, notice, session_read, layout_read, first_launch)?;
     if let Some(path) = plan.quarantine.clone() {
         after_quarantine(&mut plan, move_aside(&path));
     }
@@ -2475,7 +2489,16 @@ fn main() {
             let session = calm_core::layout::session_path();
             let layouts = calm_core::layout::layouts_dir();
             let setting = settings.settings.session.restore_on_launch;
-            match launch_plan(&args.restore, setting, &session, &layouts) {
+            let first_launch = settings.settings.session.first_launch_preset.clone();
+            let builtin_presets = calm_plugins::builtin_preset_dirs();
+            match launch_plan(
+                &args.restore,
+                setting,
+                &first_launch,
+                &session,
+                &layouts,
+                &builtin_presets,
+            ) {
                 Ok(plan) => Some((plan, session)),
                 Err(exit) => {
                     eprintln!("calm: {}", exit.message);
@@ -2849,6 +2872,7 @@ fn smoke_session_edges(
         quarantine: None,
         autosave: calm_core::restore::AutosaveStart::Off("smoke fixture".to_string()),
         notices: Vec::new(),
+        save_at_start: false,
     };
     let home = terminal_profiles::home_dir();
     let checked = cx.update_window(window, |_, window, cx| {
@@ -2909,18 +2933,23 @@ fn smoke_session_edges(
     println!("smoke: session edges titles=saved cwd=home command=rerun");
 }
 
-/// Runs the launch restore path on `session` with restore on.
+/// Runs the launch restore path on `session` with restore on. Presets come only from
+/// `builtin_presets` and the `layouts` dir beside `session`, never the workspace.
 fn smoke_launch(
     view: &Entity<CanvasView>,
     window: AnyWindowHandle,
     session: &Path,
+    first_launch_preset: &str,
+    builtin_presets: &[PathBuf],
     cx: &mut gpui::AsyncApp,
 ) {
     let plan = match launch_plan(
         &LaunchFlags::default(),
         RestoreOnLaunch::On,
+        first_launch_preset,
         session,
         &session.with_file_name("layouts"),
+        builtin_presets,
     ) {
         Ok(plan) => plan,
         Err(exit) => smoke_fail(&format!("session: launch plan: {}", exit.message)),
@@ -3007,6 +3036,7 @@ async fn smoke_session(
                 quarantine: None,
                 autosave: calm_core::restore::AutosaveStart::Off("smoke fixture".to_string()),
                 notices: Vec::new(),
+                save_at_start: false,
             };
             // The fixture plan closes the launch gate; later steps run their own launches.
             let gate = view.autosave_gate;
@@ -3055,7 +3085,7 @@ async fn smoke_session(
             .await;
     }
 
-    smoke_launch(view, window, &session, cx);
+    smoke_launch(view, window, &session, "", &[], cx);
     let report = view.update(cx, |view, cx| {
         let restored = view.scene.to_layout();
         let kinds: Vec<String> = view
@@ -3149,7 +3179,7 @@ async fn smoke_session(
     if let Err(err) = std::fs::write(&bad, &bytes) {
         smoke_fail(&format!("session: corrupt copy: {err}"));
     }
-    smoke_launch(view, window, &bad, cx);
+    smoke_launch(view, window, &bad, "", &[], cx);
     let (empty, autosave_on) = view.update(cx, |view, _| {
         let state = (view.scene.panels.is_empty(), view.autosave_running());
         view.stop_autosave();
@@ -3170,6 +3200,56 @@ async fn smoke_session(
             bad.exists()
         ));
     }
+
+    // No session file: the first-launch preset opens and is saved as the session at once.
+    smoke_close_all(view, window, cx);
+    view.update(cx, |view, _| {
+        view.scene = calm_core::scene::Scene::default()
+    });
+    let first_dir = root.join("first-launch");
+    let builtin = first_dir.join("builtin");
+    if let Err(err) = std::fs::create_dir_all(&builtin) {
+        smoke_fail(&format!("first launch: dir: {err}"));
+    }
+    let mut preset = calm_core::scene::Scene::default();
+    preset.add(
+        PanelKind::Browser {
+            url: "about:blank".to_string(),
+            page_zoom: None,
+        },
+        Rect::new(40.0, 40.0, 320.0, 200.0),
+    );
+    let mut preset_writer = SessionWriter::new(
+        builtin.join("smoke-welcome.json"),
+        0,
+        calm_core::browser_url::BrowserQueryMode::StripAll,
+    );
+    if let Err(err) = preset_writer.save(&preset.to_layout()) {
+        smoke_fail(&format!("first launch: preset: {err}"));
+    }
+    let first_session = first_dir.join("session.json");
+    smoke_launch(
+        view,
+        window,
+        &first_session,
+        "smoke-welcome",
+        std::slice::from_ref(&builtin),
+        cx,
+    );
+    let (panels, layout_name) = view.update(cx, |view, _| {
+        let state = (view.scene.panels.len(), view.layout_name.clone());
+        view.stop_autosave();
+        state
+    });
+    let saved = calm_core::layout::load_layout_from(&first_dir, "session")
+        .is_ok_and(|layout| layout.panels.len() == 1);
+    let line = format!("smoke: first_launch source=preset panels={panels} saved={saved}");
+    println!("{line}");
+    if panels != 1 || !saved || layout_name.is_some() {
+        smoke_fail(&format!("{line} layout_name={layout_name:?}"));
+    }
+    smoke_close_all(view, window, cx);
+
     if let Err(err) = cwd.close() {
         eprintln!("smoke: could not remove the cwd temp dir: {err}");
     }
@@ -3205,7 +3285,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let session = saved_session(dir.path());
         let flags = LaunchFlags::default();
-        let plan = launch_plan(&flags, RestoreOnLaunch::On, &session, dir.path()).unwrap();
+        let plan = launch_plan(&flags, RestoreOnLaunch::On, "", &session, dir.path(), &[]).unwrap();
         assert_eq!(plan.layout.map(|layout| layout.panels.len()), Some(1));
         assert!(session.exists());
     }
@@ -3218,7 +3298,7 @@ mod tests {
         bytes[0] = b'#';
         std::fs::write(&session, &bytes).unwrap();
         let flags = LaunchFlags::default();
-        let plan = launch_plan(&flags, RestoreOnLaunch::On, &session, dir.path()).unwrap();
+        let plan = launch_plan(&flags, RestoreOnLaunch::On, "", &session, dir.path(), &[]).unwrap();
         let moved = dir.path().join("session.json.invalid-0");
         assert_eq!(std::fs::read(&moved).ok(), Some(bytes), "not moved aside");
         assert!(!session.exists());
@@ -3243,9 +3323,76 @@ mod tests {
             no_restore: false,
         };
         let session = dir.path().join("session.json");
-        let exit = launch_plan(&flags, RestoreOnLaunch::On, &session, &layouts).unwrap_err();
+        let exit =
+            launch_plan(&flags, RestoreOnLaunch::On, "", &session, &layouts, &[]).unwrap_err();
         assert_eq!(exit.code, 2);
         assert!(named.exists());
         assert!(!layouts.join("work.json.invalid-0").exists());
+    }
+
+    /// A built-in preset dir holding `welcome.json` with one terminal.
+    fn builtin_welcome(dir: &Path) -> std::path::PathBuf {
+        let builtin = dir.join("builtin");
+        std::fs::create_dir(&builtin).unwrap();
+        saved_session(&builtin);
+        std::fs::rename(builtin.join("session.json"), builtin.join("welcome.json")).unwrap();
+        builtin
+    }
+
+    #[test]
+    fn launch_plan_opens_builtin_preset_on_first_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let builtin = builtin_welcome(dir.path());
+        let layouts = dir.path().join("layouts");
+        let session = dir.path().join("session.json");
+        let flags = LaunchFlags::default();
+        let plan = launch_plan(
+            &flags,
+            RestoreOnLaunch::On,
+            "welcome",
+            &session,
+            &layouts,
+            std::slice::from_ref(&builtin),
+        )
+        .unwrap();
+        assert_eq!(plan.layout.map(|layout| layout.panels.len()), Some(1));
+        assert_eq!(plan.layout_name, None);
+        assert!(plan.save_at_start);
+        // An empty setting opens nothing.
+        let plan = launch_plan(
+            &flags,
+            RestoreOnLaunch::On,
+            "",
+            &session,
+            &layouts,
+            &[builtin],
+        )
+        .unwrap();
+        assert_eq!(plan.layout, None);
+        assert!(!plan.save_at_start);
+    }
+
+    #[test]
+    fn launch_plan_layout_flag_finds_builtin_preset() {
+        let dir = tempfile::tempdir().unwrap();
+        let builtin = builtin_welcome(dir.path());
+        let layouts = dir.path().join("layouts");
+        let session = dir.path().join("session.json");
+        let flags = LaunchFlags {
+            layout: Some("welcome".to_string()),
+            no_restore: false,
+        };
+        let plan = launch_plan(
+            &flags,
+            RestoreOnLaunch::On,
+            "",
+            &session,
+            &layouts,
+            &[builtin],
+        )
+        .unwrap();
+        assert_eq!(plan.layout.map(|layout| layout.panels.len()), Some(1));
+        assert_eq!(plan.layout_name.as_deref(), Some("welcome"));
+        assert!(!plan.save_at_start);
     }
 }

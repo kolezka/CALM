@@ -350,6 +350,7 @@ impl CanvasView {
 
     /// Carries out a launch plan whose quarantine is done: builds its panels, then
     /// starts autosave to `session` on the result, so an untouched start never writes.
+    /// A plan with `save_at_start` (a first-launch preset) writes once right away.
     pub fn apply_restore_plan(
         &mut self,
         plan: RestorePlan,
@@ -380,6 +381,11 @@ impl CanvasView {
                 }
             }
             AutosaveStart::Off(reason) => self.autosave_notice = Some(reason),
+        }
+        // A first-launch preset becomes the session now, so the next launch restores it.
+        // With autosave off nothing is written.
+        if plan.save_at_start {
+            self.write_now(true);
         }
         window.refresh();
         cx.notify();
@@ -680,9 +686,16 @@ impl CanvasView {
         }
     }
 
-    /// The quit hook: writes the latest scene now. Waits for a write in flight, and the
-    /// ordered writer drops that older write if it runs after this one.
+    /// The quit hook: writes the latest scene now, if it changed since the last save.
     pub fn save_on_quit(&mut self) {
+        self.write_now(false);
+    }
+
+    /// Writes the latest scene through the autosave writer, on this thread. Without
+    /// `force` it writes only an unsaved change. Waits for a write in flight, and the
+    /// ordered writer drops that older write if it runs after this one. Does nothing
+    /// when autosave is not running.
+    fn write_now(&mut self, force: bool) {
         let revision = self.scene.sync_revision();
         let Some(autosave) = self.autosave.as_mut() else {
             return;
@@ -691,7 +704,7 @@ impl CanvasView {
         // The live revision, not the clock's: a change since the last tick must be saved.
         let pending =
             autosave.clock.changed_since_submit(revision) || autosave.queue.in_flight().is_some();
-        if !queued && !pending {
+        if !force && !queued && !pending {
             return;
         }
         autosave.clock.submitted(revision);
