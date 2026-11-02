@@ -996,12 +996,14 @@ impl CanvasView {
     /// The prompt is modal, so it runs in a task outside this update, like the menus.
     fn prompt_run_command(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
-            let answer = calm_native::prompt_text(
-                RUN_COMMAND_TITLE,
-                "",
-                RUN_COMMAND_NOTE,
-                RUN_COMMAND_PLACEHOLDER,
-            );
+            let answer = calm_native::prompt_text(&calm_native::TextPrompt {
+                title: RUN_COMMAND_TITLE,
+                message: "",
+                note: RUN_COMMAND_NOTE,
+                placeholder: RUN_COMMAND_PLACEHOLDER,
+                initial: "",
+                ok: "Run",
+            });
             let command = match answer {
                 Ok(Some(command)) => command,
                 Ok(None) => return,
