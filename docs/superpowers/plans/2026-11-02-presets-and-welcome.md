@@ -4,11 +4,18 @@
 
 **Goal:** A first launch opens a built-in `welcome` preset; users can save and load presets; a Developer item replays the welcome preset.
 
-**Architecture:** A preset is a `LayoutFile` (layout v2). A new `calm_core::preset` module finds and lists presets across the user `layouts/` dir and built-in `presets/` dirs (user shadows built-in). `plan_restore` gains a first-launch branch. The app adds a File menu (Save Preset…, Load Preset…) and a Developer item, with native NSAlert dialogs from a new `calm_native::dialog` module. Two first-party web plugins, `calm-welcome` and `calm-keys`, are hidden from the Add menu by a new `addMenu` manifest field.
+**Architecture:** A preset is a `LayoutFile` (layout v2). A new `calm_core::preset` module finds and lists presets across the user `layouts/` dir and built-in `presets/` dirs (user shadows built-in). `plan_restore` gains a first-launch branch. The app adds a File menu (Save Preset…, Load Preset…) and a Developer item, with native NSAlert dialogs added to `calm_native::prompt` (from PR #63). Two first-party web plugins, `calm-welcome` and `calm-keys`, are hidden from the Add menu by a new `addMenu` manifest field.
 
 **Tech Stack:** Rust (calm-core, calm-plugins, calm-native via objc2, calm-app on GPUI), plain HTML/CSS/JS plugins.
 
 **Spec:** `docs/superpowers/specs/2026-11-02-presets-and-welcome-design.md`
+
+**Base:** PR #63 (`feat: TUI panels extend terminals, add Run Command`), branch head `ba4834a`, 2026-11-02. Start only after #63 is merged to `main`, then rebase this branch on it. Line numbers below are from `ba4834a`; recheck them after the rebase. What this plan uses from #63:
+
+- `PanelKind::Tui` is gone. A TUI app panel is `PanelKind::Terminal { app: Some(TerminalApp { plugin_id, .. }), .. }`; build one with `PanelKind::app_terminal(id, version)`.
+- `crates/calm-native/src/prompt.rs` has `prompt_text(title, message, note, placeholder) -> Result<Option<String>, NativeError>` (Run and Cancel buttons) and `prompt_value`. Task 5 extends this file; it does not add a second prompt.
+- Modal prompts run in `cx.spawn_in(window, async move |this, cx| ..)` outside any GPUI update, then `this.update_in(..)`; see `prompt_run_command` (`crates/calm-app/src/canvas_view.rs:977`). Task 6 follows that pattern.
+- The Add menu has a "Run Command…" item (`menu::RUN_COMMAND`). `addMenu` does not touch it.
 
 ## Global Constraints
 
@@ -43,7 +50,7 @@
 - Modify: `crates/calm-core/src/lib.rs` (add `pub mod preset;`)
 - Modify: `crates/calm-core/src/layout.rs:525` (expose the name rule)
 - Modify: `crates/calm-core/src/settings.rs:120-160` (field, default, validate)
-- Modify: `crates/calm-core/src/settings_form.rs:302-345` and `:729-760` (Session field and apply)
+- Modify: `crates/calm-core/src/settings_form.rs:306-345` and `:731-765` (Session field and apply)
 
 **Interfaces:**
 - Produces:
@@ -91,8 +98,8 @@
 
 **Files:**
 - Modify: `crates/calm-core/src/restore.rs:60-160`
-- Modify: `crates/calm-app/src/main.rs:77-98` (`launch_plan`), `:2305`, `:2728` and its tests at `:3011+`
-- Modify: `crates/calm-app/src/canvas_view.rs:342-370` (`apply_restore_plan`), `:505-525` (`start_autosave`)
+- Modify: `crates/calm-app/src/main.rs:77-98` (`launch_plan`), both callers (`rg -n 'launch_plan\(' crates/calm-app/src/main.rs`), `smoke_launch` (`:2897`) and the tests at `:3188+`
+- Modify: `crates/calm-app/src/canvas_view.rs:347-375` (`apply_restore_plan`), `:511` (`start_autosave`), `:679` (`save_on_quit`)
 
 **Interfaces:**
 - Consumes: `find_preset`, `builtin_preset_dirs`, `SessionSettings.first_launch_preset`.
@@ -114,7 +121,7 @@ Rules (spec table, "Launch behavior"): `first_launch` is read and used only when
 - [ ] **Step 2: Run** `cargo test -p calm-core restore` and `cargo test -p calm-app launch_plan` → the new tests fail at their assertions (after a stub signature change compiles).
 - [ ] **Step 3: Implement.** In `apply_restore_plan`, when `save_at_start` and autosave started, submit one session write right away through the same writer as `save_on_quit` (factor the body of `save_on_quit` into `fn write_now(&mut self, force: bool)`; `save_on_quit` calls it with `false`, first launch with `true`). With autosave off, write nothing (accepted edge case in the spec).
 - [ ] **Step 4: Run** `cargo test -p calm-core` and `cargo test -p calm-app` → pass.
-- [ ] **Step 5: Add a smoke line.** In `smoke_launch` (`main.rs:2722`), add a run on an empty temp dir with a built-in dir containing a 1-panel test preset; assert the scene has 1 panel and `session.json` exists right after. Print `smoke: first_launch source=preset panels=1 saved=true`. Run `cargo run -p calm-app -- --smoke; echo rc=$?` → rc=0 and the line present.
+- [ ] **Step 5: Add a smoke line.** In `smoke_launch` (`main.rs:2897`), add a run on an empty temp dir with a built-in dir containing a 1-panel test preset; assert the scene has 1 panel and `session.json` exists right after. Print `smoke: first_launch source=preset panels=1 saved=true`. Run `cargo run -p calm-app -- --smoke; echo rc=$?` → rc=0 and the line present.
 - [ ] **Step 6: Commit** `feat: open the first launch preset when no session exists`
 
 ### Task 4: `addMenu` manifest field
@@ -134,48 +141,50 @@ Rules (spec table, "Launch behavior"): `first_launch` is read and used only when
 - [ ] **Step 4: Run** both crates' tests → pass.
 - [ ] **Step 5: Commit** `feat(plugins): addMenu hides a plugin from the Add menu`
 
-### Task 5: Native dialogs (calm-native)
+### Task 5: Native dialogs (extend #63's `prompt.rs`)
 
 **Files:**
-- Create: `crates/calm-native/src/dialog.rs`
-- Modify: `crates/calm-native/src/lib.rs`
-- Modify: `crates/calm-native/examples/native_smoke.rs` (exercise construction only)
+- Modify: `crates/calm-native/src/prompt.rs` (from #63)
+- Modify: `crates/calm-native/src/lib.rs:13` (re-exports)
+- Modify: `crates/calm-app/src/canvas_view.rs:977-1000` (`prompt_run_command`, the one existing caller)
 
 **Interfaces:**
-- Produces (all run `NSAlert runModal` on the main thread; return `Err(String)` off the main thread):
-  - `pub fn confirm(title: &str, message: &str, ok: &str) -> Result<bool, String>`: buttons `ok`, then `Cancel`; true on `ok`.
-  - `pub fn prompt_text(title: &str, message: &str, initial: &str) -> Result<Option<String>, String>`: NSTextField accessory; `None` on Cancel; value trimmed.
-  - `pub fn choose(title: &str, message: &str, options: &[String]) -> Result<Option<usize>, String>`: NSPopUpButton accessory; `None` on Cancel or empty `options`.
-  - `pub fn alert(title: &str, message: &str) -> Result<(), String>`: one OK button.
-- Use the app icon on the alert as `app_icon.rs` does for sheets.
+- Consumes: `NativeError` (`crates/calm-native/src/lib.rs:36`), `prompt_value`.
+- Produces (all `NSAlert runModal`; `Err(NativeError::NotMainThread)` off the main thread; call them outside any GPUI update):
+  - `pub struct TextPrompt<'a> { pub title: &'a str, pub message: &'a str, pub note: &'a str, pub placeholder: &'a str, pub initial: &'a str, pub ok: &'a str }`.
+  - `pub fn prompt_text(prompt: &TextPrompt) -> Result<Option<String>, NativeError>`: replaces #63's four-argument form; the first button is `prompt.ok`, then `Cancel`; the field starts with `initial`; answers go through `prompt_value`. Run Command passes `ok: "Run"`, `initial: ""` and keeps its behavior.
+  - `pub fn confirm(title: &str, message: &str, ok: &str) -> Result<bool, NativeError>`: buttons `ok`, then `Cancel`; true on `ok`.
+  - `pub fn choose(title: &str, message: &str, options: &[String]) -> Result<Option<usize>, NativeError>`: NSPopUpButton accessory; `None` on Cancel; `Ok(None)` without showing anything when `options` is empty.
+  - `pub fn alert(title: &str, message: &str) -> Result<(), NativeError>`: one OK button.
 
-- [ ] **Step 1:** Add a test that `choose(.., &[])` returns `Ok(None)` without showing anything, and that each fn returns `Err` from a non-main thread (spawn a thread). Run `cargo test -p calm-native dialog` → FAIL.
-- [ ] **Step 2: Implement**, each `unsafe` block with a SAFETY comment.
-- [ ] **Step 3: Run** `cargo test -p calm-native` and `cargo check -p calm-native --examples` → pass. Showing a real modal is not part of smoke (agents never drive the GUI).
-- [ ] **Step 4: Commit** `feat(native): NSAlert confirm, text prompt and choice dialogs`
+- [ ] **Step 1: Write the failing tests** in `prompt.rs`: `choose_with_no_options_is_none`; `dialogs_refuse_off_the_main_thread` (from a spawned thread, each of `prompt_text`, `confirm`, `choose` with one option, `alert` returns `Err(NativeError::NotMainThread)`). Keep #63's `blank_answers_are_none_and_others_are_trimmed`.
+- [ ] **Step 2: Run** `cargo test -p calm-native prompt` → the new tests fail.
+- [ ] **Step 3: Implement**, then update `prompt_run_command` to the struct form.
+- [ ] **Step 4: Run** `cargo test -p calm-native`, `cargo test -p calm-app` and `cargo check -p calm-native --examples` → pass. Showing a real modal is not part of smoke (agents never drive the GUI); Run Command's prompt is a by-eye check.
+- [ ] **Step 5: Commit** `feat(native): confirm, choice and alert dialogs next to the text prompt`
 
 ### Task 6: Save Preset, Load Preset, Show Welcome Screen (calm-core + calm-app)
 
 **Files:**
 - Modify: `crates/calm-core/src/preset.rs` (pure decisions)
 - Create: `crates/calm-app/src/preset_menu.rs` (actions and handlers)
-- Modify: `crates/calm-app/src/dev_menu.rs:9-40` (File menu, Developer item)
-- Modify: `crates/calm-app/src/canvas_view.rs` (close-all, apply preset)
+- Modify: `crates/calm-app/src/dev_menu.rs:9-45` (File menu, Developer item; `menus` at `:23`)
+- Modify: `crates/calm-app/src/canvas_view.rs` (close-all through `Effect::ClosePanel` at `:812`, apply preset)
 - Modify: `crates/calm-app/src/main.rs` (install)
 
 **Interfaces:**
-- Consumes: `find_preset`, `list_presets`, `valid_layout_name`, `save_layout_in`, `calm_native::dialog::*`, `builtin_preset_dirs`.
+- Consumes: `find_preset`, `list_presets`, `valid_layout_name`, `save_layout_in`, `calm_native::{prompt_text, TextPrompt, confirm, choose, alert}`, `builtin_preset_dirs`.
 - Produces in `preset.rs`:
   - `pub enum ClosingKind { Terminal, App, Browser, Plugin }`.
-  - `pub struct ClosingPanel { pub kind: ClosingKind, pub confirms: bool }`; `confirms` = what `ClosePanelRequested` computes today (`canvas_view.rs:771`: live terminal or TUI, or any browser).
+  - `pub struct ClosingPanel { pub kind: ClosingKind, pub confirms: bool }`. `kind` is `App` for `PanelKind::Terminal { app: Some(_), .. }`, `Terminal` for `app: None`. `confirms` = what `ClosePanelRequested` computes (`canvas_view.rs:784`: a live terminal, with or without an app, or any browser); factor that into `fn close_confirms(&self, id: PanelId, cx: &App) -> bool` and use it in both places.
   - `pub fn load_confirmation(preset: &str, closing: &[ClosingPanel], confirm_close: bool) -> Option<String>`: `None` when `confirm_close` is false or no panel confirms; else `Load preset NAME? This closes ` + counts in the order terminals, apps, browsers, plugins, each `N terminal(s)`-style with correct singular, joined by `, ` and ` and `, ending `.` Example: `Load preset welcome? This closes 3 terminals and 1 browser.`
   - `pub fn decide_load(confirmation: Option<&str>, user_said_ok: bool) -> bool`: true when there is no confirmation or the user said OK.
   - `pub fn save_name(input: &str) -> Result<String, String>`: trims; error `Preset names use letters, digits, - and _.` when `!valid_layout_name`.
 - In calm-app: actions `SavePreset`, `LoadPreset`, `ShowWelcome`; `CanvasView::apply_preset(&mut self, layout: LayoutFile, window, cx)` closes every panel through the `Effect::ClosePanel` path (no per-panel prompt), clears focus, then calls `restore_layout` and sets `layout_name = None`; the next autosave tick records it.
 - Menus: new `File` menu after the app menu: `Save Preset…`, `Load Preset…`. Developer gets `Show Welcome Screen` after a separator. No key bindings.
 
-Flows:
-- Save: `prompt_text("Save Preset", "Name", layout_name or "")` → `save_name` → if a user preset of that name exists, `confirm("Replace preset NAME?", .., "Replace")`; if only a built-in exists, the message says it will shadow the built-in → `save_layout_in(layouts_dir(), name, &scene.to_layout(), browser_query)`. Errors go to `alert`.
+Flows (each runs in `cx.spawn_in` like `prompt_run_command`, never inside an update):
+- Save: `prompt_text(&TextPrompt { title: "Save Preset", message: "", note: "Letters, digits, - and _.", placeholder: "my-layout", initial: layout_name or "", ok: "Save" })` → `save_name` → if a user preset of that name exists, `confirm("Replace preset NAME?", .., "Replace")`; if only a built-in exists, the message says it will shadow the built-in → `save_layout_in(layouts_dir(), name, &scene.to_layout(), browser_query)`. Errors go to `alert`.
 - Load: `list_presets` → `choose` (labels `name` or `name (built-in)`) → `find_preset` → `load_confirmation` → `confirm(.., "Load")` when `Some` → `apply_preset`.
 - Show Welcome: as Load with name = `first_launch_preset`, or `welcome` when it is empty.
 
@@ -190,7 +199,7 @@ Flows:
 
 **Files:**
 - Create: `crates/calm-core/src/keymap.rs` (help table), `plugins/calm-keys/{calm-plugin.json,index.html,keys.json}`
-- Modify: `crates/calm-core/src/lib.rs`, `crates/calm-app/src/canvas_view.rs:102-122` (test only)
+- Modify: `crates/calm-core/src/lib.rs`, `crates/calm-app/src/canvas_view.rs:109-128` (test only)
 
 **Interfaces:**
 - Produces: `pub struct KeyHelp { pub keys: &'static str, pub action: &'static str, pub binding: Option<&'static str> }` and `pub const KEY_HELP: &[KeyHelp]`. `binding` is the GPUI keystroke text for real bindings (`"cmd-shift-h"`) and `None` for gestures (`"Space+drag"`, `"Pinch"`). Entries, in order, from `CLAUDE.md` "In the app": t then drag (terminal), b then drag (browser), right-click (menu), Cmd+drag on content (move panel), Space+drag or middle-drag (pan), Pinch or Cmd+scroll (zoom), cmd-= / cmd-- / cmd-0 (zoom in, out, reset), cmd-shift-h (center origin), cmd-shift-0 (fit all), cmd-ctrl-f (fullscreen), cmd-shift-f (stats), alt while dragging (no snapping), cmd-, (Settings), cmd-q (quit). Escape and Enter are internal and not listed.
