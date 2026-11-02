@@ -129,7 +129,8 @@ Not tested: what the 2 s previews of distant terminals look like with transparen
 - **The fade follows #57 inheritance**: global default in the Terminal tab, per-panel
   override with reset, only set values saved, live apply, autosave marks dirty.
 - **TUI app panels count as terminals.** They are Ghostty surfaces, so they get the fade
-  and the no-fill rule too.
+  and the no-fill rule too. With PR #63 they are terminals with an app attached. An app
+  manifest cannot set the fade; the user sets it.
 - **Duplicate copies the fade**, as #57 does for other overrides.
 - **Previews should look like the live panel**: a faded terminal's preview is drawn at the
   same opacity. If the snapshot does not keep Ghostty's alpha, the preview shows the

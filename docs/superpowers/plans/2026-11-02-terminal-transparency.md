@@ -4,7 +4,7 @@
 
 **Goal:** Terminals let the canvas or the panel below show through: Ghostty's own `background-opacity` is no longer hidden by CALM, and each terminal gets a CALM fade (content opacity) with a global default.
 
-**Architecture:** The fade is a new inherited terminal field resolved like the #57 colors (panel override, profile, `terminal` defaults, then 1.0) and applied as `alphaValue` on the panel's native clip view. CALM stops painting fills under live terminal content, and a back panel's native view is no longer masked under a live terminal's content (only under its title bar and ring), while input keeps the old region.
+**Architecture:** The fade is a new inherited terminal field resolved like the #57 colors (panel override, then profile, then `terminal` defaults, then 1.0; an app manifest does not set it) and applied as `alphaValue` on the panel's native clip view. CALM stops painting fills under live terminal content, and a back panel's native view is no longer masked under a live terminal's content (only under its title bar and ring), while input keeps the old region.
 
 **Tech Stack:** Rust, GPUI (`gpui-pre` 0.3.4), objc2 / objc2-app-kit 0.3, stock gpui-libghostty 0.3.1.
 
@@ -19,7 +19,7 @@
 - Customization first: the fade is a setting with a default, validated strictly.
 - `.ai/status.md` and `.ai/decisions.md` are updated in the task that changes the behavior.
 - Code changes in a worktree under `.worktrees/`. Before the final push: `cargo clean -p calm-core -p calm-native -p calm-app`, `cargo check --workspace --tests --examples`, `gmake ci`, and `cargo run -p calm-app -- --smoke; echo rc=$?` on a visible window.
-- Coordination: the in-flight `tui-extends-terminal` work turns TUI panels into terminals. Rebase on it if it lands first. If it has not landed, TUI panels get the fade through `PanelKind::Tui` in Task 1 and Task 3 (spec: TUI counts as a terminal).
+- Built on PR #63 (`feat/tui-extends-terminal`, head `a7b8286` when this plan was updated). Start only after #63 is merged, from a worktree off `origin/main` that contains it. #63 removes `PanelKind::Tui`: TUI apps and typed commands are `PanelKind::Terminal { app: Some(TerminalApp) | None, .. }`, so "terminals only" covers them with no extra case (spec: TUI counts as a terminal). If #63 renames anything below before it merges, follow #63's names.
 
 ## Review Focus
 
@@ -27,7 +27,7 @@
 2. A fade change while the panel is a preview: the next snapshot and the return to live both show the new fade; nothing resets it to 1.0.
 3. Two overlapping terminals: a click in the overlap goes to the front terminal only, even though the back one now paints there.
 4. A minimized or preview front panel over a live back terminal: the back terminal is still cut out under it, since the front is GPUI-drawn.
-5. Reset to global on a faded panel brings it back to the inherited value at once, live.
+5. A faded app terminal or typed command exits and is run again (Enter, or `terminal.command_restart` `on_exit`): the new run keeps the panel's fade, it does not come back at 1.0.
 
 ---
 
@@ -41,7 +41,7 @@
 **Interfaces:**
 - Produces: `pub const MIN_CONTENT_OPACITY: f64 = 0.2;` and `pub const DEFAULT_CONTENT_OPACITY: f64 = 1.0;` in `terminal_profile.rs`.
 - Produces: `TerminalFields.content_opacity: Option<f64>` and `PanelOverrides.content_opacity: Option<f64>`, both `#[serde(skip_serializing_if = "Option::is_none")]`.
-- Produces: `ResolvedTerminal.content_opacity: f64`, panel override over profile over `terminal` defaults over `DEFAULT_CONTENT_OPACITY`.
+- Produces: `ResolvedTerminal.content_opacity: f64`, panel override over profile over `terminal` defaults over `DEFAULT_CONTENT_OPACITY`. `resolve_for_panel(&self, profile: Option<&str>, user_config: bool, app: Option<&AppLayer>, overrides: &PanelOverrides)` keeps #63's signature; `AppLayer` gets no opacity field, so the app layer passes the value through.
 - Produces: `pub(crate) fn check_content_opacity(path: &str, value: Option<f64>) -> Result<(), String>`, error text `"\"{path}\" is {value}, expected 0.2 to 1"`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -50,9 +50,11 @@
 #[test]
 fn content_opacity_resolves_panel_over_profile_over_defaults() {
     // defaults 0.9, profile "dim" 0.6, panel override 0.4
-    // resolve_for_panel(None, true, &no_override).content_opacity == 0.9
-    // resolve_for_panel(Some("dim"), true, &no_override).content_opacity == 0.6
-    // resolve_for_panel(Some("dim"), true, &override_0_4).content_opacity == 0.4
+    // resolve_for_panel(None, true, None, &no_override).content_opacity == 0.9
+    // resolve_for_panel(Some("dim"), true, None, &no_override).content_opacity == 0.6
+    // resolve_for_panel(Some("dim"), true, Some(&AppLayer::typed_command()), &no_override)
+    //     .content_opacity == 0.6   (an app layer does not change it)
+    // resolve_for_panel(Some("dim"), true, None, &override_0_4).content_opacity == 0.4
     // nothing set anywhere: == DEFAULT_CONTENT_OPACITY
 }
 
@@ -67,6 +69,12 @@ fn content_opacity_on_a_browser_is_rejected() {
     // PanelOverrides { content_opacity: Some(0.5), .. }.validate(&browser())
     // -> Err("\"overrides.content_opacity\" applies only to terminal panels")
 }
+
+#[test]
+fn content_opacity_on_an_app_terminal_is_accepted() {
+    // validate(&PanelKind::Terminal { app: Some(TerminalApp { plugin_id: "top-example".into(), plugin_version: None }), command: None, cwd: None, profile: None })
+    // -> Ok(())
+}
 ```
 
 In `layout.rs` tests: a session with `"content_opacity": 0.5` on a terminal round-trips; a session without the field loads with `None`; `"content_opacity": "0.5"` fails to load (Review Focus 1).
@@ -76,7 +84,7 @@ In `layout.rs` tests: a session with `"content_opacity": 0.5` on a terminal roun
 Run: `cargo test -p calm-core content_opacity`
 Expected: FAIL at the assertions (add the fields as `Option<f64>` stubs first if needed so the run compiles; a compile error is not the RED).
 
-- [ ] **Step 3: Implement** the fields, `check_content_opacity`, the terminal-only rule in `PanelOverrides::validate` (accept `PanelKind::Tui` too while it exists), and the resolution order in `resolve` and `resolve_for_panel`.
+- [ ] **Step 3: Implement** the fields, `check_content_opacity`, the terminal-only rule in `PanelOverrides::validate` (the same `PanelKind::Terminal { .. }` match `terminal_colors` uses), and the resolution order in `resolve` and `resolve_for_panel`.
 
 - [ ] **Step 4: Run them to see them pass**
 
@@ -129,7 +137,7 @@ fn global_terminal_tab_has_opacity_and_the_ghostty_note() {
 Run: `cargo test -p calm-core opacity`
 Expected: FAIL at the assertions.
 
-- [ ] **Step 3: Implement** the rows and the apply arms. Add `PanelEffective.content_opacity: f64`, filled in `panel_effective` from `resolve_for_panel(..).content_opacity` (`DEFAULT_CONTENT_OPACITY` for other kinds); the panel row shows it when inherited.
+- [ ] **Step 3: Implement** the rows and the apply arms. Add `PanelEffective.content_opacity: f64`, filled in `panel_effective` from the `resolve_for_panel(profile, user_config, app, overrides)` call it already makes, `.content_opacity` (`DEFAULT_CONTENT_OPACITY` for other kinds); the panel row shows it when inherited.
 
 - [ ] **Step 4: Run to see them pass**
 
@@ -149,6 +157,7 @@ git commit -m "feat(core): add opacity rows to panel and terminal settings"
 - Modify: `crates/calm-native/src/child.rs` (`NativeChild`)
 - Modify: `crates/calm-app/src/terminal/adapter.rs` (`TerminalPanel`)
 - Modify: `crates/calm-app/src/canvas_view.rs` (`refresh_terminal`, terminal creation and restore, duplicate)
+- Modify: `crates/calm-app/src/tui_host.rs` (restart of an app terminal or typed command), only if the restart creates a new `TerminalPanel`
 - Modify: `crates/calm-app/src/smoke_runner.rs` (the `panel_overrides` step)
 
 **Interfaces:**
@@ -164,7 +173,7 @@ git commit -m "feat(core): add opacity rows to panel and terminal settings"
 Run: `cargo run -p calm-app -- --smoke; echo rc=$?`
 Expected: `panel_overrides` FAIL naming `terminal_opacity`. Needs a visible window; with `window_visible=Some(false)` the run proves nothing.
 
-- [ ] **Step 3: Implement.** `refresh_terminal` calls `set_content_opacity(resolved.content_opacity)` every time, not only on color change. New and restored terminals get it at spawn. A global settings change refreshes every terminal through the existing path. Duplicate already copies `overrides` (check `canvas_view.rs` around `add_with_overrides`); add a test or smoke assertion only if it does not.
+- [ ] **Step 3: Implement.** In `refresh_terminal`, call `set_content_opacity(resolved.content_opacity)` right after `self.resolve_terminal(id)` and before the early return for unchanged colors, so it runs every time. New and restored terminals get it at spawn. The spawn that runs an app terminal or typed command again after it exits (`tui_host.rs`, the supervisor's restart) applies it too (Review Focus 5); if that path reuses the `TerminalPanel`, check it keeps the stored value. A global settings change refreshes every terminal through the existing path. Duplicate already copies `overrides` (check `canvas_view.rs` around `add_with_overrides`); add a test or smoke assertion only if it does not.
 
 - [ ] **Step 4: Run smoke to see it pass**
 
