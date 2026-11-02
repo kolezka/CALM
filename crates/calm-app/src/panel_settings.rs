@@ -12,10 +12,10 @@ use crate::canvas_view::CanvasView;
 /// The window title for a panel whose effective title is `title`.
 pub fn window_title(title: &str, kind: &PanelKind) -> String {
     let kind = match kind {
+        PanelKind::Terminal { app: Some(_), .. } => "TUI",
         PanelKind::Terminal { .. } => "Terminal",
         PanelKind::Browser { .. } => "Browser",
         PanelKind::Plugin { .. } => "Plugin",
-        PanelKind::Tui { .. } => "TUI",
         PanelKind::Unsupported { .. } => "Unsupported",
     };
     format!("{title} Settings ({kind})")
@@ -35,7 +35,7 @@ impl CanvasView {
         };
         if !self.panel_settings_windows.contains_key(&id) {
             let title = window_title(
-                &panel_effective(panel, &self.settings.settings).title,
+                &panel_effective(panel, &self.settings.settings, self.app_layer(id).as_ref()).title,
                 &panel.kind,
             );
             let this = cx.entity().downgrade();
@@ -81,7 +81,8 @@ impl CanvasView {
         else {
             return;
         };
-        let mut effective = panel_effective(panel, &self.settings.settings);
+        let mut effective =
+            panel_effective(panel, &self.settings.settings, self.app_layer(id).as_ref());
         effective.live_theme = self
             .terminal_meta(id)
             .is_some_and(|meta| meta.applied_colors.is_some());
@@ -127,7 +128,8 @@ impl CanvasView {
                 if let (Some(settings_window), Some(panel)) =
                     (self.panel_settings_windows.get(&id), self.scene.get(id))
                 {
-                    let effective = panel_effective(panel, &self.settings.settings);
+                    let app = self.app_layer(id);
+                    let effective = panel_effective(panel, &self.settings.settings, app.as_ref());
                     settings_window.set_title(&window_title(&effective.title, &panel.kind));
                 }
                 if rebuild {
@@ -192,6 +194,7 @@ mod tests {
             command: None,
             cwd: None,
             profile: None,
+            app: None,
         };
         let browser = PanelKind::Browser {
             url: "https://example.com".into(),
@@ -202,10 +205,7 @@ mod tests {
             plugin_version: None,
             settings: serde_json::Value::Null,
         };
-        let tui = PanelKind::Tui {
-            plugin_id: "top-example".into(),
-            plugin_version: None,
-        };
+        let tui = PanelKind::app_terminal("top-example", None);
         for (kind, expected) in [
             (terminal, "Logs Settings (Terminal)"),
             (browser, "Logs Settings (Browser)"),

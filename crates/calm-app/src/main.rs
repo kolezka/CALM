@@ -121,6 +121,7 @@ fn add_smoke_panels(
             command: None,
             cwd: None,
             profile: None,
+            app: None,
         };
         let id = view.scene.add(kind, rect);
         view.spawn_terminal(id, terminal::options(None, None), window, cx)?;
@@ -750,12 +751,9 @@ fn smoke_tui_chrome(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut
     let checked = cx.update_window(window, |_, window, cx| {
         view.update(cx, |view, cx| {
             view.install_plugins(vec![top]);
-            let kind = PanelKind::Tui {
-                plugin_id: "top-example".to_string(),
-                plugin_version: None,
-            };
+            let kind = PanelKind::app_terminal("top-example", None);
             let id = view.scene.add(kind, Rect::new(720.0, 460.0, 300.0, 160.0));
-            view.open_tui_panel(id, "top-example", window, cx)?;
+            view.open_scene_terminal(id, window, cx)?;
             let look = view.panel_look(id);
             let ring = chrome_colors(
                 ChromeState::Focused,
@@ -826,9 +824,10 @@ fn smoke_terminal_profile(
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             };
             let id = view.scene.add(kind, Rect::new(720.0, 660.0, 300.0, 160.0));
-            view.open_plain_terminal(id, chosen, None, None, window, cx)?;
+            view.open_terminal(id, chosen, None, None, None, window, cx)?;
             let look = view.panel_look(id);
             let ring = chrome_colors(
                 ChromeState::Focused,
@@ -836,7 +835,10 @@ fn smoke_terminal_profile(
                 &crate::canvas_view::chrome_palette(),
             )
             .border;
-            let meta = view.terminal_meta(id).cloned().ok_or("no terminal meta")?;
+            let meta = view
+                .terminal_meta(id)
+                .map(|meta| (meta.configuration, meta.profile.clone()))
+                .ok_or("no terminal meta")?;
             let title = view.scene.get(id).map(|panel| panel.title.clone());
             // Live recolor: swap in another palette and let the settings hook apply it.
             view.settings.settings.terminal = profile(1);
@@ -853,15 +855,14 @@ fn smoke_terminal_profile(
         })
     });
     match checked {
-        Ok(Ok((meta, ring, Some(title), true)))
+        Ok(Ok(((configuration, profile), ring, Some(title), true)))
             if ring == ACCENT
-                && meta.configuration == "custom"
-                && meta.profile.as_deref() == Some("neon")
+                && configuration == "custom"
+                && profile.as_deref() == Some("neon")
                 && title.starts_with("neon ") =>
         {
             println!(
-                "smoke: terminal profile=neon accent=#{ring:08x} theme={} title={title:?} recolor=ok",
-                meta.configuration
+                "smoke: terminal profile=neon accent=#{ring:08x} theme={configuration} title={title:?} recolor=ok"
             )
         }
         other => smoke_fail(&format!(
@@ -925,12 +926,9 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
                 ("smoke-tui", Rect::new(720.0, 60.0, 300.0, 160.0)),
                 ("smoke-tui-missing", Rect::new(720.0, 260.0, 300.0, 160.0)),
             ] {
-                let kind = PanelKind::Tui {
-                    plugin_id: plugin_id.to_string(),
-                    plugin_version: None,
-                };
+                let kind = PanelKind::app_terminal(plugin_id, None);
                 let id = view.scene.add(kind, rect);
-                view.open_tui_panel(id, plugin_id, window, cx)?;
+                view.open_scene_terminal(id, window, cx)?;
                 ids.push(id);
             }
             cx.notify();
@@ -990,7 +988,7 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
                 cx,
             );
             let before = view.native_zorder(cx);
-            view.restart_tui(ids[0], true, window, cx);
+            view.restart_terminal(ids[0], true, window, cx);
             (before, view.native_zorder(cx), view.status_bar_state())
         })
     });
@@ -1048,7 +1046,7 @@ fn smoke_blur(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui:
                 .scene
                 .panels
                 .iter()
-                .find(|panel| matches!(panel.kind, PanelKind::Terminal { .. }))
+                .find(|panel| matches!(panel.kind, PanelKind::Terminal { app: None, .. }))
                 .map(|panel| panel.id)
                 .ok_or("no terminal panel")?;
             let browser = view
@@ -1545,9 +1543,10 @@ fn smoke_panel_overrides(
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             };
             let id = view.scene.add(kind, Rect::new(720.0, 860.0, 300.0, 160.0));
-            view.open_plain_terminal(id, None, None, None, window, cx)?;
+            view.open_terminal(id, None, None, None, None, window, cx)?;
             let before = view.scene.get(id).map(content_rect).ok_or("no panel")?;
             if let Some(panel) = view.scene.get_mut(id) {
                 panel.overrides.title = Some(TITLE.to_string());
@@ -1628,6 +1627,7 @@ async fn smoke_panel_settings(
             command: None,
             cwd: None,
             profile: None,
+            app: None,
         },
     );
     let count = |title: &str| {
@@ -1640,6 +1640,7 @@ async fn smoke_panel_settings(
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             };
             let id = view.scene.add(kind, Rect::new(760.0, 1080.0, 300.0, 160.0));
             view.open_panel_settings(id, window, cx);
@@ -2632,16 +2633,14 @@ fn smoke_session_edges(
             command: None,
             cwd: Some(gone.clone()),
             profile: None,
+            app: None,
         },
         PanelKind::Plugin {
             plugin_id: "smoke-plugin".to_string(),
             plugin_version: None,
             settings: serde_json::Value::Null,
         },
-        PanelKind::Tui {
-            plugin_id: "top-example".to_string(),
-            plugin_version: None,
-        },
+        PanelKind::app_terminal("top-example", None),
     ];
     let mut layout = calm_core::scene::Scene::default().to_layout();
     for (n, kind) in fixture.into_iter().enumerate() {
@@ -2763,6 +2762,7 @@ async fn smoke_session(
             command: None,
             cwd: Some(cwd.path().to_path_buf()),
             profile: None,
+            app: None,
         },
         PanelKind::Browser {
             url: SMOKE_SESSION_PAGE.to_string(),
@@ -2982,6 +2982,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(0.0, 0.0, 300.0, 200.0),
         );

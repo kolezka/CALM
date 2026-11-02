@@ -11,7 +11,6 @@ use gpui::{
     App, AppContext as _, Context, InteractiveElement, KeyBinding, Menu, MenuItem, Window,
     WindowHandle, actions,
 };
-use gpui_libghostty::{TerminalConfiguration, TerminalOptions};
 
 use crate::canvas_view::CanvasView;
 use crate::dev_menu;
@@ -271,13 +270,6 @@ fn open_config_folder(settings_path: &Path) {
             Err(err) => eprintln!("calm: open {} failed: {err}", dir.display()),
         }
     });
-}
-
-/// Without the user config Ghostty uses its built-in defaults.
-pub fn apply_terminal_config(options: &mut TerminalOptions, settings: &Settings) {
-    if !settings.panels.terminal_user_config {
-        options.configuration = TerminalConfiguration::Default;
-    }
 }
 
 #[cfg(test)]

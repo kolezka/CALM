@@ -19,7 +19,7 @@ pub const NATIVE_SECTION_LABEL: &str = "Native";
 pub const PLUGINS_SECTION_LABEL: &str = "Plugins";
 /// Opens the global Settings window, as `cmd-,` does.
 pub const OPEN_SETTINGS: &str = "app.settings";
-/// Starts a TUI panel's command again after it exited.
+/// Starts an app or typed command again after it exited.
 pub const PANEL_RESTART: &str = "panel.restart";
 pub const PANEL_MINIMIZE: &str = "panel.minimize";
 pub const PANEL_ZOOM_TO_FIT: &str = "panel.zoom_to_fit";
@@ -167,7 +167,7 @@ pub fn terminal_profile_choice(id: &str) -> Option<&str> {
 /// Right click on a panel's chrome strip or minimized chip.
 /// Zoom to Fit needs the full panel, so a minimized panel omits it. Duplicate is offered
 /// for terminals only: browser and plugin panels have no native view in the app yet.
-/// `can_restart` adds Restart on top, for a TUI panel whose process exited.
+/// `can_restart` adds Restart on top, for an app or typed command whose process exited.
 pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
     let minimize = if panel.minimized {
         "Restore"

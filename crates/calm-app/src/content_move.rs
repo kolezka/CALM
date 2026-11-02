@@ -202,6 +202,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(100.0, 100.0, 400.0, 300.0),
         );
