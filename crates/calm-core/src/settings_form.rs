@@ -287,6 +287,15 @@ fn apply_key_field(
             }
         }
         FieldValue::Reset => {
+            // The default may have been given to another row since; refuse like a recording.
+            if let Some(default) = spec.default
+                && let Err(reason) = check_rebind(overrides, spec, default)
+            {
+                return Ok(FormOutcome::KeyRefused {
+                    action: spec.id,
+                    reason,
+                });
+            }
             overrides.remove(spec.id);
         }
         other => return Err(format!("settings field \"keys.{id}\" got {other:?}")),
@@ -1815,5 +1824,56 @@ mod tests {
             key_field(&form, "keys.canvas.draw_terminal").label,
             "Draw a terminal"
         );
+    }
+
+    #[test]
+    fn reset_refuses_a_default_another_row_now_uses() {
+        let mut settings = Settings::default();
+        apply_field(
+            &mut settings,
+            "keys.canvas.zoom_in",
+            FieldValue::Key(Some("cmd-k".into())),
+        )
+        .unwrap();
+        apply_field(
+            &mut settings,
+            "keys.panel.delete",
+            FieldValue::Key(Some("cmd-=".into())),
+        )
+        .unwrap();
+        let before = settings.clone();
+        let outcome = apply_field(&mut settings, "keys.canvas.zoom_in", FieldValue::Reset);
+        assert_eq!(
+            outcome,
+            Ok(FormOutcome::KeyRefused {
+                action: "canvas.zoom_in",
+                reason: KeyError::UsedBy("Delete focused panel")
+            })
+        );
+        assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn every_accepted_key_edit_leaves_settings_loadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let steps: [(&str, FieldValue); 6] = [
+            ("keys.canvas.zoom_in", FieldValue::Key(Some("cmd-k".into()))),
+            ("keys.panel.delete", FieldValue::Key(Some("cmd-=".into()))),
+            ("keys.canvas.zoom_in", FieldValue::Reset),
+            ("keys.panel.delete", FieldValue::Key(None)),
+            ("keys.canvas.zoom_in", FieldValue::Reset),
+            ("keys.panel.delete", FieldValue::Reset),
+        ];
+        let mut settings = Settings::default();
+        for (id, value) in steps {
+            if let Ok(FormOutcome::Changed { .. }) = apply_field(&mut settings, id, value.clone()) {
+                crate::settings::save_settings_to(&path, &settings).unwrap();
+                assert!(
+                    crate::settings::read_settings_from(&path).is_ok(),
+                    "{id} {value:?} saved a file that does not load"
+                );
+            }
+        }
     }
 }
