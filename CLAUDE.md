@@ -79,9 +79,9 @@ reaches it, and Cmd+right-click there opens the panel menu (`canvas.move_modifie
 middle-drag pans. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom. `cmd-shift-h`
 centers the world origin, `cmd-shift-0` fits all panels (both also in the View menu).
 `cmd-shift-backspace` deletes the focused panel (a live one confirms first, as with the menu's Delete).
-`cmd-shift-,` opens the focused panel's Settings window (bound as `cmd-<`, the key GPUI reports for it on a US layout).
+Cmd+Shift+, opens the focused panel's Settings window (written `cmd-<` in code, which is how GPUI reports that press).
 `cmd-ctrl-f` fullscreen, `cmd-shift-f` stats (FPS, CPU, memory; items in `developer.stats`). A click on empty canvas clears panel focus
-(`canvas.click_empty_clears_focus`). `alt` while dragging disables snapping (default
+(`canvas.click_empty_clears_focus`). Cmd+drag snaps, Cmd+Shift+drag does not; a drag that starts on a resize edge always resizes (default
 grid 8 world units, edge snap within 8). `cmd-,` opens the native Settings window
 (background, grid, snapping, panels, terminal, session, developer). Settings persist in
 `~/.config/calm/settings.json`; `CALM_HOME` overrides the directory. A launch restores the
