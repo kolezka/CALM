@@ -8,7 +8,8 @@ use crate::chrome::{BUILTIN_ICON_PREFIX, PanelIcon};
 use crate::geometry::{Point, Rect, Size};
 use crate::resize::ResizePolicy;
 use crate::terminal_profile::{
-    MAX_TITLE_CHARS, PanelTerminalColors, check_color, check_icon, check_text,
+    MAX_TITLE_CHARS, PanelTerminalColors, check_color, check_content_opacity, check_icon,
+    check_text,
 };
 
 pub const MIN_PANEL_SIZE: Size = Size::new(120.0, 80.0);
@@ -234,6 +235,9 @@ pub struct PanelOverrides {
     /// Terminals only. Each color is set or inherited on its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_colors: Option<PanelTerminalColors>,
+    /// Terminals only. 0.2 to 1: how opaque the terminal's content is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_opacity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub borderless: Option<bool>,
 }
@@ -270,6 +274,14 @@ impl PanelOverrides {
                 );
             }
             colors.validate("overrides.terminal_colors")?;
+        }
+        if self.content_opacity.is_some() {
+            if !kind.is_terminal() {
+                return Err(
+                    "\"overrides.content_opacity\" applies only to terminal panels".to_string(),
+                );
+            }
+            check_content_opacity("overrides.content_opacity", self.content_opacity)?;
         }
         Ok(())
     }
@@ -1244,5 +1256,62 @@ mod tests {
             page_zoom: None,
         };
         assert!(overrides.validate(&browser).is_err());
+    }
+
+    #[test]
+    fn content_opacity_out_of_range_is_rejected_with_its_path() {
+        let with = |value| PanelOverrides {
+            content_opacity: Some(value),
+            ..PanelOverrides::default()
+        };
+        for bad in [0.19, 1.01, f64::NAN] {
+            let error = with(bad).validate(&terminal()).unwrap_err();
+            assert!(
+                error.contains("overrides.content_opacity"),
+                "{bad}: {error}"
+            );
+        }
+        assert_eq!(
+            with(0.19).validate(&terminal()),
+            Err("\"overrides.content_opacity\" is 0.19, expected 0.2 to 1".to_string())
+        );
+        for good in [0.2, 1.0] {
+            assert_eq!(with(good).validate(&terminal()), Ok(()), "{good}");
+        }
+    }
+
+    #[test]
+    fn content_opacity_on_a_browser_is_rejected() {
+        let browser = PanelKind::Browser {
+            url: "https://example.com".into(),
+            page_zoom: None,
+        };
+        let overrides = PanelOverrides {
+            content_opacity: Some(0.5),
+            ..PanelOverrides::default()
+        };
+        assert_eq!(overrides.validate(&terminal()), Ok(()));
+        assert_eq!(
+            overrides.validate(&browser),
+            Err("\"overrides.content_opacity\" applies only to terminal panels".to_string())
+        );
+    }
+
+    #[test]
+    fn content_opacity_on_an_app_terminal_is_accepted() {
+        let overrides = PanelOverrides {
+            content_opacity: Some(0.5),
+            ..PanelOverrides::default()
+        };
+        let app = PanelKind::Terminal {
+            app: Some(TerminalApp {
+                plugin_id: "top-example".into(),
+                plugin_version: None,
+            }),
+            command: None,
+            cwd: None,
+            profile: None,
+        };
+        assert_eq!(overrides.validate(&app), Ok(()));
     }
 }

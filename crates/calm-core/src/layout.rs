@@ -1855,6 +1855,7 @@ mod tests {
             terminal_colors: Some(crate::terminal_profile::PanelTerminalColors::from_colors(
                 &crate::terminal_profile::PALETTE_PRESETS[0].colors,
             )),
+            content_opacity: None,
             borderless: Some(true),
         };
         scene.get_mut(id).unwrap().overrides = overrides.clone();
@@ -1959,5 +1960,31 @@ mod tests {
         assert!(load_layout_from(dir.path(), "present").is_ok());
         let error = load_layout_from(dir.path(), "session").unwrap_err();
         assert!(matches!(error, LayoutError::NotFound(_)), "{error:?}");
+    }
+
+    #[test]
+    fn content_opacity_override_roundtrips_and_is_optional() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = v2_json_with_kinds(&[r#"{"type": "terminal", "command": null, "cwd": null}"#]);
+        let with = |value: &str| {
+            plain.replacen(
+                r#""minimized": false"#,
+                &format!(r#""minimized": false, "overrides": {{"content_opacity": {value}}}"#),
+                1,
+            )
+        };
+        std::fs::write(dir.path().join("plain.json"), &plain).unwrap();
+        let loaded = load_layout_from(dir.path(), "plain").unwrap();
+        assert_eq!(loaded.panels[0].overrides.content_opacity, None);
+
+        std::fs::write(dir.path().join("faded.json"), with("0.5")).unwrap();
+        let loaded = load_layout_from(dir.path(), "faded").unwrap();
+        assert_eq!(loaded.panels[0].overrides.content_opacity, Some(0.5));
+        save_layout_in(dir.path(), "again", &loaded, BrowserQueryMode::Keep).unwrap();
+        let again = load_layout_from(dir.path(), "again").unwrap();
+        assert_eq!(again.panels[0].overrides, loaded.panels[0].overrides);
+
+        std::fs::write(dir.path().join("text.json"), with(r#""0.5""#)).unwrap();
+        assert!(load_layout_from(dir.path(), "text").is_err());
     }
 }
