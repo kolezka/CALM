@@ -262,6 +262,38 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
+- `feat/presets-welcome`, PR #75 (base `docs/welcome-presets-design`, the design PR #64),
+  not merged: presets, the welcome screen and layout save. Spec
+  `docs/superpowers/specs/2026-11-02-presets-and-welcome-design.md`, plan
+  `docs/superpowers/plans/2026-11-02-presets-and-welcome.md`. Landed, each reviewed:
+  - Task 1 `c5ebfb2`: `calm_core::preset` (`find_preset`, `list_presets`, user dir first)
+    and `session.first_launch_preset` (default `welcome`, `""` for an empty canvas, a name
+    matching `^[A-Za-z0-9_-]+$`), a Text field in Settings > Session.
+  - Task 2 `fc8c4b4`: `calm_plugins::builtin_preset_dirs()` (repo `presets/` in a dev build,
+    `Contents/Resources/presets` in the bundle); `bundle-macos.sh` copies `presets/*.json`.
+  - Task 3 `c037450`: first launch. No `session.json` with the session as source opens the
+    preset and writes the session once (nothing with autosave off); an unusable preset is an
+    empty start with a notice. `--layout NAME` also finds built-in presets.
+  - Task 4 `3a70798`: manifest field `addMenu` (default `true`; `false` hides a plugin from
+    Add, presets and sessions still open it).
+  - Task 5 `9576881`, `0f273aa`: `calm_native` blocking dialogs `prompt_text` (with
+    `TextPrompt`, now also used by Run Command), `confirm`, `choose`, `alert`. Repeated
+    titles stay separate choices.
+  - Task 6 `dd41ee3`, `78fb67b`: File > Save Preset… and Load Preset…, Developer > Show
+    Welcome Screen (`calm-app/src/preset_menu.rs`). Load decides the preset and its one
+    confirmation before closing anything; cancel changes nothing. Smoke step `presets`
+    checks the closed terminals' child processes are gone.
+  - Task 6b `a93371f`, `af3af49`: merged `main` (#62 editable keys, #68 arrow keys); the
+    three commands are keymap rows `app.save_preset`, `app.load_preset`,
+    `developer.show_welcome` with no default key.
+  - Task 7 `da7bf6b`: bridge method `keys.list` (18 `BRIDGE_METHODS`), the effective
+    bindings with the user's overrides, then CALM's fixed keys; `plugins/calm-keys` shows
+    them.
+  - Task 8 `c82183c`, `421fdc8`: `plugins/calm-welcome` and `presets/welcome.json` (browser
+    on `https://calm.raqz.link`, key bindings, welcome), all inside the first view, no
+    overlap (unit test). No font files ship.
+  - Task 9: docs and `.ai/` (this entry).
+  Smoke after Task 8's fix: rc=0, pass=28, window visible. By eye: see "Unverified".
 - PR #62 (`docs/keybindings-spec`): every key binding is a setting with a Keys tab in
   Settings, recorded by pressing the key, applied live. Smoke step `keybindings` prints
   `smoke: keybindings override=true old_gone=true restored=true recorder_stops=true tab_stops=true`. By eye,
@@ -310,7 +342,8 @@ Open questions: `.ai/open-questions.md`.
 
 ## Not wired yet
 
-- Plugin bridge: all 17 `BRIDGE_METHODS` are served (#44). `storage.keys` and `mailto:` for
+- Plugin bridge: all 17 `BRIDGE_METHODS` are served (#44); `feat/presets-welcome` adds
+  `keys.list`, the 18th. `storage.keys` and `mailto:` for
   `openExternal` are not served. The only host event is `command`; the phase 6
   `Coalescer` is not wired.
 - Plugin API v2 phases other than 1 and the phase 6 core are not built: no backends, no
@@ -319,7 +352,9 @@ Open questions: `.ai/open-questions.md`.
   to the WKWebView.
 - Layouts and session: restore at launch and autosave are active (#41). Not built: layout
   save (`--layout NAME` only opens), the File menu, the `ask` restore dialog (persistence
-  plan Task 7) and the later persistence tasks.
+  plan Task 7) and the later persistence tasks. On `feat/presets-welcome` (PR #75) layout
+  save is wired as File > Save Preset…, with Load Preset…; the `ask` dialog is still not
+  built. Save Preset does not set the canvas's layout name.
 - Layout v2 limits: the resize policy is not saved, overrides are stored but not applied
   in the chrome, `page_zoom` is stored but not applied, an unsupported panel draws chrome
   only, and the terminal cwd is the spawn cwd. Lowering `backup_count` leaves older backups
@@ -401,6 +436,14 @@ Open questions: `.ai/open-questions.md`.
   Cmd+right-click menu on both, the panel Settings window and its tabs, Reset to global,
   the borderless look. The panel form does not yet explain that untouched terminal colors come
   from Ghostty Default when no palette is set.
+- Presets and welcome (`feat/presets-welcome`, PR #75), by eye: the native dialogs (Save
+  Preset prompt, Load Preset choice, the Load and Replace confirmations, alerts) and the Run
+  Command prompt after its move to `TextPrompt`; the "First launch preset" field in
+  Settings > Session showing and saving; the welcome and key bindings pages in a real
+  WKWebView (the key bindings page was only syntax checked, the welcome page only fitted to
+  its 320-high panel by CSS); a first launch on a clean `CALM_HOME`; a full
+  `bundle-macos.sh` run that ships `Contents/Resources/presets` (the copy block was checked
+  on its own).
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
 
@@ -430,6 +473,9 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
 - Chrome hover is tracked from GPUI mouse moves only, so buttons can stay visible over a
   live native view.
 - A transitive `block 0.1.6` future-incompatibility warning.
+- `calm-native` example `native_smoke` fails its menu check: it expects 7 Add items and 1
+  submenu, and there are 8 items since Run Command (#63). Not in the Makefile or CI. Fix
+  pending, in the final wave of `feat/presets-welcome`.
 - repo-intel 0.1.8 prints `tmp: nieustawiona zmienna` on its error path. Upstream bug.
 
 ## User-owned next steps

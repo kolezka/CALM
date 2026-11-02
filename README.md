@@ -135,7 +135,7 @@ Scrolling over empty canvas pans it. Scrolling over a terminal scrolls the termi
 A plugin is a folder with a `calm-plugin.json` manifest and an HTML entry page. CALM finds it
 at startup, lists it in the Add menu and runs it in a panel. Plugins are trusted code that you
 install yourself, with full access, so only install plugins you have read or whose author you
-trust. The host serves all 17 bridge methods of the v1 API, including opening, focusing and
+trust. The host serves all 18 bridge methods of the v1 API, including opening, focusing and
 listing panels and `process.exec`. The wider v2 API (events, camera, terminal and browser
 control, plugin backends) is design only.
 

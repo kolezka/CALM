@@ -800,3 +800,10 @@ Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
   opens it in the browser. Build it first with `bun install && bun run build` in its folder.
   Menu item: "Open repo in browser" on its own panels. It opens the repo through
   `openExternal`.
+- `plugins/calm-welcome`: plain HTML. The welcome page of the built-in `welcome` preset: the
+  CALM logo, a pixel title, one instruction line and a scrolling closing line. Its panel
+  settings `title`, `instruction` and `closing` replace the default texts. No font files ship
+  with it. `addMenu: false`.
+- `plugins/calm-keys`: plain HTML. Lists the effective key bindings from `calm.keys.list()`,
+  bound keys by group with unbound actions collapsed at the end, and reads them again when
+  the page gets focus. Its colors follow `calm.theme.get()`. `addMenu: false`.
