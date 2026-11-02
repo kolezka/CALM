@@ -2,6 +2,8 @@
 name = "calm-native"
 version.workspace = true
 edition = "2024"
+license-file.workspace = true
+publish = false
 
 [dependencies]
 calm-core = { path = "../calm-core" }
@@ -31,6 +33,10 @@ objc2-foundation = { workspace = true, default-features = false, features = [
     "NSString",
     "NSURL",
     "NSURLRequest",
+    # Key recorder: resign-key observer and deferred stop on the main queue.
+    "NSNotification",
+    "NSOperation",
+    "block2",
 ] }
 objc2-app-kit = { workspace = true, default-features = false, features = [
     "std",
@@ -50,6 +56,8 @@ objc2-app-kit = { workspace = true, default-features = false, features = [
     "NSFont",
     "NSFontDescriptor",
     "NSGraphics",
+    # Key recorder: a never-posted key event to read the layout, as GPUI does.
+    "NSGraphicsContext",
     "NSImage",
     "NSMenu",
     "NSMenuItem",

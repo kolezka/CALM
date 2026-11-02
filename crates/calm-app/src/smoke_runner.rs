@@ -51,6 +51,7 @@ pub const STEPS: &[StepSpec] = &[
     step("resize", &[], &[]),
     step("blur", &[], &[]),
     step("settings_dispatch", &[], &[]),
+    step("keybindings", &[], &[]),
     step("github_api", &[], &[]),
     step("plugin_menus", &[], &[]),
     step("panel_overrides", &["terminals"], &[]),

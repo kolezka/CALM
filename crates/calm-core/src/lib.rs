@@ -12,6 +12,7 @@ pub mod grid;
 pub mod host_env;
 pub mod interaction;
 pub mod join;
+pub mod keymap;
 pub mod layout;
 pub mod menu;
 pub mod occlusion;

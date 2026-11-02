@@ -78,8 +78,10 @@ gesture becomes `InputHandler::begin_content_move` and the usual drag; released 
 slop it is a click, and the monitor replays the held events to the native view.
 Cmd+right-click opens the panel menu. Only the topmost panel's content counts, never chrome.
 
-Inside a terminal, keys stop propagating and `t`, `b`, `escape`, `enter` are bound to
-`NoAction` in the `Terminal` key context, so canvas shortcuts do not steal them. Browser
+Inside a terminal, keys stop propagating, and every binding without Cmd or Ctrl (by default
+`t`, `b`, `escape`, `enter`) also gets `NoAction` in the `Terminal` key context, so canvas
+shortcuts do not steal typing. The bindings come from settings (`calm-app/src/keymap.rs`)
+and are rebuilt after every settings change. Browser
 pages get editing and navigation shortcuts through an NSEvent local monitor, since GPUI
 takes key equivalents first.
 

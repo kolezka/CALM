@@ -43,7 +43,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, BorderStyle, Bounds, BoxShadow, ContentMask, Context, Corners, CursorStyle, DispatchPhase,
     Edges, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
-    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, ParentElement,
+    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
     PathBuilder, PinchEvent, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
     SharedString, Styled, Subscription, Task, TextAlign, TextRun, WeakEntity, Window, actions,
     canvas, div, fill, outline, point, px, quad, rgb, rgba, size,
@@ -64,7 +64,7 @@ use crate::grid_paint::{self, GridFrame, GridTextures};
 use crate::plugin_host::{self, BridgeSender, PluginPanel, Route};
 use crate::plugin_services::{self, ServiceCall};
 use crate::settings_menu::{self, SettingsState};
-use crate::terminal::{self, TerminalEvent, TerminalPanel};
+use crate::terminal::{TerminalEvent, TerminalPanel};
 use crate::terminal_profiles::{self, TerminalMeta};
 use crate::theme;
 use crate::tui_host::{self, CommandRun};
@@ -123,56 +123,6 @@ const STALE_LABEL: &str = "preview stale";
 const ZOOM_TO_FIT_MARGIN: f64 = 40.0;
 /// Added to the refresh timer so its repaint lands just after a snapshot is due.
 const PREVIEW_TIMER_MARGIN: Duration = Duration::from_millis(100);
-const CONFIRM_TITLE: &str = "Close? enter / esc";
-
-pub fn key_bindings() -> Vec<gpui::KeyBinding> {
-    use gpui::KeyBinding;
-    let ctx = Some(KEY_CONTEXT);
-    vec![
-        KeyBinding::new("cmd-=", ZoomIn, ctx),
-        KeyBinding::new("cmd--", ZoomOut, ctx),
-        KeyBinding::new("cmd-0", ZoomReset, ctx),
-        KeyBinding::new("cmd-shift-h", CenterOnOrigin, ctx),
-        KeyBinding::new("cmd-shift-0", FitAll, ctx),
-        KeyBinding::new("cmd-shift-backspace", DeletePanel, ctx),
-        KeyBinding::new("cmd-<", OpenPanelSettings, ctx),
-        KeyBinding::new("t", DrawTerminal, ctx),
-        KeyBinding::new("b", DrawBrowser, ctx),
-        KeyBinding::new("escape", Cancel, ctx),
-        KeyBinding::new("enter", ConfirmEnter, ctx),
-        KeyBinding::new("cmd-ctrl-f", ToggleFullscreen, ctx),
-        KeyBinding::new("up", PanUp, ctx),
-        KeyBinding::new("down", PanDown, ctx),
-        KeyBinding::new("left", PanLeft, ctx),
-        KeyBinding::new("right", PanRight, ctx),
-        KeyBinding::new("shift-up", PanUpFar, ctx),
-        KeyBinding::new("shift-down", PanDownFar, ctx),
-        KeyBinding::new("shift-left", PanLeftFar, ctx),
-        KeyBinding::new("shift-right", PanRightFar, ctx),
-        KeyBinding::new("cmd-alt-up", MovePanelUp, ctx),
-        KeyBinding::new("cmd-alt-down", MovePanelDown, ctx),
-        KeyBinding::new("cmd-alt-left", MovePanelLeft, ctx),
-        KeyBinding::new("cmd-alt-right", MovePanelRight, ctx),
-        KeyBinding::new("cmd-alt-shift-up", MovePanelUpFar, ctx),
-        KeyBinding::new("cmd-alt-shift-down", MovePanelDownFar, ctx),
-        KeyBinding::new("cmd-alt-shift-left", MovePanelLeftFar, ctx),
-        KeyBinding::new("cmd-alt-shift-right", MovePanelRightFar, ctx),
-        // A focused terminal gets these keys; canvas zoom, panel moves and fullscreen
-        // still apply.
-        KeyBinding::new("t", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("b", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("escape", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("enter", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("up", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("down", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("left", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("right", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("shift-up", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("shift-down", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("shift-left", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("shift-right", NoAction, Some(terminal::KEY_CONTEXT)),
-    ]
-}
 
 /// Autosave state for one launch. Present only once autosave has started.
 struct Autosave {
@@ -299,6 +249,8 @@ pub struct CanvasView {
     pub(crate) content_monitor_error: Option<String>,
     pub(crate) content_move: ContentMove,
     pub(crate) content_press_mods: Option<calm_core::interaction::Modifiers>,
+    /// The close prompt, naming the keys Confirm and Cancel are bound to.
+    confirm_title: String,
 }
 
 impl CanvasView {
@@ -387,6 +339,7 @@ impl CanvasView {
             content_monitor_error: None,
             content_move: ContentMove::default(),
             content_press_mods: None,
+            confirm_title: calm_core::keymap::confirm_prompt(&Default::default()),
         }
     }
 
@@ -766,6 +719,7 @@ impl CanvasView {
         self.input.click_empty_clears_focus =
             self.settings.settings.canvas.click_empty_clears_focus;
         self.input.move_modifier = self.settings.settings.canvas.move_modifier;
+        self.confirm_title = calm_core::keymap::confirm_prompt(&self.settings.settings.keybindings);
         self.input.arrow_pan_step = self.settings.settings.canvas.arrow_pan_step;
         self.input.arrow_move_step = self.settings.settings.canvas.arrow_move_step;
     }
@@ -2546,6 +2500,7 @@ struct PaintSnapshot {
     state: Interaction,
     focused: Option<PanelId>,
     confirming: Option<PanelId>,
+    confirm_title: String,
     hover: Option<(PanelId, Option<ChromeButton>)>,
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Panels with a plugin web view.
@@ -3099,7 +3054,7 @@ impl PaintSnapshot {
                     align: TextAlign::Left,
                     color: colors.title,
                 };
-                paint_text(CONFIRM_TITLE, line, look, zoom, origin, window, cx);
+                paint_text(&self.confirm_title, line, look, zoom, origin, window, cx);
             }
         }
         if !bar_shown || !details_visible(zoom) {
@@ -3210,7 +3165,7 @@ impl PaintSnapshot {
         }
         let noted;
         let title = match self.title_notes.get(&panel.id) {
-            _ if confirming => CONFIRM_TITLE,
+            _ if confirming => self.confirm_title.as_str(),
             Some(note) => {
                 noted = format!("{own_title} ({note})");
                 noted.as_str()
@@ -3401,6 +3356,7 @@ impl Render for CanvasView {
             state: self.input.state,
             focused: self.focused,
             confirming: self.input.confirming,
+            confirm_title: self.confirm_title.clone(),
             hover: self.hover,
             terminals: self.terminals.clone(),
             plugin_ids: self.plugin_panels.iter().map(|(id, _)| *id).collect(),
@@ -3650,115 +3606,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn panel_settings_shortcut_is_available_with_terminal_focus() {
-        // macOS GPUI represents US cmd-shift-comma as cmd-<.
-        let keystroke = gpui::Keystroke::parse("cmd-<").unwrap();
-        let bindings = key_bindings();
-        assert!(
-            !bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&NoAction)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
-            }),
-            "terminal context must not block the panel settings shortcut"
+    fn confirm_title_names_the_bound_keys() {
+        let mut settings = calm_core::settings::Settings::default();
+        assert_eq!(
+            calm_core::keymap::confirm_prompt(&settings.keybindings),
+            "Close? enter / esc"
         );
-        assert!(
-            bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&OpenPanelSettings)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
-            }),
-            "canvas must bind cmd-< to OpenPanelSettings"
-        );
-        assert!(
-            !settings_menu::key_bindings().iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&settings_menu::OpenSettings)
-            }),
-            "panel settings shortcut must not also open global settings"
-        );
-    }
-
-    fn binds(keys: &str, action: &dyn gpui::Action, context: &str) -> bool {
-        let keystroke = gpui::Keystroke::parse(keys).unwrap();
-        key_bindings().iter().any(|binding| {
-            binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                && binding.action().partial_eq(action)
-                && binding
-                    .predicate()
-                    .is_some_and(|p| p.to_string() == context)
-        })
-    }
-
-    #[test]
-    fn plain_arrows_pan_the_canvas_but_reach_a_focused_terminal() {
-        let cases: [(&str, &dyn gpui::Action); 8] = [
-            ("up", &PanUp),
-            ("down", &PanDown),
-            ("left", &PanLeft),
-            ("right", &PanRight),
-            ("shift-up", &PanUpFar),
-            ("shift-down", &PanDownFar),
-            ("shift-left", &PanLeftFar),
-            ("shift-right", &PanRightFar),
-        ];
-        for (keys, action) in cases {
-            assert!(binds(keys, action, KEY_CONTEXT), "canvas must bind {keys}");
-            assert!(
-                binds(keys, &NoAction, terminal::KEY_CONTEXT),
-                "terminal context must keep {keys}"
-            );
-        }
-    }
-
-    #[test]
-    fn panel_move_arrows_are_available_with_terminal_focus() {
-        let cases: [(&str, &dyn gpui::Action); 8] = [
-            ("cmd-alt-up", &MovePanelUp),
-            ("cmd-alt-down", &MovePanelDown),
-            ("cmd-alt-left", &MovePanelLeft),
-            ("cmd-alt-right", &MovePanelRight),
-            ("cmd-alt-shift-up", &MovePanelUpFar),
-            ("cmd-alt-shift-down", &MovePanelDownFar),
-            ("cmd-alt-shift-left", &MovePanelLeftFar),
-            ("cmd-alt-shift-right", &MovePanelRightFar),
-        ];
-        for (keys, action) in cases {
-            assert!(binds(keys, action, KEY_CONTEXT), "canvas must bind {keys}");
-            assert!(
-                !binds(keys, &NoAction, terminal::KEY_CONTEXT),
-                "terminal context must not block {keys}"
-            );
-        }
-    }
-
-    #[test]
-    fn delete_panel_shortcut_is_available_with_terminal_focus() {
-        let keystroke = gpui::Keystroke::parse("cmd-shift-backspace").unwrap();
-        let bindings = key_bindings();
-        assert!(
-            !bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&NoAction)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
-            }),
-            "terminal context must not block the delete shortcut"
-        );
-        assert!(
-            bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&DeletePanel)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
-            }),
-            "canvas must bind cmd-shift-backspace to DeletePanel"
+        settings
+            .keybindings
+            .insert("canvas.confirm".into(), Some("y".into()));
+        assert_eq!(
+            calm_core::keymap::confirm_prompt(&settings.keybindings),
+            "Close? y / esc"
         );
     }
 
