@@ -323,6 +323,7 @@ mod tests {
             minimized,
             resize: crate::resize::ResizePolicy::FREE,
             overrides: crate::scene::PanelOverrides::default(),
+            pin: None,
         }
     }
 

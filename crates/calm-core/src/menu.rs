@@ -485,6 +485,7 @@ mod tests {
             title: "Terminal".to_string(),
             minimized,
             overrides: crate::scene::PanelOverrides::default(),
+            pin: None,
             resize: crate::resize::ResizePolicy::FREE,
         }
     }
