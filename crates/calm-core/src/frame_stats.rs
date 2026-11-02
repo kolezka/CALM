@@ -53,13 +53,16 @@ impl FrameStats {
         if self.frames.len() < 2 {
             return None;
         }
-        let mut intervals: Vec<f64> = self
-            .frames
+        Some(percentile(&mut self.intervals_ms(), 95.0))
+    }
+
+    /// Milliseconds between consecutive frames in the window, oldest first.
+    pub fn intervals_ms(&self) -> Vec<f64> {
+        self.frames
             .iter()
             .zip(self.frames.iter().skip(1))
             .map(|(a, b)| b.saturating_duration_since(*a).as_secs_f64() * 1000.0)
-            .collect();
-        Some(percentile(&mut intervals, 95.0))
+            .collect()
     }
 
     /// Frames currently inside the window.
@@ -72,6 +75,14 @@ impl FrameStats {
     }
 }
 
+/// Estimated missed refresh slots, rounding to the nearest display period.
+pub fn missed_refreshes(interval: Duration, refresh_hz: f64) -> u64 {
+    if !refresh_hz.is_finite() || refresh_hz <= 0.0 {
+        return 0;
+    }
+    (interval.as_secs_f64() * refresh_hz).round().max(1.0) as u64 - 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +93,17 @@ mod tests {
             stats.record(start + Duration::from_millis(*ms));
         }
         stats
+    }
+
+    #[test]
+    fn missed_refreshes_counts_slots_not_slow_frames() {
+        assert_eq!(missed_refreshes(Duration::from_micros(8_400), 120.0), 0);
+        assert_eq!(missed_refreshes(Duration::from_micros(16_700), 120.0), 1);
+        assert_eq!(missed_refreshes(Duration::from_millis(25), 120.0), 2);
+        assert_eq!(missed_refreshes(Duration::from_micros(16_700), 60.0), 0);
+        for rate in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(missed_refreshes(Duration::from_secs(1), rate), 0);
+        }
     }
 
     #[test]

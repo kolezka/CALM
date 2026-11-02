@@ -906,3 +906,79 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   panels, or `panels.confirm_close` off) nothing is compared. The Load confirmation and a
   normal panel close share one rule (`close_confirms`): a running terminal or app, or a
   browser, asks first.
+
+## Canvas text sizes snap to half points (2026-11-02, branch `perf/zoom-pan`)
+
+- **Title and other canvas text use `text_size_px`: `12 * zoom` rounded to 0.5 pt.** GPUI
+  keys its glyph atlas and line layout cache by the exact font size, so a continuous zoom
+  rasterized and shaped every title glyph anew on almost every frame. Half a point is one
+  device pixel on Retina and was picked by eye from the arithmetic, not a user test.
+- **The step is a constant, not a setting.** It is a render cache detail, not a look or a
+  behavior a user picks; a setting would only let a user turn the cache off. Cost: if the
+  snap shows on some display, changing it needs a build.
+- **No dedupe of unchanged native frames yet.** `zoom_bench` measured terminal, browser and
+  plugin placement plus native order at about 0.3 ms per zoom frame, and during pan and zoom
+  every frame changes anyway. Revisit if a profile shows AppKit layout cost.
+
+## The status pill is touched only when it changes (2026-11-02, branch `perf/zoom-native`)
+
+- **`calm_core::status_bar::PillUpdate` keeps the pill's last text width and placement;
+  `StatusBar` skips `sizeToFit`, `setFrame` and `setHidden` when they are unchanged.** Any
+  geometry change on a native view makes AppKit rebuild tracking regions and set the canvas
+  cursor again on the next display cycle. A custom pointer (Accessibility colors or size,
+  common) makes each set render a new image, about 4 ms. With no panels this took 241 sets
+  per bench phase down to 0 to 3. Numbers: `docs/benchmarks.md`.
+- **Moving panels still caused one cursor set per frame.** Two fixes were measured; the
+  user picked the process-local guard below (B) for now. See the next section.
+
+## Skip repeated cursor sets (2026-11-02, branch `perf/zoom-native`)
+
+- **`calm-native::cursor_guard` swaps `-[NSCursor set]` in this process and skips a set that
+  repeats AppKit's current cursor.** Custom pointers (Accessibility pointer colors or size,
+  common) make each set render a new pointer image: 3.5 to 4.2 ms per set measured on an
+  M4 Pro. AppKit's `displayCycleUpdateStructuralRegions` re-sets the cursor of the rect
+  under the pointer on every display cycle that touches tracking regions, about 110 to 155
+  sets per second during bench motion, even with no native panels. The receiver is GPUI's
+  own cursor rect on `GPUIView`; GPUI already dedupes its style changes, so the repeat comes
+  from AppKit. Ghostty's shim never sets the cursor.
+- **Why a method swap and not a CALM view override.** Three CALM-owned fixes were measured
+  and failed: pausing cursor rects while the camera moves (AppKit then sets the arrow
+  directly every cycle), a no-op `cursorUpdate:` sink area (ignored), and the sink with rects
+  on (GPUI's rect wins). Patching GPUI would not cover WebKit or AppKit's own arrow sets.
+- **Staleness rules.** A set is skipped only when the guard trusts the last real set: it
+  was made with the pointer over one of CALM's windows, and since then no mouse event went
+  to another app (global monitor) and no AppKit-defined event (activation, hide) arrived.
+  `currentCursor` covers in-process changes (menus, the Settings window, push and pop). The
+  first set after re-entering a window always goes through.
+- **Setting `canvas.skip_repeated_cursor_sets`, default on.** A user-facing escape hatch, not
+  a developer flag, because it fixes a slowdown many users hit. Off passes every call
+  through at once; the swap stays installed until quit.
+- **`CGSCurrentCursorSeed` was rejected** as the staleness signal: it stayed the same across
+  sets of a different cursor in a test process (an inactive app, so the change may not have
+  shown), so it never passed a positive control.
+- **B now, GPUI patch A after upstream.** Patch A (`GPUIView` sets its cursor only when
+  `+[NSCursor currentCursor]` differs) fixes the repeat at its source and needs no method
+  swap, but it means vendoring GPUI until upstream takes it (zed-industries/zed#66403).
+  B ships today from CALM's own crate. Measured with the user moving the pointer in circles
+  over a browser address bar (browser-8): pan p50 13.86 to 8.40 ms, zoom p50 16.64 to
+  9.52 ms, cursor sets 520 to 125 for pan and 419 to 75 for zoom. When upstream GPUI has
+  the fix, measure again and drop B if the sets are gone.
+
+## Settings window saves wait for a quiet time (2026-11-02, branch `perf/settings-path`)
+
+- **Settings window changes save after a quiet time, not on every tick.** A durable write
+  (fsync) cost about 9 ms on the main thread per slider or color well tick. A value change
+  (`rebuild: false`) waits for `session.settings_save_ms` (default 400, 0 to 5000, 0 means
+  every change) and is flushed when the window closes (`NSWindowWillCloseNotification`,
+  reported as the `window.closed` field) and on quit. Menu actions, Reset and form changes
+  that rebuild the controls still save at once. Cost: a crash within the quiet time loses
+  the last tweak of a drag.
+- **Terminal and panel form refresh still run on every settings change.** Measured at
+  about 4 µs and 2 µs per change, so a "what changed" filter would add stale-state risk
+  for no gain. The keymap and menu rebuild (about 1.2 ms) is skipped unless key bindings or
+  `grid.show` changed.
+- **The inactive-window frame cap is off by default (`canvas.limit_inactive_fps`).** GPUI
+  caps a non-active window at about 30 fps, which held the canvas near 25 fps while Settings
+  was key. Off keeps the canvas at full rate with Settings open; the cost is a little more
+  energy while CALM is in the background. GPUI reads it at window creation, so it applies
+  after restart.

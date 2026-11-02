@@ -361,6 +361,26 @@ pub fn window_visible(window: &impl HasWindowHandle) -> Option<bool> {
     Some(state.contains(objc2_app_kit::NSWindowOcclusionState::Visible))
 }
 
+/// Maximum display rate, not the instantaneous rate on a variable-refresh display.
+pub fn maximum_refresh_hz(window: &impl HasWindowHandle) -> Option<f64> {
+    let (host, _) = host_view(window).ok()?;
+    Some(host.window()?.screen()?.maximumFramesPerSecond() as f64)
+}
+
+/// Whether the window is key and whether the pointer is inside its host view. AppKit only
+/// sends cursor updates in that state, so the zoom bench prints it next to its cursor counts.
+pub fn pointer_state(window: &impl HasWindowHandle) -> Option<(bool, bool)> {
+    let (host, _) = host_view(window).ok()?;
+    let ns_window = host.window()?;
+    let point = host.convertPoint_fromView(ns_window.mouseLocationOutsideOfEventStream(), None);
+    let bounds = host.bounds();
+    let inside = point.x >= bounds.origin.x
+        && point.y >= bounds.origin.y
+        && point.x < bounds.origin.x + bounds.size.width
+        && point.y < bounds.origin.y + bounds.size.height;
+    Some((ns_window.isKeyWindow(), inside))
+}
+
 /// Makes the window's host view, the GPUI canvas, the first responder, so no Ghostty
 /// surface, web view or address field keeps the keyboard. False if AppKit refused or the
 /// handle is not an AppKit view in a window.

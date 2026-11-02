@@ -52,7 +52,7 @@ use gpui::{
 
 use calm_plugins::{BridgeRequest, InstalledPlugin, PluginContent};
 use futures::StreamExt as _;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -62,6 +62,7 @@ use crate::browser_panel::{BrowserEvents, BrowserPanel};
 use crate::content_move::ContentMove;
 use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::grid_paint::{self, GridFrame, GridTextures};
+use crate::paint_profile::{self as profile, Section};
 use crate::plugin_host::{self, BridgeSender, PluginPanel, Route};
 use crate::plugin_services::{self, ServiceCall};
 use crate::settings_menu::{self, SettingsState};
@@ -193,7 +194,15 @@ pub struct CanvasView {
     focus_handle: FocusHandle,
     /// The stats readout (cmd-shift-f). Which items it shows is `developer.stats`.
     pub show_stats: bool,
+    /// Counts finished close flushes of the Settings window, so smoke can wait for one.
+    pub settings_close_ack: crate::settings_menu::SettingsCloseAck,
     pub frame_stats: FrameStats,
+    /// Cameras the zoom bench applies, one per frame. Empty outside the bench.
+    pub camera_script: VecDeque<calm_core::camera::Camera>,
+    /// Records each render without asking for more frames, unlike `frame_stats`. GPUI
+    /// throttles requested frames in an inactive window, so only this one sees real
+    /// pan frames while Settings is key. Only the smoke sets it.
+    pub frame_probe: Option<FrameStats>,
     /// Latest CPU and memory reading, from `stats_timer`.
     pub process_stats: Option<ProcessSample>,
     /// Successful samples since the timer last started. The smoke waits on it.
@@ -211,6 +220,11 @@ pub struct CanvasView {
     pub settings: SettingsState,
     /// Created on first `cmd-,`, then hidden and shown.
     pub settings_window: Option<calm_native::SettingsWindow>,
+    /// Writes a held Settings window change when the app quits.
+    _settings_quit: gpui::Subscription,
+    /// Writes a held Settings change and the session when the view is dropped. Closing the
+    /// window drops the view before the quit runs, which drops `_settings_quit` too.
+    _release: gpui::Subscription,
     /// At most one Settings window per panel, closed with the panel.
     pub panel_settings_windows: HashMap<PanelId, calm_native::SettingsWindow>,
     /// Closed panels a late Settings change was already logged for.
@@ -305,7 +319,10 @@ impl CanvasView {
             native_order: Vec::new(),
             focus_handle: cx.focus_handle(),
             show_stats: false,
+            settings_close_ack: Default::default(),
             frame_stats: FrameStats::default(),
+            camera_script: VecDeque::new(),
+            frame_probe: None,
             process_stats: None,
             process_samples: 0,
             stats_timer: None,
@@ -314,11 +331,20 @@ impl CanvasView {
             preview_timer: None,
             preview_input_targets: 0,
             settings: SettingsState {
+                save: Default::default(),
                 settings: Default::default(),
                 path: calm_core::settings::settings_path(),
                 notice: None,
             },
             settings_window: None,
+            _settings_quit: cx.on_app_quit(|view, _| {
+                view.flush_settings_save();
+                async {}
+            }),
+            _release: cx.on_release(|view, _| {
+                view.flush_settings_save();
+                view.save_on_quit();
+            }),
             panel_settings_windows: HashMap::new(),
             gone_panel_changes: HashSet::new(),
             background: BackgroundRenderer::default(),
@@ -795,6 +821,9 @@ impl CanvasView {
         self.input.click_empty_clears_focus =
             self.settings.settings.canvas.click_empty_clears_focus;
         self.input.move_modifier = self.settings.settings.canvas.move_modifier;
+        calm_native::cursor_guard::set_enabled(
+            self.settings.settings.canvas.skip_repeated_cursor_sets,
+        );
         self.confirm_title = calm_core::keymap::confirm_prompt(&self.settings.settings.keybindings);
         self.input.arrow_pan_step = self.settings.settings.canvas.arrow_pan_step;
         self.input.arrow_move_step = self.settings.settings.canvas.arrow_move_step;
@@ -2138,6 +2167,11 @@ impl CanvasView {
         bar.ensure_front();
     }
 
+    /// (pill width, label x, label width) as the native views report them.
+    pub fn status_label_layout(&self) -> Option<(f64, f64, f64)> {
+        self.status_bar.as_ref().map(|bar| bar.label_layout())
+    }
+
     /// (visible, topmost, text) of the status bar, or the reason it is missing.
     pub fn status_bar_state(&self) -> Result<(bool, bool, String), String> {
         match (&self.status_bar, &self.status_bar_error) {
@@ -2755,28 +2789,36 @@ impl PaintSnapshot {
         let mut preview_targets = 0;
         let mut plugin_modes = Vec::new();
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            let base = self.settings.background.base_color();
-            window.paint_quad(fill(bounds, rgb(base.0)));
-            if let Some(texture) = &self.background {
-                background::paint_background(texture, bounds, window);
-            }
+            profile::time(Section::Background, || {
+                let base = self.settings.background.base_color();
+                window.paint_quad(fill(bounds, rgb(base.0)));
+                if let Some(texture) = &self.background {
+                    background::paint_background(texture, bounds, window);
+                }
+            });
             let camera = self.scene.camera;
-            grid_paint::paint_grid(&self.grid, bounds, window);
+            profile::time(Section::Grid, || {
+                grid_paint::paint_grid(&self.grid, bounds, window)
+            });
             let viewport = Rect::new(
                 origin.x,
                 origin.y,
                 f64::from(f32::from(bounds.size.width)),
                 f64::from(f32::from(bounds.size.height)),
             );
-            let (mut contents, changed) = self.apply_terminal_modes(viewport, window, cx);
+            let (mut contents, changed) = profile::time(Section::Terminals, || {
+                self.apply_terminal_modes(viewport, window, cx)
+            });
             let modal_open = self.modal_open;
-            if let Ok(browsers) = this.update(cx, |view, _| {
-                view.apply_browser_modes(viewport, modal_open, window)
+            if let Ok(browsers) = profile::time(Section::Browsers, || {
+                this.update(cx, |view, _| {
+                    view.apply_browser_modes(viewport, modal_open, window)
+                })
             }) {
                 contents.extend(browsers);
             }
             modes_changed = changed;
-            plugin_modes = self.plugin_modes(viewport);
+            plugin_modes = profile::time(Section::Plugins, || self.plugin_modes(viewport));
             for (id, mode, _) in &plugin_modes {
                 let content = match mode {
                     PanelMode::Live => TerminalContent::Live,
@@ -2802,6 +2844,7 @@ impl PaintSnapshot {
                 .enumerate()
                 .map(|(index, panel)| (panel.id, index))
                 .collect();
+            let _panels = profile::Scope::new(Section::Panels);
             for panel in &self.scene.panels {
                 // A group's shadows all go down before its first member, so its members cover
                 // the shadow between them and only the outer boundary casts one.
@@ -2849,6 +2892,7 @@ impl PaintSnapshot {
             }
         });
 
+        let after = profile::Scope::new(Section::After);
         this.update(cx, |view, cx| {
             view.apply_plugin_modes(&plugin_modes, window);
             view.sync_native_order(cx);
@@ -2862,6 +2906,8 @@ impl PaintSnapshot {
             }
         })
         .ok();
+        drop(after);
+        profile::end_frame();
 
         // Moves and releases are tracked window-wide so a drag keeps going past the canvas edge.
         let weak = this.clone();
@@ -3489,10 +3535,11 @@ fn paint_text(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let font_px = TITLE_FONT_SIZE * zoom;
+    let font_px = calm_core::chrome::text_size_px(TITLE_FONT_SIZE, zoom);
     if font_px < MIN_TITLE_FONT_PX || text.is_empty() {
         return;
     }
+    let _titles = profile::Scope::new(Section::Titles);
     let title: SharedString = text.to_string().into();
     let run = TextRun {
         len: title.len(),
@@ -3533,7 +3580,17 @@ impl Focusable for CanvasView {
 
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        profile::begin_frame();
+        let _render = profile::Scope::new(Section::Render);
+        // The zoom bench feeds one camera per frame; the frame after the last stops asking.
+        if let Some(camera) = self.camera_script.pop_front() {
+            self.scene.camera = camera;
+            window.request_animation_frame();
+        }
         self.autosave_tick(cx);
+        if let Some(probe) = &mut self.frame_probe {
+            probe.record(Instant::now());
+        }
         if self.show_stats && self.settings.settings.developer.stats.show_fps {
             // Each render records a frame and asks for the next one, so the readout
             // measures the frame rate the window can sustain. Off means no extra frames.

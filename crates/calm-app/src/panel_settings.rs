@@ -122,6 +122,10 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Panel settings live in the scene, which autosave already writes.
+        if field == calm_core::settings_form::WINDOW_CLOSED_FIELD {
+            return;
+        }
         if self.scene.get(id).is_none() {
             // A change queued just before the panel closed. Nothing to apply it to.
             if self.gone_panel_changes.insert(id) {

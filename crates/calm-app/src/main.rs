@@ -6,6 +6,7 @@ mod dev_menu;
 mod grid_paint;
 mod icon_image;
 mod keymap;
+mod paint_profile;
 mod panel_settings;
 mod plugin_host;
 mod plugin_services;
@@ -30,6 +31,7 @@ use calm_core::restore::{
 };
 use calm_core::scene::{PanelId, PanelKind};
 use calm_core::settings::RestoreOnLaunch;
+use calm_core::settings_form::FieldValue;
 use calm_core::snap::{SnapConfig, snap_move};
 use calm_core::tui::TuiState;
 use calm_native::process_stats::{child_pids, process_exists};
@@ -215,8 +217,18 @@ async fn smoke_step(run: &mut smoke_runner::SmokeRun, name: &str, step: impl Fut
 /// so every smoke exit path drops it explicitly through `remove_smoke_dir`.
 static SMOKE_DIR: Mutex<Option<tempfile::TempDir>> = Mutex::new(None);
 
+/// Keeps the smoke dir on exit, so a test can read what the run wrote.
+const SMOKE_KEEP_HOME_ENV: &str = "CALM_SMOKE_KEEP_HOME";
+
+fn keep_smoke_dir() -> bool {
+    std::env::var_os(SMOKE_KEEP_HOME_ENV).is_some_and(|value| value == "1")
+}
+
 /// Safe to call any number of times and from the panic hook.
 fn remove_smoke_dir() {
+    if keep_smoke_dir() {
+        return;
+    }
     let dir = match SMOKE_DIR.try_lock() {
         Ok(mut slot) => slot.take(),
         Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().take(),
@@ -657,6 +669,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             }
         })
         .await;
+        smoke_step(&mut run, "zoom_bench", smoke_zoom_bench(&view, window, cx)).await;
         smoke_step(&mut run, "background", async {
             // The gradient set by `smoke_settings` rendered once per size, off the UI thread.
             let (renders, idle, error) = cx.update(|cx| {
@@ -704,8 +717,20 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_step(&mut run, "blur", async { smoke_blur(&view, window, cx) }).await;
         smoke_step(
             &mut run,
+            "status_label",
+            smoke_status_label(&view, window, cx),
+        )
+        .await;
+        smoke_step(
+            &mut run,
             "settings_dispatch",
             smoke_settings_dispatch(&view, window, cx),
+        )
+        .await;
+        smoke_step(
+            &mut run,
+            "settings_perf",
+            smoke_settings_perf(&view, window, cx),
         )
         .await;
         smoke_step(&mut run, "keybindings", smoke_keybindings(&view, window, cx)).await;
@@ -729,6 +754,13 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         })
         .await;
         smoke_step(&mut run, "presets", smoke_presets(&view, window, cx)).await;
+        // Last: it hands over the view and closes the window.
+        smoke_step(
+            &mut run,
+            "window_close_save",
+            smoke_window_close_save(view, window, cx),
+        )
+        .await;
 
         for line in run.summary() {
             println!("{line}");
@@ -1238,6 +1270,110 @@ async fn smoke_run_command(
 /// grows and its web view follows; the locked plugin keeps its rect.
 /// Focuses a terminal, then the browser's page, and clicks empty canvas through the real
 /// mouse handlers each time. Focus must drop in the scene and in AppKit.
+const SMOKE_LABEL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// After the pill's text changes the label still spans the pill between its paddings. Stats
+/// off, 100% then 99%: both fit the minimum width, so the pill keeps its rect. The 100%
+/// reading follows a wide text, so the pill shrinks there: that is the positive control.
+async fn smoke_status_label(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let (show_stats, zoom_before, flash_before) = cx.update(|cx| {
+        let view = view.read(cx);
+        (
+            view.show_stats,
+            view.scene.camera.zoom,
+            view.saved_flash.clone(),
+        )
+    });
+    const WIDE: &str = "smoke-status-label-wide-text.json";
+    let wide_text = format!(
+        "Saved {WIDE}{}100%",
+        calm_core::status_bar::STATUS_BAR_SEPARATOR
+    );
+    let mut readings = Vec::new();
+    for (flash, zoom, text) in [
+        (Some(WIDE), 1.0, wide_text.as_str()),
+        (None, 1.0, "100%"),
+        (None, 0.99, "99%"),
+    ] {
+        let set = cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_show_stats(false, window, cx);
+                view.saved_flash = flash.map(str::to_string);
+                view.scene.camera.zoom = zoom;
+                cx.notify();
+            })
+        });
+        if let Err(err) = set {
+            smoke_fail(&format!("status_label zoom {zoom}: {err:#}"));
+        }
+        let started = Instant::now();
+        let layout = loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let (shown, layout) = cx.update(|cx| {
+                let view = view.read(cx);
+                (
+                    view.status_bar_state().map(|(_, _, text)| text),
+                    view.status_label_layout(),
+                )
+            });
+            if let (Ok(shown), Some(layout)) = (&shown, layout)
+                && shown == text
+            {
+                break layout;
+            }
+            if started.elapsed() > SMOKE_LABEL_TIMEOUT {
+                smoke_fail(&format!(
+                    "status_label: pill shows {shown:?}, want {text:?}"
+                ));
+            }
+        };
+        readings.push((text, layout));
+    }
+    let restored = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.scene.camera.zoom = zoom_before;
+            view.saved_flash = flash_before;
+            view.set_show_stats(show_stats, window, cx);
+        })
+    });
+    if let Err(err) = restored {
+        smoke_fail(&format!("status_label restore: {err:#}"));
+    }
+    let pad = calm_core::status_bar::STATUS_BAR_PADDING_X;
+    let line = readings
+        .iter()
+        .map(|(text, (pill, x, w))| {
+            let text = text.rsplit(' ').next().unwrap_or(text);
+            format!("{text}:pill={pill:.0},label_x={x:.0},label_w={w:.0}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!("smoke: status_label {line}");
+    for (text, (pill, x, w)) in &readings {
+        if (x - pad).abs() > 0.5 || (w - (pill - 2.0 * pad)).abs() > 0.5 {
+            smoke_fail(&format!(
+                "status_label: at {text} the label is x={x} w={w}, want x={pad} w={} in a {pill} pill",
+                pill - 2.0 * pad
+            ));
+        }
+    }
+    let pills = readings
+        .iter()
+        .map(|(_, (pill, _, _))| *pill)
+        .collect::<Vec<_>>();
+    if pills[0] == pills[1] || pills[1] != pills[2] {
+        smoke_fail(&format!(
+            "status_label: pill widths {pills:?}, want a shrink then an unchanged rect, so the case was not tested"
+        ));
+    }
+}
+
 fn smoke_blur(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
     let outcome = cx.update_window(window, |_, window, cx| {
         view.update(cx, |view, cx| {
@@ -1857,7 +1993,6 @@ async fn smoke_panel_settings(
     window: AnyWindowHandle,
     cx: &mut gpui::AsyncApp,
 ) {
-    use calm_core::settings_form::FieldValue;
     const TITLE: &str = "Second";
     let title = crate::panel_settings::window_title(
         TITLE,
@@ -2102,6 +2237,214 @@ async fn smoke_plugin_menus(
     }
 }
 
+/// Frames per bench phase direction; a phase goes there and back.
+const BENCH_FRAMES: usize = 120;
+const BENCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Pans, then zooms 0.3 to 3.0 and back, one camera per frame, and prints frame times
+/// and the paint sections. The way back uses slightly different zooms, as a real gesture does.
+async fn smoke_zoom_bench(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let variants = std::env::var("CALM_ZOOM_BENCH_VARIANTS").unwrap_or_else(|_| "mixed".into());
+    let variants = if variants == "matrix" {
+        "none,terminal-2,terminal-8,browser-2,browser-8,plugin-2,plugin-8"
+    } else {
+        &variants
+    };
+    let fixtures = tempfile::Builder::new()
+        .prefix("calm-zoom-bench-")
+        .tempdir()
+        .unwrap_or_else(|err| smoke_fail(&format!("bench fixtures: {err}")));
+    write_smoke_plugin(
+        fixtures.path(),
+        "zoom-fixture",
+        "<html><body><h1>CALM zoom fixture</h1><p>Static local content</p></body></html>",
+        "",
+    )
+    .unwrap_or_else(|err| smoke_fail(&format!("bench plugin: {err}")));
+    // The guard is installed either way so its counters see every set; off measures the
+    // old behavior in the same binary.
+    calm_native::cursor_guard::install_here();
+    if std::env::var("CALM_ZOOM_BENCH_SKIP_CURSOR").as_deref() == Ok("off") {
+        calm_native::cursor_guard::set_enabled(false);
+    }
+    for variant in variants.split(',') {
+        let spec = match variant {
+            "mixed" => None,
+            "none" => Some(("none", 0)),
+            "terminal-2" => Some(("terminal", 2)),
+            "terminal-8" => Some(("terminal", 8)),
+            "browser-2" => Some(("browser", 2)),
+            "browser-8" => Some(("browser", 8)),
+            "plugin-2" => Some(("plugin", 2)),
+            "plugin-8" => Some(("plugin", 8)),
+            _ => smoke_fail(&format!("unknown bench variant {variant:?}")),
+        };
+        if let Some((kind, count)) = spec {
+            let discovery = calm_plugins::discover(&[fixtures.path().to_path_buf()]);
+            if !discovery.errors.is_empty() || discovery.plugins.len() != 1 {
+                smoke_fail("bench fixture discovery failed");
+            }
+            let result = cx.update_window(window, |_, window, cx| view.update(cx, |view, cx| {
+                let effects = view.scene.panels.iter().map(|p| calm_core::interaction::Effect::ClosePanel(p.id)).collect();
+                view.apply_effects(effects, window, cx);
+                view.install_plugins(discovery.plugins);
+                view.scene.camera = calm_core::camera::Camera::default();
+                view.show_stats = false;
+                for i in 0..count {
+                    let rect = Rect::new(20.0 + (i % 4) as f64 * 300.0, 20.0 + (i / 4) as f64 * 200.0, 280.0, 180.0);
+                    match kind {
+                        "terminal" => {
+                            let id = view.scene.add(PanelKind::Terminal { command: None, cwd: None, profile: None, app: None }, rect);
+                            view.spawn_terminal(id, terminal::options(None, None), window, cx)?;
+                        }
+                        "browser" => {
+                            let url = "data:text/html,%3Ch1%3ECALM%20zoom%20fixture%3C%2Fh1%3E%3Cp%3EStatic%20local%20content%3C%2Fp%3E";
+                            let id = view.scene.add(PanelKind::Browser { url: url.into(), page_zoom: None }, rect);
+                            view.spawn_browser(id, url, window, cx)?;
+                        }
+                        "plugin" => {
+                            let id = view.scene.add(PanelKind::Plugin { plugin_id: "zoom-fixture".into(), plugin_version: None, settings: serde_json::json!({}) }, rect);
+                            view.open_plugin_panel(id, "zoom-fixture", window, cx)?;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                cx.notify();
+                Ok::<_, String>(())
+            }));
+            if !matches!(result, Ok(Ok(()))) {
+                smoke_fail(&format!("bench setup: {result:?}"));
+            }
+            cx.background_executor().timer(Duration::from_secs(2)).await;
+        }
+        smoke_camera_phases(view, window, variant, cx).await;
+    }
+}
+
+async fn smoke_camera_phases(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    variant: &str,
+    cx: &mut gpui::AsyncApp,
+) {
+    let refresh_hz = cx
+        .update_window(window, |_, window, _| {
+            calm_native::child::maximum_refresh_hz(window)
+        })
+        .ok()
+        .flatten()
+        .filter(|hz| *hz > 0.0)
+        .unwrap_or_else(|| smoke_fail("bench display refresh unavailable"));
+    let (start, size, panels) = cx.update(|cx| {
+        let view = view.read(cx);
+        (
+            view.scene.camera,
+            view.viewport.size,
+            view.scene.panels.len(),
+        )
+    });
+    let center = Point::new(size.width / 2.0, size.height / 2.0);
+    let mut pan = Vec::new();
+    let mut camera = start;
+    for i in 0..2 * BENCH_FRAMES {
+        let dx = if i < BENCH_FRAMES { 6.0 } else { -6.0 };
+        camera.pan_by_screen(dx, 1.5 * dx.signum());
+        pan.push(camera);
+    }
+    let mut zoom = Vec::new();
+    let mut camera = start;
+    let (low, high) = (0.3_f64, 3.0_f64);
+    for i in 0..2 * BENCH_FRAMES {
+        let t = (i % BENCH_FRAMES) as f64 / (BENCH_FRAMES - 1) as f64;
+        let target = if i < BENCH_FRAMES {
+            low * (high / low).powf(t)
+        } else {
+            high * (low / high).powf(t) * 1.0037
+        };
+        camera.zoom_by(target / camera.zoom, center);
+        zoom.push(camera);
+    }
+    println!(
+        "smoke: zoom_bench variant={variant} panels={panels} frames_per_phase={}",
+        2 * BENCH_FRAMES
+    );
+    for (phase, cameras) in [("pan", pan), ("zoom", zoom)] {
+        let expected = cameras.len();
+        let unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("benchmark wall clock")
+            .as_millis();
+        let pointer = cx
+            .update_window(window, |_, window, _| {
+                calm_native::child::pointer_state(window)
+            })
+            .ok()
+            .flatten();
+        println!(
+            "smoke: zoom_bench variant={variant} phase={phase} start_unix_ms={unix_ms} key_and_pointer_inside={pointer:?}"
+        );
+        let cursor_before = calm_native::cursor_guard::counts();
+        cx.update(|cx| {
+            paint_profile::start();
+            view.update(cx, |view, cx| {
+                view.camera_script = cameras.into();
+                cx.notify();
+            });
+        });
+        let started = Instant::now();
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let left = cx.update(|cx| view.read(cx).camera_script.len());
+            if left == 0 || started.elapsed() > BENCH_TIMEOUT {
+                break;
+            }
+        }
+        // One more frame paints the last camera.
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+        let mut frames = cx.update(|_| paint_profile::stop());
+        frames.truncate(expected);
+        if frames.len() < expected {
+            let visible = cx.update(|cx| window_visible(window, cx));
+            cx.update(|cx| view.update(cx, |view, _| view.camera_script.clear()));
+            smoke_fail(&format!(
+                "zoom_bench {phase}: only {} of {expected} frames painted window_visible={visible:?}",
+                frames.len()
+            ));
+        }
+        if cx.update(|cx| !view.read(cx).camera_script.is_empty()) {
+            smoke_fail(&format!("zoom_bench {variant}/{phase}: script timed out"));
+        }
+        for line in paint_profile::report(phase, &frames, refresh_hz) {
+            println!("smoke: zoom_bench variant={variant} {line}");
+        }
+        let cursor = calm_native::cursor_guard::counts();
+        let calls = cursor.calls - cursor_before.calls;
+        let skipped = cursor.skipped - cursor_before.skipped;
+        let sets = calls - skipped;
+        let set_ms = (cursor.set_nanos - cursor_before.set_nanos) as f64 / 1e6;
+        let secs = started.elapsed().as_secs_f64();
+        println!(
+            "smoke: zoom_bench variant={variant} phase={phase} cursor calls={calls} skipped={skipped} sets={sets} sets_per_s={:.1} set_ms_total={set_ms:.1} ms_per_set={:.2}",
+            sets as f64 / secs,
+            if sets > 0 { set_ms / sets as f64 } else { 0.0 }
+        );
+    }
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.scene.camera = start;
+            cx.notify();
+        })
+    });
+}
+
 fn set_zoom(view: &Entity<CanvasView>, zoom: f64, cx: &mut App) {
     view.update(cx, |view, cx| {
         view.scene.camera.zoom = zoom;
@@ -2120,9 +2463,13 @@ fn startup_settings(smoke: bool) -> SettingsState {
         Err(err) => smoke_fail(&format!("settings temp dir: {err}")),
     };
     let path = dir.path().join("settings.json");
+    if keep_smoke_dir() {
+        println!("smoke: kept home={}", dir.path().display());
+    }
     *SMOKE_DIR.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir);
     match calm_core::settings::load_settings_from(&path) {
         Ok(settings) => SettingsState {
+            save: Default::default(),
             settings,
             path,
             notice: None,
@@ -2138,6 +2485,7 @@ fn load_startup_settings(path: std::path::PathBuf) -> SettingsState {
     let error = match load_settings_from(&path) {
         Ok(settings) => {
             return SettingsState {
+                save: Default::default(),
                 settings,
                 path,
                 notice: None,
@@ -2163,6 +2511,7 @@ fn load_startup_settings(path: std::path::PathBuf) -> SettingsState {
         }
     };
     SettingsState {
+        save: Default::default(),
         settings: Settings::default(),
         path,
         notice: Some(notice),
@@ -2304,6 +2653,298 @@ async fn smoke_github_api(
 /// Opens Settings the way a menu click or `cmd-,` does: `OpenSettings` dispatched on the
 /// canvas window, so handlers run while GPUI holds that window. Calling `open_settings`
 /// directly skips that path, which is how a dead menu item once passed the smoke.
+/// Ticks in each measured run, about 16 ms apart.
+const SMOKE_PERF_TICKS: usize = 60;
+
+/// p50 and p95 of `values`, in the same unit.
+fn p50_p95(mut values: Vec<f64>) -> (f64, f64) {
+    let p50 = calm_core::stats::percentile(&mut values, 50.0);
+    (p50, calm_core::stats::percentile(&mut values, 95.0))
+}
+
+/// Frame intervals while the camera pans and zooms each tick, as a drag or pinch would.
+/// With `request_frames` the FPS readout runs too, which asks GPUI for every frame.
+async fn smoke_perf_sweep(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    request_frames: bool,
+    cx: &mut gpui::AsyncApp,
+) -> (usize, f64, f64) {
+    let toggled = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.settings.settings.developer.stats.show_fps = true;
+            view.set_show_stats(request_frames, window, cx);
+            view.frame_probe = Some(calm_core::frame_stats::FrameStats::new(
+                Duration::from_secs(60),
+            ));
+        })
+    });
+    if let Err(err) = toggled {
+        smoke_fail(&format!("settings_perf sweep: {err:#}"));
+    }
+    for tick in 0..SMOKE_PERF_TICKS {
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                let step = if tick % 20 < 10 { 12.0 } else { -12.0 };
+                view.scene.camera.pan_by_screen(step, step / 2.0);
+                view.scene.camera.zoom = 1.0 + 0.2 * ((tick as f64) / 10.0).sin();
+                cx.notify();
+            })
+        });
+        cx.background_executor()
+            .timer(Duration::from_millis(16))
+            .await;
+    }
+    let intervals = cx.update(|cx| {
+        view.update(cx, |view, _| {
+            view.frame_probe
+                .take()
+                .map(|probe| probe.intervals_ms())
+                .unwrap_or_default()
+        })
+    });
+    let frames = intervals.len();
+    let (p50, p95) = p50_p95(intervals);
+    (frames, p50, p95)
+}
+
+/// How long the Settings window's close flush may take to report back.
+const SMOKE_CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Opt-in numbers for the settings path: `CALM_SMOKE_ONLY=settings_perf`. Prints lines,
+/// fails only when the path itself errors.
+async fn smoke_settings_perf(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    cx.update(|cx| {
+        if let Some(settings_window) = &view.read(cx).settings_window {
+            settings_window.hide();
+        }
+    });
+    cx.background_executor()
+        .timer(Duration::from_millis(300))
+        .await;
+    let mut sweeps = Vec::new();
+    for (label, request_frames) in [("closed", false), ("closed_fps", true)] {
+        sweeps.push((
+            label,
+            smoke_perf_sweep(view, window, request_frames, cx).await,
+        ));
+    }
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| view.open_settings(window, cx))
+    });
+    if let Err(err) = opened {
+        smoke_fail(&format!("settings_perf open: {err:#}"));
+    }
+    cx.background_executor()
+        .timer(Duration::from_millis(300))
+        .await;
+    for (label, request_frames) in [("open", false), ("open_fps", true)] {
+        sweeps.push((
+            label,
+            smoke_perf_sweep(view, window, request_frames, cx).await,
+        ));
+    }
+
+    // Slider and color well ticks through the same entry point AppKit calls, with the
+    // readout off so frames are not throttled by the probe itself.
+    let off = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_show_stats(false, window, cx);
+            view.frame_probe = Some(calm_core::frame_stats::FrameStats::new(
+                Duration::from_secs(60),
+            ));
+        })
+    });
+    if let Err(err) = off {
+        smoke_fail(&format!("settings_perf stats off: {err:#}"));
+    }
+    let mut change_ms = Vec::new();
+    for tick in 0..SMOKE_PERF_TICKS {
+        let (id, value) = match tick % 3 {
+            0 => (
+                "grid.opacity",
+                FieldValue::Number(0.2 + (tick as f64) / 200.0),
+            ),
+            1 => ("gradient.angle", FieldValue::Number(tick as f64 * 3.0)),
+            _ => (
+                "grid.color",
+                FieldValue::Color(calm_core::background::Rgb(0x10_20_30 + tick as u32)),
+            ),
+        };
+        let started = Instant::now();
+        let applied = cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.settings_field_changed(id, value, window, cx)
+            })
+        });
+        change_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+        if let Err(err) = applied {
+            smoke_fail(&format!("settings_perf change {id}: {err:#}"));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(16))
+            .await;
+    }
+    let saved = |cx: &mut gpui::AsyncApp| {
+        cx.update(|cx| {
+            let state = &view.read(cx).settings;
+            calm_core::settings::load_settings_from(&state.path)
+                .map(|file| file.grid == state.settings.grid)
+                .map_err(|err| err.to_string())
+        })
+    };
+    // Positive control: the last tick is still held by the debounce, so only the close flush
+    // can write it before the quiet time ends.
+    let (pending, acked) = cx.update(|cx| {
+        let view = view.read(cx);
+        (
+            view.settings.save.is_pending(),
+            view.settings_close_ack.generation,
+        )
+    });
+    let before_close = saved(cx);
+    if !pending {
+        smoke_fail(&format!(
+            "settings_perf: the last change is not pending before close (file matches: {before_close:?}), so the close flush is untested"
+        ));
+    }
+    let drag_frames = cx.update(|cx| {
+        view.update(cx, |view, _| {
+            if let Some(settings_window) = &view.settings_window {
+                settings_window.perform_close();
+            }
+            view.frame_probe
+                .take()
+                .map(|probe| probe.intervals_ms())
+                .unwrap_or_default()
+        })
+    });
+    let started = Instant::now();
+    let flush_error = loop {
+        let ack = cx.update(|cx| view.read(cx).settings_close_ack.clone());
+        if ack.generation > acked {
+            break ack.error;
+        }
+        if started.elapsed() > SMOKE_CLOSE_FLUSH_TIMEOUT {
+            smoke_fail(&format!(
+                "settings_perf: no close flush finished within {SMOKE_CLOSE_FLUSH_TIMEOUT:?}"
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(10))
+            .await;
+    };
+    let flush_ms = started.elapsed().as_secs_f64() * 1000.0;
+    if let Some(err) = flush_error {
+        smoke_fail(&format!(
+            "settings_perf: close flush failed to write: {err}"
+        ));
+    }
+    let after_close = saved(cx);
+    println!(
+        "smoke: settings_perf saved pending_before_close={pending} before_close={before_close:?} after_close={after_close:?} close_flush_ms={flush_ms:.1}"
+    );
+    if after_close != Ok(true) {
+        smoke_fail(&format!(
+            "settings_perf: settings.json lacks the last change after the close flush: {after_close:?}"
+        ));
+    }
+    let total: f64 = change_ms.iter().sum();
+    let (c50, c95) = p50_p95(change_ms);
+    let drag_n = drag_frames.len();
+    let (d50, d95) = p50_p95(drag_frames);
+    println!(
+        "smoke: settings_perf changes={SMOKE_PERF_TICKS} total_ms={total:.1} change_p50_ms={c50:.2} change_p95_ms={c95:.2} drag_frames={drag_n} drag_frame_p50_ms={d50:.1} drag_frame_p95_ms={d95:.1}"
+    );
+    for (label, (frames, p50, p95)) in sweeps {
+        println!(
+            "smoke: settings_perf sweep {label} frames={frames} p50_ms={p50:.1} p95_ms={p95:.1}"
+        );
+    }
+}
+
+/// The grid opacity and panel x the close must write. Neither is a default or a smoke value.
+const SMOKE_CLOSE_OPACITY: f64 = 0.37;
+const SMOKE_CLOSE_PANEL_X: f64 = 1234.0;
+
+/// Opt-in, with `CALM_SMOKE_KEEP_HOME=1`: leaves a settings save and a session save
+/// pending, drops the smoke's view handle and closes the window. The test in
+/// `tests/window_close_save.rs` reads the kept files after the process exits.
+async fn smoke_window_close_save(
+    view: Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let Some(dir) = SMOKE_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|dir| dir.path().to_path_buf())
+    else {
+        smoke_fail("window_close_save: no smoke dir");
+    };
+    // Longest allowed waits, so nothing reaches the disk before the close.
+    let setup = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.update_settings(
+                |s| {
+                    s.session.settings_save_ms = 5000;
+                    s.session.debounce_ms = 10_000;
+                },
+                window,
+                cx,
+            );
+            view.start_autosave(dir.join("session.json"), cx)?;
+            view.settings_field_changed(
+                "grid.opacity",
+                FieldValue::Number(SMOKE_CLOSE_OPACITY),
+                window,
+                cx,
+            );
+            // `get_mut` bumps the scene revision, which is what autosave watches.
+            let first = view.scene.panels.first().map(|panel| panel.id);
+            let Some(panel) = first.and_then(|id| view.scene.get_mut(id)) else {
+                return Err("no panel to move".to_string());
+            };
+            panel.rect.origin.x = SMOKE_CLOSE_PANEL_X;
+            view.autosave_tick(cx);
+            Ok(())
+        })
+    });
+    match setup {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => smoke_fail(&format!("window_close_save setup: {err}")),
+        Err(err) => smoke_fail(&format!("window_close_save setup: {err:#}")),
+    }
+    let settings_pending = calm_core::settings::load_settings_from(&dir.join("settings.json"))
+        .is_ok_and(|file| file.grid.opacity != SMOKE_CLOSE_OPACITY);
+    let session_pending = !dir.join("session.json").exists();
+    println!(
+        "smoke: window_close_save pending settings={settings_pending} session={session_pending}"
+    );
+    if !settings_pending || !session_pending {
+        smoke_fail("window_close_save: a save reached the disk before the close");
+    }
+    // The positive control: proves the close really released the view.
+    cx.update(|cx| {
+        cx.observe_release(&view, |_, _| {
+            println!("smoke: window_close_save view released");
+        })
+        .detach();
+    });
+    // The smoke's own handle would keep the view alive and hide the bug.
+    drop(view);
+    let closed = cx.update_window(window, |_, window, _| window.remove_window());
+    if let Err(err) = closed {
+        smoke_fail(&format!("window_close_save close: {err:#}"));
+    }
+    println!("smoke: window_close_save closed=true");
+}
+
 async fn smoke_settings_dispatch(
     view: &Entity<CanvasView>,
     window: AnyWindowHandle,
@@ -2689,6 +3330,12 @@ fn main() {
                 appears_transparent: true,
                 traffic_light_position: None,
             }),
+            // GPUI's own default when on; None keeps full frame rate in the background.
+            inactive_frame_interval: settings
+                .settings
+                .canvas
+                .limit_inactive_fps
+                .then_some(Duration::from_micros(33_333)),
             ..Default::default()
         };
         let smoke = args.smoke;
@@ -2747,6 +3394,10 @@ fn main() {
                     println!(
                         "smoke: canvas viewport={}x{} panels={panels}",
                         rect.size.width, rect.size.height
+                    );
+                    println!(
+                        "smoke: cursor_guard monitors={}",
+                        calm_native::cursor_guard::monitors_status()
                     );
                     if rect.size.width <= 0.0 || rect.size.height <= 0.0 || panels != 3 {
                         smoke_fail("canvas did not lay out with all three panels");
