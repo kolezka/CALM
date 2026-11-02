@@ -271,7 +271,7 @@ export interface CalmHostInfo {
 }
 
 /** `"unsupported"` is a panel from a layout written by a newer CALM; it draws chrome only. */
-export type PanelKind = "terminal" | "browser" | "plugin" | "tui" | "unsupported";
+export type PanelKind = "terminal" | "browser" | "plugin" | "tui" | "markdown" | "unsupported";
 
 /**
  * Where a new panel goes.

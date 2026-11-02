@@ -471,6 +471,7 @@ fn kind_word(kind: &PanelKind) -> &'static str {
         PanelKind::Terminal { .. } => "terminal",
         PanelKind::Browser { .. } => "browser",
         PanelKind::Plugin { .. } => "plugin",
+        PanelKind::Markdown { .. } => "markdown",
         PanelKind::Unsupported { .. } => "unsupported",
     }
 }
@@ -514,7 +515,9 @@ pub fn list_panels(scene: &Scene, focused: Option<PanelId>) -> Value {
                 info["pluginId"] = Value::from(app.plugin_id.as_str());
             }
             PanelKind::Browser { url, .. } => info["url"] = Value::from(url.as_str()),
-            PanelKind::Terminal { .. } | PanelKind::Unsupported { .. } => {}
+            PanelKind::Terminal { .. }
+            | PanelKind::Markdown { .. }
+            | PanelKind::Unsupported { .. } => {}
         }
         info
     });

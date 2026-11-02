@@ -147,6 +147,7 @@ impl CanvasView {
         self.apply_settings_to_input();
         self.reconcile_autosave(&old.session, cx);
         self.terminal_settings_changed(cx);
+        self.refresh_markdown_pages();
         self.sync_stats_timer(cx);
         self.refresh_all_panel_settings();
         if keymap_affected(&old, &self.settings.settings) {

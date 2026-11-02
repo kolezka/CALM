@@ -62,6 +62,7 @@ use crate::browser_panel::{BrowserEvents, BrowserPanel};
 use crate::content_move::ContentMove;
 use crate::dev_menu::{self, ResetFps, ToggleFps};
 use crate::grid_paint::{self, GridFrame, GridTextures};
+use crate::markdown_panel::{self, MarkdownPanel};
 use crate::paint_profile::{self as profile, Section};
 use crate::plugin_host::{self, BridgeSender, PluginPanel, Route};
 use crate::plugin_services::{self, ServiceCall};
@@ -88,6 +89,7 @@ actions!(
         FitAll,
         DrawTerminal,
         DrawBrowser,
+        DrawMarkdown,
         DeletePanel,
         OpenPanelSettings,
         Cancel,
@@ -160,6 +162,7 @@ pub struct CanvasView {
     pub plugin_warnings: usize,
     /// Live plugin pages by panel. Dropping an entry closes the page.
     plugin_panels: Vec<(PanelId, PluginPanel)>,
+    markdown_panels: Vec<(PanelId, MarkdownPanel)>,
     bridge: BridgeSender,
     /// Feeds bridge messages from plugin pages into `plugin_message`.
     _bridge_task: Task<()>,
@@ -301,6 +304,7 @@ impl CanvasView {
             plugin_errors: discovery.errors.len(),
             plugin_warnings: discovery.warnings.len(),
             plugin_panels: Vec::new(),
+            markdown_panels: Vec::new(),
             bridge,
             _bridge_task: bridge_task,
             plugin_services: Arc::new(plugin_services::Services::default()),
@@ -465,7 +469,8 @@ impl CanvasView {
                     PanelKind::Terminal { app: None, .. } => ClosingKind::Terminal,
                     PanelKind::Browser { .. } => ClosingKind::Browser,
                     PanelKind::Plugin { .. } => ClosingKind::Plugin,
-                    PanelKind::Unsupported { .. } => return None,
+                    // Its text is saved with the layout, so closing loses nothing.
+                    PanelKind::Markdown { .. } | PanelKind::Unsupported { .. } => return None,
                 };
                 Some(ClosingPanel {
                     kind,
@@ -589,6 +594,7 @@ impl CanvasView {
             || self.terminal_meta(id).is_some()
             || self.browser(id).is_some()
             || self.plugin_panels.iter().any(|(panel, _)| *panel == id)
+            || self.markdown_panels.iter().any(|(panel, _)| *panel == id)
     }
 
     /// The note drawn after `id`'s title, if it has one.
@@ -881,6 +887,10 @@ impl CanvasView {
                     {
                         eprintln!("calm: plugin panel {}: could not take the keyboard", id.0);
                     }
+                    if let Some((_, page)) = self.markdown_panels.iter().find(|(p, _)| *p == id) {
+                        // Only for scrolling with keys; no message when it is not in a window yet.
+                        page.focus();
+                    }
                 }
                 Effect::ClearFocus => {
                     self.focused = None;
@@ -922,6 +932,7 @@ impl CanvasView {
                     self.terminal_meta.retain(|(panel, _)| *panel != id);
                     self.browsers.retain(|(panel, _)| *panel != id);
                     self.plugin_panels.retain(|(panel, _)| *panel != id);
+                    self.markdown_panels.retain(|(panel, _)| *panel != id);
                     self.placeholders.remove(&id);
                     self.title_notes.remove(&id);
                     self.scene.remove(id);
@@ -1174,6 +1185,14 @@ impl CanvasView {
                     eprintln!("calm: plugin panel failed to open: {err}");
                     if let Some(panel) = self.scene.get_mut(id) {
                         panel.title = format!("{plugin_id}: failed to open");
+                    }
+                }
+            }
+            PanelKind::Markdown { .. } => {
+                if let Err(err) = self.open_markdown_panel(id, window, cx) {
+                    eprintln!("calm: markdown panel failed to open: {err}");
+                    if let Some(panel) = self.scene.get_mut(id) {
+                        panel.title = "Markdown: failed to open".to_string();
                     }
                 }
             }
@@ -1514,6 +1533,7 @@ impl CanvasView {
     pub fn apply_panel_overrides(&mut self, id: PanelId, cx: &mut Context<Self>) {
         self.cache_override_icon(id);
         self.refresh_terminal(id, cx);
+        self.refresh_markdown_pages();
         cx.notify();
     }
 
@@ -1712,6 +1732,49 @@ impl CanvasView {
         Ok(())
     }
 
+    /// Opens the page for a markdown panel already in the scene.
+    pub fn open_markdown_panel(
+        &mut self,
+        id: PanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let panel = self.scene.get(id).ok_or("no such panel")?;
+        let html = markdown_panel::page_for(panel, &self.settings.settings)
+            .ok_or("not a markdown panel")?;
+        let page = MarkdownPanel::open(html, window)?;
+        self.markdown_panels.push((id, page));
+        self.sync_native_order(cx);
+        Ok(())
+    }
+
+    /// Reloads every markdown page whose text or resolved style changed. Ids of the ones
+    /// that reloaded.
+    pub fn refresh_markdown_pages(&mut self) -> Vec<PanelId> {
+        let mut reloaded = Vec::new();
+        for (id, page) in &mut self.markdown_panels {
+            let Some(html) = self
+                .scene
+                .get(*id)
+                .and_then(|panel| markdown_panel::page_for(panel, &self.settings.settings))
+            else {
+                continue;
+            };
+            if page.show(html) {
+                reloaded.push(*id);
+            }
+        }
+        reloaded
+    }
+
+    /// The markdown page of panel `id`, for the smoke.
+    pub fn markdown_page(&mut self, id: PanelId) -> Option<&mut MarkdownPanel> {
+        self.markdown_panels
+            .iter_mut()
+            .find(|(p, _)| *p == id)
+            .map(|(_, page)| page)
+    }
+
     /// Installs plugins found outside the startup scan, e.g. the smoke's fixture.
     pub fn install_plugins(&mut self, plugins: Vec<InstalledPlugin>) {
         let entries = plugin_host::menu_entries(&plugins);
@@ -1832,6 +1895,8 @@ impl CanvasView {
         for (id, mode, placement) in modes {
             if let Some((_, plugin)) = self.plugin_panels.iter_mut().find(|(p, _)| p == id) {
                 plugin.apply_mode(*mode, placement.clone(), window);
+            } else if let Some((_, page)) = self.markdown_panels.iter_mut().find(|(p, _)| p == id) {
+                page.apply_mode(*mode, placement.clone(), window);
             }
         }
     }
@@ -2083,6 +2148,7 @@ impl CanvasView {
                 self.terminals.iter().any(|(t, _)| t == id)
                     || self.browsers.iter().any(|(b, _)| b == id)
                     || self.plugin_panels.iter().any(|(p, _)| p == id)
+                    || self.markdown_panels.iter().any(|(p, _)| p == id)
             })
             .collect()
     }
@@ -2101,6 +2167,8 @@ impl CanvasView {
                 browser.bring_to_front();
             } else if let Some((_, plugin)) = self.plugin_panels.iter_mut().find(|(p, _)| p == id) {
                 plugin.bring_to_front();
+            } else if let Some((_, page)) = self.markdown_panels.iter_mut().find(|(p, _)| p == id) {
+                page.bring_to_front();
             }
         }
         self.native_order = order;
@@ -2197,6 +2265,11 @@ impl CanvasView {
                 self.plugin_panels
                     .iter()
                     .map(|(id, plugin)| (plugin.stack_index(), id.0)),
+            )
+            .chain(
+                self.markdown_panels
+                    .iter()
+                    .map(|(id, page)| (page.stack_index(), id.0)),
             )
             .collect();
         native.sort();
@@ -2673,11 +2746,19 @@ enum ContentKind {
     LiveTerminal,
     TerminalPreviewImage,
     TerminalPreviewEmpty,
+    /// A live markdown page. It paints its own background, at its own opacity.
+    LiveMarkdown,
     Other,
 }
 
 impl ContentKind {
     fn of(panel: &Panel, content: Option<&TerminalContent>) -> Self {
+        if matches!(panel.kind, PanelKind::Markdown { .. }) {
+            return match content {
+                Some(TerminalContent::Live) => Self::LiveMarkdown,
+                _ => Self::Other,
+            };
+        }
         if !matches!(panel.kind, PanelKind::Terminal { .. }) {
             return Self::Other;
         }
@@ -2697,7 +2778,7 @@ impl ContentKind {
 fn paints_content_underfill(kind: ContentKind) -> bool {
     !matches!(
         kind,
-        ContentKind::LiveTerminal | ContentKind::TerminalPreviewImage
+        ContentKind::LiveTerminal | ContentKind::TerminalPreviewImage | ContentKind::LiveMarkdown
     )
 }
 
@@ -3618,7 +3699,13 @@ impl Render for CanvasView {
             confirm_title: self.confirm_title.clone(),
             hover: self.hover,
             terminals: self.terminals.clone(),
-            plugin_ids: self.plugin_panels.iter().map(|(id, _)| *id).collect(),
+            // Markdown pages take the plugin path: placed after paint, flat in preview.
+            plugin_ids: self
+                .plugin_panels
+                .iter()
+                .map(|(id, _)| *id)
+                .chain(self.markdown_panels.iter().map(|(id, _)| *id))
+                .collect(),
             looks: self.paint_looks(),
             modal_open: self.input.confirming.is_some() || self.menu_open,
             input_targets: Vec::new(),
@@ -3724,6 +3811,9 @@ impl Render for CanvasView {
             }))
             .on_action(cx.listener(|view, _: &DrawBrowser, window, cx| {
                 view.set_tool(Tool::DrawBrowser, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &DrawMarkdown, window, cx| {
+                view.set_tool(Tool::DrawMarkdown, window, cx)
             }))
             .on_action(cx.listener(|view, _: &DeletePanel, window, cx| {
                 if let Some(id) = view.focused {

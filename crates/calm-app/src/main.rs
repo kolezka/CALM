@@ -6,6 +6,7 @@ mod dev_menu;
 mod grid_paint;
 mod icon_image;
 mod keymap;
+mod markdown_panel;
 mod paint_profile;
 mod panel_settings;
 mod plugin_host;
@@ -746,6 +747,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             smoke_panel_settings(&view, window, cx),
         )
         .await;
+        smoke_step(&mut run, "markdown", smoke_markdown(&view, window, cx)).await;
         // Last: run early, it was followed by a plugins z-order mismatch (backlog item 6).
         smoke_step(&mut run, "session", async {
             smoke_autosave(&view, window, cx).await;
@@ -3668,6 +3670,127 @@ const SMOKE_MISSING_PLUGIN: &str = "calm-smoke-not-installed";
 const SMOKE_RESTORED_COMMAND: &str = "true";
 
 /// Closes every panel through the confirmed close path.
+const SMOKE_MARKDOWN: &str = "# Smoke\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- [x] one\n- [ ] two\n\n\
+```rust\nfn main() {}\n```\n\n<script>document.title = 'raw'</script>\n";
+
+/// Runs the probe in panel `id`'s page until it answers, after the page loaded.
+async fn smoke_markdown_probe(
+    view: &Entity<CanvasView>,
+    id: PanelId,
+    cx: &mut gpui::AsyncApp,
+) -> String {
+    let started = Instant::now();
+    let mut probing = false;
+    loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let answer = cx.update(|cx| {
+            view.update(cx, |view, _| {
+                let page = view.markdown_page(id)?;
+                if page.is_loading() {
+                    return None;
+                }
+                if !probing {
+                    page.probe(calm_core::markdown::PROBE_JS);
+                    probing = true;
+                    return None;
+                }
+                page.probe_result()
+            })
+        });
+        if let Some(answer) = answer {
+            return answer;
+        }
+        if started.elapsed() > Duration::from_secs(10) {
+            smoke_fail("markdown: the page did not load and answer the probe within 10 s");
+        }
+    }
+}
+
+/// Opens a markdown panel, checks what rendered, then turns its background opacity to 0
+/// and edits its text through the panel Settings path: the same page re-renders.
+async fn smoke_markdown(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::settings_form::FieldValue;
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            let kind = PanelKind::Markdown {
+                text: SMOKE_MARKDOWN.to_string(),
+            };
+            let id = view.scene.add(kind, Rect::new(60.0, 420.0, 360.0, 260.0));
+            view.open_markdown_panel(id, window, cx)?;
+            cx.notify();
+            Ok::<_, String>(id)
+        })
+    });
+    let id = match opened {
+        Ok(Ok(id)) => id,
+        Ok(Err(err)) => smoke_fail(&format!("markdown: open: {err}")),
+        Err(err) => smoke_fail(&format!("markdown: open: {err:#}")),
+    };
+    let rendered = smoke_markdown_probe(view, id, cx).await;
+    if rendered != "h1=1 table=1 tasks=2 code=1" {
+        smoke_fail(&format!(
+            "markdown: expected h1=1 table=1 tasks=2 code=1, got {rendered:?}"
+        ));
+    }
+    let edited = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.panel_settings_changed(
+                id,
+                "panel.markdown.background_opacity",
+                FieldValue::Number(0.0),
+                window,
+                cx,
+            );
+            view.panel_settings_changed(
+                id,
+                "panel.markdown.text",
+                FieldValue::Text("# One\n\n# Two\n".to_string()),
+                window,
+                cx,
+            );
+            let page = view.markdown_page(id)?;
+            let faded = page.html().contains("background-color:rgba(13,17,23,0)");
+            Some((faded, page.draws_background()))
+        })
+    });
+    let (faded, draws_background) = match edited {
+        Ok(Some(state)) => state,
+        Ok(None) => smoke_fail("markdown: the page is gone after the edit"),
+        Err(err) => smoke_fail(&format!("markdown: edit: {err:#}")),
+    };
+    if !faded || draws_background != Some(false) {
+        smoke_fail(&format!(
+            "markdown: expected a faded page and drawsBackground false, got faded={faded} \
+             draws_background={draws_background:?}"
+        ));
+    }
+    let rerendered = smoke_markdown_probe(view, id, cx).await;
+    if !rerendered.starts_with("h1=2 table=0") {
+        smoke_fail(&format!(
+            "markdown: the edited text did not re-render, probe says {rerendered:?}"
+        ));
+    }
+    let closed = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.apply_effects(vec![Effect::ClosePanel(id)], window, cx);
+            view.markdown_page(id).is_none()
+        })
+    });
+    if !matches!(closed, Ok(true)) {
+        smoke_fail("markdown: the page outlived its panel");
+    }
+    println!(
+        "smoke: markdown rendered=\"{rendered}\" rerendered=\"{rerendered}\" opacity=0 \
+         draws_background=false closed=ok"
+    );
+}
+
 fn smoke_close_all(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
     let closed = cx.update_window(window, |_, window, cx| {
         view.update(cx, |view, cx| {

@@ -8,11 +8,11 @@ use calm_core::settings::Settings;
 use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, NoAction};
 
 use crate::canvas_view::{
-    self, Cancel, CenterOnOrigin, ConfirmEnter, DeletePanel, DrawBrowser, DrawTerminal, FitAll,
-    MovePanelDown, MovePanelDownFar, MovePanelLeft, MovePanelLeftFar, MovePanelRight,
-    MovePanelRightFar, MovePanelUp, MovePanelUpFar, OpenPanelSettings, PanDown, PanDownFar,
-    PanLeft, PanLeftFar, PanRight, PanRightFar, PanUp, PanUpFar, ToggleFullscreen, ZoomIn, ZoomOut,
-    ZoomReset,
+    self, Cancel, CenterOnOrigin, ConfirmEnter, DeletePanel, DrawBrowser, DrawMarkdown,
+    DrawTerminal, FitAll, MovePanelDown, MovePanelDownFar, MovePanelLeft, MovePanelLeftFar,
+    MovePanelRight, MovePanelRightFar, MovePanelUp, MovePanelUpFar, OpenPanelSettings, PanDown,
+    PanDownFar, PanLeft, PanLeftFar, PanRight, PanRightFar, PanUp, PanUpFar, ToggleFullscreen,
+    ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::dev_menu::{About, Quit, ResetFps, ToggleFps};
 use crate::preset_menu::{LoadPreset, SavePreset, ShowWelcome};
@@ -29,6 +29,7 @@ pub fn gpui_action(id: &str) -> Option<Box<dyn Action>> {
         "canvas.fit_all" => Box::new(FitAll),
         "canvas.draw_terminal" => Box::new(DrawTerminal),
         "canvas.draw_browser" => Box::new(DrawBrowser),
+        "canvas.draw_markdown" => Box::new(DrawMarkdown),
         "canvas.cancel" => Box::new(Cancel),
         "canvas.confirm" => Box::new(ConfirmEnter),
         "view.fullscreen" => Box::new(ToggleFullscreen),
@@ -152,7 +153,7 @@ mod tests {
                 data.name
             );
         }
-        assert_eq!(ours.len(), 39);
+        assert_eq!(ours.len(), 40);
     }
 
     #[test]
@@ -217,6 +218,7 @@ mod tests {
                 [
                     "t",
                     "b",
+                    "m",
                     "escape",
                     "enter",
                     "f5",
@@ -240,6 +242,7 @@ mod tests {
             "enter",
             "escape",
             "f5",
+            "m",
             "t",
             "up",
             "down",
