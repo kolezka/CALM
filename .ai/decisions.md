@@ -768,9 +768,11 @@ These shipped with #41, next to "Restore at launch" above.
 ## Launching terminal's env is scrubbed (2026-11-02, `fix/terminal-env-scrub`)
 
 - **`main` unsets the launching terminal's identity before any thread starts.** Started from
-  iTerm2, every canvas terminal inherited `ITERM_SESSION_ID`, `TERM_PROGRAM=iTerm.app` and
-  `LC_TERMINAL`. Claude Code 2.1.316 treats either of the first two as "inside iTerm2", so
-  agent teams split the iTerm2 tab CALM was launched from. The list is in
+  iTerm2, every canvas terminal inherited `ITERM_SESSION_ID` and `LC_TERMINAL`. Claude Code
+  2.1.316 treats `ITERM_SESSION_ID` alone as "inside iTerm2", so agent teams split the iTerm2
+  tab CALM was launched from. `TERM_PROGRAM` did not leak into Ghostty terminals: the
+  gpui-libghostty shim sets it (`gpui-ghostty`), and since #67 CALM sets `ghostty`. Other
+  children (`gh`, `process.exec`, plugin helpers) did get `TERM_PROGRAM=iTerm.app`. The list is in
   `calm_core::host_env` (iTerm2, Terminal.app, tmux, screen, kitty, WezTerm, Alacritty,
   Zellij); `GHOSTTY_*`, `TERM`, `LC_ALL`/`LC_CTYPE` stay.
 - Hard-coded on purpose: it is a correctness fix, not a look or behavior choice. A user who
