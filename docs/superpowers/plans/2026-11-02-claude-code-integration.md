@@ -35,14 +35,28 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
   without the socket, never exit.
 - macOS `sun_path` limit: the socket path must be at most 103 bytes; longer means the server
   stays off with one logged line naming the path and the limit.
-- Token: 32 random bytes, hex, rewritten at every start. Requests carry
-  `Authorization: Bearer <token>`. A wrong or missing token gets 401 and no body detail.
-- Default allowlist for external callers: `canvas.listPanels`, `panel.getBounds`, `theme.get`,
-  `panel.setStatus`, `events.poll`, `events.publish`. `canvas.createPanel` and
-  `canvas.focusPanel` need `control.allow_open` (default false). A create with a `command`,
-  `process.exec` and any terminal input need `control.allow_exec` (default false), and these
-  three are one unit: never allow one without the others. `github.api`, `storage.*`,
-  `settings.*` stay plugin-only.
+- Token: 32 random bytes, hex, in `run/token`, replaced on each launch and deleted on quit.
+  Requests carry `Authorization: Bearer <token>`, compared in constant time, checked before
+  routing. A wrong or missing token gets 401 and no body detail. Terminals get the token file
+  path, never the token.
+- Access classes, checked before `plugin_host::route` (storage services bypass `dispatch`):
+  - **Read** (always allowed): `canvas.listPanels`, `panel.getBounds`, `theme.get`,
+    `panel.setStatus`, `events.poll`, `events.publish`.
+  - **Open** (`control.allow_open`, default false): `canvas.focusPanel`, and
+    `canvas.createPanel` only for kind `browser`, or kind `terminal` without `command`.
+  - **Exec** (`control.allow_exec`, default false), one unit: `canvas.createPanel` with a
+    `command`, with kind `tui` (runs the manifest command) or kind `plugin` (starts plugin
+    code), `process.exec`, and any terminal input. Never allow one without the others.
+  - **Plugin-only** (refused externally): every other `BRIDGE_METHODS` entry, including
+    `github.api`, `storage.*`, `settings.*`, `openExternal`, `panel.setTitle`,
+    `panel.minimize`, `panel.close`, `log`.
+- Wire format of `POST /v1/call`: request `{ "id": u64, "method": string, "params": any }`;
+  answer `{ "id": u64, "ok": true, "result": any }` or
+  `{ "id": u64, "ok": false, "error": { "code": string, "message": string } }` (the existing
+  `ApiError` serde shape). Produced by `BridgeResponse::to_json` (Task A2); `calm-mcp` and the
+  mod parse this shape and nothing else.
+- Deadlines: an ordinary call gets 503 when the UI has not answered within 5 s;
+  `events.poll` gets its own `timeoutMs + 5 s`. Request reading times out after 5 s.
 - Request body at most 65,536 bytes (413 above). Status text at most 120 chars after trimming,
   control characters stripped, rendered as plain text. Event payloads at most 16,384 bytes of
   JSON.
@@ -74,7 +88,10 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 4. **Hostile text from the model.** 1 MB body, status with ANSI escapes and newlines, event
    payload with `</script>`. Expect 413, sanitized 120-char status, payload delivered to the
    board only through `BridgeEvent::to_js` escaping. Tests in Tasks A2, A5, D2.
-5. **Many teammates, slow reader.** 20 teammates publishing every 2 s while the board is closed.
+5. **`allow_open` alone must not run anything.** A client with only `allow_open` asks for a
+   `tui` or `plugin` panel. Expect 403. Tests `access_matrix` (A1) and
+   `tui_create_is_403_with_only_allow_open` (A2).
+6. **Many teammates, slow reader.** 20 teammates publishing every 2 s while the board is closed.
    The event backlog stays bounded (512 events) and the next poll reports `gap: true`. Test in
    Task A6.
 
@@ -96,19 +113,27 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
   - `pub fn run_dir(calm_home: &Path) -> PathBuf` (`<calm_home>/run`)
   - `pub fn socket_path(calm_home: &Path) -> Result<PathBuf, ControlError>` (`TooLong { path, len }`)
   - `pub enum Access { Read, Open, Exec, PluginOnly }`
-  - `pub fn method_access(method: &str, params: &serde_json::Value) -> Access`
-    (`canvas.createPanel` with `spec.command` present is `Exec`, without it `Open`)
+  - `pub fn method_access(method: &str, params: &serde_json::Value) -> Access`, exactly the
+    classes in Global Constraints. Unknown methods are `PluginOnly`.
   - `pub fn allowed(access: Access, settings: &ControlSettings) -> bool`
+  - `pub fn token_matches(given: &[u8], expected: &[u8]) -> bool` (constant time over
+    `expected.len()`, false on length mismatch)
   - `pub fn sanitize_status(text: &str) -> String`
   - `pub struct ControlSettings { enabled: bool, allow_open: bool, allow_exec: bool }`
   - `pub enum Side { Right, Below }` (serde `"right"`, `"below"`) and
     `pub enum BoardMode { Auto, Off }`
-  - `pub struct AgentSettings { board: BoardMode, board_side: Side }`
+  - `pub struct AgentColors { working: Rgba, waiting: Rgba, idle: Rgba, error: Rgba }`
+    (defaults `#4f8cff`, `#ffb020`, `#7a7a7a`, `#ff4d4f`, parsed like other color settings)
+  - `pub struct AgentSettings { board: BoardMode, board_side: Side, colors: AgentColors }`
 
 - [ ] **Step 1: Write failing tests** in `control.rs`:
   `socket_path_rejects_104_bytes` (a home making the path exactly 104 bytes gives `TooLong`,
-  103 gives `Ok`), `create_with_command_is_exec`, `create_without_command_is_open`,
-  `github_and_storage_are_plugin_only`, `exec_needs_allow_exec_even_with_allow_open`,
+  103 gives `Ok`), `access_matrix` (table test: each of the 17 `BRIDGE_METHODS` plus
+  `panel.setStatus`, `events.poll`, `events.publish`, and `canvas.createPanel` with kinds
+  `browser`, `terminal`, `terminal`+`command`, `tui`, `plugin`, each against the four
+  combinations of `allow_open`/`allow_exec`; expected values are the Global Constraints
+  classes), `tui_and_plugin_creates_need_allow_exec`, `token_match_rejects_prefix_and_length`,
+  `exec_needs_allow_exec_even_with_allow_open`,
   `status_is_trimmed_stripped_and_capped` (input `"\x1b[31mhi\nthere" + 200 × "x"` gives
   `"hi there" + ...` of 120 chars, no `\x1b`, no `\n`), and in `settings.rs`
   `control_defaults_are_closed` plus `unknown_board_mode_is_rejected`.
@@ -123,29 +148,38 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 **Files:**
 - Create: `crates/calm-app/src/control_server.rs`
 - Create: `crates/calm-app/src/control_http.rs` (bounded HTTP/1.1 parse and write, no new crate)
+- Modify: `crates/calm-plugins/src/bridge.rs` (`BridgeResponse::to_json`)
 - Modify: `crates/calm-app/src/main.rs` (start after settings load, stop on quit)
 
 **Interfaces:**
-- Consumes: Task A1 (`socket_path`, `method_access`, `allowed`).
+- Consumes: Task A1 (`socket_path`, `method_access`, `allowed`, `token_matches`).
 - Produces:
+  - `impl BridgeResponse { pub fn to_json(&self) -> serde_json::Value }` with the wire shape
+    in Global Constraints.
   - `pub struct ControlServer` with `pub fn start(calm_home: &Path, settings: ControlSettings, tx: async_channel::Sender<ControlCall>) -> Result<ControlServer, String>` and `Drop` that removes the socket and token.
   - `pub struct ControlCall { pub panel: PanelId, pub request: BridgeRequest, pub reply: async_channel::Sender<BridgeResponse> }`, the reply channel made with
     `async_channel::bounded(1)` (`async-channel` is already a `calm-app` dependency).
   - `pub fn token_file(calm_home: &Path) -> PathBuf`
   - HTTP: `POST /v1/call`, headers `Authorization: Bearer`, `X-Calm-Panel: <u64>`, body
-    `{ "id", "method", "params" }`; answer 200 with the `BridgeResponse` JSON. 400 bad JSON or
-    header, 401 token, 403 not allowed (body `{ "error": { "code": "not_allowed", "method" } }`),
-    404 path, 413 size, 503 when the UI does not answer within 5 s.
+    `{ "id", "method", "params" }`; answer 200 with `BridgeResponse::to_json`. 400 bad JSON or
+    header, 401 token, 403 not allowed (body
+    `{ "id", "ok": false, "error": { "code": "not_allowed", "message": "<method> needs control.allow_open|allow_exec" } }`),
+    404 path, 413 size, 503 per the deadlines in Global Constraints.
 
 - [ ] **Step 1: Write failing tests** (`#[cfg(test)]`, temp `CALM_HOME`, a test thread that
-  answers `ControlCall`s): `refuses_wrong_token_with_401`, `rejects_body_over_64k_with_413`,
-  `exec_method_is_403_by_default`, `stale_socket_is_replaced` (bind, drop listener without
-  unlink, start again: ok), `live_socket_is_not_stolen` (second start returns `Err`, first
-  still answers), `files_are_private` (dir 0700, socket and token 0600),
-  `symlinked_run_dir_is_refused`.
+  answers `ControlCall`s): `response_json_round_trip` (in `bridge.rs`: one `Ok` and one `Err`
+  encode to the exact wire shape), `refuses_wrong_token_with_401`,
+  `refuses_missing_token_with_401`, `rejects_body_over_64k_with_413`,
+  `exec_method_is_403_by_default`, `tui_create_is_403_with_only_allow_open`,
+  `stale_socket_is_replaced` (bind, drop listener without unlink, start again: ok),
+  `live_socket_is_not_stolen` (second start returns `Err`, first still answers, token file
+  bytes unchanged), `files_are_private` (dir 0700, socket and token 0600),
+  `symlinked_run_dir_is_refused`, `ordinary_call_times_out_with_503` (test thread never
+  answers), `poll_outlives_the_ordinary_deadline` (a `timeoutMs: 8000` poll answered at 7 s
+  gets 200, not 503).
 - [ ] **Step 2:** `cargo test -p calm-app control_` fails.
 - [ ] **Step 3:** Implement. One accept thread, one short-lived thread per connection,
-  `Connection: close`, read timeout 5 s, umask 0177 around bind. Liveness check is a connect.
+  `Connection: close`, umask 0177 around bind. Liveness check is a connect.
 - [ ] **Step 4:** Tests pass.
 - [ ] **Step 5:** Commit `feat(app): serve the bridge on a private Unix socket`.
 
@@ -153,7 +187,8 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 
 **Files:**
 - Modify: `crates/calm-app/src/canvas_view.rs` (drain `ControlCall`s near the plugin call site
-  at `plugin_host::route`, about line 1646)
+  at `plugin_host::route`, about line 1644 on `main` at `18f72b6`). The access check from A1
+  runs before `route`, because `route` sends storage calls to background services first.
 - Modify: `crates/calm-app/src/plugin_host.rs` (`Origin` on `HostContext`)
 
 **Interfaces:**
@@ -176,16 +211,25 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 
 **Interfaces:**
 - Produces: env `CALM_SOCKET`, `CALM_PANEL_ID` (decimal), `CALM_TOKEN_FILE`, `CALM_MCP_BIN`
-  (absolute path of `calm-mcp` next to the running binary, omitted if missing). Merged before
-  profile env, so a profile can override them. Missing socket means the vars are not set.
+  (absolute path of `calm-mcp` in the same directory as the running `calm-app`: the bundle's
+  `Contents/MacOS`, or `target/<profile>` in a dev build; omitted when that file is missing).
+  Merged before profile env, so a profile can override them. Missing socket means the vars
+  are not set. Never the token itself.
 
-- [ ] **Step 1: Failing test** `launch_env_names_the_panel` in `terminal_profiles.rs`, and a
-  restore test `restored_terminal_gets_its_new_panel_id`.
+- [ ] **Step 1: Failing tests** `launch_env_names_the_panel` in `terminal_profiles.rs`,
+  `app_launch_env_names_the_panel` in `tui_host.rs`, and a restore test
+  `restored_terminal_gets_its_new_panel_id`.
 - [ ] **Steps 2 to 4:** Implement; `cargo test -p calm-app` passes.
-- [ ] **Step 5:** Smoke step `control_socket`: from the smoke process, POST `canvas.listPanels`
-  with `X-Calm-Panel` of the first smoke terminal, print
-  `smoke: control_socket panels=<n> status=200`, fail unless 200 and `n >= 1`. Also POST with a
-  bad token, require 401. `cargo run -p calm-app -- --smoke; echo rc=$?` exits 0.
+- [ ] **Step 5:** Smoke step `control_socket`, proving the env reaches real children:
+  open a typed-command terminal running `/bin/sh -c 'env > "$1"' sh <smoke dir>/env-cmd.txt`,
+  and an app from a smoke-only TUI manifest in the smoke plugin dir with the same command
+  writing `env-app.txt`. Wait for both files, decode them, and require in each
+  `CALM_PANEL_ID` equal to that panel's id, `CALM_SOCKET` and `CALM_TOKEN_FILE` present, and
+  the token's value absent. Then, using the decoded `CALM_SOCKET` and the token file,
+  POST `canvas.listPanels` with that `CALM_PANEL_ID` (require 200 and the panel listed) and
+  once with a bad token (require 401). Print
+  `smoke: control_socket env_cmd=ok env_app=ok status=200 bad_token=401`.
+  `cargo run -p calm-app -- --smoke; echo rc=$?` exits 0.
 - [ ] **Step 6:** Commit `feat(app): give terminals the control socket env`.
 
 ### Task A5: `panel.setStatus` and the chrome dot
@@ -201,12 +245,12 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
   `pub struct PanelStatus { pub state: AgentState, pub text: String, pub at_ms: u64 }`,
   method `panel.setStatus { state: "working"|"waiting"|"idle"|"error"|"clear", text?: string, panelId?: u64 }`
   (`panelId` defaults to the caller). `canvas.listPanels` items gain `status`.
-  Dot colors are settings `agents.colors.{working,waiting,idle,error}` with defaults
-  `#4f8cff`, `#ffb020`, `#7a7a7a`, `#ff4d4f`.
+  Dot colors come from `AgentSettings.colors` (Task A1).
 
 - [ ] **Step 1: Failing tests:** `set_status_sanitizes_text`, `clear_removes_status`,
-  `status_is_not_saved_in_layouts` (round-trip a scene, status gone),
-  `bridge_methods_match_sdk_types` (existing sync test extended).
+  `status_is_not_saved_in_layouts` (round-trip a scene, status gone), and the existing
+  `dts_declares_every_bridge_method` in `bridge.rs` fails until `calm.d.ts` declares
+  `panel.setStatus`.
 - [ ] **Steps 2 to 4:** Implement. The dot and text sit in the title bar, so they never overlap the
   native view. Text is cut with an ellipsis to the bar width.
 - [ ] **Step 5:** Smoke: set `waiting` on the smoke terminal over the socket, print
@@ -226,13 +270,22 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
   `since(cursor: u64, topics: &[String]) -> Polled { events: Vec<LoggedEvent>, next: u64, gap: bool }`.
   Methods: `events.publish { topic, payload }` (topic `[a-z0-9.]{1,64}`, payload at most 16 KiB),
   `events.poll { since, topics?, timeoutMs <= 25000 }` held without blocking the UI thread
-  (answer when an event arrives or the timeout fires). CALM itself pushes `panelsChanged` and
-  `panelStatusChanged`. Plugin pages receive every event through `calm.events.on(topic)`.
+  (answer when an event arrives or the timeout fires; `timeoutMs: 0` answers at once, which is
+  how a page replays the backlog). CALM itself pushes `panelsChanged` and
+  `panelStatusChanged`. Plugin pages get three new host event names, added to the prelude's
+  `EVENTS` list and to `calm.d.ts`: `panelsChanged`, `panelStatusChanged`, and `external`
+  with payload `{ topic, payload, seq }` for every `events.publish`. Pages filter by `topic`
+  themselves; `calm.events.on("agent")` stays an error.
 
 - [ ] **Step 1: Failing tests** in `event_log.rs`: `poll_returns_events_after_cursor`,
   `overflow_reports_gap` (capacity 4, push 6, poll from 0: 4 events, `gap: true`),
-  `topic_filter`, and `publish_rejects_large_payload` in `plugin_host.rs`.
-- [ ] **Steps 2 to 4:** Implement; poll waits go through the background executor with a timer.
+  `topic_filter`, `zero_timeout_answers_at_once`; in `plugin_host.rs`
+  `publish_rejects_large_payload` and `publish_emits_external_to_plugin_pages`; in
+  `bridge.rs` the prelude test `events_on_accepts_external` and the existing
+  `dts_declares_every_bridge_method` for `events.poll` and `events.publish`.
+- [ ] **Steps 2 to 4:** Implement; a held poll is a stored waiter answered from the UI thread
+  when an event is pushed, or by a background-executor timer at `timeoutMs`. The UI thread
+  never sleeps.
 - [ ] **Step 5:** Update `.ai/status.md` (socket, env, status, events now wired) and
   `docs/plugins.md` (new methods, allowlist, settings). Commit `feat: event log over the socket`.
 
@@ -243,23 +296,33 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 ### Task B1: placement beside a panel (`calm-core`)
 
 **Files:** Create `crates/calm-core/src/placement.rs` (register in `lib.rs`); modify
-`crates/calm-app/src/plugin_host.rs` `create_panel`.
+`crates/calm-app/src/plugin_host.rs` `create_panel` and `PanelSpec` in
+`packages/calm-plugin-sdk/calm.d.ts`.
 
 **Interfaces:**
 - Produces: `pub fn place_beside(anchor: Rect, size: Size, side: Side, gap: f64, others: &[Rect]) -> Rect`.
-  First free spot on `side` at `gap` (callers pass `JOIN_SNAP_GAP`), stepping along the same side, then
-  the other side, never overlapping `others`. `canvas.createPanel` spec gains
-  `placement?: { beside: u64, side?: "right"|"below" }`.
+  First free spot on `side` at `gap`, stepping along the same side, then the other side, never
+  overlapping `others`. Every caller passes `gap = JOIN_SNAP_GAP` and `others` = the rects of
+  all other panels in the scene. `canvas.createPanel` spec gains
+  `near?: u64` and `side?: "right"|"below"` (the spec's `{ near: PanelId, side }`); `side`
+  defaults to `agents.board_side`. An unknown `near` is `not_found`.
 
-- [ ] Tests: `beside_right_of_anchor`, `skips_occupied_slot`, `falls_back_to_below`.
+- [ ] Tests: `beside_right_of_anchor`, `skips_occupied_slot`, `falls_back_to_below`, and in
+  `plugin_host.rs` `create_near_unknown_panel_is_not_found`.
   Implement, `cargo test -p calm-core placement`, commit `feat(core): place a panel beside another`.
 
 ### Task B2: the MCP server crate
 
 **Files:**
 - Create: `crates/calm-mcp/` (`Cargo.toml`, `src/main.rs`, `src/protocol.rs`,
-  `src/client.rs`, `src/tools.rs`); add to the workspace; `scripts/` bundle step copies the
-  binary to `Contents/MacOS/calm-mcp`.
+  `src/client.rs`, `src/tools.rs`); add to the workspace. No dependency on other CALM crates:
+  it parses the wire format from Global Constraints with `serde_json`.
+- Modify: `scripts/bundle-macos.sh`: build with `cargo build --release -p calm-app -p calm-mcp`
+  and copy `calm-mcp` to `Contents/MacOS/calm-mcp`. In dev, `cargo build -p calm-mcp` puts it
+  in `target/debug` next to `calm-app`, where A4 finds it; `docs/dev-setup.md` says so.
+- Outside CALM the plugin's fallback is `calm-mcp` on `PATH`. If it is not installed, Claude
+  Code shows the `calm` MCP server as failed in `/mcp`; nothing else breaks. `docs/claude-code.md`
+  documents both (and a symlink from the bundle into `~/.local/bin` for terminal use).
 
 **Interfaces:**
 - Consumes: socket protocol from A2, env from A4, placement from B1.
@@ -314,17 +377,24 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 - Produces:
   - `turn.start` → `working`; `turn.complete` → `idle`; a permission or question prompt
     (`tool.check` answering ask) → `waiting` with the tool name; an API error → `error`.
+  - A session id: the one the mods API reports for this session if the reference has one
+    (check `plugins/mods/reference.md`), else a random 16-hex id made in `register`.
   - `agent.spawn` and a 2 s `$.clock.every` over `$.agent.list()` publish topic `agent` with
-    `{ lead: CALM_PANEL_ID, agentId, name, status, lastTurnAt }`, only on change.
-  - A 10 s long-poll loop on topic `agent.message`: payload `{ to, text }` goes to
-    `$.session.send({ to, text })`. Stops on the first 401 or 403.
+    `{ lead: CALM_PANEL_ID, session, agentId, name, status, lastTurnAt }` on change, and the
+    full current list every 30 s even without a change, so a board opened late or after a
+    `gap` catches up.
+  - A long-poll loop on topic `agent.message` with `timeoutMs: 20000`, cursor kept between
+    polls. A payload `{ lead, session, to, text }` is delivered with
+    `$.session.send({ to, text })` only when `lead` equals this `CALM_PANEL_ID` and `session`
+    equals this session id; others are skipped. Stops on the first 401 or 403.
   - Commands `/calm open <url>` and `/calm board`.
   - With `CALM_SOCKET` unset, `register` registers nothing.
 
 - [ ] **Step 1: Failing tests** with the documented mods test runner
   (`https://code.claude.com/docs/en/plugins/mods/test.md`; read it first and use its harness):
   `no_socket_registers_nothing`, `turn_start_sets_working`, `agent_list_change_publishes_once`,
-  `message_poll_calls_session_send`, `forbidden_stops_polling`.
+  `full_list_republished_every_30s`, `message_poll_calls_session_send`,
+  `message_for_other_lead_or_session_is_skipped`, `forbidden_stops_polling`.
 - [ ] **Steps 2 to 4:** Implement; tests pass; `claude plugin validate` lists only
   `$.fs.read`, `$.http.fetch`, `$.agent.list`, `$.session.send`, `$.clock.every`,
   `$.command.register` under `calls:`.
@@ -342,23 +412,31 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 - Create: `plugins/agent-board/` (manifest, Preact TSX, bun build like `github-prs`)
 
 **Interfaces:**
-- Consumes: `calm.events.on("agent")`, `canvas.listPanels`, `events.publish`.
-- Produces: one card per `agentId` under its lead panel's title: name, status pill, time since
-  last turn, a `waiting` highlight, a text box that publishes `agent.message { to, text }`.
-  Clicking a card focuses the lead panel.
+- Consumes: `calm.events.on("external")` filtered to `topic === "agent"`,
+  `events.poll`, `canvas.listPanels`, `events.publish`.
+- Produces: on load, replay with `events.poll({ since: 0, topics: ["agent"], timeoutMs: 0 })`,
+  then subscribe. One card per `(lead, session, agentId)` under its lead panel's title: name,
+  status pill, time since last turn, a `waiting` highlight, a text box that publishes
+  `agent.message { lead, session, to, text }`. Cards of an older `session` for the same lead
+  are dropped when a newer one appears. Clicking a card focuses the lead panel.
 
 - [ ] Tests (bun): `cards_group_by_lead`, `waiting_sorts_first`, `escapes_names`
-  (name `<img onerror>` renders as text). `gmake plugins-check` passes. Commit
+  (name `<img onerror>` renders as text), `late_open_shows_existing_agents` (replay returns two
+  agents, no live event: two cards), `new_session_replaces_old_cards`,
+  `message_carries_lead_and_session`. `gmake plugins-check` passes. Commit
   `feat: agent board plugin`.
 
 ### Task D2: open the board beside the lead
 
 **Files:** Modify `crates/calm-app/src/plugin_host.rs` / `canvas_view.rs`.
 
-- [ ] When `agents.board = "auto"` and the first `agent` event arrives for a lead with no board,
-  CALM opens `agent-board` with `place_beside(lead, default size, agents.board_side)`. One board
-  per lead; closing it keeps it closed until the lead's next session. Tests:
+- [ ] When `agents.board = "auto"` and an `agent` event arrives for a lead with no board,
+  CALM opens `agent-board` at
+  `place_beside(lead.rect, default plugin size, agents.board_side, JOIN_SNAP_GAP, &other_rects)`.
+  One board per lead. Closing it records `(lead, session)` as dismissed; the board opens again
+  only for an `agent` event from that lead with a different `session`. Tests:
   `first_agent_event_opens_one_board`, `board_off_opens_nothing`,
+  `dismissed_board_stays_closed_for_same_session`, `new_session_reopens_board`,
   `payload_reaches_page_escaped` (payload with `</script>` through `BridgeEvent::to_js`).
   Smoke: publish one `agent` event, print `smoke: agent_board opened=1`. Commit
   `feat: open the agent board beside the lead`.
