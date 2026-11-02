@@ -44,6 +44,8 @@ to paint.
   settings, changed live in a native Settings window.
 - **Picks up where you left off.** A launch restores the last session (panels, order and
   camera, with fresh processes) and autosaves it as you work. `--no-restore` starts empty.
+  The first launch opens the `welcome` preset. File > Save Preset… and Load Preset… keep
+  named layouts, and Developer > Show Welcome Screen brings the welcome page back.
 
 <details>
 <summary>All features</summary>
@@ -247,9 +249,9 @@ from the TSX template in [templates/plugin-tsx](templates/plugin-tsx/README.md).
 CALM is an early prototype. Nothing has been released and the GUI has had limited manual
 testing.
 
-Session restore and autosave work. Not built yet: saving named layouts and the File menu
-(`--layout` only opens an existing layout), the `ask` restore dialog, a benchmark mode, and
-most of the plugin API v2 (all 17 v1 bridge methods answer).
+Session restore, autosave and named presets (File > Save Preset… and Load Preset…) work.
+Not built yet: the `ask` restore dialog, a benchmark mode, and most of the plugin API v2
+(all 18 v1 bridge methods answer).
 
 ## Documentation
 

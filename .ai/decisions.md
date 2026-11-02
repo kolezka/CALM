@@ -24,6 +24,15 @@ one means a new entry, not an edit.
   CALM shaped to their own workflow, not to the author's taste. Cost: more settings to
   validate, test and document, and more states to support. If it proves wrong, fold rarely
   used settings back into fixed defaults.
+- **CALM is proprietary, the plugin SDK and templates are MIT (2026-11-02, #71, #72).**
+  `LICENSE` says all rights reserved; crates point at it with `license-file` and are
+  `publish = false`. `packages/calm-plugin-sdk/` and `templates/` carry an MIT `LICENSE`, so
+  plugins built from them can use any license. Third-party notices for shipped code live in
+  `THIRD_PARTY_NOTICES`, written by `gmake notices` (cargo-about plus
+  `third_party/notices/`). Reason (#71): CALM can be sold or relicensed later, and plugin
+  authors can copy the types and starters into their own code. Cost not recorded; the
+  `LICENSE` text publishes the repo for viewing only. This replaces the earlier MIT plan in
+  the backlog.
 
 ## Architecture
 
@@ -596,7 +605,7 @@ These shipped with #41, next to "Restore at launch" above.
   Reason: the panel keeps its place and the bad url never loads. Cost: the user sees a
   blank page and has to type the address again.
 
-## Bridge control (2026-11-01, `feat/plugin-bridge-control`)
+## Bridge control (2026-11-01, PR #44)
 
 - **Window work leaves `dispatch` as `HostEffect`s.** `dispatch` stays pure over a
   `HostContext` and the canvas applies `Open`, `Focus` and `Close` with the window. The
@@ -643,7 +652,7 @@ These shipped with #41, next to "Restore at launch" above.
   is wanted, add one `menus.labels` settings block for all built-in menu labels rather than
   one setting per label.
 
-## Native occlusion (2026-11-01, `fix/native-occlusion`)
+## Native occlusion (2026-11-01, PR #54)
 
 - **Native views are masked by the panels above them.** Native views are subviews of the
   GPUI host, so they draw over all GPUI paint, and a back panel's content covered a front
@@ -671,7 +680,7 @@ These shipped with #41, next to "Restore at launch" above.
   press (`calm_core::occlusion::PointerGate`). A move event with no button held drops any
   remembered press, since GPUI only sends a release to hovered views.
 
-## Per-panel settings (2026-11-01, `feat/panel-settings`)
+## Per-panel settings (2026-11-01, PR #57)
 
 - **Each field is inherited or set.** The panel Settings window shows every field with its
   inherited value until the user sets it. Clearing a field puts it back to inherited, and
@@ -771,7 +780,7 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
 - **Symbols use Apple's modifier order** `⌃⌥⇧⌘`, so Cmd+Shift+Backspace shows as `⇧⌘⌫`.
   The close prompt names its keys in words (`Close? enter / esc`), as the user chose.
 
-## TUI apps are terminals (2026-11-02, `feat/tui-extends-terminal`)
+## TUI apps are terminals (2026-11-02, PR #63)
 
 - **A TUI app is `PanelKind::Terminal` with `app: Some(TerminalApp { plugin_id,
   plugin_version })`.** Built by `PanelKind::app_terminal`, read with `.app()`.
@@ -811,7 +820,44 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
   and follows `terminal.command_restart`. Plugin API kind `tui` and `PanelInfo.kind` "tui"
   are unchanged.
 
-## Presets and welcome screen (2026-11-02, built on `feat/presets-welcome`, PR #75, not merged)
+## Color wells without opacity (2026-11-02, PR #74)
+
+- **Every CALM color well sets `supportsAlpha = false`.** The `Control::Color` builder in
+  `settings_window.rs` (the only `NSColorWell` CALM creates) turns it off, so the picker
+  shows no opacity slider. Why every well: no CALM color well keeps alpha today
+  (`rgb_from_ns`, `BindingKind::Color`), chrome wells included, so a slider anywhere would
+  be a control that does nothing. This replaces the spec's "terminal wells only". Turn it
+  back on per well when chrome alpha is wired (the gap is in `.ai/status.md`). The
+  deprecated app-wide `NSColor::setIgnoresAlpha` was rejected; macOS 14, CALM's floor, has
+  the per-well API.
+- **Previews fade in bytes.** A preview is GPUI-drawn, so the native fade does not reach
+  it. `take_snapshot` scales the snapshot's alpha by `content_opacity` with
+  `preview::fade_pixels`, straight alpha, because gpui's sprite pipeline blends with
+  `SourceAlpha` (`gpui-pre-apple` 0.3.4 `metal_renderer.rs`). Bytes round half away from zero.
+  Ghostty's snapshot bytes are premultiplied, so every snapshot first goes through
+  `preview::unpremultiply_pixels`, then the fade.
+
+## Launching terminal's env is scrubbed (2026-11-02, PR #69)
+
+- **`main` unsets the launching terminal's identity before CALM starts any thread.** The
+  function is `unsafe` and its caller owns that guarantee. GPUI's pre-main constructors only
+  register classes (source-read in review); system framework start-up is not audited. Started from
+  iTerm2, every canvas terminal inherited `ITERM_SESSION_ID` and `LC_TERMINAL`. Claude Code
+  2.1.316 treats `ITERM_SESSION_ID` alone as "inside iTerm2", so agent teams split the iTerm2
+  tab CALM was launched from. `TERM_PROGRAM` did not leak into Ghostty terminals: the
+  gpui-libghostty shim sets it (`gpui-ghostty`), and since #67 CALM sets `ghostty`. Other
+  children (`gh`, `process.exec`, plugin helpers) did get `TERM_PROGRAM=iTerm.app`. The list is in
+  `calm_core::host_env` (iTerm2, Terminal.app, tmux, screen, kitty, WezTerm, Alacritty,
+  Zellij); `GHOSTTY_*`, `TERM`, `LC_ALL`/`LC_CTYPE` stay.
+- Hard-coded on purpose: it is a correctness fix, not a look or behavior choice. A user who
+  wants one of these names in a terminal can set it in a terminal profile's env.
+- Done in CALM's own environment, not per spawn: `gpui-libghostty` 0.3.1 has no env option,
+  and one place then covers every child (terminals, TUI apps, plugins, `gh`) instead of each
+  argv builder growing `env -u` flags.
+- Smoke step `terminal_env` spawns `/usr/bin/env` and fails on any listed name. It only
+  discriminates when smoke runs from a terminal that sets them (iTerm2, tmux).
+
+## Presets and welcome screen (2026-11-02, PR #75)
 
 Spec: `docs/superpowers/specs/2026-11-02-presets-and-welcome-design.md`.
 
@@ -860,40 +906,3 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   panels, or `panels.confirm_close` off) nothing is compared. The Load confirmation and a
   normal panel close share one rule (`close_confirms`): a running terminal or app, or a
   browser, asks first.
-
-## Color wells without opacity (2026-11-02, `feat/terminal-transparency`)
-
-- **Every CALM color well sets `supportsAlpha = false`.** The `Control::Color` builder in
-  `settings_window.rs` (the only `NSColorWell` CALM creates) turns it off, so the picker
-  shows no opacity slider. Why every well: no CALM color well keeps alpha today
-  (`rgb_from_ns`, `BindingKind::Color`), chrome wells included, so a slider anywhere would
-  be a control that does nothing. This replaces the spec's "terminal wells only". Turn it
-  back on per well when chrome alpha is wired (the gap is in `.ai/status.md`). The
-  deprecated app-wide `NSColor::setIgnoresAlpha` was rejected; macOS 14, CALM's floor, has
-  the per-well API.
-- **Previews fade in bytes.** A preview is GPUI-drawn, so the native fade does not reach
-  it. `take_snapshot` scales the snapshot's alpha by `content_opacity` with
-  `preview::fade_pixels`, straight alpha, because gpui's sprite pipeline blends with
-  `SourceAlpha` (`gpui-pre-apple` 0.3.4 `metal_renderer.rs`). Bytes round half away from zero.
-  Ghostty's snapshot bytes are premultiplied, so every snapshot first goes through
-  `preview::unpremultiply_pixels`, then the fade.
-
-## Launching terminal's env is scrubbed (2026-11-02, `fix/terminal-env-scrub`)
-
-- **`main` unsets the launching terminal's identity before CALM starts any thread.** The
-  function is `unsafe` and its caller owns that guarantee. GPUI's pre-main constructors only
-  register classes (source-read in review); system framework start-up is not audited. Started from
-  iTerm2, every canvas terminal inherited `ITERM_SESSION_ID` and `LC_TERMINAL`. Claude Code
-  2.1.316 treats `ITERM_SESSION_ID` alone as "inside iTerm2", so agent teams split the iTerm2
-  tab CALM was launched from. `TERM_PROGRAM` did not leak into Ghostty terminals: the
-  gpui-libghostty shim sets it (`gpui-ghostty`), and since #67 CALM sets `ghostty`. Other
-  children (`gh`, `process.exec`, plugin helpers) did get `TERM_PROGRAM=iTerm.app`. The list is in
-  `calm_core::host_env` (iTerm2, Terminal.app, tmux, screen, kitty, WezTerm, Alacritty,
-  Zellij); `GHOSTTY_*`, `TERM`, `LC_ALL`/`LC_CTYPE` stay.
-- Hard-coded on purpose: it is a correctness fix, not a look or behavior choice. A user who
-  wants one of these names in a terminal can set it in a terminal profile's env.
-- Done in CALM's own environment, not per spawn: `gpui-libghostty` 0.3.1 has no env option,
-  and one place then covers every child (terminals, TUI apps, plugins, `gh`) instead of each
-  argv builder growing `env -u` flags.
-- Smoke step `terminal_env` spawns `/usr/bin/env` and fails on any listed name. It only
-  discriminates when smoke runs from a terminal that sets them (iTerm2, tmux).

@@ -9,9 +9,9 @@ native children.
 
 - Many terminals at once (5, 10, 20), each any size, all alive while panned or zoomed.
 - Performance matters. Distant or tiny panels become previews instead of live views.
-- Processes do not need to survive app quit. Today a launch starts an empty canvas; the
-  persistence plan restores the arrangement with fresh processes. Its storage primitives
-  are merged (#36); autosave and restore are not active.
+- Processes do not need to survive app quit. Since #41 a launch restores the last session
+  with fresh processes and autosaves it. `--no-restore` and `session.restore_on_launch`
+  `off` start empty; `ask` has no dialog yet and restores with a notice.
 - Plugins are explicitly installed, trusted code. No sandbox.
 - Customization first: look and behavior come from settings and manifest fields.
 
@@ -38,6 +38,10 @@ calm-plugins   manifest discovery, TUI manifests, menu contributions, API v2 err
 calm-app       GPUI binary: CanvasView, hosts per panel kind, plugin services, menus,
                smoke gate
 ```
+
+Outside the crates, `web/` is the product site: a static Astro site (`index` and `plugins`
+pages), built by `web/Dockerfile` and hosted on Coolify at https://calm.raqz.link, per
+`web/README.md`.
 
 ### calm-core
 
@@ -107,7 +111,7 @@ calm-app       GPUI binary: CanvasView, hosts per panel kind, plugin services, m
   `discover_search`, strict errors, resize fields. Depends on `calm-core`.
 - `tui`: `"kind": "tui"` manifests (`TuiSpec`, restart, look fields, icon checks).
 - `assets`: checks that an entry page's local scripts exist (the unbuilt `dist/` case).
-- `bridge`: request, response and event types, `BRIDGE_METHODS` (17), `CALM_PRELUDE_JS`,
+- `bridge`: request, response and event types, `BRIDGE_METHODS` (18), `CALM_PRELUDE_JS`,
   `host_info_js` (the `window.__calmHost` script).
 - `api`: plugin API v2 phase 1. `API_VERSION` (2), `ErrorCode` (22 codes), `ApiError
   { code, message }`, `Caller`, `ClientId`, `Capability` and `unknown_capabilities`.
@@ -173,7 +177,7 @@ Web plugins are folders with `calm-plugin.json` and an HTML entry, loaded in a `
 with `CALM_PRELUDE_JS` defining `window.calm`. Calls post to the `calm` handler as JSON
 strings; the host answers with `eval_js`. Before the prelude the host injects
 `window.__calmHost = { apiVersion, methods }` from `served_methods`, which `calm.has` reads.
-The app serves all 17 methods. TUI plugins have
+The app serves all 18 methods. TUI plugins have
 `"kind": "tui"` and run a command in a terminal panel. Both kinds may add context menu
 items with `contributes.menus`. See `docs/plugins.md` and
 `packages/calm-plugin-sdk/calm.d.ts`. Of API v2, phase 1 (codes, `calm.has`, manifest
