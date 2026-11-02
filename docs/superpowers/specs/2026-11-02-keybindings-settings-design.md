@@ -1,6 +1,7 @@
 # Editable key bindings: design
 
-Date: 2026-11-02. Status: draft for the user's review.
+Date: 2026-11-02. Status: draft for the user's review. Builder-checked (route-gpt-sol); the
+user answered its two open questions (browser keys, unbound menu commands).
 
 ## Intent
 
@@ -14,12 +15,23 @@ keys are settings". The user skipped the question round, so everything below tha
 
 - A **Keys** tab in the global Settings window lists every key binding CALM has, one row
   per action: label, the current key, Reset (back to the default), Clear (unbound).
+- Every menu command gets a row, including the ones with no shortcut today (Show Grid,
+  Reset FPS Stats, Reset Settings to Defaults and any other registered menu action). They
+  start unbound. (User's answer.)
+- CALM's own browser shortcuts are listed read-only in a "Browser (fixed)" group and
+  cannot be changed (user's answer): Cmd+[ back, Cmd+] forward, Cmd+R reload, Cmd+L
+  address bar, and the Cmd+C/X/V/A/Z and Cmd+Shift+Z edit keys
+  (`calm-native/src/browser.rs:227-238`). They are reserved: no canvas or global binding
+  may use them.
 - A row's key is changed by **recording**: click the key button, press the new shortcut.
   (Lead's call. Typed text would let the user enter `cmd-shift-,`, which GPUI never matches
   because it reports that press as `cmd-<`. Recording stores what GPUI will report.)
 - Changes apply at once, with no restart, and persist in `settings.json`.
 - Menu items show the current key (GPUI derives menu key equivalents from the keymap, so
-  rebinding plus `set_menus` refreshes them).
+  rebinding plus `set_menus` refreshes them). GPUI's menu builder cannot show `fn`
+  combinations, and passes `enter` and `tab` through unconverted
+  (`gpui-pre-macos-0.3.4/src/platform.rs:364-402`); such a binding still works but its menu
+  item shows no shortcut. The row notes "not shown in the menu" (lead's call).
 - Any UI text that names a key follows the binding: the close confirmation
   "Close? enter / esc" and the "Show stats (cmd-shift-f)" checkbox label.
 
@@ -32,6 +44,8 @@ keys are settings". The user skipped the question round, so everything below tha
   `2026-10-31-plugin-api-v2-design.md`); this design must not block them (see
   Conflicts).
 - Keys inside terminals and web pages. CALM does not remap what Ghostty or WKWebView do.
+- Rebinding CALM's browser shortcuts or the Enter-to-restart key of an exited terminal
+  (`terminal/adapter.rs:304-309`). The latter is listed read-only with the browser group.
 
 ## Anti-goals
 
@@ -84,6 +98,11 @@ New module `calm-core/src/keymap.rs`, pure, no GPUI. One entry per action:
   by one pure function in calm-core. Shifted punctuation shows as pressed: `cmd-<` shows as
   `⌘<`.
 
+Rows for menu commands without a default (`view.show_grid`, `developer.reset_fps`,
+`app.reset_settings`, and every other action the menus register) are added with
+`default: None`; the builder takes the exact list from `dev_menu.rs` and
+`settings_menu.rs`.
+
 The app maps each id to its GPUI action in one place (`calm-app/src/keymap.rs`), so the
 three `key_bindings()` functions go away.
 
@@ -100,9 +119,13 @@ three `key_bindings()` functions go away.
 - Strict validation in `settings.rs`, each with its own error naming the field:
   unknown id; a value that `gpui`'s keystroke syntax would not parse (the core checks the
   same grammar: modifiers `cmd ctrl alt shift fn` joined by `-`, then one key); a bare
-  modifier; `shift` together with a non-letter key under Cmd (it can never fire, say so
-  and name the form to use); two actions with the same key in overlapping scopes (canvas
-  and global overlap).
+  modifier; `shift` together with a printable non-letter key (it can never fire, because
+  GPUI reports the shifted character instead; say so and name the form to use). Named keys
+  (backspace, enter, tab, arrows, function keys) keep Shift and are valid with it, so
+  `cmd-shift-backspace` passes (`gpui-pre-macos-0.3.4/src/events.rs:352-378`). Also
+  rejected: two actions with the same key in overlapping scopes (canvas and global
+  overlap); a reserved browser key; bare `space`, which stays the hold-to-pan key
+  (`canvas_view.rs:2195`; lead's call).
 - Only overrides are written back. Reset removes the id from the section.
 
 ## Recording (calm-native plus a pure rule in calm-core)
@@ -132,7 +155,7 @@ The Settings window is AppKit; GPUI never sees its key events, and GPUI's conver
 - Recording a key another action already uses (overlapping scope) is refused; the row
   shows "Used by Zoom in" for a few seconds and keeps its old key. (Lead's call; the
   alternative, swapping, surprises more.)
-- Reserved: none beyond what validation already rejects. `cmd-q` and `cmd-,` are
+- Reserved: the browser keys and bare `space` (see Settings file). `cmd-q` and `cmd-,` are
   rebindable; if a user unbinds Settings they still reach it from the app menu.
 - When plugin v2 keybindings arrive they must lose to user bindings and say so; this
   design leaves room by keeping the action table the single source of truth.
@@ -145,8 +168,8 @@ One function builds the full list, used at startup and after every change.
 
 ## Testing
 
-- calm-core: table completeness (every GPUI action the app registers has exactly one row;
-  the app asserts this too), defaults equal today's keys except the documented fit_all
+- calm-core: table completeness (every GPUI action the app registers in a keymap or a
+  menu has exactly one row; the app asserts this too), defaults equal today's keys except the documented fit_all
   fix, validation errors one by one, NoAction derivation for unmodified keys, symbol
   rendering, `keystroke_from_parts` cases.
 - calm-app: the built binding list matches the table for defaults and for overrides; a
