@@ -8,8 +8,8 @@ use calm_core::settings_form::{
 };
 use calm_native::{SettingsWindow, WindowLayout, choose_image_file};
 use gpui::{
-    App, AppContext as _, Context, InteractiveElement, KeyBinding, Menu, MenuItem, Window,
-    WindowHandle, actions,
+    App, AppContext as _, Context, InteractiveElement, Menu, MenuItem, Window, WindowHandle,
+    actions,
 };
 
 use crate::canvas_view::CanvasView;
@@ -26,11 +26,6 @@ pub struct SettingsState {
     pub path: PathBuf,
     /// Shown at the top of the Settings window, such as a rejected file that was set aside.
     pub notice: Option<String>,
-}
-
-pub fn key_bindings() -> Vec<KeyBinding> {
-    // No context, so it also works while a terminal has focus.
-    vec![KeyBinding::new("cmd-,", OpenSettings, None)]
 }
 
 /// Every menu bar menu, so the Developer and Settings menus are always set together.
@@ -62,10 +57,6 @@ fn settings_menu(settings: &Settings) -> Menu {
         MenuItem::action("Open Config Folder", OpenConfigFolder),
         MenuItem::action("Reset to Defaults", ResetSettings),
     ])
-}
-
-pub fn install(cx: &mut App, settings: &Settings) {
-    cx.set_menus(menus(false, settings));
 }
 
 /// One global handler for `OpenSettings`, used by `cmd-,` and both menu items. Global, so
@@ -130,7 +121,8 @@ impl CanvasView {
         self.refresh_all_panel_settings();
         let show_stats = self.show_stats;
         let settings = self.settings.settings.clone();
-        cx.defer(move |cx| cx.set_menus(menus(show_stats, &settings)));
+        // Keys may have changed too, so the keymap is rebuilt along with the menus.
+        cx.defer(move |cx| crate::keymap::apply(cx, &settings, show_stats));
         window.refresh();
         cx.notify();
     }
@@ -342,7 +334,7 @@ mod tests {
             matches!(&menus.last().unwrap().items[0], MenuItem::Action { name, .. } if name == "Open Settings…")
         );
         assert!(
-            key_bindings()
+            crate::keymap::key_bindings(&Settings::default())
                 .iter()
                 .any(|binding| binding.action().partial_eq(&OpenSettings)),
             "cmd-, must dispatch the same action"

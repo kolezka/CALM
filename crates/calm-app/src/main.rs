@@ -5,6 +5,7 @@ mod content_move;
 mod dev_menu;
 mod grid_paint;
 mod icon_image;
+mod keymap;
 mod panel_settings;
 mod plugin_host;
 mod plugin_services;
@@ -2424,9 +2425,6 @@ fn smoke_app_icon() {
 fn main() {
     let args = parse_args();
     gpui_platform::application().run(move |cx: &mut App| {
-        cx.bind_keys(canvas_view::key_bindings());
-        cx.bind_keys(dev_menu::key_bindings());
-        cx.bind_keys(settings_menu::key_bindings());
         dev_menu::install(cx);
         install_app_icon();
         if args.smoke {
@@ -2440,7 +2438,7 @@ fn main() {
             }));
         }
         let settings = startup_settings(args.smoke);
-        settings_menu::install(cx, &settings.settings);
+        keymap::apply(cx, &settings.settings, false);
         // Single window in v1: closing it quits.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
