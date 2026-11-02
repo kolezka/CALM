@@ -216,8 +216,18 @@ async fn smoke_step(run: &mut smoke_runner::SmokeRun, name: &str, step: impl Fut
 /// so every smoke exit path drops it explicitly through `remove_smoke_dir`.
 static SMOKE_DIR: Mutex<Option<tempfile::TempDir>> = Mutex::new(None);
 
+/// Keeps the smoke dir on exit, so a test can read what the run wrote.
+const SMOKE_KEEP_HOME_ENV: &str = "CALM_SMOKE_KEEP_HOME";
+
+fn keep_smoke_dir() -> bool {
+    std::env::var_os(SMOKE_KEEP_HOME_ENV).is_some_and(|value| value == "1")
+}
+
 /// Safe to call any number of times and from the panic hook.
 fn remove_smoke_dir() {
+    if keep_smoke_dir() {
+        return;
+    }
     let dir = match SMOKE_DIR.try_lock() {
         Ok(mut slot) => slot.take(),
         Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().take(),
@@ -736,6 +746,13 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         })
         .await;
         smoke_step(&mut run, "presets", smoke_presets(&view, window, cx)).await;
+        // Last: it hands over the view and closes the window.
+        smoke_step(
+            &mut run,
+            "window_close_save",
+            smoke_window_close_save(view, window, cx),
+        )
+        .await;
 
         for line in run.summary() {
             println!("{line}");
@@ -2126,6 +2143,9 @@ fn startup_settings(smoke: bool) -> SettingsState {
         Err(err) => smoke_fail(&format!("settings temp dir: {err}")),
     };
     let path = dir.path().join("settings.json");
+    if keep_smoke_dir() {
+        println!("smoke: kept home={}", dir.path().display());
+    }
     *SMOKE_DIR.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir);
     match calm_core::settings::load_settings_from(&path) {
         Ok(settings) => SettingsState {
@@ -2491,6 +2511,84 @@ async fn smoke_settings_perf(
             "smoke: settings_perf sweep {label} frames={frames} p50_ms={p50:.1} p95_ms={p95:.1}"
         );
     }
+}
+
+/// The grid opacity and panel x the close must write. Neither is a default or a smoke value.
+const SMOKE_CLOSE_OPACITY: f64 = 0.37;
+const SMOKE_CLOSE_PANEL_X: f64 = 1234.0;
+
+/// Opt-in, with `CALM_SMOKE_KEEP_HOME=1`: leaves a settings save and a session save
+/// pending, drops the smoke's view handle and closes the window. The test in
+/// `tests/window_close_save.rs` reads the kept files after the process exits.
+async fn smoke_window_close_save(
+    view: Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let Some(dir) = SMOKE_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|dir| dir.path().to_path_buf())
+    else {
+        smoke_fail("window_close_save: no smoke dir");
+    };
+    // Longest allowed waits, so nothing reaches the disk before the close.
+    let setup = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.update_settings(
+                |s| {
+                    s.session.settings_save_ms = 5000;
+                    s.session.debounce_ms = 10_000;
+                },
+                window,
+                cx,
+            );
+            view.start_autosave(dir.join("session.json"), cx)?;
+            view.settings_field_changed(
+                "grid.opacity",
+                FieldValue::Number(SMOKE_CLOSE_OPACITY),
+                window,
+                cx,
+            );
+            // `get_mut` bumps the scene revision, which is what autosave watches.
+            let first = view.scene.panels.first().map(|panel| panel.id);
+            let Some(panel) = first.and_then(|id| view.scene.get_mut(id)) else {
+                return Err("no panel to move".to_string());
+            };
+            panel.rect.origin.x = SMOKE_CLOSE_PANEL_X;
+            view.autosave_tick(cx);
+            Ok(())
+        })
+    });
+    match setup {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => smoke_fail(&format!("window_close_save setup: {err}")),
+        Err(err) => smoke_fail(&format!("window_close_save setup: {err:#}")),
+    }
+    let settings_pending = calm_core::settings::load_settings_from(&dir.join("settings.json"))
+        .is_ok_and(|file| file.grid.opacity != SMOKE_CLOSE_OPACITY);
+    let session_pending = !dir.join("session.json").exists();
+    println!(
+        "smoke: window_close_save pending settings={settings_pending} session={session_pending}"
+    );
+    if !settings_pending || !session_pending {
+        smoke_fail("window_close_save: a save reached the disk before the close");
+    }
+    // The positive control: proves the close really released the view.
+    cx.update(|cx| {
+        cx.observe_release(&view, |_, _| {
+            println!("smoke: window_close_save view released");
+        })
+        .detach();
+    });
+    // The smoke's own handle would keep the view alive and hide the bug.
+    drop(view);
+    let closed = cx.update_window(window, |_, window, _| window.remove_window());
+    if let Err(err) = closed {
+        smoke_fail(&format!("window_close_save close: {err:#}"));
+    }
+    println!("smoke: window_close_save closed=true");
 }
 
 async fn smoke_settings_dispatch(

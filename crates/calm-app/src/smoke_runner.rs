@@ -72,6 +72,8 @@ pub const STEPS: &[StepSpec] = &[
     step("panel_settings", &[], &[]),
     step("session", &[], &[]),
     step("presets", &[], &["session"]),
+    // Closes the window, so it must stay last.
+    opt_in("window_close_save"),
 ];
 
 /// Failures seen before and written up in `.ai/conventions.md` ("Smoke flakes").
@@ -430,5 +432,12 @@ mod tests {
                 .unwrap()
                 .contains("settings_perf")
         );
+    }
+
+    #[test]
+    fn the_window_close_step_is_opt_in_and_last() {
+        let last = STEPS.last().unwrap();
+        assert_eq!(last.name, "window_close_save");
+        assert!(last.opt_in);
     }
 }

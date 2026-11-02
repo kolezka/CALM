@@ -418,7 +418,9 @@ Open questions: `.ai/open-questions.md`.
   effect with Settings open is not yet checked in the GUI. Real trackpad input with
   Settings open is not measured. Closing the canvas window drops the view before quit runs,
   so a held settings save and the last session write now also run when the view is
-  released (`_release` in `canvas_view.rs`); source traced, not checked in the GUI.
+  released (`_release` in `canvas_view.rs`). Checked by `tests/window_close_save.rs`
+  (ignored by default, macOS GUI session): the opt-in `window_close_save` smoke step closes
+  the window with both saves pending, the test decodes the kept files.
 - No PR yet: a Linux port plan.
 
 ## Not wired yet
