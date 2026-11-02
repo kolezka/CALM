@@ -17,7 +17,8 @@
         closing: "Open Source for life - Long Live Tech",
       };
 
-      // Draws the text at 9 px with smoothing off, then CSS scales it up by whole pixels.
+      // No font files ship with this plugin. The bitmap look comes from drawing the title
+      // with the system monospace stack at 9 px, then CSS scales it up by whole pixels.
       function drawTitle(text) {
         var canvas = document.getElementById("title");
         var ctx = canvas.getContext("2d");
@@ -35,7 +36,8 @@
         var image = ctx.getImageData(0, 0, canvas.width, canvas.height);
         for (var i = 3; i < image.data.length; i += 4) image.data[i] = image.data[i] > 110 ? 255 : 0;
         ctx.putImageData(image, 0, 0);
-        var scale = Math.max(1, Math.min(8, Math.floor(400 / width)));
+        var fit = Math.min(400 / width, (window.innerHeight * 0.2) / canvas.height);
+        var scale = Math.max(1, Math.min(8, Math.floor(fit)));
         canvas.style.width = width * scale + "px";
         canvas.style.height = canvas.height * scale + "px";
         canvas.setAttribute("aria-label", text);
@@ -57,6 +59,7 @@
       }
 
       render();
+      window.addEventListener("resize", render);
       if (window.calm && window.calm.settings) {
         calm.settings.get().then(apply).catch(function (err) {
           if (calm.log) calm.log("welcome settings: " + (err && err.message ? err.message : err));

@@ -3708,5 +3708,32 @@ mod tests {
                 .unwrap_or_else(|| panic!("built-in plugin {id} not discovered"));
             assert!(!plugin.manifest.add_menu, "{id} must stay out of Add");
         }
+        // Every panel is fully on screen in the first 1280x800 view and none overlap.
+        let camera = &layout.camera;
+        let view = Rect::new(
+            camera.offset.x,
+            camera.offset.y,
+            1280.0 / camera.zoom,
+            800.0 / camera.zoom,
+        );
+        for (index, panel) in layout.panels.iter().enumerate() {
+            let rect = panel.rect;
+            assert!(
+                rect.origin.x >= view.origin.x
+                    && rect.origin.y >= view.origin.y
+                    && rect.right() <= view.right()
+                    && rect.bottom() <= view.bottom(),
+                "{} at {rect:?} is outside the first view {view:?}",
+                panel.title
+            );
+            for other in &layout.panels[index + 1..] {
+                assert!(
+                    rect.intersect(&other.rect).is_none(),
+                    "{} and {} overlap",
+                    panel.title,
+                    other.title
+                );
+            }
+        }
     }
 }
