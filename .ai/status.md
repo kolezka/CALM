@@ -413,8 +413,22 @@ Open questions: `.ai/open-questions.md`.
 - Branch `perf/zoom-pan` (no PR yet): canvas text sizes snap to 0.5 pt so zoom reuses
   GPUI's glyph cache, and the opt-in `zoom_bench` smoke step (`CALM_SMOKE_ONLY=zoom_bench`)
   times paint sections. Numbers in `docs/benchmarks.md`. Unverified: how titles look while
-  zooming (manual GUI check), and whether the user's jank is reproduced: frame time outside
-  CALM's paint (GPUI draw, AppKit layout) is not timed.
+  zooming (manual GUI check).
+- Branch `perf/zoom-native` (no PR yet): extends that diagnostic with a native-kind matrix
+  (`CALM_ZOOM_BENCH_VARIANTS=matrix`), render-start intervals, maximum-rate missed-slot
+  estimates, calling-thread CPU outside paint and first-painted-frame epoch markers. Two
+  release matrices and two Time Profiler recordings exit 0. The precise browser-8 trace
+  shows substantial AppKit cursor-image and CA commit work after paint. It does not prove
+  WebKit re-tiling, Ghostty resizing or input backlog as the user's cause. No production
+  workaround applied. Pointer location, accessibility cursor settings, actual presentation
+  drops and real pinch feel remain unverified. Method and numbers: `docs/benchmarks.md`.
+  Verification: `gmake ci` passed with smoke 29/29, but two later standalone smokes failed
+  the browser resize check (page stayed 320x142 instead of 400x202). The second also failed
+  join, FPS, stats and preview checks. Standalone GUI acceptance is blocked by the window
+  environment, not passed: other CALM windows may occlude the smoke and stall paint, but
+  that cause is unconfirmed. A separate CALM process was observed running for about an
+  hour and was left untouched. No further retry or `origin/main` control was run, per the
+  lead's instruction. These failures are not newly classified as flakes.
 
 ## Not wired yet
 

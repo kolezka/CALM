@@ -56,6 +56,12 @@ pub struct Frame {
     pub sections: [Duration; SECTIONS.len()],
     /// Render start to the end of the canvas paint; zero if the paint never came.
     pub total: Duration,
+    pub cpu_start: Duration,
+    pub cpu_end: Duration,
+}
+
+fn thread_cpu() -> Duration {
+    calm_native::process_stats::thread_cpu_time().expect("benchmark thread CPU clock")
 }
 
 thread_local! {
@@ -79,6 +85,8 @@ pub fn begin_frame() {
                 started: Instant::now(),
                 sections: [Duration::ZERO; SECTIONS.len()],
                 total: Duration::ZERO,
+                cpu_start: thread_cpu(),
+                cpu_end: Duration::ZERO,
             });
         }
     });
@@ -87,6 +95,7 @@ pub fn begin_frame() {
 pub fn end_frame() {
     FRAMES.with(|f| {
         if let Some(frame) = f.borrow_mut().as_mut().and_then(|frames| frames.last_mut()) {
+            frame.cpu_end = thread_cpu();
             frame.total = frame.started.elapsed();
         }
     });
@@ -147,12 +156,19 @@ fn spread(mut values: Vec<f64>) -> String {
 }
 
 /// Lines for one bench phase: frame interval, CPU per frame, then each section, in ms.
-pub fn report(phase: &str, frames: &[Frame]) -> Vec<String> {
+pub fn report(phase: &str, frames: &[Frame], refresh_hz: f64) -> Vec<String> {
+    let first_unix_ms = frames.first().map(|frame| {
+        (std::time::SystemTime::now() - frame.started.elapsed())
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("benchmark wall clock")
+            .as_millis()
+    });
     let intervals: Vec<f64> = frames
         .windows(2)
         .map(|pair| ms(pair[1].started.saturating_duration_since(pair[0].started)))
         .collect();
     let mut lines = vec![
+        format!("phase={phase} first_frame_unix_ms={first_unix_ms:?}"),
         format!(
             "phase={phase} frames={} interval_ms {}",
             frames.len(),
@@ -163,6 +179,48 @@ pub fn report(phase: &str, frames: &[Frame]) -> Vec<String> {
             spread(frames.iter().map(|f| ms(f.total)).collect())
         ),
     ];
+    lines.push(format!(
+        "phase={phase} main_cpu_ms {}",
+        spread(
+            frames
+                .windows(2)
+                .map(|pair| ms(pair[1].cpu_start.saturating_sub(pair[0].cpu_start)))
+                .collect()
+        )
+    ));
+    lines.push(format!(
+        "phase={phase} outside_paint_cpu_ms {}",
+        spread(
+            frames
+                .windows(2)
+                .map(|pair| ms(pair[1].cpu_start.saturating_sub(pair[0].cpu_end)))
+                .collect()
+        )
+    ));
+    let outside: Vec<f64> = frames
+        .windows(2)
+        .map(|pair| {
+            ms(pair[1]
+                .started
+                .saturating_duration_since(pair[0].started + pair[0].total))
+        })
+        .collect();
+    let missed: u64 = frames
+        .windows(2)
+        .map(|pair| {
+            calm_core::frame_stats::missed_refreshes(
+                pair[1].started.saturating_duration_since(pair[0].started),
+                refresh_hz,
+            )
+        })
+        .sum();
+    lines.push(format!(
+        "phase={phase} outside_paint_wall_ms {}",
+        spread(outside)
+    ));
+    lines.push(format!(
+        "phase={phase} max_refresh_hz={refresh_hz:.1} estimated_missed_slots={missed}"
+    ));
     for (index, section) in SECTIONS.iter().enumerate() {
         let values = frames.iter().map(|f| ms(f.sections[index])).collect();
         lines.push(format!(

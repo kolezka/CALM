@@ -2115,6 +2115,91 @@ async fn smoke_zoom_bench(
     window: AnyWindowHandle,
     cx: &mut gpui::AsyncApp,
 ) {
+    let variants = std::env::var("CALM_ZOOM_BENCH_VARIANTS").unwrap_or_else(|_| "mixed".into());
+    let variants = if variants == "matrix" {
+        "none,terminal-2,terminal-8,browser-2,browser-8,plugin-2,plugin-8"
+    } else {
+        &variants
+    };
+    let fixtures = tempfile::Builder::new()
+        .prefix("calm-zoom-bench-")
+        .tempdir()
+        .unwrap_or_else(|err| smoke_fail(&format!("bench fixtures: {err}")));
+    write_smoke_plugin(
+        fixtures.path(),
+        "zoom-fixture",
+        "<html><body><h1>CALM zoom fixture</h1><p>Static local content</p></body></html>",
+        "",
+    )
+    .unwrap_or_else(|err| smoke_fail(&format!("bench plugin: {err}")));
+    for variant in variants.split(',') {
+        let spec = match variant {
+            "mixed" => None,
+            "none" => Some(("none", 0)),
+            "terminal-2" => Some(("terminal", 2)),
+            "terminal-8" => Some(("terminal", 8)),
+            "browser-2" => Some(("browser", 2)),
+            "browser-8" => Some(("browser", 8)),
+            "plugin-2" => Some(("plugin", 2)),
+            "plugin-8" => Some(("plugin", 8)),
+            _ => smoke_fail(&format!("unknown bench variant {variant:?}")),
+        };
+        if let Some((kind, count)) = spec {
+            let discovery = calm_plugins::discover(&[fixtures.path().to_path_buf()]);
+            if !discovery.errors.is_empty() || discovery.plugins.len() != 1 {
+                smoke_fail("bench fixture discovery failed");
+            }
+            let result = cx.update_window(window, |_, window, cx| view.update(cx, |view, cx| {
+                let effects = view.scene.panels.iter().map(|p| calm_core::interaction::Effect::ClosePanel(p.id)).collect();
+                view.apply_effects(effects, window, cx);
+                view.install_plugins(discovery.plugins);
+                view.scene.camera = calm_core::camera::Camera::default();
+                view.show_stats = false;
+                for i in 0..count {
+                    let rect = Rect::new(20.0 + (i % 4) as f64 * 300.0, 20.0 + (i / 4) as f64 * 200.0, 280.0, 180.0);
+                    match kind {
+                        "terminal" => {
+                            let id = view.scene.add(PanelKind::Terminal { command: None, cwd: None, profile: None, app: None }, rect);
+                            view.spawn_terminal(id, terminal::options(None, None), window, cx)?;
+                        }
+                        "browser" => {
+                            let url = "data:text/html,%3Ch1%3ECALM%20zoom%20fixture%3C%2Fh1%3E%3Cp%3EStatic%20local%20content%3C%2Fp%3E";
+                            let id = view.scene.add(PanelKind::Browser { url: url.into(), page_zoom: None }, rect);
+                            view.spawn_browser(id, url, window, cx)?;
+                        }
+                        "plugin" => {
+                            let id = view.scene.add(PanelKind::Plugin { plugin_id: "zoom-fixture".into(), plugin_version: None, settings: serde_json::json!({}) }, rect);
+                            view.open_plugin_panel(id, "zoom-fixture", window, cx)?;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                cx.notify();
+                Ok::<_, String>(())
+            }));
+            if !matches!(result, Ok(Ok(()))) {
+                smoke_fail(&format!("bench setup: {result:?}"));
+            }
+            cx.background_executor().timer(Duration::from_secs(2)).await;
+        }
+        smoke_camera_phases(view, window, variant, cx).await;
+    }
+}
+
+async fn smoke_camera_phases(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    variant: &str,
+    cx: &mut gpui::AsyncApp,
+) {
+    let refresh_hz = cx
+        .update_window(window, |_, window, _| {
+            calm_native::child::maximum_refresh_hz(window)
+        })
+        .ok()
+        .flatten()
+        .filter(|hz| *hz > 0.0)
+        .unwrap_or_else(|| smoke_fail("bench display refresh unavailable"));
     let (start, size, panels) = cx.update(|cx| {
         let view = view.read(cx);
         (
@@ -2145,11 +2230,16 @@ async fn smoke_zoom_bench(
         zoom.push(camera);
     }
     println!(
-        "smoke: zoom_bench panels={panels} frames_per_phase={}",
+        "smoke: zoom_bench variant={variant} panels={panels} frames_per_phase={}",
         2 * BENCH_FRAMES
     );
     for (phase, cameras) in [("pan", pan), ("zoom", zoom)] {
         let expected = cameras.len();
+        let unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("benchmark wall clock")
+            .as_millis();
+        println!("smoke: zoom_bench variant={variant} phase={phase} start_unix_ms={unix_ms}");
         cx.update(|cx| {
             paint_profile::start();
             view.update(cx, |view, cx| {
@@ -2171,8 +2261,9 @@ async fn smoke_zoom_bench(
         cx.background_executor()
             .timer(Duration::from_millis(100))
             .await;
-        let frames = cx.update(|_| paint_profile::stop());
-        if frames.len() < expected / 2 {
+        let mut frames = cx.update(|_| paint_profile::stop());
+        frames.truncate(expected);
+        if frames.len() < expected {
             let visible = cx.update(|cx| window_visible(window, cx));
             cx.update(|cx| view.update(cx, |view, _| view.camera_script.clear()));
             smoke_fail(&format!(
@@ -2180,8 +2271,11 @@ async fn smoke_zoom_bench(
                 frames.len()
             ));
         }
-        for line in paint_profile::report(phase, &frames) {
-            println!("smoke: zoom_bench {line}");
+        if cx.update(|cx| !view.read(cx).camera_script.is_empty()) {
+            smoke_fail(&format!("zoom_bench {variant}/{phase}: script timed out"));
+        }
+        for line in paint_profile::report(phase, &frames, refresh_hz) {
+            println!("smoke: zoom_bench variant={variant} {line}");
         }
     }
     cx.update(|cx| {
