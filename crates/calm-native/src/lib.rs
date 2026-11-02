@@ -8,6 +8,7 @@ pub mod app_icon;
 pub mod browser;
 pub mod child;
 pub mod content_gesture;
+pub mod host_env;
 pub mod menu;
 pub mod process_stats;
 pub mod prompt;

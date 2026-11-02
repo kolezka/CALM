@@ -341,6 +341,15 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   alone are an error. `env` merges key by key. Other fields are taken whole.
 - **Env goes through `/usr/bin/env` in argv.** gpui-libghostty 0.3.1 has no env option.
   Values are never printed, and Settings masks them, but `ps` shows them. Documented.
+- **Terminals export `TERM_PROGRAM=ghostty` (2026-11-02).** gpui-libghostty 0.3.1 sets
+  `gpui-ghostty`, which apps that choose features by terminal name do not know: slk fell
+  back to half-block images instead of kitty graphics. The engine is Ghostty's, so the
+  name is honest. It sits under every env layer (`BUILTIN_ENV`), so `terminal.env`, a
+  profile or a manifest can set another value. `TERM` stays `xterm-256color`: the build
+  ships no `xterm-ghostty` terminfo. Cost: every terminal now starts through
+  `/usr/bin/env`, then `/bin/bash -c 'exec -l "$@"'`, which puts back the login mark
+  Ghostty's `exec -l` gave the command: a profile `command` such as `/bin/zsh` still reads
+  its login profile (review finding on PR #67; before, any profile with `env` lost it).
 - **Live recolor uses `TerminalThemeState::apply`.** It exists in 0.3.1 and keeps the process.
   It cannot remove a theme or flip the user config, so those apply to new terminals.
 - **The panel's profile is kept beside the scene, not in `PanelKind`.** Layouts are not
@@ -709,12 +718,52 @@ These shipped with #41, next to "Restore at launch" above.
   with the session. An unknown profile id opens with the defaults and one notice; the saved
   kind keeps the id, so it comes back if the profile does.
 - **Panel shortcuts: Cmd+Shift+Backspace deletes, Cmd+Shift+, opens Settings.** Both
-  are hard-coded like the other canvas bindings until key bindings become settings. Plain
+  are defaults of the key binding settings below. Plain
   `cmd-backspace` stays with shell and web fields, where Ghostty and WKWebView use it to
   delete to the start of the line. The Settings key is written `cmd-<` in code because GPUI
   reports the Cmd+Shift+, press that way (with Cmd held it drops Shift for punctuation and
   keeps the shifted character); a `cmd-shift-,` binding would never match. On layouts where
   `<` is on another key, the shortcut moves with it.
+
+## Key bindings are settings (2026-11-02, PR #62)
+
+Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One table in
+`calm-core/src/keymap.rs` owns every action, its default and scope; `keybindings` in
+`settings.json` stores overrides only (`null` unbinds); the Keys tab edits them.
+
+- **Keys are recorded, not typed.** A typed `cmd-shift-,` would be accepted and never fire,
+  because GPUI reports that press as `cmd-<`. The recorder turns one AppKit key-down into
+  the string GPUI will report, through a pure copy of GPUI's rule
+  (`keystroke_from_parts`, mirroring `gpui-pre-macos 0.3.4` `events.rs`). Keep the two in
+  step on a GPUI upgrade.
+- **A key already in use is refused, not swapped.** The row shows "Used by <label>" for
+  3 s. Swapping would silently move a shortcut the user did not touch.
+- **`NoAction` in terminals is derived.** Any binding without Cmd or Ctrl also binds
+  `NoAction` in the `Terminal` context, so a focused terminal keeps typing keys, whatever
+  the user binds.
+- **Reserved:** CALM's ten browser keys (`calm-native/src/browser.rs`) and Space without
+  Cmd, Ctrl or Alt (hold-to-pan, which ignores Shift). They are listed read-only in the tab,
+  with Enter-to-restart.
+- **Keys that never fire are errors:** Shift with a printable non-letter (GPUI reports the
+  shifted character), and `fn` with arrow, page, home, end, delete, insert and F keys (GPUI
+  clears `fn` on them). Named keys keep Shift, so `cmd-shift-backspace` is valid.
+- **Fit All default is `cmd-)`.** The old `cmd-shift-0` binding never matched: a test on the
+  pre-change code showed a `cmd-shift-0` binding does not match the `cmd-)` keystroke GPUI
+  reports for Cmd+Shift+0 on a US layout, and no binding matched `cmd-)`
+  (`fit_all_matches_the_press_gpui_reports_for_cmd_shift_0`).
+- **The arrow keys from #68 are rows too**: eight pan rows (View) and eight move rows
+  (Panels) with #68's keys as defaults, so the table has 36 actions. Their terminal
+  `NoAction` entries now come from the derived rule instead of a hand list.
+- **Menu commands refuse `fn`, `enter` and `tab`.** GPUI's menu builder drops `fn` and
+  passes `enter` and `tab` through unconverted, so the menu item would get a different key
+  than the binding (`fn-cmd-k` would show and fire as Cmd+K). Canvas actions may use them.
+- **Reset is checked like a recording.** If another row took the default meanwhile, Reset
+  is refused with "Used by"; otherwise the saved file would fail validation at the next
+  launch and the whole settings file would be set aside.
+- **Any click off the recorder, or a tab change, stops recording**, so a key meant for
+  another field is never recorded. Clicks are never swallowed.
+- **Symbols use Apple's modifier order** `⌃⌥⇧⌘`, so Cmd+Shift+Backspace shows as `⇧⌘⌫`.
+  The close prompt names its keys in words (`Close? enter / esc`), as the user chose.
 
 ## TUI apps are terminals (2026-11-02, `feat/tui-extends-terminal`)
 
@@ -772,3 +821,23 @@ These shipped with #41, next to "Restore at launch" above.
   `SourceAlpha` (`gpui-pre-apple` 0.3.4 `metal_renderer.rs`). Bytes round half away from zero.
   Ghostty's snapshot bytes are premultiplied, so every snapshot first goes through
   `preview::unpremultiply_pixels`, then the fade.
+
+## Launching terminal's env is scrubbed (2026-11-02, `fix/terminal-env-scrub`)
+
+- **`main` unsets the launching terminal's identity before CALM starts any thread.** The
+  function is `unsafe` and its caller owns that guarantee. GPUI's pre-main constructors only
+  register classes (source-read in review); system framework start-up is not audited. Started from
+  iTerm2, every canvas terminal inherited `ITERM_SESSION_ID` and `LC_TERMINAL`. Claude Code
+  2.1.316 treats `ITERM_SESSION_ID` alone as "inside iTerm2", so agent teams split the iTerm2
+  tab CALM was launched from. `TERM_PROGRAM` did not leak into Ghostty terminals: the
+  gpui-libghostty shim sets it (`gpui-ghostty`), and since #67 CALM sets `ghostty`. Other
+  children (`gh`, `process.exec`, plugin helpers) did get `TERM_PROGRAM=iTerm.app`. The list is in
+  `calm_core::host_env` (iTerm2, Terminal.app, tmux, screen, kitty, WezTerm, Alacritty,
+  Zellij); `GHOSTTY_*`, `TERM`, `LC_ALL`/`LC_CTYPE` stay.
+- Hard-coded on purpose: it is a correctness fix, not a look or behavior choice. A user who
+  wants one of these names in a terminal can set it in a terminal profile's env.
+- Done in CALM's own environment, not per spawn: `gpui-libghostty` 0.3.1 has no env option,
+  and one place then covers every child (terminals, TUI apps, plugins, `gh`) instead of each
+  argv builder growing `env -u` flags.
+- Smoke step `terminal_env` spawns `/usr/bin/env` and fails on any listed name. It only
+  discriminates when smoke runs from a terminal that sets them (iTerm2, tmux).

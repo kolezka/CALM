@@ -5,6 +5,7 @@ mod content_move;
 mod dev_menu;
 mod grid_paint;
 mod icon_image;
+mod keymap;
 mod panel_settings;
 mod plugin_host;
 mod plugin_services;
@@ -465,6 +466,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         })
         .await;
         smoke_step(&mut run, "app_icon", async { smoke_app_icon() }).await;
+        smoke_step(&mut run, "terminal_env", async { smoke_terminal_env() }).await;
         smoke_step(&mut run, "native_reorder", async {
             smoke_native_reorder(&view, window, cx)
         })
@@ -690,6 +692,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             smoke_settings_dispatch(&view, window, cx),
         )
         .await;
+        smoke_step(&mut run, "keybindings", smoke_keybindings(&view, window, cx)).await;
         smoke_step(&mut run, "github_api", smoke_github_api(&view, window, cx)).await;
         smoke_step(&mut run, "plugin_menus", smoke_plugin_menus(&view, window, cx)).await;
         smoke_step(&mut run, "panel_overrides", async {
@@ -726,9 +729,16 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
 const SMOKE_TUI_TIMEOUT: Duration = Duration::from_secs(10);
 /// A panel background no manifest or preset uses, so the recolor is ours.
 const SMOKE_APP_BACKGROUND: u32 = 0x1a2b3c;
-/// Prints a marker, proves it ran by writing `$1`, exits 0.
-const SMOKE_TUI_SCRIPT: &str =
-    "#!/bin/sh\nprintf 'calm-smoke-tui-marker\\n'\nprintf ran > \"$1\"\nexit 0\n";
+/// Prints a marker, proves it ran by writing `$1` with its `TERM_PROGRAM`, exits 0.
+const SMOKE_TUI_SCRIPT: &str = concat!(
+    "#!/bin/sh\n",
+    "printf 'calm-smoke-tui-marker\\n'\n",
+    "printf 'ran %s' \"$TERM_PROGRAM\" > \"$1\"\n",
+    "exit 0\n",
+);
+
+/// What the smoke script writes when it ran inside a terminal that identifies as Ghostty.
+const SMOKE_TUI_MARKER: &str = "ran ghostty";
 
 /// Two TUI fixtures: a script that runs and exits 0 (restart "prompt", run directly), and
 /// a missing command through the login shell (restart "on-exit", which must not loop).
@@ -977,7 +987,8 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
                     .timer(Duration::from_millis(100))
                     .await;
                 let status = cx.update(|cx| view.read(cx).tui_status());
-                let ran = std::fs::read_to_string(&marker).is_ok_and(|text| text == "ran");
+                let written = std::fs::read_to_string(&marker).ok();
+                let ran = written.as_deref() == Some(SMOKE_TUI_MARKER);
                 let done = match status.as_slice() {
                     [
                         (ok_title, TuiState::Exited(Some(0)), true, ok_launches),
@@ -994,7 +1005,7 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
                     return;
                 }
                 if started.elapsed() > SMOKE_TUI_TIMEOUT {
-                    smoke_fail(&format!("tui: ran={ran} status={status:?}"));
+                    smoke_fail(&format!("tui: marker={written:?} status={status:?}"));
                 }
             }
         }
@@ -1049,7 +1060,9 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
             "exited tui panels did not close without asking: {other:?}"
         )),
     }
-    println!("smoke: tui ran=ok exit=0 missing=reported restarted=ok closed=ok");
+    println!(
+        "smoke: tui ran=ok term_program=ghostty exit=0 missing=reported restarted=ok closed=ok"
+    );
     smoke_tui_chrome(view, window, cx);
     smoke_terminal_profile(view, window, cx);
     if let Err(err) = fixtures.close() {
@@ -2302,6 +2315,104 @@ async fn smoke_settings_dispatch(
     smoke_settings_from_canvas_menu(view, window, cx).await;
 }
 
+/// A key binding from a settings file reaches GPUI's keymap, a reset brings the default
+/// back, and hiding Settings stops a recorder. No key events are sent.
+async fn smoke_keybindings(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::keymap::KeyOverrides;
+    let dir = SMOKE_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|dir| dir.path().to_path_buf());
+    let Some(dir) = dir else {
+        smoke_fail("keybindings: no smoke dir");
+    };
+    let path = dir.join("keys.json");
+    std::fs::write(
+        &path,
+        r#"{"version": 2, "keybindings": {"panel.delete": "cmd-d"}}"#,
+    )
+    .unwrap_or_else(|err| smoke_fail(&format!("keybindings: write {err}")));
+    let loaded = calm_core::settings::read_settings_from(&path)
+        .unwrap_or_else(|err| smoke_fail(&format!("keybindings: read {err}")));
+    let set_keys = |keys: KeyOverrides, cx: &mut gpui::AsyncApp| {
+        cx.update(|cx| {
+            window.update(cx, |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.update_settings(|s| s.keybindings = keys, window, cx);
+                })
+            })
+        })
+        .unwrap_or_else(|err| smoke_fail(&format!("keybindings: update {err:#}")));
+    };
+    let delete_matches = |key: &str, cx: &mut gpui::AsyncApp| -> (usize, bool) {
+        let typed = gpui::Keystroke::parse(key).unwrap_or_else(|_| smoke_fail("keybindings: key"));
+        cx.update(|cx| {
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
+            let bindings: Vec<_> = keymap
+                .bindings_for_action(&canvas_view::DeletePanel)
+                .collect();
+            let hit = bindings
+                .iter()
+                .any(|b| b.match_keystrokes(std::slice::from_ref(&typed)) == Some(false));
+            (bindings.len(), hit)
+        })
+    };
+    set_keys(loaded.keybindings, cx);
+    // `update_settings` rebuilds the keymap in a deferred update.
+    cx.background_executor()
+        .timer(Duration::from_millis(100))
+        .await;
+    let (count, new_key) = delete_matches("cmd-d", cx);
+    let overridden = count == 1 && new_key;
+    let old_gone = !delete_matches("cmd-shift-backspace", cx).1;
+    set_keys(KeyOverrides::new(), cx);
+    cx.background_executor()
+        .timer(Duration::from_millis(100))
+        .await;
+    let restored = delete_matches("cmd-shift-backspace", cx).1;
+    let stops = cx.update(|cx| -> gpui::Result<(bool, bool)> {
+        window.update(cx, |_, window, cx| {
+            view.update(cx, |view, cx| view.open_settings(window, cx));
+        })?;
+        let view = view.read(cx);
+        let Some(settings_window) = &view.settings_window else {
+            return Ok((false, false));
+        };
+        settings_window.select_tab(calm_core::settings_form::KEYS_SECTION);
+        let started = settings_window.start_recording("keys.panel.delete");
+        settings_window.select_tab("Developer");
+        let tab_stops = started && settings_window.recording_field().is_none();
+        let started = settings_window.start_recording("keys.panel.delete");
+        settings_window.hide();
+        Ok((
+            started && settings_window.recording_field().is_none(),
+            tab_stops,
+        ))
+    });
+    let (recorder_stops, tab_stops) =
+        stops.unwrap_or_else(|err| smoke_fail(&format!("keybindings: settings {err:#}")));
+    println!(
+        "smoke: keybindings override={overridden} old_gone={old_gone} restored={restored} recorder_stops={recorder_stops} tab_stops={tab_stops}"
+    );
+    for (ok, name) in [
+        (overridden, "override"),
+        (old_gone, "old_gone"),
+        (restored, "restored"),
+        (recorder_stops, "recorder_stops"),
+        (tab_stops, "tab_stops"),
+    ] {
+        if !ok {
+            smoke_fail(&format!("keybindings: {name} is false"));
+        }
+    }
+}
+
 /// Picks "Settings…" in the canvas context menu the way a click does and waits for the
 /// Settings window to show.
 async fn smoke_settings_from_canvas_menu(
@@ -2400,13 +2511,18 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
     if count != 1 || first.is_none() || first != second {
         smoke_fail("opening Settings twice did not reuse one window");
     }
-    // One binding per non-note control, plus a Reset button per field with its own value.
+    // One binding per non-note control (a key row has two: recorder and Clear), plus a
+    // Reset button per field with its own value.
     let expected = settings_form(&view.settings.settings, &view.form_context())
         .iter()
         .flat_map(|section| &section.fields)
         .map(|field| {
-            usize::from(!matches!(field.control, Control::Note(_)))
-                + usize::from(field.state == FieldState::Set)
+            let controls = match field.control {
+                Control::Note(_) => 0,
+                Control::Key { .. } => 2,
+                _ => 1,
+            };
+            controls + usize::from(field.state == FieldState::Set)
         })
         .sum::<usize>();
     let Some(settings_window) = &view.settings_window else {
@@ -2457,12 +2573,40 @@ fn smoke_app_icon() {
     }
 }
 
+/// A spawned child must not inherit the launching terminal's identity. Run from iTerm2
+/// or tmux, this fails without the scrub in `main`.
+fn smoke_terminal_env() {
+    let output = match std::process::Command::new("/usr/bin/env").output() {
+        Ok(output) => output,
+        Err(err) => smoke_fail(&format!("terminal env: spawn /usr/bin/env: {err}")),
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let names: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(n, _)| n)
+        .collect();
+    let leaked = calm_core::host_env::inherited_terminal_vars(&names);
+    println!(
+        "smoke: terminal_env child_vars={} leaked={leaked:?}",
+        names.len()
+    );
+    if names.is_empty() {
+        smoke_fail("terminal env: child printed no variables");
+    }
+    if !leaked.is_empty() {
+        smoke_fail(&format!("terminal env: child inherited {leaked:?}"));
+    }
+}
+
 fn main() {
+    // A terminal launched from iTerm2 must not look like iTerm2.
+    // SAFETY: first statement of `main`, before CALM or GPUI starts a thread. GPUI's pre-main
+    // constructors only register classes (source-read); system framework start-up was not
+    // audited.
+    unsafe { calm_native::host_env::scrub_inherited_terminal_env() };
     let args = parse_args();
     gpui_platform::application().run(move |cx: &mut App| {
-        cx.bind_keys(canvas_view::key_bindings());
-        cx.bind_keys(dev_menu::key_bindings());
-        cx.bind_keys(settings_menu::key_bindings());
         dev_menu::install(cx);
         install_app_icon();
         if args.smoke {
@@ -2476,7 +2620,7 @@ fn main() {
             }));
         }
         let settings = startup_settings(args.smoke);
-        settings_menu::install(cx, &settings.settings);
+        keymap::apply(cx, &settings.settings, false);
         // Single window in v1: closing it quits.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
