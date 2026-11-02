@@ -291,6 +291,26 @@ Open questions: `.ai/open-questions.md`.
   notch of the rear view (known limitation). A restack without a paint keeps the old mask until the next
   paint. `native_smoke` checks the mask piece, hit testing and full cover in AppKit; the
   look over real Ghostty and WKWebView content is unverified (manual pass owed).
+- `feat/terminal-transparency` (branch, not merged): CALM paints no fill under a live
+  terminal's content (the ring quad is transparent, the title bar gets its own fill), and
+  `NativePlacement::paint` (`occlusion::native_paint_region`) masks a back native view only
+  under a live front terminal's title bar and ring, so it shows through the front terminal.
+  `visible` stays the input region: a press in the overlap still goes to the front panel.
+  A preview, minimized or hidden front panel still cuts the back view out.
+  Why the throwaway spike (fills removed, Ghostty `background-opacity = 0.5`) showed a back
+  terminal's text through a front one although the back was masked there: not reproduced,
+  since agents do not drive the GUI. No stale mask was found. `native_visible_region` cuts
+  the front panel's whole outline out of the back container (unit tests
+  `panel_above_occludes_with_its_ring`, `input_region_is_unchanged_by_live_front_panels`),
+  and every paint recomputes every placement and reapplies the mask (`apply_terminal_modes`,
+  `apply_browser_modes`, `plugin_modes`; the dedupe key is the clip-local pieces, so a new
+  panel on top changes the key even when the back placement does not move). The likely
+  cause is the preview path: modes are global (`decide_mode`), so while a menu is open
+  (`modal_open`, for example the right-click Add menu) or below `preview_below_zoom` both
+  terminals are GPUI-drawn snapshots in scene order with no native view and no mask, and
+  with the content fill gone a front snapshot with see-through background pixels shows the
+  back snapshot's text. Not confirmed by eye. On this branch previews keep the content
+  fill. The mask's rendered look over Ghostty's own layer is still unverified (manual pass owed).
 
 ## Not wired yet
 

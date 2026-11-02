@@ -239,6 +239,7 @@ fn main() {
         c.size.width,
         c.size.height - 40.0,
     )];
+    covered.paint = covered.visible.clone();
     child.apply(&covered, HEIGHT, scale);
     let layer = clip
         .layer()
@@ -291,6 +292,7 @@ fn main() {
         fail("covered strip is not masked out of paint and hit testing");
     }
     covered.visible.clear();
+    covered.paint.clear();
     child.apply(&covered, HEIGHT, scale);
     let hidden = clip.isHidden();
     child.set_visible(true);
