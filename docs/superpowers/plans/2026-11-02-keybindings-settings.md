@@ -1038,44 +1038,24 @@ After merge-ready: `repo-intel build; echo rc=$?` (new modules).
 
 ---
 
-## Re-check after #63
+## Re-check after #63 (done on `d21a7c9`)
 
-PR #63 (`origin/feat/tui-extends-terminal`, merge base `2d3f2d9`, before #60) must land
-before this plan starts. Read on its head, not merged. After it lands, refresh these
-citations against the new `origin/main`:
+#63 merged as `d21a7c9`. Refreshed by the lead against that commit; use these lines, they
+replace the ones the tasks cite where they differ:
 
-- **Task 4, `canvas_view.rs`.** #63 rewrites the file (+538). On its head: `actions!` at
-  `:78`, `CONFIRM_TITLE` at `:107`, `key_bindings` at `:109-128`, `apply_settings_to_input`
-  at `:716`, deferred `set_menus` at `:729`, paint uses of `CONFIRM_TITLE` at `:3023` and
-  `:3134`, tests at `:3512`. Its `actions!` and `key_bindings` lack `DeletePanel` and
-  `OpenPanelSettings` because it branched before #60: confirm the merged file has both,
-  and that `actions!` still has exactly the 12 canvas actions. #63 adds no GPUI action
-  (Run Command is a context menu item, `calm-core/src/menu.rs`), so the 20-row table holds;
-  `every_registered_calm_action_has_one_table_row` will catch it if that changes.
-- **Task 4 and 5, `main.rs`.** On #63's head: `bind_keys` lines `:2411-2413`,
-  `settings_menu::install` `:2427`, the smoke binding count `:2364`, `settings_dispatch`
-  step `:689`.
-- **Task 1 and 4, menu action list.** `settings_menu.rs` on #63 only drops
-  `apply_terminal_config` and an import (`-8`); `actions!` (`:18`), `key_bindings` (`:31`),
-  menu items (`:46-63`) and the deferred `set_menus` (`:133`) shift by one line.
-  `dev_menu.rs` is unchanged. Re-run
-  `rg -n "MenuItem::action|actions!" crates/calm-app/src` and confirm the five unbound rows
-  are still the whole list.
-- **Task 3, `settings_form.rs`.** #63 adds `terminal.command_restart` (a Choice in the
-  Terminal section) and a test; the Developer section and the stats label line move. The
-  Keys section must still be last; tabs map one per section (`settings_window.rs:276-321`,
-  untouched by #63).
-- **Task 3 and 4, `panel_settings.rs`.** #63 changes it (+/-44); re-find the
-  `FormOutcome` match for the compile-only arm.
-- **Task 1, restart key.** `terminal/adapter.rs` Enter-restart moves to `:315` on #63 and
-  is still the literal `"enter"`. #63's `terminal.command_restart` setting ("On Enter")
-  restarts typed commands on Enter too; check whether that path has its own key check and,
-  if so, cite it next to `RESTART_KEY`.
-- **Task 6, smoke.** #63 adds `step("run_command", ...)` after `tui` in `STEPS`; insert
-  `keybindings` after `settings_dispatch` as planned. `docs/dev-setup.md` step list and
-  `.ai/decisions.md`, `.ai/status.md`, `CLAUDE.md` all change in #63: re-find the lines
-  Task 6 edits.
-- **Task 5, `calm-native/Cargo.toml`.** #63 adds the `NSAlert` app-kit feature; add the
-  foundation features next to it without reordering.
-- **Space pan check.** Moves to `canvas_view.rs:2361` on #63; Task 1 cites it for the
-  Space rule.
+- `canvas_view.rs`: `actions!` `:78` (12 canvas actions, `DeletePanel` and
+  `OpenPanelSettings` present), `CONFIRM_TITLE` `:109`, `key_bindings` `:111`,
+  `apply_settings_to_input` `:722`, deferred `set_menus` `:735`, `CONFIRM_TITLE` paint uses
+  `:3022` and `:3133`, Space pan check `:2360` (and `:2368`).
+- `main.rs`: `bind_keys` `:2427-2429`, `settings_menu::install` `:2443`,
+  `settings_dispatch` step `:689`, its function `:2214`.
+- Menu actions: `dev_menu.rs:9` (`ToggleFps, ResetFps, Quit, About`), `settings_menu.rs:18`;
+  menu items `dev_menu.rs:26-36`, `settings_menu.rs:46-63`. The five unbound rows are still
+  the whole list (Show Grid, Reset FPS Stats, Open Config Folder, Reset to Defaults, About).
+- `settings_form.rs`: stats label `:356`.
+- Restart key: `terminal/adapter.rs:315`, literal `"enter"`. `terminal.command_restart`
+  (`Prompt`) goes through the same check (`tui_host.rs:40-44`); there is no second Enter
+  check.
+- Smoke: `smoke_runner.rs` has `run_command` at `:38` and `settings_dispatch` at `:52`;
+  insert `keybindings` after `settings_dispatch`.
+- `calm-native/Cargo.toml`: `NSAlert` at `:38`; add the foundation features next to it.
