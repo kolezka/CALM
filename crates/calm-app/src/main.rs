@@ -3361,6 +3361,10 @@ fn main() {
                         "smoke: canvas viewport={}x{} panels={panels}",
                         rect.size.width, rect.size.height
                     );
+                    println!(
+                        "smoke: cursor_guard monitors={}",
+                        calm_native::cursor_guard::monitors_status()
+                    );
                     if rect.size.width <= 0.0 || rect.size.height <= 0.0 || panels != 3 {
                         smoke_fail("canvas did not lay out with all three panels");
                     }

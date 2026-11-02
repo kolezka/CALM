@@ -6,13 +6,16 @@
 //! A set is skipped only when it repeats AppKit's current cursor and nothing outside this
 //! process can have changed the visible cursor since the last real set. The native side calls
 //! `invalidate` when that may have happened: mouse events in another app, app activation
-//! changes, or the pointer leaving the window.
+//! changes, or the pointer leaving the window. Without those event monitors nothing reports
+//! such a change, so the guard skips only while they are active.
 
 /// State of the guard, one per process.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CursorSetGuard {
     /// The last real set is still what the screen shows.
     trusted: bool,
+    /// The event monitors that call `invalidate` are registered.
+    monitors_active: bool,
 }
 
 impl CursorSetGuard {
@@ -20,7 +23,13 @@ impl CursorSetGuard {
     /// being set is AppKit's current cursor, `pointer_inside` that the pointer is over one of
     /// this app's windows.
     pub fn should_skip(&self, enabled: bool, is_current: bool, pointer_inside: bool) -> bool {
-        enabled && is_current && pointer_inside && self.trusted
+        enabled && is_current && pointer_inside && self.trusted && self.monitors_active
+    }
+
+    /// Records whether the event monitors are registered. Until they are, nothing is skipped.
+    pub fn set_monitors_active(&mut self, active: bool) {
+        self.monitors_active = active;
+        self.trusted = false;
     }
 
     /// Records a set that reached AppKit. Only a set made while the pointer is over this app's
@@ -41,6 +50,7 @@ mod tests {
 
     fn trusted() -> CursorSetGuard {
         let mut guard = CursorSetGuard::default();
+        guard.set_monitors_active(true);
         guard.did_set(true);
         guard
     }
@@ -81,6 +91,21 @@ mod tests {
         assert!(!guard.should_skip(true, true, true));
         guard.did_set(true);
         assert!(guard.should_skip(true, true, true));
+    }
+
+    #[test]
+    fn without_the_monitors_nothing_is_skipped() {
+        // Without them nothing reports another app changing the cursor, so trust never ends.
+        let mut guard = CursorSetGuard::default();
+        guard.did_set(true);
+        assert!(
+            !guard.should_skip(true, true, true),
+            "a guard whose monitors are not active must never skip"
+        );
+        let mut guard = trusted();
+        guard.set_monitors_active(false);
+        guard.did_set(true);
+        assert!(!guard.should_skip(true, true, true));
     }
 
     #[test]

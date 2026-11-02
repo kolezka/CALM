@@ -6,7 +6,7 @@
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 
 use block2::RcBlock;
@@ -23,6 +23,10 @@ static ORIGINAL: OnceLock<SetFn> = OnceLock::new();
 static CALLS: AtomicU64 = AtomicU64::new(0);
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
 static SET_NANOS: AtomicU64 = AtomicU64::new(0);
+static MONITORS: AtomicU8 = AtomicU8::new(MONITORS_NOT_INSTALLED);
+const MONITORS_NOT_INSTALLED: u8 = 0;
+const MONITORS_ACTIVE: u8 = 1;
+const MONITORS_FAILED: u8 = 2;
 
 thread_local! {
     static GUARD: Cell<CursorSetGuard> = Cell::new(CursorSetGuard::default());
@@ -41,6 +45,16 @@ pub fn counts() -> CursorSetCounts {
         calls: CALLS.load(Ordering::Relaxed),
         skipped: SKIPPED.load(Ordering::Relaxed),
         set_nanos: SET_NANOS.load(Ordering::Relaxed),
+    }
+}
+
+/// Whether the event monitors the guard relies on are registered: "active", "failed" (the
+/// guard then never skips) or "not installed".
+pub fn monitors_status() -> &'static str {
+    match MONITORS.load(Ordering::Relaxed) {
+        MONITORS_ACTIVE => "active",
+        MONITORS_FAILED => "failed",
+        _ => "not installed",
     }
 }
 
@@ -86,7 +100,25 @@ fn install_on_main(mtm: MainThreadMarker) {
     unsafe {
         method.set_implementation(std::mem::transmute::<SetFn, Imp>(guarded_set));
     }
-    install_monitors(mtm);
+    let active = install_monitors(mtm);
+    if !active {
+        eprintln!(
+            "calm: cursor guard off: an event monitor failed to register, so every cursor set goes through"
+        );
+    }
+    MONITORS.store(
+        if active {
+            MONITORS_ACTIVE
+        } else {
+            MONITORS_FAILED
+        },
+        Ordering::Relaxed,
+    );
+    GUARD.with(|guard| {
+        let mut state = guard.get();
+        state.set_monitors_active(active);
+        guard.set(state);
+    });
 }
 
 fn invalidate() {
@@ -133,8 +165,8 @@ unsafe extern "C-unwind" fn guarded_set(this: *mut AnyObject, cmd: Sel) {
 }
 
 /// Mouse events in other apps and app activation changes mean another process may have
-/// drawn its own cursor, so the next set must reach AppKit.
-fn install_monitors(_mtm: MainThreadMarker) {
+/// drawn its own cursor, so the next set must reach AppKit. False when either monitor failed.
+fn install_monitors(_mtm: MainThreadMarker) -> bool {
     let global = RcBlock::new(|_event: NonNull<NSEvent>| invalidate());
     let global_mask = NSEventMask::MouseMoved
         | NSEventMask::LeftMouseDragged
@@ -151,17 +183,17 @@ fn install_monitors(_mtm: MainThreadMarker) {
     });
     // SAFETY: the handlers match the documented block types. Both monitors live for the rest
     // of the process, so they are leaked on purpose with their blocks.
-    unsafe {
-        if let Some(monitor) =
-            NSEvent::addGlobalMonitorForEventsMatchingMask_handler(global_mask, &global)
-        {
-            std::mem::forget(monitor);
-        }
-        if let Some(monitor) = NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-            NSEventMask::AppKitDefined,
-            &local,
-        ) {
-            std::mem::forget(monitor);
-        }
-    }
+    let (global, local) = unsafe {
+        (
+            NSEvent::addGlobalMonitorForEventsMatchingMask_handler(global_mask, &global),
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::AppKitDefined,
+                &local,
+            ),
+        )
+    };
+    let active = global.is_some() && local.is_some();
+    std::mem::forget(global);
+    std::mem::forget(local);
+    active
 }
