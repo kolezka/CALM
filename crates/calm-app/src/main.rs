@@ -3075,6 +3075,7 @@ fn smoke_session_edges(
             title: format!("saved title {n}"),
             minimized: false,
             overrides: Default::default(),
+            pin: None,
         });
     }
     let plan = RestorePlan {
@@ -3235,6 +3236,7 @@ async fn smoke_session(
             title: format!("panel {n}"),
             minimized: false,
             overrides: Default::default(),
+            pin: None,
         });
     }
     layout.camera.zoom = 0.75;
@@ -3522,6 +3524,7 @@ fn smoke_panel(kind: PanelKind, n: usize) -> calm_core::layout::LayoutPanel {
         title: format!("preset panel {n}"),
         minimized: false,
         overrides: Default::default(),
+        pin: None,
     }
 }
 
