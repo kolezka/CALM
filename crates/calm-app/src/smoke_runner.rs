@@ -35,6 +35,7 @@ pub const STEPS: &[StepSpec] = &[
     step("native_reorder", &[], &[]),
     step("plugins", &[], &[]),
     step("tui", &[], &[]),
+    step("run_command", &[], &[]),
     step("show_stats", &[], &[]),
     step("fps", &["show_stats"], &[]),
     step("stats", &["show_stats"], &[]),
@@ -68,7 +69,6 @@ const KNOWN_FLAKES: &[FlakeRule] = &[
     ("few-frames", |m| {
         m.starts_with("only ") && m.ends_with(" frames with show_stats on")
     }),
-    ("tui-exit", |m| m.starts_with("tui: ran=")),
     ("preview-cadence", |m| {
         m.starts_with("preview refresh outside 1..=3 snapshots")
     }),
@@ -280,7 +280,6 @@ mod tests {
                 "known-flake:stats-pill",
             ),
             ("only 1 frames with show_stats on", "known-flake:few-frames"),
-            ("tui: ran=false status=[]", "known-flake:tui-exit"),
             (
                 "preview refresh outside 1..=3 snapshots: preview_snapshots_in_3s=[0,0] window_visible=Some(true)",
                 "known-flake:preview-cadence",
@@ -303,6 +302,8 @@ mod tests {
             "stats: sampler has 1 samples and cpu=None after 5.0s, CPU needs two",
             "no fps after 11 frames",
             "tui marker: No such file",
+            // Fixed by starting the tick loop at spawn: a lost exit is a real failure now.
+            "tui: ran=false status=[]",
             "autosave: no session file: None",
             "",
         ] {

@@ -23,7 +23,8 @@ trap : INT QUIT
 code=$?
 printf '%s\n' "$code" > "$status"
 if [ "$code" -eq 127 ]; then
-  printf '\n[calm] command not found: %s\n[calm] plugin: %s\n' "$name" "$dir"
+  printf '\n[calm] command not found: %s\n' "$name"
+  [ -z "$dir" ] || printf '[calm] plugin: %s\n' "$dir"
 else
   printf '\n[calm] %s exited with code %s\n' "$name" "$code"
 fi
@@ -53,6 +54,11 @@ pub struct LaunchContext<'a> {
 /// The leading `/usr/bin/env` absorbs the `-` that `exec -l` puts on argv[0], so `/bin/sh`
 /// does not start as a login shell and read profiles.
 pub fn argv(spec: &LaunchSpec, context: &LaunchContext) -> Vec<String> {
+    argv_named(spec, context, &spec.command)
+}
+
+/// `argv` with `name` in the closing line instead of the command.
+pub fn argv_named(spec: &LaunchSpec, context: &LaunchContext, name: &str) -> Vec<String> {
     let mut argv: Vec<String> = [
         "/usr/bin/env",
         "/bin/sh",
@@ -60,7 +66,7 @@ pub fn argv(spec: &LaunchSpec, context: &LaunchContext) -> Vec<String> {
         STATUS_SCRIPT,
         "calm-tui",
         context.status_file,
-        &spec.command,
+        name,
         context.plugin_dir,
     ]
     .into_iter()
@@ -80,6 +86,78 @@ pub fn argv(spec: &LaunchSpec, context: &LaunchContext) -> Vec<String> {
     argv.push(spec.command.clone());
     argv.extend(spec.args.iter().cloned());
     argv
+}
+
+/// A typed command runs in the login shell like a plain terminal: env first, then
+/// `$SHELL -lc <command>`, so pipes and quotes in it work as typed.
+pub fn typed_command_spec(
+    command: &str,
+    login_shell: &str,
+    env: Vec<(String, String)>,
+) -> LaunchSpec {
+    LaunchSpec {
+        command: login_shell.to_string(),
+        args: vec!["-lc".to_string(), command.to_string()],
+        env,
+        shell: false,
+    }
+}
+
+/// `command_name` when the command word is missing or not a plain name.
+pub const FALLBACK_COMMAND_NAME: &str = "command";
+
+/// What `{name}` and the exit line call a command: its first word without the folder.
+/// Leading words with `=` are skipped, and only a plain word is shown, so no part of
+/// a typed env value can leak.
+pub fn command_name(command: &str) -> String {
+    if command.trim().is_empty() {
+        return String::new();
+    }
+    let word = shell_words(command)
+        .into_iter()
+        .find(|word| !word.contains('='))
+        .unwrap_or_default();
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '/');
+    if word.is_empty() || !word.chars().all(plain) {
+        return FALLBACK_COMMAND_NAME.to_string();
+    }
+    match word.rsplit('/').next() {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => FALLBACK_COMMAND_NAME.to_string(),
+    }
+}
+
+/// Splits on whitespace outside quotes, keeping each word's raw text.
+fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (None, c) if c.is_whitespace() => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+                continue;
+            }
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (None | Some('"'), '\\') => {
+                word.push(c);
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        word.push(c);
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
 }
 
 /// One POSIX shell word that stands for exactly `word`.
@@ -370,6 +448,111 @@ mod tests {
             );
             assert!(stdout.contains("[calm] plugin: /plugins/slack"), "{stdout}");
         }
+    }
+
+    #[test]
+    fn a_typed_command_runs_in_the_login_shell_with_env_and_reports_its_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = dir.path().join("status");
+        let status = status.to_str().unwrap();
+        let run = |command: &str| {
+            let env = vec![("CALM_TEST_VAR".to_string(), "x y".to_string())];
+            let launch = typed_command_spec(command, "/bin/sh", env);
+            let name = command_name(command);
+            let context = LaunchContext {
+                login_shell: "/bin/sh",
+                status_file: status,
+                plugin_dir: "",
+            };
+            let line = command_line(&argv_named(&launch, &context, &name));
+            let output = Command::new("/bin/bash")
+                .args(["--noprofile", "--norc", "-c", &format!("exec -l {line}")])
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let stdout = run("printf '%s\\n' \"$CALM_TEST_VAR\" | tr x z; exit 3");
+        assert!(stdout.starts_with("z y\n"), "{stdout}");
+        assert!(
+            stdout.contains("[calm] printf exited with code 3"),
+            "{stdout}"
+        );
+        assert_eq!(std::fs::read_to_string(status).unwrap(), "3\n");
+
+        let stdout = run("calm-no-such-command-xyz --flag");
+        assert_eq!(std::fs::read_to_string(status).unwrap(), "127\n");
+        assert!(
+            stdout.contains("[calm] command not found: calm-no-such-command-xyz"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("[calm] plugin:"), "{stdout}");
+
+        let stdout = run("API_TOKEN=calm-secret-value calm-no-such-command-xyz");
+        assert_eq!(std::fs::read_to_string(status).unwrap(), "127\n");
+        assert!(
+            stdout.contains("[calm] command not found: calm-no-such-command-xyz"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("calm-secret-value"), "{stdout}");
+
+        let mut leaks = Vec::new();
+        for command in [
+            "API_TOKEN+=SECRETVAL calm-no-such-command-xyz",
+            "API_TOKEN=$(printf SECRETVAL) calm-no-such-command-xyz",
+        ] {
+            let stdout = run(command);
+            assert_eq!(std::fs::read_to_string(status).unwrap(), "127\n");
+            if stdout.contains("SECRETVAL") {
+                leaks.push((command, stdout));
+            }
+        }
+        assert!(leaks.is_empty(), "{leaks:?}");
+    }
+
+    #[test]
+    fn command_name_is_the_first_word_without_its_folder() {
+        assert_eq!(command_name("htop -d 5"), "htop");
+        assert_eq!(command_name("  /usr/bin/top"), "top");
+        assert_eq!(command_name("/usr/bin/top -d 5"), "top");
+        assert_eq!(command_name(""), "");
+    }
+
+    #[test]
+    fn command_name_skips_env_assignments_so_their_values_never_show() {
+        assert_eq!(command_name("API_TOKEN=x htop -d 5"), "htop");
+        assert_eq!(command_name("A=1 B=2 /usr/bin/top"), "top");
+        assert_eq!(command_name("A='x y' _b=\"1 2\" top"), "top");
+        assert_eq!(command_name("FOO=bar"), "command");
+        // Any leading word with `=` is skipped; `=` after the command is fine.
+        assert_eq!(command_name("1A=x htop"), "htop");
+        assert_eq!(command_name("ls a=b"), "ls");
+    }
+
+    #[test]
+    fn command_name_never_shows_any_part_of_an_env_value() {
+        let leaks: Vec<_> = [
+            "API_TOKEN+=SECRET missing",
+            "\u{17b}ETON=SECRET missing",
+            "API_TOKEN=$(printf SECRET) missing",
+            "$(API_TOKEN=SECRET printf missing)",
+            "A=1 B=SECRET top",
+            "A='x SECRET' top",
+            "A=\"$(printf SECRET)\" top",
+            "A=`printf SECRET` top",
+            "A=SECRET;top",
+            "A=SECRET&&top",
+            "A[0]=SECRET top",
+            "typeset A=SECRET; top",
+        ]
+        .into_iter()
+        .map(|command| (command, command_name(command)))
+        .filter(|(_, name)| name.contains("SECRET"))
+        .collect();
+        assert!(leaks.is_empty(), "{leaks:?}");
+        assert_eq!(command_name("/usr/bin/top -d 5"), "top");
+        assert_eq!(command_name("htop"), "htop");
+        assert_eq!(command_name("A=1 htop"), "htop");
+        assert_eq!(command_name("python3.12 x"), "python3.12");
     }
 
     #[test]

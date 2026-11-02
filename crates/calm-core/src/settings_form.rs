@@ -18,7 +18,9 @@ use crate::settings::{
     RestoreOnLaunch, SESSION_BACKUP_COUNT_RANGE, SESSION_DEBOUNCE_MS_RANGE, SNAP_EDGE_RANGE,
     SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
 };
-use crate::terminal_profile::{PALETTE_PRESETS, TerminalColors, TerminalColorsSetting, hex};
+use crate::terminal_profile::{
+    CommandRestart, PALETTE_PRESETS, TerminalColors, TerminalColorsSetting, hex,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
@@ -913,6 +915,18 @@ fn terminal_fields(settings: &Settings) -> Vec<Field> {
             selected,
         ));
     }
+    fields.push(choice(
+        "terminal.command_restart",
+        "Restart typed commands",
+        CommandRestart::ALL
+            .iter()
+            .map(|mode| mode.label().to_string())
+            .collect(),
+        CommandRestart::ALL
+            .iter()
+            .position(|mode| *mode == terminal.command_restart)
+            .unwrap_or(0),
+    ));
     if let Some(env) = &defaults.env {
         // Keys only: values may be secrets.
         let masked: Vec<String> = env
@@ -1013,6 +1027,12 @@ fn apply_terminal_field(
                 colors.foreground = rgb.0;
             }
             set_colors(colors);
+            changed
+        }
+        ("command_restart", FieldValue::Index(index)) => {
+            terminal.command_restart = *CommandRestart::ALL
+                .get(index)
+                .ok_or("bad command restart mode")?;
             changed
         }
         ("default_profile", FieldValue::Index(index)) => {
@@ -1133,6 +1153,27 @@ mod tests {
         apply_field(&mut next, "terminal.default_profile", FieldValue::Index(1)).unwrap();
         assert_eq!(next.terminal.default_profile.as_deref(), Some("neon"));
         assert_eq!(next.validate(), Ok(()));
+    }
+
+    #[test]
+    fn terminal_section_picks_the_command_restart_mode() {
+        let settings = Settings::default();
+        let form = settings_form(&settings, &FormContext::default());
+        let field = form
+            .iter()
+            .flat_map(|s| &s.fields)
+            .find(|f| f.id == "terminal.command_restart")
+            .expect("command restart control");
+        let Control::Choice { options, selected } = &field.control else {
+            panic!("{:?}", field.control)
+        };
+        assert_eq!(options, &["Never", "When it exits", "On Enter"]);
+        assert_eq!(*selected, 2);
+        let mut next = settings.clone();
+        apply_field(&mut next, "terminal.command_restart", FieldValue::Index(1)).unwrap();
+        assert_eq!(next.terminal.command_restart, CommandRestart::OnExit);
+        assert!(apply_field(&mut next, "terminal.command_restart", FieldValue::Index(3)).is_err());
+        assert_eq!(next.terminal.command_restart, CommandRestart::OnExit);
     }
 
     /// The value a user could send from this control.

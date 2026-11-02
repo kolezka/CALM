@@ -26,10 +26,12 @@ use calm_core::restore::{
     AutosaveStart, CWD_MISSING_NOTE, RestorePlan, placeholder_reason, restored_cwd,
     restored_profile, version_note,
 };
-use calm_core::scene::{Panel, PanelId, PanelKind, Scene, chip_rect, chrome_height, content_rect};
+use calm_core::scene::{
+    Panel, PanelId, PanelKind, Scene, TerminalApp, chip_rect, chrome_height, content_rect,
+};
 use calm_core::status_bar::{status_bar_rect, status_text};
 use calm_core::terminal_profile::{
-    ResolvedTerminal, TerminalIcon, display_cwd, is_image_icon, render_title,
+    AppLayer, ResolvedTerminal, TerminalIcon, display_cwd, is_image_icon, render_title,
 };
 use calm_core::viewport::{NativePlacement, place_native};
 use calm_native::{
@@ -64,9 +66,14 @@ use crate::settings_menu::{self, SettingsState};
 use crate::terminal::{self, TerminalEvent, TerminalPanel};
 use crate::terminal_profiles::{self, TerminalMeta};
 use crate::theme;
-use crate::tui_host::{self, TuiRun};
+use crate::tui_host::{self, CommandRun};
 
 mod plugin_menus;
+
+const RUN_COMMAND_TITLE: &str = "Run Command";
+const RUN_COMMAND_NOTE: &str =
+    "The command is saved in the session file. Do not put secrets in it.";
+const RUN_COMMAND_PLACEHOLDER: &str = "htop";
 
 actions!(
     calm,
@@ -78,6 +85,8 @@ actions!(
         FitAll,
         DrawTerminal,
         DrawBrowser,
+        DeletePanel,
+        OpenPanelSettings,
         Cancel,
         ConfirmEnter,
         ToggleFullscreen
@@ -108,6 +117,8 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("cmd-0", ZoomReset, ctx),
         KeyBinding::new("cmd-shift-h", CenterOnOrigin, ctx),
         KeyBinding::new("cmd-shift-0", FitAll, ctx),
+        KeyBinding::new("cmd-shift-backspace", DeletePanel, ctx),
+        KeyBinding::new("cmd-<", OpenPanelSettings, ctx),
         KeyBinding::new("t", DrawTerminal, ctx),
         KeyBinding::new("b", DrawBrowser, ctx),
         KeyBinding::new("escape", Cancel, ctx),
@@ -169,9 +180,8 @@ pub struct CanvasView {
     resize_cursor: Option<ResizeEdge>,
     /// Live terminals by panel. Dropping an entry ends its process.
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
-    /// Restart state of TUI panels. Their terminal is in `terminals`.
-    tui_runs: Vec<(PanelId, TuiRun)>,
-    /// Plain terminals opened from the `terminal` settings. Their terminal is in `terminals`.
+    /// Every terminal's settings state and, for apps and typed commands, its supervisor.
+    /// Their terminal is in `terminals`.
     terminal_meta: Vec<(PanelId, TerminalMeta)>,
     /// Profile asked for by a menu item or a duplicate, read when the panel is created.
     requested_profiles: HashMap<PanelId, String>,
@@ -246,6 +256,7 @@ pub struct CanvasView {
     /// Set when the monitor could not be installed, so paint stops retrying.
     pub(crate) content_monitor_error: Option<String>,
     pub(crate) content_move: ContentMove,
+    pub(crate) content_press_mods: Option<calm_core::interaction::Modifiers>,
 }
 
 impl CanvasView {
@@ -289,7 +300,6 @@ impl CanvasView {
             hover: None,
             resize_cursor: None,
             terminals: Vec::new(),
-            tui_runs: Vec::new(),
             terminal_meta: Vec::new(),
             requested_profiles: HashMap::new(),
             terminals_opened: 0,
@@ -334,6 +344,7 @@ impl CanvasView {
             content_monitor: None,
             content_monitor_error: None,
             content_move: ContentMove::default(),
+            content_press_mods: None,
         }
     }
 
@@ -416,6 +427,7 @@ impl CanvasView {
                     command,
                     cwd,
                     profile,
+                    app,
                 } => {
                     // An unknown id opens with the defaults; the saved kind keeps it.
                     let (profile, notice) = restored_profile(profile.as_deref(), |profile| {
@@ -429,8 +441,15 @@ impl CanvasView {
                         self.title_notes.insert(id, CWD_MISSING_NOTE);
                     }
                     notices.extend(notice);
-                    let opened =
-                        self.open_plain_terminal(id, profile, command.as_deref(), cwd, window, cx);
+                    let opened = self.open_terminal(
+                        id,
+                        profile,
+                        command.as_deref(),
+                        cwd,
+                        app.as_ref(),
+                        window,
+                        cx,
+                    );
                     if let Err(err) = opened {
                         notices.push(format!("a restored terminal failed to start: {err}"));
                     }
@@ -477,7 +496,7 @@ impl CanvasView {
     /// Whether `id` has a live terminal, TUI app, browser or plugin view.
     fn panel_running(&self, id: PanelId) -> bool {
         self.terminal(id).is_some()
-            || self.tui_run(id).is_some()
+            || self.terminal_meta(id).is_some()
             || self.browser(id).is_some()
             || self.plugin_panels.iter().any(|(panel, _)| *panel == id)
     }
@@ -801,7 +820,6 @@ impl CanvasView {
                         terminal.update(cx, |terminal, _| terminal.release_preview(window));
                     }
                     self.terminals.retain(|(panel, _)| *panel != id);
-                    self.tui_runs.retain(|(panel, _)| *panel != id);
                     self.terminal_meta.retain(|(panel, _)| *panel != id);
                     self.browsers.retain(|(panel, _)| *panel != id);
                     self.plugin_panels.retain(|(panel, _)| *panel != id);
@@ -885,7 +903,8 @@ impl CanvasView {
         let profile = menu::terminal_profile_choice(id).map(str::to_string);
         let effects = match (menu::menu_action(id, world, &self.plugin_sizes), target) {
             (Some(MenuCommand::AddPanel { kind, mut rect }), MenuTarget::Canvas { .. }) => {
-                if matches!(kind, PanelKind::Terminal { .. }) {
+                // An app keeps its manifest size.
+                if matches!(kind, PanelKind::Terminal { app: None, .. }) {
                     rect.size = self.settings.settings.panels.default_terminal_size();
                 }
                 let (id, kind) = self.add_new_panel(kind, rect);
@@ -894,6 +913,10 @@ impl CanvasView {
                 }
                 let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
                 vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)]
+            }
+            (Some(MenuCommand::RunCommand { rect }), MenuTarget::Canvas { .. }) => {
+                self.prompt_run_command(rect, window, cx);
+                return;
             }
             // The same action as `cmd-,` and the menu bar, so one handler opens Settings.
             (Some(MenuCommand::OpenSettings), MenuTarget::Canvas { .. }) => {
@@ -905,7 +928,7 @@ impl CanvasView {
                 return;
             }
             (Some(MenuCommand::Restart), MenuTarget::Panel(id)) => {
-                self.restart_tui(id, true, window, cx);
+                self.restart_terminal(id, true, window, cx);
                 vec![Effect::Redraw]
             }
             (Some(MenuCommand::Minimize), MenuTarget::Panel(id)) => {
@@ -956,6 +979,53 @@ impl CanvasView {
         self.apply_effects(effects, window, cx);
     }
 
+    /// Asks for a command in a native prompt, then opens a terminal running it in `rect`.
+    /// The prompt is modal, so it runs in a task outside this update, like the menus.
+    fn prompt_run_command(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            let answer = calm_native::prompt_text(
+                RUN_COMMAND_TITLE,
+                "",
+                RUN_COMMAND_NOTE,
+                RUN_COMMAND_PLACEHOLDER,
+            );
+            let command = match answer {
+                Ok(Some(command)) => command,
+                Ok(None) => return,
+                Err(err) => {
+                    eprintln!("calm: run command prompt unavailable: {err}");
+                    return;
+                }
+            };
+            this.update_in(cx, |view, window, cx| {
+                view.add_command_terminal(command, rect, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Adds a terminal running `command` where Add puts new terminals, and starts it. The
+    /// Run Command prompt ends here; the smoke calls it directly.
+    pub fn add_command_terminal(
+        &mut self,
+        command: String,
+        mut rect: Rect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<PanelId> {
+        let command = calm_native::prompt_value(&command)?;
+        rect.size = self.settings.settings.panels.default_terminal_size();
+        let (id, kind) = self.add_new_panel(PanelKind::command_terminal(command), rect);
+        let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
+        self.apply_effects(
+            vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)],
+            window,
+            cx,
+        );
+        Some(id)
+    }
+
     fn panel_created(
         &mut self,
         id: PanelId,
@@ -968,6 +1038,7 @@ impl CanvasView {
                 command,
                 cwd,
                 profile: saved,
+                app,
             } => {
                 let profile = self
                     .requested_profiles
@@ -979,11 +1050,12 @@ impl CanvasView {
                 {
                     kept.clone_from(&profile);
                 }
-                let opened = self.open_plain_terminal(
+                let opened = self.open_terminal(
                     id,
                     profile,
                     command.as_deref(),
                     cwd.clone(),
+                    app.as_ref(),
                     window,
                     cx,
                 );
@@ -1004,14 +1076,6 @@ impl CanvasView {
                     }
                 }
             }
-            PanelKind::Tui { plugin_id, .. } => {
-                if let Err(err) = self.open_tui_panel(id, plugin_id, window, cx) {
-                    eprintln!("calm: tui panel failed to open: {err}");
-                    if let Some(panel) = self.scene.get_mut(id) {
-                        panel.title = format!("{plugin_id}: failed to open");
-                    }
-                }
-            }
             // No native view: drawn by GPUI as a placeholder, so it never covers a live one.
             PanelKind::Unsupported { raw } => {
                 let reason = placeholder_reason(kind, |_| true, |_| true)
@@ -1021,47 +1085,125 @@ impl CanvasView {
         }
     }
 
-    /// Starts a plain terminal for a panel already in the scene, from `profile` (else the
-    /// default profile) over the `terminal` defaults. A command or cwd stored on the panel
-    /// wins over the profile's.
-    pub fn open_plain_terminal(
+    /// Starts a terminal for a panel already in the scene, from `profile` (else the default
+    /// profile) over the `terminal` defaults. A typed `command` runs instead of the
+    /// profile's under a supervisor, as does an `app`, whose manifest gives the command,
+    /// cwd and restart policy. A cwd stored on the panel wins over the profile's.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_terminal(
         &mut self,
         id: PanelId,
         profile: Option<String>,
         command: Option<&str>,
         cwd: Option<std::path::PathBuf>,
+        app: Option<&TerminalApp>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let resolved = self.resolve_terminal(id, profile.as_deref());
-        if let Some(asked) = &profile
-            && resolved.profile.as_ref() != Some(asked)
+        let typed = command.map(str::trim).filter(|command| !command.is_empty());
+        let run = match (app, typed) {
+            (Some(app), _) => {
+                let opened = self
+                    .installed_plugins
+                    .iter()
+                    .find(|plugin| plugin.manifest.id == app.plugin_id)
+                    .ok_or_else(|| format!("plugin {} is not installed", app.plugin_id))
+                    .and_then(|plugin| {
+                        let extra = self.pending_tui_args.take().unwrap_or_default();
+                        CommandRun::app(plugin.clone(), extra)
+                    });
+                match opened {
+                    Ok(run) => Some(run),
+                    Err(err) => {
+                        if let Some(panel) = self.scene.get_mut(id) {
+                            panel.title = format!("{}: failed to open", app.plugin_id);
+                        }
+                        return Err(err);
+                    }
+                }
+            }
+            (None, Some(command)) => Some(CommandRun::typed(
+                command.to_string(),
+                self.settings.settings.terminal.command_restart,
+            )),
+            (None, None) => None,
+        };
+        if let Some(TerminalIcon::AppImage(path)) = run
+            .as_ref()
+            .and_then(CommandRun::app_layer)
+            .and_then(|layer| layer.icon)
         {
-            eprintln!("calm: terminal profile {asked:?} not found, using the defaults");
+            self.tui_icons.entry(path).or_insert_with_key(|path| {
+                crate::icon_image::load(path)
+                    .inspect_err(|err| eprintln!("calm: tui icon: {err}"))
+                    .ok()
+            });
         }
         let home = terminal_profiles::home_dir();
         let inherited = self
             .focused
             .and_then(|focused| self.terminal_meta(focused))
             .map(|meta| meta.cwd.clone());
-        let start =
-            terminal_profiles::terminal_start(cwd, &resolved.cwd, inherited.as_deref(), &home);
-        let options = terminal_profiles::options(&resolved, command, start.clone());
-        let configuration = terminal_profiles::configuration_name(&options.configuration);
-        self.spawn_terminal(id, options, window, cx)?;
+        let is_plain = run.is_none();
+        let app_start = run.as_ref().and_then(|run| run.app_start_dir(&home));
         self.terminals_opened += 1;
         self.terminal_meta.push((
             id,
             TerminalMeta {
-                profile,
+                profile: profile.clone(),
                 index: self.terminals_opened,
-                cwd: start,
-                applied_colors: resolved.colors,
-                configuration,
+                cwd: home.clone(),
+                applied_colors: None,
+                configuration: "default",
+                run,
             },
         ));
-        self.refresh_terminal_chrome(id, &resolved);
-        Ok(())
+        let resolved = self.resolve_terminal(id);
+        if let Some(asked) = &profile
+            && resolved.profile.as_ref() != Some(asked)
+        {
+            eprintln!("calm: terminal profile {asked:?} not found, using the defaults");
+        }
+        let start = app_start.unwrap_or_else(|| {
+            terminal_profiles::terminal_start(cwd, &resolved.cwd, inherited.as_deref(), &home)
+        });
+        if let Some(meta) = self.terminal_meta_mut(id) {
+            meta.cwd = start;
+        }
+        let launched = self.launch_terminal(id, window, cx);
+        if launched.is_err() && is_plain {
+            // A plain shell has nothing to restart; forget it like before.
+            self.terminal_meta.retain(|(panel, _)| *panel != id);
+        }
+        launched
+    }
+
+    /// Opens the terminal of a panel already in the scene from its saved kind, the way
+    /// a restore does. The smoke uses it in place of the native prompt and menus.
+    pub fn open_scene_terminal(
+        &mut self,
+        id: PanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let Some(PanelKind::Terminal {
+            command,
+            cwd,
+            profile,
+            app,
+        }) = self.scene.get(id).map(|panel| panel.kind.clone())
+        else {
+            return Err(format!("panel {} is not a terminal", id.0));
+        };
+        self.open_terminal(
+            id,
+            profile,
+            command.as_deref(),
+            cwd,
+            app.as_ref(),
+            window,
+            cx,
+        )
     }
 
     pub fn terminal_meta(&self, id: PanelId) -> Option<&TerminalMeta> {
@@ -1071,16 +1213,43 @@ impl CanvasView {
             .map(|(_, meta)| meta)
     }
 
-    /// The panel's profile over the defaults, with its overrides on top.
-    fn resolve_terminal(&self, id: PanelId, profile: Option<&str>) -> ResolvedTerminal {
+    fn terminal_meta_mut(&mut self, id: PanelId) -> Option<&mut TerminalMeta> {
+        self.terminal_meta
+            .iter_mut()
+            .find(|(panel, _)| *panel == id)
+            .map(|(_, meta)| meta)
+    }
+
+    fn command_run(&self, id: PanelId) -> Option<&CommandRun> {
+        self.terminal_meta(id).and_then(|meta| meta.run.as_ref())
+    }
+
+    fn command_run_mut(&mut self, id: PanelId) -> Option<&mut CommandRun> {
+        self.terminal_meta_mut(id)
+            .and_then(|meta| meta.run.as_mut())
+    }
+
+    /// An app panel's manifest layer, for its look and its Settings window.
+    pub fn app_layer(&self, id: PanelId) -> Option<AppLayer> {
+        self.command_run(id).and_then(CommandRun::app_layer)
+    }
+
+    /// The terminal's profile over the defaults, an app's manifest over that, and the
+    /// panel's overrides on top.
+    fn resolve_terminal(&self, id: PanelId) -> ResolvedTerminal {
         let settings = &self.settings.settings;
         let user_config = settings.panels.terminal_user_config;
+        let profile = self
+            .terminal_meta(id)
+            .and_then(|meta| meta.profile.as_deref());
+        let app = self.app_layer(id);
         match self.scene.get(id) {
-            Some(panel) => {
-                settings
-                    .terminal
-                    .resolve_for_panel(profile, user_config, &panel.overrides)
-            }
+            Some(panel) => settings.terminal.resolve_for_panel(
+                profile,
+                user_config,
+                app.as_ref(),
+                &panel.overrides,
+            ),
             None => settings.terminal.resolve(profile, user_config),
         }
     }
@@ -1092,18 +1261,86 @@ impl CanvasView {
             .map_or_else(std::path::PathBuf::new, std::path::Path::to_path_buf)
     }
 
-    /// Sets the title and decodes an image icon once. Decoding and path problems are logged
-    /// once per path; the panel then shows the terminal icon.
+    /// Spawns the terminal's next process: its first one, or a restart that replaces an
+    /// exited view under the same panel id.
+    fn launch_terminal(
+        &mut self,
+        id: PanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let resolved = self.resolve_terminal(id);
+        let shell = terminal_profiles::login_shell();
+        let meta = self
+            .terminal_meta_mut(id)
+            .ok_or_else(|| format!("panel {} has no terminal state", id.0))?;
+        let cwd = meta.cwd.clone();
+        let line = match meta.run.as_mut() {
+            Some(run) => Some(run.next_launch(id, &resolved.env, &shell)?),
+            None => None,
+        };
+        let supervised = line.is_some();
+        let options = terminal_profiles::options(&resolved, line.as_deref(), cwd);
+        let configuration = terminal_profiles::configuration_name(&options.configuration);
+        if let Some(old) = self.terminal(id) {
+            old.update(cx, |terminal, _| terminal.release_preview(window));
+            self.terminals.retain(|(panel, _)| *panel != id);
+        }
+        // A restart replaces the native view without changing its panel id.
+        self.native_order.clear();
+        self.spawn_terminal(id, options, window, cx)?;
+        if supervised {
+            let terminal = self
+                .terminal(id)
+                .ok_or("terminal missing right after spawn")?;
+            let subscription = cx.subscribe_in(
+                &terminal,
+                window,
+                move |view: &mut Self, _, event: &TerminalEvent, window, cx| match event {
+                    TerminalEvent::Exited => view.terminal_exited(id, window, cx),
+                    TerminalEvent::RestartRequested => {
+                        view.restart_terminal(id, true, window, cx);
+                    }
+                },
+            );
+            if let Some(run) = self.command_run_mut(id) {
+                run.subscription = Some(subscription);
+            }
+        }
+        if let Some(meta) = self.terminal_meta_mut(id) {
+            meta.applied_colors = resolved.colors;
+            meta.configuration = configuration;
+        }
+        self.refresh_terminal_chrome(id, &resolved);
+        Ok(())
+    }
+
+    /// Sets the title, with a supervised command's exit state, and decodes an image icon
+    /// once. Decoding and path problems are logged once per path; the panel then shows the
+    /// terminal icon.
     fn refresh_terminal_chrome(&mut self, id: PanelId, resolved: &ResolvedTerminal) {
         let Some(meta) = self.terminal_meta(id) else {
             return;
         };
         let cwd = display_cwd(&meta.cwd, &terminal_profiles::home_dir());
+        let name = match &meta.run {
+            Some(run) => run.name(),
+            None => calm_core::tui::command_name(
+                resolved
+                    .command
+                    .as_deref()
+                    .unwrap_or(&terminal_profiles::login_shell()),
+            ),
+        };
         // An override title is shown as typed, `{n}` and all.
-        let title = if resolved.title_is_literal {
+        let base = if resolved.title_is_literal {
             resolved.title_template.clone()
         } else {
-            render_title(&resolved.title_template, meta.index, &cwd)
+            render_title(&resolved.title_template, meta.index, &cwd, &name)
+        };
+        let title = match &meta.run {
+            Some(run) => run.title(&base),
+            None => base,
         };
         self.scene.set_title(id, title);
         if let Some(TerminalIcon::Image(relative)) = &resolved.icon {
@@ -1117,24 +1354,31 @@ impl CanvasView {
         }
     }
 
-    /// After a settings change: every plain terminal's title and chrome follow at once, and
-    /// a changed palette recolors the running surface. Removing a palette, or switching the
+    /// After a settings change: every terminal's title and chrome follow at once, and a
+    /// changed palette recolors the running surface. Removing a palette, or switching the
     /// Ghostty user config, needs a new terminal: libghostty only takes a new theme.
     pub fn terminal_settings_changed(&mut self, cx: &mut Context<Self>) {
+        let policy = tui_host::typed_policy(self.settings.settings.terminal.command_restart);
+        for (_, meta) in &mut self.terminal_meta {
+            // Only the next exit follows the new policy; nothing restarts now.
+            if let Some(run) = meta.run.as_mut().filter(|run| !run.is_app()) {
+                run.supervisor.policy = policy;
+            }
+        }
         let ids: Vec<PanelId> = self.terminal_meta.iter().map(|(id, _)| *id).collect();
         for id in ids {
             self.refresh_terminal(id, cx);
         }
     }
 
-    /// Re-resolves one plain terminal: title, chrome, and a live recolor when the palette
+    /// Re-resolves one terminal: title, chrome, and a live recolor when the palette
     /// changed. The process keeps running.
     fn refresh_terminal(&mut self, id: PanelId, cx: &mut Context<Self>) {
         let Some(meta) = self.terminal_meta(id) else {
             return;
         };
         let applied = meta.applied_colors;
-        let resolved = self.resolve_terminal(id, meta.profile.clone().as_deref());
+        let resolved = self.resolve_terminal(id);
         self.refresh_terminal_chrome(id, &resolved);
         let Some(colors) = resolved.colors.filter(|colors| Some(*colors) != applied) else {
             return;
@@ -1145,7 +1389,7 @@ impl CanvasView {
         let theme = terminal_profiles::theme(&colors);
         match terminal.update(cx, |terminal, _| terminal.apply_theme(&theme)) {
             Ok(()) => {
-                if let Some((_, meta)) = self.terminal_meta.iter_mut().find(|(p, _)| *p == id) {
+                if let Some(meta) = self.terminal_meta_mut(id) {
                     meta.applied_colors = Some(colors);
                 }
             }
@@ -1191,112 +1435,29 @@ impl CanvasView {
             .map(IconLook::Image)
     }
 
-    /// Starts a TUI plugin's command in a terminal for a panel already in the scene.
-    pub fn open_tui_panel(
-        &mut self,
-        id: PanelId,
-        plugin_id: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let plugin = self
-            .installed_plugins
-            .iter()
-            .find(|plugin| plugin.manifest.id == plugin_id)
-            .ok_or_else(|| format!("plugin {plugin_id} is not installed"))?
-            .clone();
-        let mut run = TuiRun::new(plugin)?;
-        run.extra_args = self.pending_tui_args.take().unwrap_or_default();
-        if let Some(path) = run.icon_path() {
-            self.tui_icons.entry(path).or_insert_with_key(|path| {
-                crate::icon_image::load(path)
-                    .inspect_err(|err| eprintln!("calm: tui icon: {err}"))
-                    .ok()
-            });
-        }
-        self.tui_runs.push((id, run));
-        self.launch_tui(id, window, cx)
-    }
-
-    fn tui_run(&self, id: PanelId) -> Option<&TuiRun> {
-        self.tui_runs
-            .iter()
-            .find(|(panel, _)| *panel == id)
-            .map(|(_, run)| run)
-    }
-
-    fn tui_run_mut(&mut self, id: PanelId) -> Option<&mut TuiRun> {
-        self.tui_runs
-            .iter_mut()
-            .find(|(panel, _)| *panel == id)
-            .map(|(_, run)| run)
-    }
-
-    /// Spawns the next process of a TUI panel. An old, exited terminal is dropped first.
-    fn launch_tui(
-        &mut self,
-        id: PanelId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let run = self
-            .tui_run_mut(id)
-            .ok_or_else(|| format!("panel {} has no tui state", id.0))?;
-        let mut options = run.next_launch(id)?;
-        let title = run.title();
-        settings_menu::apply_terminal_config(&mut options, &self.settings.settings);
-        if let Some(run) = self.tui_run(id) {
-            run.apply_terminal_colors(&mut options);
-        }
-        if let Some(old) = self.terminal(id) {
-            old.update(cx, |terminal, _| terminal.release_preview(window));
-            self.terminals.retain(|(panel, _)| *panel != id);
-        }
-        // A restart replaces the native view without changing its panel id.
-        self.native_order.clear();
-        self.spawn_terminal(id, options, window, cx)?;
-        let terminal = self
-            .terminal(id)
-            .ok_or("terminal missing right after spawn")?;
-        let subscription = cx.subscribe_in(
-            &terminal,
-            window,
-            move |view: &mut Self, _, event: &TerminalEvent, window, cx| match event {
-                TerminalEvent::Exited => view.tui_exited(id, window, cx),
-                TerminalEvent::RestartRequested => view.restart_tui(id, true, window, cx),
-            },
-        );
-        if let Some(run) = self.tui_run_mut(id) {
-            run.subscription = Some(subscription);
-        }
-        self.scene.set_title(id, title);
-        Ok(())
-    }
-
-    fn tui_exited(&mut self, id: PanelId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(run) = self.tui_run_mut(id) else {
+    /// A supervised command ended: read its code, show the state, maybe restart.
+    fn terminal_exited(&mut self, id: PanelId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(run) = self.command_run_mut(id) else {
             return;
         };
         let code = tui_host::read_exit_code(&run.status_file);
         let action = run.supervisor.exited(code, run.started_at.elapsed());
-        let title = run.title();
         let launches = run.launches;
         if run.supervisor.state == calm_core::tui::TuiState::NotFound {
-            eprintln!(
-                "calm: tui {}: command not found: {} (plugin dir {})",
-                run.plugin.manifest.id,
-                run.spec().command,
-                run.plugin.dir.display()
-            );
+            eprintln!("{}", run.not_found_log(id));
         }
-        self.scene.set_title(id, title);
+        let resolved = self.resolve_terminal(id);
+        self.refresh_terminal_chrome(id, &resolved);
         if let calm_core::tui::ExitAction::RestartAfter(delay) = action {
             cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor().timer(delay).await;
                 this.update_in(cx, |view, window, cx| {
                     // Skip if the panel closed or was restarted by hand meanwhile.
-                    if view.tui_run(id).is_some_and(|run| run.launches == launches) {
-                        view.restart_tui(id, false, window, cx);
+                    if view
+                        .command_run(id)
+                        .is_some_and(|run| run.launches == launches)
+                    {
+                        view.restart_terminal(id, false, window, cx);
                     }
                 })
                 .ok();
@@ -1307,22 +1468,23 @@ impl CanvasView {
         cx.notify();
     }
 
-    /// `manual` is a user's Restart, which only works once the process has exited.
-    pub fn restart_tui(
+    /// Starts a supervised command again under the same panel id. `manual` is a user's
+    /// Restart, which only works once the process has exited.
+    pub fn restart_terminal(
         &mut self,
         id: PanelId,
         manual: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(run) = self.tui_run_mut(id) else {
+        let Some(run) = self.command_run_mut(id) else {
             return;
         };
         if manual && !run.supervisor.restart_requested() {
             return;
         }
-        if let Err(err) = self.launch_tui(id, window, cx) {
-            eprintln!("calm: tui panel failed to restart: {err}");
+        if let Err(err) = self.launch_terminal(id, window, cx) {
+            eprintln!("calm: terminal failed to restart: {err}");
             if let Some(panel) = self.scene.get_mut(id) {
                 panel.title = format!("{}: failed to restart", panel.title);
             }
@@ -1335,13 +1497,19 @@ impl CanvasView {
     }
 
     /// The chrome look paint uses for a panel. Read by the smoke.
-    /// The panel's overrides win over its profile, manifest or the theme.
+    /// The panel's overrides win over an app's manifest, its profile or the theme.
     pub fn panel_look(&self, id: PanelId) -> PanelLook {
-        if let Some(meta) = self.terminal_meta(id) {
-            let resolved = self.resolve_terminal(id, meta.profile.as_deref());
+        if self.terminal_meta(id).is_some() {
+            let resolved = self.resolve_terminal(id);
             let icon = match resolved.icon {
                 Some(TerminalIcon::Text(text)) => text_icon(text),
                 Some(TerminalIcon::Image(relative)) => self.settings_icon(&relative),
+                Some(TerminalIcon::AppImage(path)) => self
+                    .tui_icons
+                    .get(&path)
+                    .cloned()
+                    .flatten()
+                    .map(IconLook::Image),
                 None => None,
             };
             return PanelLook {
@@ -1355,23 +1523,9 @@ impl CanvasView {
             .get(id)
             .map(|panel| panel.overrides.clone())
             .unwrap_or_default();
-        let (base, own_icon) = match self.tui_run(id) {
-            Some(run) => {
-                let icon = match (run.glyph(), run.icon_path()) {
-                    (Some(text), _) => Some(IconLook::Text(text.to_string())),
-                    (None, Some(path)) => self
-                        .tui_icons
-                        .get(&path)
-                        .cloned()
-                        .flatten()
-                        .map(IconLook::Image),
-                    (None, None) => None,
-                };
-                (run.chrome_overrides(), icon)
-            }
-            None => (ChromeOverrides::default(), None),
-        };
-        override_look(overrides, base, own_icon, |path| self.settings_icon(path))
+        override_look(overrides, ChromeOverrides::default(), None, |path| {
+            self.settings_icon(path)
+        })
     }
 
     /// The looks the paint snapshot carries. Read by the smoke so it checks what paint sees.
@@ -1379,21 +1533,36 @@ impl CanvasView {
         snapshot_looks(&self.scene, |id| self.panel_look(id))
     }
 
-    /// Per TUI panel in creation order: chrome title, state, Restart offered, launches.
-    pub fn tui_status(&self) -> Vec<(String, calm_core::tui::TuiState, bool, u64)> {
-        self.tui_runs
+    /// Per supervised terminal in creation order: whether it is an app, chrome title,
+    /// state, Restart offered, launches.
+    pub fn run_status(&self) -> Vec<(PanelId, bool, String, calm_core::tui::TuiState, bool, u64)> {
+        self.terminal_meta
             .iter()
+            .filter_map(|(id, meta)| meta.run.as_ref().map(|run| (id, run)))
             .map(|(id, run)| {
                 let title = self
                     .scene
                     .get(*id)
                     .map_or_else(String::new, |panel| panel.title.clone());
                 (
+                    *id,
+                    run.is_app(),
                     title,
                     run.supervisor.state,
                     run.supervisor.can_restart(),
                     run.launches,
                 )
+            })
+            .collect()
+    }
+
+    /// Per TUI app panel in creation order: chrome title, state, Restart offered, launches.
+    pub fn tui_status(&self) -> Vec<(String, calm_core::tui::TuiState, bool, u64)> {
+        self.run_status()
+            .into_iter()
+            .filter(|(_, is_app, ..)| *is_app)
+            .map(|(_, _, title, state, can_restart, launches)| {
+                (title, state, can_restart, launches)
             })
             .collect()
     }
@@ -2014,8 +2183,8 @@ impl CanvasView {
     }
 
     /// Drives a press, a move by `delta` canvas pixels and a release through the real
-    /// mouse handlers, starting at `from_world`. Alt is held so snapping stays out of the
-    /// numbers. Only the smoke uses it.
+    /// mouse handlers, starting at `from_world`. Cmd and Shift keep snapping out of the
+    /// numbers after the press. Only the smoke uses it.
     pub fn smoke_drag(
         &mut self,
         from_world: Point,
@@ -2031,7 +2200,8 @@ impl CanvasView {
             )
         };
         let modifiers = gpui::Modifiers {
-            alt: true,
+            platform: true,
+            shift: true,
             ..gpui::Modifiers::default()
         };
         let from = position(start.x, start.y);
@@ -2039,7 +2209,7 @@ impl CanvasView {
         let down = MouseDownEvent {
             button: MouseButton::Left,
             position: from,
-            modifiers,
+            modifiers: gpui::Modifiers::default(),
             click_count: 1,
             first_mouse: false,
         };
@@ -3247,6 +3417,16 @@ impl Render for CanvasView {
             .on_action(cx.listener(|view, _: &DrawBrowser, window, cx| {
                 view.set_tool(Tool::DrawBrowser, window, cx)
             }))
+            .on_action(cx.listener(|view, _: &DeletePanel, window, cx| {
+                if let Some(id) = view.focused {
+                    view.apply_effects(vec![Effect::ClosePanelRequested(id)], window, cx);
+                }
+            }))
+            .on_action(cx.listener(|view, _: &OpenPanelSettings, window, cx| {
+                if let Some(id) = view.focused {
+                    view.open_panel_settings(id, window, cx);
+                }
+            }))
             .on_action(cx.listener(|view, _: &Cancel, window, cx| view.cancel(window, cx)))
             .on_action(
                 cx.listener(|view, _: &ConfirmEnter, window, cx| view.confirm_enter(window, cx)),
@@ -3342,6 +3522,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn panel_settings_shortcut_is_available_with_terminal_focus() {
+        // macOS GPUI represents US cmd-shift-comma as cmd-<.
+        let keystroke = gpui::Keystroke::parse("cmd-<").unwrap();
+        let bindings = key_bindings();
+        assert!(
+            !bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&NoAction)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
+            }),
+            "terminal context must not block the panel settings shortcut"
+        );
+        assert!(
+            bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&OpenPanelSettings)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
+            }),
+            "canvas must bind cmd-< to OpenPanelSettings"
+        );
+        assert!(
+            !settings_menu::key_bindings().iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&settings_menu::OpenSettings)
+            }),
+            "panel settings shortcut must not also open global settings"
+        );
+    }
+
+    #[test]
+    fn delete_panel_shortcut_is_available_with_terminal_focus() {
+        let keystroke = gpui::Keystroke::parse("cmd-shift-backspace").unwrap();
+        let bindings = key_bindings();
+        assert!(
+            !bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&NoAction)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
+            }),
+            "terminal context must not block the delete shortcut"
+        );
+        assert!(
+            bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&DeletePanel)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
+            }),
+            "canvas must bind cmd-shift-backspace to DeletePanel"
+        );
+    }
+
+    #[test]
     fn a_builtin_override_draws_the_builtin_icon_not_its_text() {
         let icon = text_icon("builtin:browser".to_string());
         assert!(matches!(icon, Some(IconLook::Builtin(PanelIcon::Browser))));
@@ -3359,6 +3599,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             rect,
         );
@@ -3377,13 +3618,7 @@ mod tests {
             },
             rect,
         );
-        let tui = scene.add(
-            PanelKind::Tui {
-                plugin_id: "top-example".to_string(),
-                plugin_version: None,
-            },
-            rect,
-        );
+        let tui = scene.add(PanelKind::app_terminal("top-example", None), rect);
         if let Some(panel) = scene.get_mut(browser) {
             panel.overrides.accent_color = Some("#12ab34".to_string());
             panel.overrides.title = Some("docs".to_string());

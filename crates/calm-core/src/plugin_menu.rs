@@ -47,10 +47,11 @@ impl KindName {
     /// `None` for an unsupported kind, which no `when.kind` filter can name.
     pub fn of(kind: &PanelKind) -> Option<KindName> {
         match kind {
+            // An app panel is a terminal underneath but keeps its own name in filters.
+            PanelKind::Terminal { app: Some(_), .. } => Some(KindName::Tui),
             PanelKind::Terminal { .. } => Some(KindName::Terminal),
             PanelKind::Browser { .. } => Some(KindName::Browser),
             PanelKind::Plugin { .. } => Some(KindName::Plugin),
-            PanelKind::Tui { .. } => Some(KindName::Tui),
             PanelKind::Unsupported { .. } => None,
         }
     }
@@ -128,7 +129,8 @@ pub struct PluginMenus {
 
 pub fn plugin_of(kind: &PanelKind) -> Option<&str> {
     match kind {
-        PanelKind::Plugin { plugin_id, .. } | PanelKind::Tui { plugin_id, .. } => Some(plugin_id),
+        PanelKind::Plugin { plugin_id, .. } => Some(plugin_id),
+        PanelKind::Terminal { app: Some(app), .. } => Some(&app.plugin_id),
         _ => None,
     }
 }
@@ -337,6 +339,7 @@ mod tests {
             command: None,
             cwd: None,
             profile: None,
+            app: None,
         }
     }
 
@@ -421,10 +424,7 @@ mod tests {
         );
         // Another plugin's panel does not match `plugins: ["a"]`.
         assert_eq!(ids(&panel(plugin_kind("b"), false)), [action("a", "open")]);
-        let tui = PanelKind::Tui {
-            plugin_id: "a".to_string(),
-            plugin_version: None,
-        };
+        let tui = PanelKind::app_terminal("a", None);
         assert_eq!(
             ids(&panel(tui, true)),
             [action("a", "kind"), action("a", "own")]
