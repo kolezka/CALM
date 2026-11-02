@@ -110,11 +110,8 @@ one means a new entry, not an edit.
 
 ## TUI app plugins (2026-10-31)
 
-- **A TUI app is `PanelKind::Tui { plugin_id }`, not `Terminal` with a launch spec.** The
-  manifest owns command, args, env and restart policy, so a layout stores only the id and
-  never holds env values (which may be secrets despite the docs). The panel still lives in
-  the shared `terminals` list, so placement, z-order, preview, minimize, resize and close are
-  the terminal code. Cost: one more arm in each `PanelKind` match.
+- **Superseded 2026-11-02: a TUI app is no longer `PanelKind::Tui`.** See "TUI apps are
+  terminals (2026-11-02)". The rule that a layout stores only the plugin id still holds.
 - **Commands are built as an argv and joined with POSIX single quotes.** Ghostty takes one
   string and on macOS runs `bash -c "exec -l <string>"`. `shell: true` adds
   `$SHELL -lc 'exec "$0" "$@"'` so the login profile sets `PATH`; env goes through
@@ -700,3 +697,43 @@ These shipped with #41, next to "Restore at launch" above.
 - **A restored terminal opens its saved profile.** `PanelKind::Terminal.profile` is saved
   with the session. An unknown profile id opens with the defaults and one notice; the saved
   kind keeps the id, so it comes back if the profile does.
+
+## TUI apps are terminals (2026-11-02, `feat/tui-extends-terminal`)
+
+- **A TUI app is `PanelKind::Terminal` with `app: Some(TerminalApp { plugin_id,
+  plugin_version })`.** Built by `PanelKind::app_terminal`, read with `.app()`.
+  `PanelKind::Tui` is gone. Why: one terminal path for spawn, refresh, recolor and exit.
+  Run Command would otherwise have needed a third path, and apps get every per-panel
+  terminal feature (Settings sections, presets, live recolor, profiles) for free.
+- **The saved format stays.** An app panel still saves as `type=tui` with `plugin_id` and
+  `plugin_version`, plus an optional `profile` (left out when unset, so old files round-trip
+  unchanged). An app panel never saves `command`, `cwd` or env.
+- **Looks stack in four layers, later wins:** terminal defaults, profile, manifest (title,
+  icon, `accentColor`, `titleBarColor`, `titleColor`, `terminalColors`), panel overrides.
+  Resetting one panel color falls back to the manifest, not the profile.
+- **Env stacks the same way, key by key:** defaults, profile, manifest. The use of the Ghostty
+  user config follows the profile, else `panels.terminal_user_config`. Command, args, cwd
+  (else home), `shell` and restart come from the manifest only.
+- **`{name}` in title templates.** An app's manifest name, a typed command's first word
+  without its folder, or the shell's first word for a plain terminal. A typed command's
+  default title is `{name}`; a panel title override wins. Every terminal, apps too, counts
+  toward `{n}`.
+- **Run Command: typed commands are saved in the session file.** The panel is a terminal
+  with `command`, run in the login shell with defaults and profile env, under the status
+  wrapper. A restore runs it again. The prompt says "The command is saved in the session
+  file. Do not put secrets in it."
+- **`terminal.command_restart` defaults to `"prompt"`.** Values `"never"`, `"on_exit"`,
+  `"prompt"`, validated strictly. Why "prompt": it is the TUI manifest default too, it never
+  restarts a command on its own, and Enter or the panel menu still restarts it once it has
+  exited. A change applies at the next exit and restarts nothing.
+- **A terminal's tick loop starts at spawn, not at its first paint.** The loop services the
+  surface and reports the exit. Started on first render, a window that did not paint
+  (occluded, stalled frame) never saw a new or restarted terminal exit, which was the
+  `tui-exit` smoke flake, also seen on `main`. The exit check runs only from the loop, after
+  the caller subscribed.
+- Costs: apps now inherit defaults and profile env (before: manifest env only), so a profile
+  variable reaches every app run in it. Any terminal kind with a `command` is now supervised
+  with exit handling: plugin API `panels.create` with kind `terminal` and a `command`, and
+  saved terminals with a `command`. Their exit now shows "[calm] <name> exited with code N"
+  and follows `terminal.command_restart`. Plugin API kind `tui` and `PanelInfo.kind` "tui"
+  are unchanged.
