@@ -1,7 +1,8 @@
 ![CALM pixel-art logo and infinite canvas tagline](assets/brand/banner-animated.gif)
 
 **One pan and zoom canvas on macOS. Ghostty terminals, a live browser and your own plugins
-side by side, all of them still running while you move around.**
+side by side, all of them still running while you move around. A plugin SDK lets you shape
+it into whatever workspace you need.**
 
 **[calm.raqz.link](https://calm.raqz.link)** · [Docs](#documentation) · [Plugins](https://calm.raqz.link/plugins/)
 
@@ -30,6 +31,32 @@ Panels dropped edge to edge join into one block with a single divider. Distant p
 still previews refreshed every two seconds, which is what keeps twenty live terminals cheap
 to paint.
 
+## Built to be extended
+
+CALM is a small core with a plugin SDK on top. What the canvas does not do yet, a plugin can
+add. The welcome page, the key bindings page and the GitHub PRs panel are plugins built the
+same way yours would be.
+
+- **A plugin is a folder.** A `calm-plugin.json` manifest and an HTML page. No build step,
+  or TSX built with bun if you want types and components.
+- **A real host API.** `window.calm` gives a plugin 18 calls into CALM: its own settings and
+  storage, its panel (title, bounds, minimize, close), the canvas (open, focus and list
+  panels), `process.exec`, `gh api` without ever seeing a token, the theme and the key
+  bindings.
+- **Hooks into the app.** `contributes.menus` adds items to the right-click menus on the
+  canvas or on panels. The chosen item reaches the plugin as a `command` event.
+- **Any terminal program becomes a panel.** A TUI manifest names a command and, if you like,
+  its title, icon, size, title bar colors, terminal palette and restart behavior. No HTML.
+- **Typed and MIT licensed.** [`packages/calm-plugin-sdk`](packages/calm-plugin-sdk/README.md)
+  holds the TypeScript types for `window.calm`, and [`templates/`](templates/) has TSX and
+  TUI starters. Both are MIT, so your plugin can use any license.
+- **The rest is settings.** Backgrounds, grid, snapping, terminal profiles and every key
+  binding change live in Settings, and presets save whole layouts.
+
+Today the host delivers the `command` event; the other plugin events and the v2 API are
+designed but not built. Plugins run as trusted code. See [Plugins](#plugins) and
+[docs/plugins.md](docs/plugins.md).
+
 ## Highlights
 
 - **Terminals.** Live Ghostty surfaces, as many as you like, at any size. Use your own Ghostty
@@ -38,8 +65,8 @@ to paint.
   a host and it opens, type anything else and it searches.
 - **TUI apps.** One manifest turns a terminal program into an Add menu entry, so a tool like
   `htop` or a Slack client lands on the canvas as a panel instead of a window.
-- **Plugins.** Panels written in HTML and JavaScript (TSX optional) that talk to CALM through
-  `window.calm` and add items to the right-click menus.
+- **Plugins.** Your own panels in HTML and JavaScript (TSX optional), with a typed SDK, 18
+  host calls through `window.calm` and items in the right-click menus.
 - **Make it yours.** Backgrounds, grid, snapping, terminal colors and every key binding are
   settings, changed live in a native Settings window.
 - **Picks up where you left off.** A launch restores the last session (panels, order and
