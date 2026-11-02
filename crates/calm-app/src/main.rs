@@ -3461,6 +3461,52 @@ async fn smoke_session(
     }
     smoke_close_all(view, window, cx);
 
+    // The same first launch with autosave off, then with the launch gate closed, opens the
+    // preset but must leave no session file.
+    let mut unsaved = Vec::new();
+    for (case, setting, gate) in [("setting_off", false, true), ("gate_closed", true, false)] {
+        view.update(cx, |view, _| {
+            view.scene = calm_core::scene::Scene::default()
+        });
+        let previous = view.update(cx, |view, _| {
+            let previous = (view.settings.settings.session.autosave, view.autosave_gate);
+            view.settings.settings.session.autosave = setting;
+            view.autosave_gate = gate;
+            previous
+        });
+        let session = root
+            .join(format!("first-launch-{case}"))
+            .join("session.json");
+        if let Some(dir) = session.parent()
+            && let Err(err) = std::fs::create_dir_all(dir)
+        {
+            smoke_fail(&format!("first launch {case}: dir: {err}"));
+        }
+        smoke_launch(
+            view,
+            window,
+            &session,
+            "smoke-welcome",
+            std::slice::from_ref(&builtin),
+            cx,
+        );
+        let panels = view.update(cx, |view, _| {
+            let panels = view.scene.panels.len();
+            view.stop_autosave();
+            (view.settings.settings.session.autosave, view.autosave_gate) = previous;
+            panels
+        });
+        smoke_close_all(view, window, cx);
+        let written = session.exists();
+        unsaved.push(format!("{case}=panels:{panels},written:{written}"));
+        if panels != 1 || written {
+            smoke_fail(&format!(
+                "first launch {case}: panels={panels} session_written={written}"
+            ));
+        }
+    }
+    println!("smoke: first_launch_unsaved {}", unsaved.join(" "));
+
     if let Err(err) = cwd.close() {
         eprintln!("smoke: could not remove the cwd temp dir: {err}");
     }
