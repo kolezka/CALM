@@ -16,7 +16,7 @@ OUT ?= dist
 
 export ZIG
 
-.PHONY: help setup-check build test lint fmt smoke run bench bundle release-upload plugins plugins-check ci graph clean
+.PHONY: help setup-check build test lint fmt smoke run bench bundle release-upload notices plugins plugins-check ci graph clean
 
 help: ## Show the available targets.
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  %-14s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -72,6 +72,11 @@ bundle: ## Build a macOS bundle with VERSION and OUT options.
 
 release-upload: ## Build the macOS zip and attach it to release VERSION.
 	@if [[ "$(origin VERSION)" != "command line" && "$(origin VERSION)" != "environment" ]]; then printf 'error: pass the release version, e.g. make release-upload VERSION=0.1.1\n' >&2; exit 1; fi; scripts/release-upload.sh "$(VERSION)"
+
+notices: ## Regenerate THIRD_PARTY_NOTICES (needs cargo-about).
+	@command -v cargo-about >/dev/null 2>&1 || { printf 'error: cargo-about is missing; run cargo install --locked cargo-about --features cli\n' >&2; exit 1; }
+	@cargo about generate --locked about.hbs -o THIRD_PARTY_NOTICES
+	@perl -0pi -e 's/[ \t\r]+$$//mg; s/\n+\z/\n/' THIRD_PARTY_NOTICES
 
 plugins: ## Install and build every plugin package (needs bun).
 	@command -v bun >/dev/null 2>&1 || { printf 'error: bun is missing; install it from https://bun.sh, then rerun gmake plugins\n' >&2; exit 1; }

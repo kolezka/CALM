@@ -10,5 +10,6 @@
   },
   "dependencies": {
     "astro": "^7.4.4"
-  }
+  },
+  "license": "UNLICENSED"
 }
