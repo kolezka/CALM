@@ -37,7 +37,7 @@ pub fn wants(
     screen: Point,
     mods: Modifiers,
 ) -> bool {
-    (settings.canvas.move_modifier.matches(mods) || mods.snap_off())
+    settings.canvas.move_modifier.matches(mods)
         && (input.resize_target_at(screen, scene).is_some()
             || content_gesture_target(scene, screen).is_some())
 }
@@ -341,7 +341,7 @@ mod tests {
             CMD
         ));
         settings.canvas.move_modifier = MoveModifier::Ctrl;
-        assert!(wants(
+        assert!(!wants(
             &settings,
             &InputHandler::default(),
             &scene,
@@ -355,6 +355,21 @@ mod tests {
             on_content,
             CMD
         ));
+        settings.canvas.move_modifier = MoveModifier::Cmd;
+        assert!(wants(
+            &settings,
+            &InputHandler::default(),
+            &scene,
+            on_content,
+            CMD_SHIFT
+        ));
+        assert!(wants(
+            &settings,
+            &InputHandler::default(),
+            &scene,
+            Point::new(499.0, 250.0),
+            CMD_SHIFT
+        ));
     }
 
     #[test]
@@ -364,8 +379,7 @@ mod tests {
         let mut gesture = ContentMove::default();
         let at = Point::new(499.0, 250.0);
         let mods = Modifiers { shift: true, ..CMD };
-        let mut settings = Settings::default();
-        settings.canvas.move_modifier = MoveModifier::Ctrl;
+        let settings = Settings::default();
         assert!(wants(&settings, &InputHandler::default(), &scene, at, mods));
         let (down, _) = gesture.event(ContentEvent::Down(at), mods, &mut input, &mut scene);
         assert_eq!(down, ContentDecision::Moving);

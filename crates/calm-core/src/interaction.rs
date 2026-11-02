@@ -215,11 +215,6 @@ impl InputHandler {
         scene: &mut Scene,
     ) -> Vec<Effect> {
         self.content_press = None;
-        if button == Button::Left
-            && let Some(effects) = self.begin_resize_at(screen, scene)
-        {
-            return effects;
-        }
         // Move-modifier gestures on content GPUI paints (placeholders, previews, a panel
         // without a native view). Presses over a native view are taken by the native
         // monitor and never reach here, so nothing is handled twice.
@@ -229,6 +224,9 @@ impl InputHandler {
         {
             if button == Button::Right {
                 return self.content_menu(id, screen);
+            }
+            if let Some(effects) = self.begin_resize_at(screen, scene) {
+                return effects;
             }
             self.content_press = Some((id, ContentGesture::press(screen)));
             return vec![Effect::FocusPanel(id)];
@@ -1621,6 +1619,55 @@ mod tests {
             &mut scene,
         );
         assert_eq!(scene.get(id).unwrap().rect.size.width, 413.0);
+    }
+
+    #[test]
+    fn space_drag_on_resize_edge_pans() {
+        let mut scene = Scene::default();
+        scene.add(terminal(), Rect::new(100.0, 100.0, 400.0, 300.0));
+        let mut handler = InputHandler {
+            space_held: true,
+            ..InputHandler::default()
+        };
+        handler.mouse_down(
+            Point::new(499.0, 250.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
+        assert!(matches!(handler.state, Interaction::Panning { .. }));
+    }
+
+    #[test]
+    fn chrome_button_overlapping_resize_band_remains_clickable() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(100.0, 100.0, 400.0, 300.0));
+        let panel = scene.get(id).unwrap();
+        let button = crate::chrome::title_bar_layout(panel).close.unwrap();
+        let press = Point::new(
+            button.right() - 1.0,
+            button.origin.y + button.size.height / 2.0,
+        );
+        assert!(press.x >= panel.rect.right() - RESIZE_BAND);
+        let mut handler = InputHandler::default();
+        assert_eq!(
+            handler.mouse_down(press, Button::Left, no_mods(), &mut scene),
+            vec![Effect::ClosePanelRequested(id)]
+        );
+    }
+
+    #[test]
+    fn plain_press_on_gpui_inner_band_resizes() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(100.0, 100.0, 400.0, 300.0));
+        let mut handler = InputHandler::default();
+        handler.mouse_down(
+            Point::new(499.0, 250.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
+        assert!(matches!(handler.state, Interaction::Resizing { id: target, .. } if target == id));
     }
 
     #[test]
