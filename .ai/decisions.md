@@ -49,8 +49,10 @@ one means a new entry, not an edit.
 - **Superseded by "Dot and cross grids are back" below.** **Grid is drawn as lines, not dots.** About 1500 dot quads stalled paint, which stopped
   preview refresh. Cost: a different look than the brief; the user can veto.
 - **Default snap grid is 8 world units, not the requested 3 pixels.** Terminal cells are
-  about 8 px wide at zoom 1, so 3 is not a cell multiple. Edge snap within 8, `alt`
-  disables. One constant to change if the user wants finer.
+  about 8 px wide at zoom 1, so 3 is not a cell multiple. Edge snap within 8. At the
+  user's request, Cmd+Shift replaces alt to disable snapping; alt alone snaps again. The
+  gesture is hard-coded like the other gesture keys, with no setting yet. One constant
+  changes the grid if the user wants finer.
 - **Dot and cross grids are back, as tiled textures (reverses "Grid is drawn as lines, not
   dots").** The user asked for grid styles (lines, dots, crosses, none), mark size and a
   major grid. Lines stay one quad per line. Dots and crosses are rasterized once per
@@ -103,7 +105,7 @@ one means a new entry, not an edit.
   cannot paint over a native view: a 0 gap leaves the divider no room beside two live
   terminals. The divider fills the gap, so it is 1 px at zoom 1 and scales with zoom.
   Over the title bars it is at least 1 px wide, so a pair at gap 0 (only reachable with
-  `alt`) still shows a seam in the bar, but none over the content. All panel kinds join.
+  `cmd-shift`) still shows a seam in the bar, but none over the content. All panel kinds join.
   Resizing a shared edge moves one panel; snapping keeps it joined. Rejected: a 0 gap
   with the divider drawn on chrome only, which leaves two terminals visually fused.
   Cost if wrong: the 1 unit offset breaks exact grid alignment of the second panel.
@@ -227,7 +229,10 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   are errors in `calm-plugins`, never defaults. Cost: `calm-plugins` depends on `calm-core`.
 - **Resize handles live outside the panel, in GPUI pixels.** A band of 8 screen px past the
   right and bottom edges, plus the old 12 unit band inside (which only reaches GPUI over
-  terminals and previews). Rejected: insetting the web view from its edges, which would
+  terminals and previews). The user decided on 2026-11-02 that resize handles take
+  priority over content moves. Presses with the configured move modifier on the inner
+  band are captured as resizes even over a live web view; unmodified web presses still
+  go to the web view. Rejected: insetting the web view from its edges, which would
   break "zoom view bounds equal the panel's logical size", and painting over the native
   rect. Cost: a press just outside a panel resizes it instead of hitting what is behind,
   and over a joined or overlapping neighbor that is a live web view, the web view still
@@ -237,7 +242,7 @@ Design in `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Not imple
   or content goes to the neighbor. The inner band and the 1 unit join gap still resize the
   left or top panel, and only that panel moves. Unjoined edges keep the full 8 px band.
   Cost: over a joined web view the shared edge is grabbable only in the 1 unit gap and the
-  inner band, which a web view keeps for itself.
+  inner band, which a web view keeps for itself unless the move modifier is held.
 - **Only right, bottom and corner handles.** Left and top edges would move the origin and
   touch `snap_resize`, which PR #12 rewrites. Cost: no resize from the left or top yet.
 - **No `aspectRatio`.** Snapping and two clamped axes make it more than cheap.
@@ -706,3 +711,10 @@ These shipped with #41, next to "Restore at launch" above.
 - **A restored terminal opens its saved profile.** `PanelKind::Terminal.profile` is saved
   with the session. An unknown profile id opens with the defaults and one notice; the saved
   kind keeps the id, so it comes back if the profile does.
+- **Panel shortcuts: Cmd+Shift+Backspace deletes, Cmd+Shift+, opens Settings.** Both
+  are hard-coded like the other canvas bindings until key bindings become settings. Plain
+  `cmd-backspace` stays with shell and web fields, where Ghostty and WKWebView use it to
+  delete to the start of the line. The Settings key is written `cmd-<` in code because GPUI
+  reports the Cmd+Shift+, press that way (with Cmd held it drops Shift for punctuation and
+  keeps the shifted character); a `cmd-shift-,` binding would never match. On layouts where
+  `<` is on another key, the shortcut moves with it.

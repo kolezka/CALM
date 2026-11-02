@@ -78,6 +78,8 @@ actions!(
         FitAll,
         DrawTerminal,
         DrawBrowser,
+        DeletePanel,
+        OpenPanelSettings,
         Cancel,
         ConfirmEnter,
         ToggleFullscreen
@@ -108,6 +110,8 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("cmd-0", ZoomReset, ctx),
         KeyBinding::new("cmd-shift-h", CenterOnOrigin, ctx),
         KeyBinding::new("cmd-shift-0", FitAll, ctx),
+        KeyBinding::new("cmd-shift-backspace", DeletePanel, ctx),
+        KeyBinding::new("cmd-<", OpenPanelSettings, ctx),
         KeyBinding::new("t", DrawTerminal, ctx),
         KeyBinding::new("b", DrawBrowser, ctx),
         KeyBinding::new("escape", Cancel, ctx),
@@ -246,6 +250,7 @@ pub struct CanvasView {
     /// Set when the monitor could not be installed, so paint stops retrying.
     pub(crate) content_monitor_error: Option<String>,
     pub(crate) content_move: ContentMove,
+    pub(crate) content_press_mods: Option<calm_core::interaction::Modifiers>,
 }
 
 impl CanvasView {
@@ -334,6 +339,7 @@ impl CanvasView {
             content_monitor: None,
             content_monitor_error: None,
             content_move: ContentMove::default(),
+            content_press_mods: None,
         }
     }
 
@@ -2014,8 +2020,8 @@ impl CanvasView {
     }
 
     /// Drives a press, a move by `delta` canvas pixels and a release through the real
-    /// mouse handlers, starting at `from_world`. Alt is held so snapping stays out of the
-    /// numbers. Only the smoke uses it.
+    /// mouse handlers, starting at `from_world`. Cmd and Shift keep snapping out of the
+    /// numbers after the press. Only the smoke uses it.
     pub fn smoke_drag(
         &mut self,
         from_world: Point,
@@ -2031,7 +2037,8 @@ impl CanvasView {
             )
         };
         let modifiers = gpui::Modifiers {
-            alt: true,
+            platform: true,
+            shift: true,
             ..gpui::Modifiers::default()
         };
         let from = position(start.x, start.y);
@@ -2039,7 +2046,7 @@ impl CanvasView {
         let down = MouseDownEvent {
             button: MouseButton::Left,
             position: from,
-            modifiers,
+            modifiers: gpui::Modifiers::default(),
             click_count: 1,
             first_mouse: false,
         };
@@ -3247,6 +3254,16 @@ impl Render for CanvasView {
             .on_action(cx.listener(|view, _: &DrawBrowser, window, cx| {
                 view.set_tool(Tool::DrawBrowser, window, cx)
             }))
+            .on_action(cx.listener(|view, _: &DeletePanel, window, cx| {
+                if let Some(id) = view.focused {
+                    view.apply_effects(vec![Effect::ClosePanelRequested(id)], window, cx);
+                }
+            }))
+            .on_action(cx.listener(|view, _: &OpenPanelSettings, window, cx| {
+                if let Some(id) = view.focused {
+                    view.open_panel_settings(id, window, cx);
+                }
+            }))
             .on_action(cx.listener(|view, _: &Cancel, window, cx| view.cancel(window, cx)))
             .on_action(
                 cx.listener(|view, _: &ConfirmEnter, window, cx| view.confirm_enter(window, cx)),
@@ -3340,6 +3357,66 @@ fn installed_version(plugins: &[InstalledPlugin], plugin_id: &str) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panel_settings_shortcut_is_available_with_terminal_focus() {
+        // macOS GPUI represents US cmd-shift-comma as cmd-<.
+        let keystroke = gpui::Keystroke::parse("cmd-<").unwrap();
+        let bindings = key_bindings();
+        assert!(
+            !bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&NoAction)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
+            }),
+            "terminal context must not block the panel settings shortcut"
+        );
+        assert!(
+            bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&OpenPanelSettings)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
+            }),
+            "canvas must bind cmd-< to OpenPanelSettings"
+        );
+        assert!(
+            !settings_menu::key_bindings().iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&settings_menu::OpenSettings)
+            }),
+            "panel settings shortcut must not also open global settings"
+        );
+    }
+
+    #[test]
+    fn delete_panel_shortcut_is_available_with_terminal_focus() {
+        let keystroke = gpui::Keystroke::parse("cmd-shift-backspace").unwrap();
+        let bindings = key_bindings();
+        assert!(
+            !bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&NoAction)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
+            }),
+            "terminal context must not block the delete shortcut"
+        );
+        assert!(
+            bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&DeletePanel)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
+            }),
+            "canvas must bind cmd-shift-backspace to DeletePanel"
+        );
+    }
 
     #[test]
     fn a_builtin_override_draws_the_builtin_icon_not_its_text() {
