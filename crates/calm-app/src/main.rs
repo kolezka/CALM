@@ -31,6 +31,7 @@ use calm_core::restore::{
 };
 use calm_core::scene::{PanelId, PanelKind};
 use calm_core::settings::RestoreOnLaunch;
+use calm_core::settings_form::FieldValue;
 use calm_core::snap::{SnapConfig, snap_move};
 use calm_core::tui::TuiState;
 use calm_native::process_stats::{child_pids, process_exists};
@@ -216,8 +217,18 @@ async fn smoke_step(run: &mut smoke_runner::SmokeRun, name: &str, step: impl Fut
 /// so every smoke exit path drops it explicitly through `remove_smoke_dir`.
 static SMOKE_DIR: Mutex<Option<tempfile::TempDir>> = Mutex::new(None);
 
+/// Keeps the smoke dir on exit, so a test can read what the run wrote.
+const SMOKE_KEEP_HOME_ENV: &str = "CALM_SMOKE_KEEP_HOME";
+
+fn keep_smoke_dir() -> bool {
+    std::env::var_os(SMOKE_KEEP_HOME_ENV).is_some_and(|value| value == "1")
+}
+
 /// Safe to call any number of times and from the panic hook.
 fn remove_smoke_dir() {
+    if keep_smoke_dir() {
+        return;
+    }
     let dir = match SMOKE_DIR.try_lock() {
         Ok(mut slot) => slot.take(),
         Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().take(),
@@ -710,6 +721,12 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             smoke_settings_dispatch(&view, window, cx),
         )
         .await;
+        smoke_step(
+            &mut run,
+            "settings_perf",
+            smoke_settings_perf(&view, window, cx),
+        )
+        .await;
         smoke_step(&mut run, "keybindings", smoke_keybindings(&view, window, cx)).await;
         smoke_step(&mut run, "github_api", smoke_github_api(&view, window, cx)).await;
         smoke_step(&mut run, "plugin_menus", smoke_plugin_menus(&view, window, cx)).await;
@@ -731,6 +748,13 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         })
         .await;
         smoke_step(&mut run, "presets", smoke_presets(&view, window, cx)).await;
+        // Last: it hands over the view and closes the window.
+        smoke_step(
+            &mut run,
+            "window_close_save",
+            smoke_window_close_save(view, window, cx),
+        )
+        .await;
 
         for line in run.summary() {
             println!("{line}");
@@ -1859,7 +1883,6 @@ async fn smoke_panel_settings(
     window: AnyWindowHandle,
     cx: &mut gpui::AsyncApp,
 ) {
-    use calm_core::settings_form::FieldValue;
     const TITLE: &str = "Second";
     let title = crate::panel_settings::window_title(
         TITLE,
@@ -2330,9 +2353,13 @@ fn startup_settings(smoke: bool) -> SettingsState {
         Err(err) => smoke_fail(&format!("settings temp dir: {err}")),
     };
     let path = dir.path().join("settings.json");
+    if keep_smoke_dir() {
+        println!("smoke: kept home={}", dir.path().display());
+    }
     *SMOKE_DIR.lock().unwrap_or_else(PoisonError::into_inner) = Some(dir);
     match calm_core::settings::load_settings_from(&path) {
         Ok(settings) => SettingsState {
+            save: Default::default(),
             settings,
             path,
             notice: None,
@@ -2348,6 +2375,7 @@ fn load_startup_settings(path: std::path::PathBuf) -> SettingsState {
     let error = match load_settings_from(&path) {
         Ok(settings) => {
             return SettingsState {
+                save: Default::default(),
                 settings,
                 path,
                 notice: None,
@@ -2373,6 +2401,7 @@ fn load_startup_settings(path: std::path::PathBuf) -> SettingsState {
         }
     };
     SettingsState {
+        save: Default::default(),
         settings: Settings::default(),
         path,
         notice: Some(notice),
@@ -2514,6 +2543,264 @@ async fn smoke_github_api(
 /// Opens Settings the way a menu click or `cmd-,` does: `OpenSettings` dispatched on the
 /// canvas window, so handlers run while GPUI holds that window. Calling `open_settings`
 /// directly skips that path, which is how a dead menu item once passed the smoke.
+/// Ticks in each measured run, about 16 ms apart.
+const SMOKE_PERF_TICKS: usize = 60;
+
+/// p50 and p95 of `values`, in the same unit.
+fn p50_p95(mut values: Vec<f64>) -> (f64, f64) {
+    let p50 = calm_core::stats::percentile(&mut values, 50.0);
+    (p50, calm_core::stats::percentile(&mut values, 95.0))
+}
+
+/// Frame intervals while the camera pans and zooms each tick, as a drag or pinch would.
+/// With `request_frames` the FPS readout runs too, which asks GPUI for every frame.
+async fn smoke_perf_sweep(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    request_frames: bool,
+    cx: &mut gpui::AsyncApp,
+) -> (usize, f64, f64) {
+    let toggled = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.settings.settings.developer.stats.show_fps = true;
+            view.set_show_stats(request_frames, window, cx);
+            view.frame_probe = Some(calm_core::frame_stats::FrameStats::new(
+                Duration::from_secs(60),
+            ));
+        })
+    });
+    if let Err(err) = toggled {
+        smoke_fail(&format!("settings_perf sweep: {err:#}"));
+    }
+    for tick in 0..SMOKE_PERF_TICKS {
+        cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                let step = if tick % 20 < 10 { 12.0 } else { -12.0 };
+                view.scene.camera.pan_by_screen(step, step / 2.0);
+                view.scene.camera.zoom = 1.0 + 0.2 * ((tick as f64) / 10.0).sin();
+                cx.notify();
+            })
+        });
+        cx.background_executor()
+            .timer(Duration::from_millis(16))
+            .await;
+    }
+    let intervals = cx.update(|cx| {
+        view.update(cx, |view, _| {
+            view.frame_probe
+                .take()
+                .map(|probe| probe.intervals_ms())
+                .unwrap_or_default()
+        })
+    });
+    let frames = intervals.len();
+    let (p50, p95) = p50_p95(intervals);
+    (frames, p50, p95)
+}
+
+/// Opt-in numbers for the settings path: `CALM_SMOKE_ONLY=settings_perf`. Prints lines,
+/// fails only when the path itself errors.
+async fn smoke_settings_perf(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    cx.update(|cx| {
+        if let Some(settings_window) = &view.read(cx).settings_window {
+            settings_window.hide();
+        }
+    });
+    cx.background_executor()
+        .timer(Duration::from_millis(300))
+        .await;
+    let mut sweeps = Vec::new();
+    for (label, request_frames) in [("closed", false), ("closed_fps", true)] {
+        sweeps.push((
+            label,
+            smoke_perf_sweep(view, window, request_frames, cx).await,
+        ));
+    }
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| view.open_settings(window, cx))
+    });
+    if let Err(err) = opened {
+        smoke_fail(&format!("settings_perf open: {err:#}"));
+    }
+    cx.background_executor()
+        .timer(Duration::from_millis(300))
+        .await;
+    for (label, request_frames) in [("open", false), ("open_fps", true)] {
+        sweeps.push((
+            label,
+            smoke_perf_sweep(view, window, request_frames, cx).await,
+        ));
+    }
+
+    // Slider and color well ticks through the same entry point AppKit calls, with the
+    // readout off so frames are not throttled by the probe itself.
+    let off = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.set_show_stats(false, window, cx);
+            view.frame_probe = Some(calm_core::frame_stats::FrameStats::new(
+                Duration::from_secs(60),
+            ));
+        })
+    });
+    if let Err(err) = off {
+        smoke_fail(&format!("settings_perf stats off: {err:#}"));
+    }
+    let mut change_ms = Vec::new();
+    for tick in 0..SMOKE_PERF_TICKS {
+        let (id, value) = match tick % 3 {
+            0 => (
+                "grid.opacity",
+                FieldValue::Number(0.2 + (tick as f64) / 200.0),
+            ),
+            1 => ("gradient.angle", FieldValue::Number(tick as f64 * 3.0)),
+            _ => (
+                "grid.color",
+                FieldValue::Color(calm_core::background::Rgb(0x10_20_30 + tick as u32)),
+            ),
+        };
+        let started = Instant::now();
+        let applied = cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.settings_field_changed(id, value, window, cx)
+            })
+        });
+        change_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+        if let Err(err) = applied {
+            smoke_fail(&format!("settings_perf change {id}: {err:#}"));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(16))
+            .await;
+    }
+    let saved = |cx: &mut gpui::AsyncApp| {
+        cx.update(|cx| {
+            let state = &view.read(cx).settings;
+            calm_core::settings::load_settings_from(&state.path)
+                .map(|file| file.grid == state.settings.grid)
+                .map_err(|err| err.to_string())
+        })
+    };
+    // Before the quiet time ends the file may lag; closing the window must catch it up.
+    let before_close = saved(cx);
+    let drag_frames = cx.update(|cx| {
+        view.update(cx, |view, _| {
+            if let Some(settings_window) = &view.settings_window {
+                settings_window.perform_close();
+            }
+            view.frame_probe
+                .take()
+                .map(|probe| probe.intervals_ms())
+                .unwrap_or_default()
+        })
+    });
+    cx.background_executor()
+        .timer(Duration::from_millis(100))
+        .await;
+    let after_close = saved(cx);
+    println!(
+        "smoke: settings_perf saved before_close={before_close:?} after_close={after_close:?}"
+    );
+    if after_close != Ok(true) {
+        smoke_fail(&format!(
+            "settings_perf: settings.json lacks the last change after close: {after_close:?}"
+        ));
+    }
+    let total: f64 = change_ms.iter().sum();
+    let (c50, c95) = p50_p95(change_ms);
+    let drag_n = drag_frames.len();
+    let (d50, d95) = p50_p95(drag_frames);
+    println!(
+        "smoke: settings_perf changes={SMOKE_PERF_TICKS} total_ms={total:.1} change_p50_ms={c50:.2} change_p95_ms={c95:.2} drag_frames={drag_n} drag_frame_p50_ms={d50:.1} drag_frame_p95_ms={d95:.1}"
+    );
+    for (label, (frames, p50, p95)) in sweeps {
+        println!(
+            "smoke: settings_perf sweep {label} frames={frames} p50_ms={p50:.1} p95_ms={p95:.1}"
+        );
+    }
+}
+
+/// The grid opacity and panel x the close must write. Neither is a default or a smoke value.
+const SMOKE_CLOSE_OPACITY: f64 = 0.37;
+const SMOKE_CLOSE_PANEL_X: f64 = 1234.0;
+
+/// Opt-in, with `CALM_SMOKE_KEEP_HOME=1`: leaves a settings save and a session save
+/// pending, drops the smoke's view handle and closes the window. The test in
+/// `tests/window_close_save.rs` reads the kept files after the process exits.
+async fn smoke_window_close_save(
+    view: Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let Some(dir) = SMOKE_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|dir| dir.path().to_path_buf())
+    else {
+        smoke_fail("window_close_save: no smoke dir");
+    };
+    // Longest allowed waits, so nothing reaches the disk before the close.
+    let setup = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.update_settings(
+                |s| {
+                    s.session.settings_save_ms = 5000;
+                    s.session.debounce_ms = 10_000;
+                },
+                window,
+                cx,
+            );
+            view.start_autosave(dir.join("session.json"), cx)?;
+            view.settings_field_changed(
+                "grid.opacity",
+                FieldValue::Number(SMOKE_CLOSE_OPACITY),
+                window,
+                cx,
+            );
+            // `get_mut` bumps the scene revision, which is what autosave watches.
+            let first = view.scene.panels.first().map(|panel| panel.id);
+            let Some(panel) = first.and_then(|id| view.scene.get_mut(id)) else {
+                return Err("no panel to move".to_string());
+            };
+            panel.rect.origin.x = SMOKE_CLOSE_PANEL_X;
+            view.autosave_tick(cx);
+            Ok(())
+        })
+    });
+    match setup {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => smoke_fail(&format!("window_close_save setup: {err}")),
+        Err(err) => smoke_fail(&format!("window_close_save setup: {err:#}")),
+    }
+    let settings_pending = calm_core::settings::load_settings_from(&dir.join("settings.json"))
+        .is_ok_and(|file| file.grid.opacity != SMOKE_CLOSE_OPACITY);
+    let session_pending = !dir.join("session.json").exists();
+    println!(
+        "smoke: window_close_save pending settings={settings_pending} session={session_pending}"
+    );
+    if !settings_pending || !session_pending {
+        smoke_fail("window_close_save: a save reached the disk before the close");
+    }
+    // The positive control: proves the close really released the view.
+    cx.update(|cx| {
+        cx.observe_release(&view, |_, _| {
+            println!("smoke: window_close_save view released");
+        })
+        .detach();
+    });
+    // The smoke's own handle would keep the view alive and hide the bug.
+    drop(view);
+    let closed = cx.update_window(window, |_, window, _| window.remove_window());
+    if let Err(err) = closed {
+        smoke_fail(&format!("window_close_save close: {err:#}"));
+    }
+    println!("smoke: window_close_save closed=true");
+}
+
 async fn smoke_settings_dispatch(
     view: &Entity<CanvasView>,
     window: AnyWindowHandle,
@@ -2899,6 +3186,12 @@ fn main() {
                 appears_transparent: true,
                 traffic_light_position: None,
             }),
+            // GPUI's own default when on; None keeps full frame rate in the background.
+            inactive_frame_interval: settings
+                .settings
+                .canvas
+                .limit_inactive_fps
+                .then_some(Duration::from_micros(33_333)),
             ..Default::default()
         };
         let smoke = args.smoke;

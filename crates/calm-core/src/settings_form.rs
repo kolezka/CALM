@@ -20,8 +20,8 @@ use crate::scene::PanelId;
 use crate::settings::{
     ARROW_MOVE_STEP_RANGE, ARROW_PAN_STEP_RANGE, DEFAULT_ARROW_MOVE_STEP, DEFAULT_ARROW_PAN_STEP,
     GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
-    RestoreOnLaunch, SESSION_BACKUP_COUNT_RANGE, SESSION_DEBOUNCE_MS_RANGE, SNAP_EDGE_RANGE,
-    SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
+    RestoreOnLaunch, SESSION_BACKUP_COUNT_RANGE, SESSION_DEBOUNCE_MS_RANGE, SETTINGS_SAVE_MS_RANGE,
+    SNAP_EDGE_RANGE, SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
 };
 use crate::terminal_profile::{
     CommandRestart, DEFAULT_CONTENT_OPACITY, MIN_CONTENT_OPACITY, PALETTE_PRESETS, TerminalColors,
@@ -81,6 +81,9 @@ pub struct Section {
     pub title: String,
     pub fields: Vec<Field>,
 }
+
+/// The id a settings window reports, with `FieldValue::Pressed`, as it closes.
+pub const WINDOW_CLOSED_FIELD: &str = "window.closed";
 
 /// What a control reports when the user changes it.
 #[derive(Clone, Debug, PartialEq)]
@@ -414,6 +417,16 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                 ARROW_MOVE_STEP_RANGE,
                 0,
             ),
+            checkbox(
+                "canvas.limit_inactive_fps",
+                "Limit frame rate while another window is active",
+                settings.canvas.limit_inactive_fps,
+            ),
+            note(
+                "canvas.limit_inactive_fps_note",
+                "",
+                "About 30 fps. Applies after restart.".to_string(),
+            ),
             checkbox("snap.enabled", "Snap panels", snap.enabled),
             choice("snap.grid", "Snap grid", steps, selected),
             slider(
@@ -496,6 +509,13 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                 "Save after quiet (ms)",
                 session.debounce_ms as f64,
                 debounce_range(),
+                0,
+            ),
+            slider(
+                "session.settings_save_ms",
+                "Save settings after quiet (ms)",
+                session.settings_save_ms as f64,
+                settings_save_range(),
                 0,
             ),
             slider(
@@ -853,6 +873,10 @@ pub fn apply_field(
             settings.canvas.skip_repeated_cursor_sets = on;
             changed
         }
+        ("canvas.limit_inactive_fps", FieldValue::Bool(on)) => {
+            settings.canvas.limit_inactive_fps = on;
+            changed
+        }
         ("canvas.arrow_pan_step", FieldValue::Number(_)) => {
             settings.canvas.arrow_pan_step =
                 number(ARROW_PAN_STEP_RANGE, 0).unwrap_or(DEFAULT_ARROW_PAN_STEP);
@@ -940,6 +964,11 @@ pub fn apply_field(
                 number(debounce_range(), 0).ok_or("bad session debounce")? as u64;
             changed
         }
+        ("session.settings_save_ms", FieldValue::Number(_)) => {
+            settings.session.settings_save_ms =
+                number(settings_save_range(), 0).ok_or("bad settings save delay")? as u64;
+            changed
+        }
         ("session.backup_count", FieldValue::Number(_)) => {
             settings.session.backup_count =
                 number(backup_count_range(), 0).ok_or("bad session backup count")? as u32;
@@ -986,6 +1015,7 @@ pub fn apply_field(
             | "canvas.move_modifier"
             | "canvas.arrow_pan_step"
             | "canvas.arrow_move_step"
+            | "canvas.limit_inactive_fps"
             | "snap.enabled"
             | "snap.grid"
             | "snap.edge"
@@ -998,6 +1028,7 @@ pub fn apply_field(
             | "session.first_launch_preset"
             | "session.autosave"
             | "session.debounce_ms"
+            | "session.settings_save_ms"
             | "session.backup_count"
             | "session.browser_query"
             | "developer.show_stats"
@@ -1013,6 +1044,10 @@ pub fn apply_field(
         ) => mismatch(),
         _ => Err(format!("unknown settings field {id:?}")),
     }
+}
+
+fn settings_save_range() -> RangeInclusive<f64> {
+    *SETTINGS_SAVE_MS_RANGE.start() as f64..=*SETTINGS_SAVE_MS_RANGE.end() as f64
 }
 
 fn debounce_range() -> RangeInclusive<f64> {
@@ -1702,6 +1737,32 @@ mod tests {
     }
 
     #[test]
+    fn inactive_fps_limit_checkbox_round_trips() {
+        let mut settings = Settings::default();
+        let form = settings_form(&settings, &FormContext::default());
+        let canvas = form
+            .iter()
+            .find(|s| s.title == "Canvas and Snapping")
+            .unwrap();
+        let id = "canvas.limit_inactive_fps";
+        let field = canvas.fields.iter().find(|f| f.id == id).unwrap();
+        assert_eq!(field.control, Control::Checkbox(false));
+        assert!(
+            canvas
+                .fields
+                .iter()
+                .any(|f| f.id == "canvas.limit_inactive_fps_note")
+        );
+        apply_field(&mut settings, id, FieldValue::Bool(true)).unwrap();
+        assert!(settings.canvas.limit_inactive_fps);
+        let form = settings_form(&settings, &FormContext::default());
+        let field = form.iter().flat_map(|s| &s.fields).find(|f| f.id == id);
+        assert_eq!(field.unwrap().control, Control::Checkbox(true));
+        assert!(apply_field(&mut settings, id, FieldValue::Index(0)).is_err());
+        assert!(settings.canvas.limit_inactive_fps);
+    }
+
+    #[test]
     fn session_controls_show_and_apply_clamped_and_strict() {
         let mut settings = Settings::default();
         let sections = settings_form(&settings, &FormContext::default());
@@ -1714,6 +1775,7 @@ mod tests {
                 "session.first_launch_preset",
                 "session.autosave",
                 "session.debounce_ms",
+                "session.settings_save_ms",
                 "session.backup_count",
                 "session.browser_query",
             ]
@@ -1731,6 +1793,12 @@ mod tests {
         apply_field(&mut settings, debounce, FieldValue::Number(1e9)).unwrap();
         assert_eq!(settings.session.debounce_ms, 10_000);
         assert!(apply_field(&mut settings, debounce, FieldValue::Number(f64::NAN)).is_err());
+        let save = "session.settings_save_ms";
+        apply_field(&mut settings, save, FieldValue::Number(-3.0)).unwrap();
+        assert_eq!(settings.session.settings_save_ms, 0);
+        apply_field(&mut settings, save, FieldValue::Number(1e9)).unwrap();
+        assert_eq!(settings.session.settings_save_ms, 5_000);
+        assert!(apply_field(&mut settings, save, FieldValue::Number(f64::NAN)).is_err());
         let backups = "session.backup_count";
         apply_field(&mut settings, backups, FieldValue::Number(-4.0)).unwrap();
         assert_eq!(settings.session.backup_count, 0);

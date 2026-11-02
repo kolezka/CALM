@@ -16,7 +16,9 @@ use std::ptr::NonNull;
 use block2::RcBlock;
 use calm_core::background::Rgb;
 use calm_core::keymap::{KeyParts, display_key, keystroke_from_parts};
-use calm_core::settings_form::{Control, Field, FieldState, FieldValue, Section};
+use calm_core::settings_form::{
+    Control, Field, FieldState, FieldValue, Section, WINDOW_CLOSED_FIELD,
+};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -25,7 +27,7 @@ use objc2_app_kit::{
     NSColorWell, NSControl, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSFont,
     NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSScrollView, NSSlider, NSTabView,
     NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowDidResignKeyNotification,
-    NSWindowOrderingMode, NSWindowStyleMask,
+    NSWindowOrderingMode, NSWindowStyleMask, NSWindowWillCloseNotification,
 };
 use objc2_foundation::{
     NSInteger, NSNotification, NSNotificationCenter, NSOperationQueue, NSPoint, NSRect, NSSize,
@@ -546,6 +548,7 @@ pub struct SettingsWindow {
     window: Retained<NSWindow>,
     body: Body,
     target: Retained<FormTarget>,
+    close_observer: Retained<ProtocolObject<dyn NSObjectProtocol>>,
 }
 
 impl SettingsWindow {
@@ -597,11 +600,34 @@ impl SettingsWindow {
         let target = FormTarget::new(mtm);
         *target.ivars().callback.borrow_mut() = Some(Box::new(on_change));
         *target.ivars().window.borrow_mut() = Some(Weak::from_retained(&window));
+        // The title bar close only hides the window; the owner hears of it to flush work.
+        let weak_target = Weak::from_retained(&target);
+        let on_close = RcBlock::new(move |_: NonNull<NSNotification>| {
+            if let Some(target) = weak_target.load() {
+                target
+                    .ivars()
+                    .pending
+                    .borrow_mut()
+                    .push_back((WINDOW_CLOSED_FIELD.to_string(), FieldValue::Pressed));
+                target.flush();
+            }
+        });
+        // SAFETY: a nil queue runs the block on the posting thread; AppKit posts window
+        // notifications on the main thread, which `FormTarget` is bound to. Drop removes it.
+        let close_observer = unsafe {
+            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(NSWindowWillCloseNotification),
+                Some(window.as_ref() as &AnyObject),
+                None,
+                &on_close,
+            )
+        };
         Ok(SettingsWindow {
             mtm,
             window,
             body,
             target,
+            close_observer,
         })
     }
 
@@ -1083,8 +1109,14 @@ impl SettingsWindow {
 
 impl Drop for SettingsWindow {
     fn drop(&mut self) {
-        // The monitor and observer must not outlive the window they watch.
+        // The monitor and observers must not outlive the window they watch.
         self.target.stop_recording();
+        // SAFETY: the observer came from addObserverForName:object:queue:usingBlock: on the
+        // default center, and is removed once here.
+        unsafe {
+            NSNotificationCenter::defaultCenter()
+                .removeObserver(self.close_observer.as_ref() as &AnyObject)
+        };
     }
 }
 

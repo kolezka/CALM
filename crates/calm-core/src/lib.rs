@@ -28,6 +28,7 @@ pub mod restore;
 pub mod scene;
 pub mod settings;
 pub mod settings_form;
+pub mod settings_save;
 pub mod snap;
 pub mod stats;
 pub mod status_bar;

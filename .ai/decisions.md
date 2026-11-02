@@ -963,3 +963,22 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   over a browser address bar (browser-8): pan p50 13.86 to 8.40 ms, zoom p50 16.64 to
   9.52 ms, cursor sets 520 to 125 for pan and 419 to 75 for zoom. When upstream GPUI has
   the fix, measure again and drop B if the sets are gone.
+
+## Settings window saves wait for a quiet time (2026-11-02, branch `perf/settings-path`)
+
+- **Settings window changes save after a quiet time, not on every tick.** A durable write
+  (fsync) cost about 9 ms on the main thread per slider or color well tick. A value change
+  (`rebuild: false`) waits for `session.settings_save_ms` (default 400, 0 to 5000, 0 means
+  every change) and is flushed when the window closes (`NSWindowWillCloseNotification`,
+  reported as the `window.closed` field) and on quit. Menu actions, Reset and form changes
+  that rebuild the controls still save at once. Cost: a crash within the quiet time loses
+  the last tweak of a drag.
+- **Terminal and panel form refresh still run on every settings change.** Measured at
+  about 4 µs and 2 µs per change, so a "what changed" filter would add stale-state risk
+  for no gain. The keymap and menu rebuild (about 1.2 ms) is skipped unless key bindings or
+  `grid.show` changed.
+- **The inactive-window frame cap is off by default (`canvas.limit_inactive_fps`).** GPUI
+  caps a non-active window at about 30 fps, which held the canvas near 25 fps while Settings
+  was key. Off keeps the canvas at full rate with Settings open; the cost is a little more
+  energy while CALM is in the background. GPUI reads it at window creation, so it applies
+  after restart.

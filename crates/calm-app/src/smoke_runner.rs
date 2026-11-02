@@ -12,6 +12,16 @@ pub struct StepSpec {
     pub requires: &'static [&'static str],
     /// Must have run first (any result). The filter pulls them in.
     pub after: &'static [&'static str],
+    /// Runs only when `CALM_SMOKE_ONLY` names it, as a slow measurement does.
+    pub opt_in: bool,
+}
+
+/// Marks a step that a plain smoke run leaves out; naming it in `CALM_SMOKE_ONLY` runs it.
+const fn opt_in(step: StepSpec) -> StepSpec {
+    StepSpec {
+        opt_in: true,
+        ..step
+    }
 }
 
 const fn step(
@@ -23,6 +33,7 @@ const fn step(
         name,
         requires,
         after,
+        opt_in: false,
     }
 }
 
@@ -46,13 +57,13 @@ pub const STEPS: &[StepSpec] = &[
     step("grid", &["preview"], &["preview_cadence"]),
     step("preview_input_targets", &["preview"], &["preview_cadence"]),
     step("live", &["terminals"], &["preview"]),
-    // Opt-in: runs only when `CALM_SMOKE_ONLY` names it.
-    step("zoom_bench", &["terminals"], &["live", "plugins"]),
+    opt_in(step("zoom_bench", &["terminals"], &["live", "plugins"])),
     step("background", &[], &[]),
     step("browser", &[], &[]),
     step("resize", &[], &[]),
     step("blur", &[], &[]),
     step("settings_dispatch", &[], &[]),
+    opt_in(step("settings_perf", &[], &[])),
     step("keybindings", &[], &[]),
     step("github_api", &[], &[]),
     step("plugin_menus", &[], &[]),
@@ -60,10 +71,9 @@ pub const STEPS: &[StepSpec] = &[
     step("panel_settings", &[], &[]),
     step("session", &[], &[]),
     step("presets", &[], &["session"]),
+    // Closes the window, so it must stay last.
+    opt_in(step("window_close_save", &[], &[])),
 ];
-
-/// Steps a full run leaves out. Naming one in `CALM_SMOKE_ONLY` runs it.
-pub const OPT_IN: &[&str] = &["zoom_bench"];
 
 /// Failures seen before and written up in `.ai/conventions.md` ("Smoke flakes").
 /// Checked in order, so a specific id wins over `window-hidden`.
@@ -94,15 +104,11 @@ pub fn classify(message: &str) -> String {
         .map_or_else(|| "new".to_string(), |(id, _)| format!("known-flake:{id}"))
 }
 
-/// The steps to run. `None` (variable unset) runs all; a value names steps, and their
+/// The steps to run. `None` (variable unset) runs all but opt-in steps; a value names steps, and their
 /// `requires` and `after` steps are added. Empty values and unknown names are errors.
 pub fn select(only: Option<&str>) -> Result<BTreeSet<&'static str>, String> {
     let Some(raw) = only else {
-        return Ok(STEPS
-            .iter()
-            .map(|s| s.name)
-            .filter(|n| !OPT_IN.contains(n))
-            .collect());
+        return Ok(STEPS.iter().filter(|s| !s.opt_in).map(|s| s.name).collect());
     };
     let names: Vec<&str> = raw
         .split(',')
@@ -275,11 +281,15 @@ mod tests {
 
     #[test]
     fn opt_in_steps_run_only_when_named() {
+        let opt_in: Vec<&str> = STEPS.iter().filter(|s| s.opt_in).map(|s| s.name).collect();
+        assert_eq!(opt_in, ["zoom_bench", "settings_perf", "window_close_save"]);
         let all = select(None).unwrap();
-        assert!(!all.contains("zoom_bench"));
+        for name in opt_in {
+            assert!(!all.contains(name), "{name} runs in a plain smoke");
+            assert!(select(Some(name)).unwrap().contains(name), "{name}");
+        }
         let named = select(Some("zoom_bench")).unwrap();
-        assert!(named.contains("zoom_bench") && named.contains("terminals"));
-        assert!(OPT_IN.iter().all(|n| spec(n).is_some()));
+        assert!(named.contains("terminals"), "zoom_bench keeps its setup");
     }
 
     #[test]
@@ -334,7 +344,10 @@ mod tests {
 
     #[test]
     fn no_filter_selects_every_step() {
-        assert_eq!(select(None).unwrap().len(), STEPS.len() - OPT_IN.len());
+        assert_eq!(
+            select(None).unwrap().len(),
+            STEPS.iter().filter(|s| !s.opt_in).count()
+        );
     }
 
     #[test]
@@ -421,5 +434,12 @@ mod tests {
             Outcome::Skipped("needs terminals, which failed".into()),
         );
         assert_eq!(run.exit_code(), 1);
+    }
+
+    #[test]
+    fn the_window_close_step_is_opt_in_and_last() {
+        let last = STEPS.last().unwrap();
+        assert_eq!(last.name, "window_close_save");
+        assert!(last.opt_in);
     }
 }

@@ -409,6 +409,18 @@ Open questions: `.ai/open-questions.md`.
 ## In progress (not on `main`)
 
 - Open PRs: #70 (plan the Claude Code integration).
+- Branch `perf/settings-path`, no PR yet: Settings window changes save after
+  `session.settings_save_ms` of quiet (default 400) and on window close or quit, and the
+  keymap and menus rebuild only when key bindings or `grid.show` change. Per change 10 ms
+  to 0.07 ms (`docs/benchmarks.md`). Opt-in smoke step `settings_perf`
+  (`CALM_SMOKE_ONLY=settings_perf`). GPUI's 33 ms frame cap for an inactive window is
+  now a setting, `canvas.limit_inactive_fps`, default off (applies after restart); its
+  effect with Settings open is not yet checked in the GUI. Real trackpad input with
+  Settings open is not measured. Closing the canvas window drops the view before quit runs,
+  so a held settings save and the last session write now also run when the view is
+  released (`_release` in `canvas_view.rs`). Checked by `tests/window_close_save.rs`
+  (ignored by default, macOS GUI session): the opt-in `window_close_save` smoke step closes
+  the window with both saves pending, the test decodes the kept files.
 - No PR yet: a Linux port plan.
 - Branch `perf/zoom-pan` (no PR yet): canvas text sizes snap to 0.5 pt so zoom reuses
   GPUI's glyph cache, and the opt-in `zoom_bench` smoke step (`CALM_SMOKE_ONLY=zoom_bench`)
@@ -473,7 +485,8 @@ Open questions: `.ai/open-questions.md`.
   on every quit path (the smoke calls the quit save directly, not through a real quit), and
   the manual "drag writes `session.json` about 1 s later" check.
 - `--bench` is not built. The Makefile `bench` target calls a flag that is missing.
-  `docs/benchmarks.md` holds only the `zoom_bench` smoke numbers.
+  `docs/benchmarks.md` holds only numbers from opt-in smoke steps (`zoom_bench`,
+  `settings_perf`).
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
   or exit code from Ghostty, and TUI `fontSize`, `fontFamily` and `padding` are rejected.
 - Bun lookup for plugin backends (`plugins.bun_path`) is decided but not built; no plugin

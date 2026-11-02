@@ -34,6 +34,11 @@ mid-save leaves the old file whole.
   each, and AppKit repeats the update on every frame while panels move, so pans, zooms
   and mouse moves over panels slowed down. Turn it off if the pointer ever shows the wrong
   shape; a restart is not needed. In the Settings window under Canvas and Snapping.
+- `limit_inactive_fps` (default `false`): while another window is active (the Settings
+  window, another app), the canvas window draws at most about 30 fps, except while input
+  arrives quickly. Off keeps the full frame rate there, at a small energy cost when CALM
+  sits in the background. Read when the canvas window opens, so a change applies after
+  restart. In the Settings window under Canvas and Snapping.
 
 ## Developer stats
 
@@ -90,6 +95,7 @@ built-in preset NAME (a missing one starts empty, a malformed one exits with cod
     "first_launch_preset": "welcome",
     "autosave": true,
     "debounce_ms": 1000,
+    "settings_save_ms": 400,
     "backup_count": 3,
     "browser_query": "strip_all"
   }
@@ -109,6 +115,9 @@ built-in preset NAME (a missing one starts empty, a malformed one exits with cod
   "First launch preset".
 - `autosave` (default `true`).
 - `debounce_ms` (default 1000, 250 to 10000): quiet time after the last change before a save.
+- `settings_save_ms` (default 400, 0 to 5000): quiet time after the last change in the
+  Settings window before `settings.json` is written, so a slider drag writes once. Closing
+  the window or quitting writes at once; 0 writes every change.
 - `backup_count` (default 3, 0 to 20): how many `session.json.<n>` backups to keep.
 - `browser_query`: `strip_all` (default) drops the query, the fragment and any
   `user:password@` from browser urls when a layout is saved; `keep` saves them as they are,
