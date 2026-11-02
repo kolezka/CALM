@@ -1596,8 +1596,10 @@ mod tests {
             )
             .is_err()
         );
-        let mut overrides = PanelOverrides::default();
-        overrides.markdown = Some(Default::default());
+        let overrides = PanelOverrides {
+            markdown: Some(Default::default()),
+            ..Default::default()
+        };
         assert!(overrides.validate(&terminal()).is_err());
     }
 
