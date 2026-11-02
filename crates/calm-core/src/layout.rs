@@ -480,13 +480,30 @@ pub fn load_layout_from(dir: &Path, name: &str) -> Result<LayoutFile, LayoutErro
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| malformed("missing or non-integer \"version\"".to_string()))?;
     let parse_error = |error: serde_json::Error| malformed(error.to_string());
-    let layout = match found {
+    let mut layout = match found {
         1 => migrate_v1(serde_json::from_str::<LayoutFileV1>(&text).map_err(parse_error)?),
         2 => serde_json::from_str::<LayoutFile>(&text).map_err(parse_error)?,
         _ => return Err(LayoutError::UnsupportedVersion { path, found }),
     };
     validate_layout(&layout).map_err(malformed)?;
+    drop_misplaced_markdown_style(&mut layout);
     Ok(layout)
+}
+
+/// A markdown style on a terminal, browser or plugin would fail every later edit of that
+/// panel, so it goes at load. An unknown kind keeps it, to be saved back unchanged.
+fn drop_misplaced_markdown_style(layout: &mut LayoutFile) {
+    for (index, panel) in layout.panels.iter_mut().enumerate() {
+        let misplaced = !matches!(
+            panel.kind,
+            PanelKind::Markdown { .. } | PanelKind::Unsupported { .. }
+        );
+        if misplaced && panel.overrides.markdown.take().is_some() {
+            eprintln!(
+                "calm: panels[{index}].overrides.markdown applies only to markdown panels; ignored"
+            );
+        }
+    }
 }
 
 /// Rejects numbers that would break camera or hit-test math. JSON cannot carry
@@ -613,6 +630,116 @@ mod tests {
         assert_eq!(panel.overrides.markdown, Some(style));
         assert_eq!(panel.overrides.borderless, Some(true));
         assert_eq!(panel.rect, scene.get(id).unwrap().rect);
+    }
+
+    /// A layout with a markdown panel carrying `style` as `overrides.markdown`, and a
+    /// terminal after it.
+    fn markdown_layout(style: &str) -> String {
+        format!(
+            r#"{{"version":2,"camera":{{"offset":{{"x":0,"y":0}},"zoom":1}},"panels":[
+            {{"kind":{{"type":"markdown","text":"note"}},"rect":{{"origin":{{"x":0,"y":0}},"size":{{"width":200,"height":100}}}},"title":"","minimized":false,"overrides":{{"title":"Keep","markdown":{style}}}}},
+            {{"kind":{{"type":"terminal"}},"rect":{{"origin":{{"x":300,"y":0}},"size":{{"width":200,"height":100}}}},"title":"","minimized":false}}
+        ]}}"#
+        )
+    }
+
+    /// Reads `text` through the real session reader.
+    fn load_text(text: &str) -> Result<LayoutFile, LayoutError> {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("session.json"), text).unwrap();
+        load_layout_from(dir.path(), "session")
+    }
+
+    #[test]
+    fn a_bad_markdown_override_field_is_dropped_and_the_rest_loads() {
+        use crate::background::Rgb;
+        use crate::markdown::PanelMarkdownStyle;
+        let padding = PanelMarkdownStyle {
+            padding: Some(4.0),
+            ..Default::default()
+        };
+        let cases = [
+            (
+                r##"{"text_color":"#123456","padding":4,"font_size":20}"##,
+                Some(PanelMarkdownStyle {
+                    text_color: Some(Rgb(0x123456)),
+                    padding: Some(4.0),
+                    font_size: Some(20.0),
+                    ..Default::default()
+                }),
+            ),
+            (r##"{"text_color":"#nothex","padding":4}"##, Some(padding.clone())),
+            (r#"{"link_color":5,"padding":4}"#, Some(padding.clone())),
+            (
+                r##"{"padding":"bad","text_color":"#123456"}"##,
+                Some(PanelMarkdownStyle {
+                    text_color: Some(Rgb(0x123456)),
+                    ..Default::default()
+                }),
+            ),
+            (r#"{"font_size":99,"padding":4}"#, Some(padding.clone())),
+            (r#"{"background_opacity":2,"padding":4}"#, Some(padding.clone())),
+            (r#"{"font_family":"x}</style>","padding":4}"#, Some(padding.clone())),
+            (r#"{"font_family":7,"padding":4}"#, Some(padding.clone())),
+            (r#"{"font_size":99}"#, None),
+            (r#"{}"#, None),
+            ("null", None),
+            ("5", None),
+            (r#""big""#, None),
+            ("[1]", None),
+        ];
+        for (style, expected) in cases {
+            let layout = load_text(&markdown_layout(style))
+                .unwrap_or_else(|err| panic!("{style}: the layout failed: {err}"));
+            assert_eq!(layout.panels.len(), 2, "{style}");
+            let note = &layout.panels[0];
+            assert_eq!(note.overrides.markdown, expected, "{style}");
+            assert_eq!(note.overrides.title.as_deref(), Some("Keep"), "{style}");
+            assert!(layout.panels[1].kind.is_terminal(), "{style}");
+        }
+    }
+
+    #[test]
+    fn a_markdown_override_on_another_kind_is_dropped_at_load() {
+        let text = markdown_layout("null").replace(
+            r#""kind":{"type":"terminal"},"#,
+            r#""kind":{"type":"terminal"},"overrides":{"markdown":{"padding":4}},"#,
+        );
+        let layout = load_text(&text).unwrap();
+        assert_eq!(layout.panels[1].overrides.markdown, None);
+        let mut scene = Scene::from_layout(layout);
+        let id = scene.panels[1].id;
+        let edit = crate::panel_form::apply_panel_field(
+            &mut scene,
+            id,
+            "panel.title",
+            crate::settings_form::FieldValue::Text("T".into()),
+        );
+        assert!(edit.is_ok(), "{edit:?}");
+    }
+
+    #[test]
+    fn a_loaded_out_of_range_markdown_field_never_vetoes_a_text_edit() {
+        let layout = load_text(&markdown_layout(r#"{"font_size":99,"padding":4}"#)).unwrap();
+        let mut scene = Scene::from_layout(layout);
+        let id = scene.panels[0].id;
+        let edit = crate::panel_form::apply_panel_field(
+            &mut scene,
+            id,
+            "panel.markdown.text",
+            crate::settings_form::FieldValue::Text("# New".into()),
+        );
+        assert!(edit.is_ok(), "{edit:?}");
+        let panel = scene.get(id).unwrap();
+        assert_eq!(
+            panel.kind,
+            PanelKind::Markdown {
+                text: "# New".into()
+            }
+        );
+        let style = panel.overrides.markdown.as_ref().unwrap();
+        assert_eq!(style.font_size, None, "the bad field is gone");
+        assert_eq!(style.padding, Some(4.0));
     }
 
     #[test]

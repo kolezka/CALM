@@ -253,8 +253,12 @@ pub struct PanelOverrides {
     pub content_opacity: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub borderless: Option<bool>,
-    /// Markdown panels only. Each style field is set or inherited on its own.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Markdown panels only. Each style field is set or inherited on its own. A bad field
+    /// is dropped at load, so this only ever holds valid values.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::markdown::deserialize_panel_style"
+    )]
     pub markdown: Option<PanelMarkdownStyle>,
 }
 

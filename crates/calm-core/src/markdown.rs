@@ -156,6 +156,78 @@ impl PanelMarkdownStyle {
     }
 }
 
+/// Reads `overrides.markdown` from a layout. A field with the wrong type or a value the
+/// checks reject is dropped with a warning, so one bad value never fails the layout or
+/// blocks a later edit. A value that is not an object is no override.
+pub(crate) fn deserialize_panel_style<'de, D>(
+    deserializer: D,
+) -> Result<Option<PanelMarkdownStyle>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(panel_style_from_value(&value, &mut |warning| {
+        eprintln!("calm: {warning}")
+    }))
+}
+
+/// The valid part of a loaded `overrides.markdown`; `warn` gets one line per dropped field.
+pub fn panel_style_from_value(
+    value: &serde_json::Value,
+    warn: &mut dyn FnMut(String),
+) -> Option<PanelMarkdownStyle> {
+    use serde_json::Value;
+    const PATH: &str = "overrides.markdown";
+    let fields = match value {
+        Value::Null => return None,
+        Value::Object(fields) => fields,
+        other => {
+            warn(format!("\"{PATH}\" is {other}, expected an object; ignored"));
+            return None;
+        }
+    };
+    let color = |path: &str, value: &Value| -> Result<Option<Rgb>, String> {
+        serde_json::from_value::<Option<Rgb>>(value.clone())
+            .map_err(|error| format!("\"{path}\": {error}"))
+    };
+    let number = |path: &str, value: &Value, range| -> Result<Option<f64>, String> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        let number = value
+            .as_f64()
+            .ok_or_else(|| format!("\"{path}\" is {value}, expected a number"))?;
+        check_range(path, number, range).map(|()| Some(number))
+    };
+    let mut style = PanelMarkdownStyle::default();
+    for (key, value) in fields {
+        let path = format!("{PATH}.{key}");
+        let read = match key.as_str() {
+            "background_color" => color(&path, value).map(|v| style.background_color = v),
+            "text_color" => color(&path, value).map(|v| style.text_color = v),
+            "link_color" => color(&path, value).map(|v| style.link_color = v),
+            "background_opacity" => {
+                number(&path, value, 0.0..=1.0).map(|v| style.background_opacity = v)
+            }
+            "font_size" => number(&path, value, FONT_SIZE_RANGE).map(|v| style.font_size = v),
+            "padding" => number(&path, value, PADDING_RANGE).map(|v| style.padding = v),
+            "font_family" => match value {
+                Value::Null => Ok(()),
+                Value::String(family) => {
+                    check_font_family(&path, family).map(|()| style.font_family = Some(family.clone()))
+                }
+                other => Err(format!("\"{path}\" is {other}, expected a string")),
+            },
+            // Unknown keys are ignored, as in the other overrides.
+            _ => Ok(()),
+        };
+        if let Err(error) = read {
+            warn(format!("{error}; ignored"));
+        }
+    }
+    (!style.is_empty()).then_some(style)
+}
+
 fn check_range(path: &str, value: f64, range: std::ops::RangeInclusive<f64>) -> Result<(), String> {
     if value.is_finite() && range.contains(&value) {
         Ok(())
@@ -514,6 +586,44 @@ mod tests {
         );
         assert!(check_text(&"a".repeat(MAX_MARKDOWN_BYTES)).is_ok());
         assert!(check_text(&"a".repeat(MAX_MARKDOWN_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn a_loaded_style_warns_once_per_dropped_field() {
+        let mut warnings = Vec::new();
+        let value = serde_json::json!({
+            "text_color": "#nothex",
+            "font_size": 99,
+            "padding": "bad",
+            "link_color": "#00ff00",
+            "future_field": 1
+        });
+        let style = panel_style_from_value(&value, &mut |w| warnings.push(w));
+        assert_eq!(
+            style,
+            Some(PanelMarkdownStyle {
+                link_color: Some(Rgb(0x00ff00)),
+                ..Default::default()
+            })
+        );
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        for field in ["text_color", "font_size", "padding"] {
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains(&format!("overrides.markdown.{field}"))),
+                "{field}: {warnings:?}"
+            );
+        }
+        warnings.clear();
+        assert_eq!(panel_style_from_value(&serde_json::json!(5), &mut |w| warnings.push(w)), None);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        warnings.clear();
+        assert_eq!(
+            panel_style_from_value(&serde_json::Value::Null, &mut |w| warnings.push(w)),
+            None
+        );
+        assert!(warnings.is_empty());
     }
 
     #[test]
