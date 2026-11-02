@@ -78,7 +78,10 @@ impl MarkdownSettings {
         if let Some(color) = own.background_color {
             style.background_color = color;
         }
-        if let Some(value) = own.background_opacity.filter(|v| check_opacity("", *v).is_ok()) {
+        if let Some(value) = own
+            .background_opacity
+            .filter(|v| check_opacity("", *v).is_ok())
+        {
             style.background_opacity = value;
         }
         if let Some(color) = own.text_color {
@@ -153,11 +156,7 @@ impl PanelMarkdownStyle {
     }
 }
 
-fn check_range(
-    path: &str,
-    value: f64,
-    range: std::ops::RangeInclusive<f64>,
-) -> Result<(), String> {
+fn check_range(path: &str, value: f64, range: std::ops::RangeInclusive<f64>) -> Result<(), String> {
     if value.is_finite() && range.contains(&value) {
         Ok(())
     } else {
@@ -254,7 +253,10 @@ pub fn style_css(style: &MarkdownSettings) -> String {
 /// contain its own hash, and with raw HTML off it cannot contain a tag at all.
 fn script_nonce(body: &str) -> String {
     let digest = Sha256::digest(body.as_bytes());
-    digest[..16].iter().map(|byte| format!("{byte:02x}")).collect()
+    digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// The whole page for a panel: `source` rendered in `style`.
@@ -379,7 +381,10 @@ mod tests {
         assert!(!page.contains("src=\"http"), "no remote script or style");
         let nonce = script_nonce(&render_body("# Hi\n"));
         assert!(page.contains(&format!("script-src 'nonce-{nonce}'")));
-        assert_eq!(page.matches(&format!("<script nonce=\"{nonce}\">")).count(), 2);
+        assert_eq!(
+            page.matches(&format!("<script nonce=\"{nonce}\">")).count(),
+            2
+        );
         // highlight.js names `<script` in its own grammar, so count outside it.
         assert_eq!(page.replace(HIGHLIGHT_JS, "").matches("<script").count(), 2);
     }
@@ -480,7 +485,11 @@ mod tests {
     fn links_open_outside_and_the_page_never_navigates_away() {
         assert_eq!(navigation("about:blank", false), Navigation::Allow);
         assert_eq!(navigation("about:blank#fn-1", true), Navigation::Allow);
-        for url in ["https://example.com/x", "http://a.b", "mailto:me@example.com"] {
+        for url in [
+            "https://example.com/x",
+            "http://a.b",
+            "mailto:me@example.com",
+        ] {
             assert_eq!(
                 navigation(url, true),
                 Navigation::OpenExternally(url.to_string()),

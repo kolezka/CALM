@@ -622,14 +622,24 @@ mod tests {
             {"kind":{"type":"sticky_note","color":"y"},"rect":{"origin":{"x":0,"y":0},"size":{"width":200,"height":100}},"title":"","minimized":false}
         ]}"#;
         let parsed: LayoutFile = serde_json::from_str(text).unwrap();
-        assert_eq!(parsed.panels[0].kind, PanelKind::Markdown { text: String::new() });
-        assert!(matches!(&parsed.panels[1].kind, PanelKind::Unsupported { raw } if raw.type_name() == "sticky_note"));
+        assert_eq!(
+            parsed.panels[0].kind,
+            PanelKind::Markdown {
+                text: String::new()
+            }
+        );
+        assert!(
+            matches!(&parsed.panels[1].kind, PanelKind::Unsupported { raw } if raw.type_name() == "sticky_note")
+        );
     }
 
     #[test]
     fn duplicate_copies_markdown_text_and_style() {
         let mut scene = Scene::default();
-        let id = scene.add(PanelKind::Markdown { text: "hi".into() }, Rect::new(0.0, 0.0, 300.0, 200.0));
+        let id = scene.add(
+            PanelKind::Markdown { text: "hi".into() },
+            Rect::new(0.0, 0.0, 300.0, 200.0),
+        );
         scene.get_mut(id).unwrap().overrides.markdown = Some(crate::markdown::PanelMarkdownStyle {
             padding: Some(2.0),
             ..Default::default()

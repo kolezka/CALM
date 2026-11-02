@@ -15,6 +15,7 @@ use crate::keymap::{
     ACTIONS, BROWSER_KEYS, Group, KeyError, RESTART_KEY, action, check_rebind, display_key,
     effective_key, parse_key,
 };
+use crate::markdown::{FONT_SIZE_RANGE, MarkdownSettings, PADDING_RANGE, check_font_family};
 use crate::process_stats::{INTERVAL_MS_RANGE, MemoryUnit, clamp_interval_ms};
 use crate::scene::PanelId;
 use crate::settings::{
@@ -46,6 +47,8 @@ pub enum Control {
     Button(String),
     /// Read-only text.
     Note(String),
+    /// Several lines of editable text, reported when editing ends.
+    TextArea(String),
     /// One line of editable text. An empty `value` shows `placeholder`.
     Text {
         value: String,
@@ -478,6 +481,7 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
     ));
 
     sections.push(section("Terminal", terminal_fields(settings)));
+    sections.push(section("Markdown", markdown_fields(&settings.markdown)));
 
     let session = &settings.session;
     sections.push(section(
@@ -707,6 +711,90 @@ fn background_fields(settings: &Settings, context: &FormContext) -> Vec<Field> {
     fields
 }
 
+/// The global look of markdown panels. A panel can set each field on its own.
+fn markdown_fields(markdown: &MarkdownSettings) -> Vec<Field> {
+    vec![
+        color(
+            "markdown.background_color",
+            "Background",
+            markdown.background_color,
+        ),
+        slider(
+            "markdown.background_opacity",
+            "Background opacity",
+            markdown.background_opacity,
+            0.0..=1.0,
+            2,
+        ),
+        color("markdown.text_color", "Text", markdown.text_color),
+        color("markdown.link_color", "Links", markdown.link_color),
+        field(
+            "markdown.font_family",
+            "Font family",
+            Control::Text {
+                value: markdown.font_family.clone(),
+                placeholder: MarkdownSettings::default().font_family,
+            },
+        ),
+        slider(
+            "markdown.font_size",
+            "Font size",
+            markdown.font_size,
+            FONT_SIZE_RANGE,
+            0,
+        ),
+        slider(
+            "markdown.padding",
+            "Padding",
+            markdown.padding,
+            PADDING_RANGE,
+            0,
+        ),
+    ]
+}
+
+fn apply_markdown_field(
+    markdown: &mut MarkdownSettings,
+    id: &str,
+    value: FieldValue,
+) -> Result<FormOutcome, String> {
+    let changed = Ok(FormOutcome::Changed { rebuild: false });
+    let mismatch = || Err(format!("settings field \"markdown.{id}\" got {value:?}"));
+    let number = |range: RangeInclusive<f64>, decimals: i32| match value {
+        FieldValue::Number(n) if n.is_finite() => {
+            let scale = 10f64.powi(decimals);
+            Some(((n * scale).round() / scale).clamp(*range.start(), *range.end()))
+        }
+        _ => None,
+    };
+    match (id, value.clone()) {
+        ("background_color", FieldValue::Color(rgb)) => markdown.background_color = rgb,
+        ("text_color", FieldValue::Color(rgb)) => markdown.text_color = rgb,
+        ("link_color", FieldValue::Color(rgb)) => markdown.link_color = rgb,
+        ("background_opacity", FieldValue::Number(_)) => {
+            markdown.background_opacity = number(0.0..=1.0, 2).ok_or("bad opacity")?
+        }
+        ("font_size", FieldValue::Number(_)) => {
+            markdown.font_size = number(FONT_SIZE_RANGE, 0).ok_or("bad font size")?
+        }
+        ("padding", FieldValue::Number(_)) => {
+            markdown.padding = number(PADDING_RANGE, 0).ok_or("bad padding")?
+        }
+        ("font_family", FieldValue::Text(family)) => {
+            let family = family.trim().to_string();
+            check_font_family("markdown.font_family", &family)?;
+            markdown.font_family = family;
+        }
+        (
+            "background_color" | "text_color" | "link_color" | "background_opacity" | "font_size"
+            | "padding" | "font_family",
+            _,
+        ) => return mismatch(),
+        _ => return Err(format!("unknown settings field \"markdown.{id}\"")),
+    }
+    changed
+}
+
 /// Applies one control change to `settings`. Unknown ids and mismatched values are errors:
 /// they mean the form and this function disagree, which must not pass silently.
 pub fn apply_field(
@@ -729,6 +817,9 @@ pub fn apply_field(
     }
     if let Some(rest) = id.strip_prefix("keys.") {
         return apply_key_field(settings, rest, value);
+    }
+    if let Some(rest) = id.strip_prefix("markdown.") {
+        return apply_markdown_field(&mut settings.markdown, rest, value);
     }
     let background = &mut settings.background;
 
@@ -1438,7 +1529,7 @@ mod tests {
             Control::Color(_) => Some(FieldValue::Color(Rgb(0x123456))),
             Control::Choice { options, .. } => Some(FieldValue::Index(options.len() - 1)),
             Control::Button(_) => Some(FieldValue::Pressed),
-            Control::Note(_) | Control::Text { .. } => None,
+            Control::Note(_) | Control::Text { .. } | Control::TextArea(_) => None,
             Control::Key { .. } => Some(FieldValue::Key(None)),
         }
     }
@@ -1602,6 +1693,72 @@ mod tests {
                 assert_eq!(settings.validate(), Ok(()), "{kind:?} {}", field.id);
             }
         }
+    }
+
+    #[test]
+    fn markdown_tab_edits_the_global_look_strictly() {
+        let mut settings = Settings::default();
+        let form = settings_form(&settings, &FormContext::default());
+        assert!(form.iter().any(|s| s.title == "Markdown"));
+        let ids = ids(&form);
+        for id in [
+            "markdown.background_color",
+            "markdown.background_opacity",
+            "markdown.text_color",
+            "markdown.link_color",
+            "markdown.font_family",
+            "markdown.font_size",
+            "markdown.padding",
+        ] {
+            assert!(ids.contains(&id.to_string()), "{id}");
+        }
+        apply_field(
+            &mut settings,
+            "markdown.background_opacity",
+            FieldValue::Number(0.333),
+        )
+        .unwrap();
+        assert_eq!(settings.markdown.background_opacity, 0.33);
+        apply_field(
+            &mut settings,
+            "markdown.link_color",
+            FieldValue::Color(Rgb(0x00ff00)),
+        )
+        .unwrap();
+        assert_eq!(settings.markdown.link_color, Rgb(0x00ff00));
+        apply_field(
+            &mut settings,
+            "markdown.font_family",
+            FieldValue::Text(" Menlo, monospace ".into()),
+        )
+        .unwrap();
+        assert_eq!(settings.markdown.font_family, "Menlo, monospace");
+        assert!(
+            apply_field(
+                &mut settings,
+                "markdown.font_family",
+                FieldValue::Text("x}".into())
+            )
+            .is_err()
+        );
+        assert!(
+            apply_field(
+                &mut settings,
+                "markdown.font_family",
+                FieldValue::Text("".into())
+            )
+            .is_err()
+        );
+        assert!(apply_field(&mut settings, "markdown.padding", FieldValue::Bool(true)).is_err());
+        assert!(apply_field(&mut settings, "markdown.nope", FieldValue::Pressed).is_err());
+        apply_field(
+            &mut settings,
+            "markdown.padding",
+            FieldValue::Number(1000.0),
+        )
+        .unwrap();
+        assert_eq!(settings.markdown.padding, 96.0);
+        assert_eq!(settings.validate(), Ok(()));
     }
 
     #[test]

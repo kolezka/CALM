@@ -3,6 +3,9 @@
 
 use crate::background::Rgb;
 use crate::chrome::{BUILTIN_ICON_PREFIX, ChromeOverrides, PanelIcon, lay_overrides};
+use crate::markdown::{
+    FONT_SIZE_RANGE, MarkdownSettings, PADDING_RANGE, PanelMarkdownStyle, check_font_family,
+};
 use crate::scene::{Panel, PanelId, PanelKind, PanelOverrides, Scene, set_borderless};
 use crate::settings::Settings;
 use crate::settings_form::{
@@ -27,6 +30,8 @@ pub struct PanelEffective {
     /// The running terminal already shows a theme CALM applied. Set by the app.
     pub live_theme: bool,
     pub content_opacity: f64,
+    /// A markdown panel's resolved look; `None` for other kinds.
+    pub markdown: Option<MarkdownSettings>,
 }
 
 /// `app` is an app panel's manifest layer, filled by the app; `None` for other panels.
@@ -63,6 +68,7 @@ pub fn panel_effective(
                 colors: resolved.colors,
                 live_theme: false,
                 content_opacity: resolved.content_opacity,
+                markdown: None,
             }
         }
         _ => PanelEffective {
@@ -73,6 +79,8 @@ pub fn panel_effective(
             live_colors_note: false,
             live_theme: false,
             content_opacity: DEFAULT_CONTENT_OPACITY,
+            markdown: matches!(panel.kind, PanelKind::Markdown { .. })
+                .then(|| settings.markdown.resolve(overrides.markdown.as_ref())),
         },
     }
 }
@@ -242,6 +250,79 @@ pub fn panel_form(panel: &Panel, effective: &PanelEffective) -> Vec<Section> {
         ));
     }
 
+    if let (PanelKind::Markdown { text: source }, Some(style)) = (&panel.kind, &effective.markdown)
+    {
+        sections.push(section(
+            "Markdown",
+            vec![field(
+                "panel.markdown.text",
+                "Text",
+                Control::TextArea(source.clone()),
+            )],
+        ));
+        let own = overrides.markdown.clone().unwrap_or_default();
+        sections.push(section(
+            "Markdown style",
+            vec![
+                with_state(
+                    color(
+                        "panel.markdown.background_color",
+                        "Background",
+                        style.background_color,
+                    ),
+                    own.background_color.is_some(),
+                ),
+                with_state(
+                    slider(
+                        "panel.markdown.background_opacity",
+                        "Background opacity",
+                        style.background_opacity,
+                        0.0..=1.0,
+                        2,
+                    ),
+                    own.background_opacity.is_some(),
+                ),
+                with_state(
+                    color("panel.markdown.text_color", "Text", style.text_color),
+                    own.text_color.is_some(),
+                ),
+                with_state(
+                    color("panel.markdown.link_color", "Links", style.link_color),
+                    own.link_color.is_some(),
+                ),
+                with_state(
+                    text(
+                        "panel.markdown.font_family",
+                        "Font family",
+                        own.font_family.clone().unwrap_or_default(),
+                        style.font_family.clone(),
+                    ),
+                    own.font_family.is_some(),
+                ),
+                with_state(
+                    slider(
+                        "panel.markdown.font_size",
+                        "Font size",
+                        style.font_size,
+                        FONT_SIZE_RANGE,
+                        0,
+                    ),
+                    own.font_size.is_some(),
+                ),
+                with_state(
+                    slider(
+                        "panel.markdown.padding",
+                        "Padding",
+                        style.padding,
+                        PADDING_RANGE,
+                        0,
+                    ),
+                    own.padding.is_some(),
+                ),
+            ],
+        ));
+    }
+
     sections.push(section(
         "Reset",
         vec![button("panel.reset_all", "", "Reset to global")],
@@ -275,6 +356,7 @@ pub fn apply_panel_field(
         .ok_or_else(|| format!("no panel {id:?}"))?;
     target.overrides = panel.overrides;
     target.rect = panel.rect;
+    target.kind = panel.kind;
     Ok(outcome)
 }
 
@@ -302,6 +384,9 @@ fn edit(panel: &mut Panel, field: &str, value: FieldValue) -> Result<FormOutcome
             Err(format!("panel field {field:?} applies only to terminals"))
         }
     };
+    if let Some(part) = field.strip_prefix("panel.markdown.") {
+        return edit_markdown(panel, part, value);
+    }
     let overrides = &mut panel.overrides;
 
     if let Some(index) = field.strip_prefix("panel.preset.") {
@@ -432,6 +517,96 @@ fn edit(panel: &mut Panel, field: &str, value: FieldValue) -> Result<FormOutcome
             _,
         ) => Err(wrong()),
         _ => Err(format!("unknown panel field {field:?}")),
+    }
+}
+
+/// A slider value rounded to `decimals` and clamped to `range`. NaN is refused.
+fn rounded(value: f64, range: std::ops::RangeInclusive<f64>, decimals: i32) -> Option<f64> {
+    if !value.is_finite() {
+        return None;
+    }
+    let scale = 10f64.powi(decimals);
+    Some(((value * scale).round() / scale).clamp(*range.start(), *range.end()))
+}
+
+/// The markdown text and style fields. The text is content, so Reset to global keeps it.
+fn edit_markdown(panel: &mut Panel, part: &str, value: FieldValue) -> Result<FormOutcome, String> {
+    let wrong = || format!("panel field \"panel.markdown.{part}\" got {value:?}");
+    if !matches!(panel.kind, PanelKind::Markdown { .. }) {
+        return Err(format!(
+            "panel field \"panel.markdown.{part}\" applies only to markdown panels"
+        ));
+    }
+    if part == "text" {
+        let FieldValue::Text(new) = value else {
+            return Err(wrong());
+        };
+        crate::markdown::check_text(&new)?;
+        panel.kind = PanelKind::Markdown { text: new };
+        return Ok(FormOutcome::Changed { rebuild: false });
+    }
+    let mut own = panel.overrides.markdown.take().unwrap_or_default();
+    let was = own.clone();
+    let reset = value == FieldValue::Reset;
+    let result = (|| -> Result<(), String> {
+        match (part, value.clone()) {
+            ("background_color", FieldValue::Color(rgb)) => own.background_color = Some(rgb),
+            ("text_color", FieldValue::Color(rgb)) => own.text_color = Some(rgb),
+            ("link_color", FieldValue::Color(rgb)) => own.link_color = Some(rgb),
+            ("background_opacity", FieldValue::Number(n)) => {
+                own.background_opacity = Some(rounded(n, 0.0..=1.0, 2).ok_or_else(wrong)?)
+            }
+            ("font_size", FieldValue::Number(n)) => {
+                own.font_size = Some(rounded(n, FONT_SIZE_RANGE, 0).ok_or_else(wrong)?)
+            }
+            ("padding", FieldValue::Number(n)) => {
+                own.padding = Some(rounded(n, PADDING_RANGE, 0).ok_or_else(wrong)?)
+            }
+            ("font_family", FieldValue::Text(family)) => {
+                own.font_family = match text_value(&family) {
+                    Some(family) => {
+                        check_font_family("overrides.markdown.font_family", &family)?;
+                        Some(family)
+                    }
+                    None => None,
+                }
+            }
+            ("background_color", FieldValue::Reset) => own.background_color = None,
+            ("text_color", FieldValue::Reset) => own.text_color = None,
+            ("link_color", FieldValue::Reset) => own.link_color = None,
+            ("background_opacity", FieldValue::Reset) => own.background_opacity = None,
+            ("font_size", FieldValue::Reset) => own.font_size = None,
+            ("padding", FieldValue::Reset) => own.padding = None,
+            ("font_family", FieldValue::Reset) => own.font_family = None,
+            (
+                "background_color" | "text_color" | "link_color" | "background_opacity"
+                | "font_size" | "padding" | "font_family",
+                _,
+            ) => return Err(wrong()),
+            _ => return Err(format!("unknown panel field \"panel.markdown.{part}\"")),
+        }
+        Ok(())
+    })();
+    if let Err(err) = result {
+        panel.overrides.markdown = (!was.is_empty()).then_some(was);
+        return Err(err);
+    }
+    let flips = field_set(&was, part) != field_set(&own, part);
+    panel.overrides.markdown = (!own.is_empty()).then_some(own);
+    Ok(FormOutcome::Changed {
+        rebuild: flips || reset,
+    })
+}
+
+fn field_set(style: &PanelMarkdownStyle, part: &str) -> bool {
+    match part {
+        "background_color" => style.background_color.is_some(),
+        "text_color" => style.text_color.is_some(),
+        "link_color" => style.link_color.is_some(),
+        "background_opacity" => style.background_opacity.is_some(),
+        "font_size" => style.font_size.is_some(),
+        "padding" => style.padding.is_some(),
+        _ => style.font_family.is_some(),
     }
 }
 
@@ -1226,7 +1401,7 @@ mod tests {
             Control::Color(_) => Some(FieldValue::Color(Rgb(0x123456))),
             Control::Choice { options, .. } => Some(FieldValue::Index(options.len() - 1)),
             Control::Button(_) => Some(FieldValue::Pressed),
-            Control::Text { .. } => Some(FieldValue::Text("Hi".into())),
+            Control::Text { .. } | Control::TextArea(_) => Some(FieldValue::Text("Hi".into())),
             Control::Note(_) | Control::Key { .. } => None,
         }
     }
@@ -1234,7 +1409,7 @@ mod tests {
     #[test]
     fn every_control_in_every_panel_form_applies_resets_and_stays_valid() {
         let settings = with_global_colors();
-        for kind in [terminal(), browser()] {
+        for kind in [terminal(), browser(), PanelKind::markdown()] {
             let (scene, id) = scene_with(kind.clone());
             let (sections, _) = form(&scene, id, &settings);
             let mut seen = std::collections::HashSet::new();
@@ -1265,6 +1440,165 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn markdown_form_edits_text_and_each_style_field_inherits_or_sets() {
+        let mut settings = Settings::default();
+        settings.markdown.font_size = 20.0;
+        let (mut scene, id) = scene_with(PanelKind::markdown());
+        let (sections, effective) = form(&scene, id, &settings);
+        assert_eq!(effective.markdown.as_ref().unwrap().font_size, 20.0);
+        let ids = ids(&sections);
+        for expected in [
+            "panel.markdown.text",
+            "panel.markdown.background_color",
+            "panel.markdown.background_opacity",
+            "panel.markdown.text_color",
+            "panel.markdown.link_color",
+            "panel.markdown.font_family",
+            "panel.markdown.font_size",
+            "panel.markdown.padding",
+        ] {
+            assert!(ids.contains(&expected.to_string()), "{expected}: {ids:?}");
+        }
+        assert!(!ids.contains(&"panel.content_opacity".to_string()));
+        assert!(matches!(
+            &find(&sections, "panel.markdown.text").control,
+            Control::TextArea(text) if text.starts_with("# Markdown")
+        ));
+        assert_eq!(
+            find(&sections, "panel.markdown.font_size").state,
+            FieldState::Inherited
+        );
+
+        let text = "# New\n\nbody\n".to_string();
+        let outcome = apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.markdown.text",
+            FieldValue::Text(text.clone()),
+        );
+        assert_eq!(outcome, Ok(FormOutcome::Changed { rebuild: false }));
+        assert_eq!(
+            scene.get(id).unwrap().kind,
+            PanelKind::Markdown { text: text.clone() }
+        );
+
+        let outcome = apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.markdown.background_opacity",
+            FieldValue::Number(0.0),
+        );
+        assert_eq!(outcome, Ok(FormOutcome::Changed { rebuild: true }));
+        let (sections, effective) = form(&scene, id, &settings);
+        assert_eq!(effective.markdown.unwrap().background_opacity, 0.0);
+        assert_eq!(
+            find(&sections, "panel.markdown.background_opacity").state,
+            FieldState::Set
+        );
+
+        // A bad font family changes nothing.
+        assert!(
+            apply(
+                &mut scene,
+                id,
+                &settings,
+                "panel.markdown.font_family",
+                FieldValue::Text("a;b".into())
+            )
+            .is_err()
+        );
+        assert_eq!(
+            scene
+                .get(id)
+                .unwrap()
+                .overrides
+                .markdown
+                .as_ref()
+                .unwrap()
+                .font_family,
+            None
+        );
+        // Out of range sliders clamp.
+        apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.markdown.font_size",
+            FieldValue::Number(500.0),
+        )
+        .unwrap();
+        assert_eq!(
+            scene
+                .get(id)
+                .unwrap()
+                .overrides
+                .markdown
+                .as_ref()
+                .unwrap()
+                .font_size,
+            Some(48.0)
+        );
+
+        // Reset to global clears the style, never the text.
+        apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.reset_all",
+            FieldValue::Pressed,
+        )
+        .unwrap();
+        let panel = scene.get(id).unwrap();
+        assert!(panel.overrides.is_empty());
+        assert_eq!(panel.kind, PanelKind::Markdown { text });
+    }
+
+    #[test]
+    fn markdown_fields_on_other_panels_and_oversized_text_are_errors() {
+        let settings = Settings::default();
+        let (mut scene, id) = scene_with(terminal());
+        assert!(
+            apply(
+                &mut scene,
+                id,
+                &settings,
+                "panel.markdown.text",
+                FieldValue::Text("x".into())
+            )
+            .is_err()
+        );
+        assert!(!ids(&form(&scene, id, &settings).0).contains(&"panel.markdown.text".to_string()));
+        let (mut scene, id) = scene_with(PanelKind::markdown());
+        let huge = "a".repeat(crate::markdown::MAX_MARKDOWN_BYTES + 1);
+        assert!(
+            apply(
+                &mut scene,
+                id,
+                &settings,
+                "panel.markdown.text",
+                FieldValue::Text(huge)
+            )
+            .is_err()
+        );
+        assert_eq!(scene.get(id).unwrap().kind, PanelKind::markdown());
+        assert!(
+            apply(
+                &mut scene,
+                id,
+                &settings,
+                "panel.markdown.nope",
+                FieldValue::Reset
+            )
+            .is_err()
+        );
+        let mut overrides = PanelOverrides::default();
+        overrides.markdown = Some(Default::default());
+        assert!(overrides.validate(&terminal()).is_err());
     }
 
     fn manifest_layer() -> AppLayer {
