@@ -1,9 +1,8 @@
 # Status
 
-Last updated: 2026-11-02, against `origin/main` at `d9e4edb` (PRs #1 to #76 merged; #11
-merged into a branch, see #20; #61 closed unmerged; #64, #70 and #75 open). #77 merged
-after `d9e4edb` and is not covered here. This file describes `main`, not branches. Facts
-are verified against the code unless marked otherwise.
+Last updated: 2026-11-02, against `origin/main` at `23278d3` (PRs #1 to #77 merged; #11
+merged into a branch, see #20; #61 closed unmerged; #64, #70 and #75 open). This file
+describes `main`, not branches. Facts are verified against the code unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -338,6 +337,9 @@ Pull requests:
 - #76 A typed command or TUI app that exits in under
   250 ms (say `echo hello`) no longer gets Ghostty's "failed to launch" screen. The status
   wrapper stays alive at least 0.4 s. Unit tested on the real wrapper; not yet seen in the app.
+- #77 README leads with the product: pitch, link to https://calm.raqz.link, a screenshot
+  (`assets/screenshots/canvas.png`), highlights, then get started. The full feature list
+  and key table sit in `<details>` blocks.
 
 ## Persistence plan progress
 

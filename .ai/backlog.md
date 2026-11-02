@@ -1,7 +1,7 @@
 # Backlog
 
 Agreed follow-ups with remaining unassigned work. Checked against `origin/main` at
-`d9e4edb` (PRs #1 to #76 merged) on 2026-11-02. Items from open PRs say so. Item numbers
+`23278d3` (PRs #1 to #77 merged) on 2026-11-02. Items from open PRs say so. Item numbers
 stay fixed; a closed item moves to "Done". Move an item
 to `status.md` under "In progress" once all of its remaining work has an owner or branch.
 
