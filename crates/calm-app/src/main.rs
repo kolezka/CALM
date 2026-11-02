@@ -31,6 +31,7 @@ use calm_core::scene::{PanelId, PanelKind};
 use calm_core::settings::RestoreOnLaunch;
 use calm_core::snap::{SnapConfig, snap_move};
 use calm_core::tui::TuiState;
+use calm_native::process_stats::{child_pids, process_exists};
 use std::cell::Cell;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -3304,6 +3305,10 @@ async fn smoke_presets(
         },
         0,
     ));
+    // The fixture's shells are the direct children of this process that appear while it
+    // opens, read from the OS, so the check does not depend on the terminal entities.
+    let own_pid = std::process::id();
+    let before: std::collections::HashSet<u32> = child_pids(own_pid).into_iter().collect();
     let opened = cx.update_window(window, |_, window, cx| {
         view.update(cx, |view, cx| view.apply_preset(terminals, window, cx))
     });
@@ -3311,23 +3316,21 @@ async fn smoke_presets(
         smoke_fail(&format!("presets: open terminals: {err}"));
     }
     let started = Instant::now();
-    let old = loop {
-        let state = view.update(cx, |view, cx| {
-            let alive = view.terminal_status(cx);
-            let handles: Vec<_> = view
-                .scene
-                .panels
-                .iter()
-                .filter_map(|panel| view.terminal(panel.id))
-                .map(|terminal| terminal.downgrade())
-                .collect();
-            (alive, handles)
-        });
-        if state.0.len() == 2 && state.0.iter().all(|(_, alive)| *alive) && state.1.len() == 2 {
-            break state.1;
+    let fixture_pids = loop {
+        let alive = view.update(cx, |view, cx| view.terminal_status(cx));
+        let mut new: Vec<u32> = child_pids(own_pid)
+            .into_iter()
+            .filter(|pid| !before.contains(pid) && process_exists(*pid))
+            .collect();
+        new.sort_unstable();
+        let started_ok = alive.len() == 2 && alive.iter().all(|(_, alive)| *alive);
+        if started_ok && new.len() == 2 {
+            break new;
         }
         if started.elapsed() > SMOKE_PRESET_EXIT_TIMEOUT {
-            smoke_fail(&format!("presets: terminals did not start: {:?}", state.0));
+            smoke_fail(&format!(
+                "presets: terminals did not start: status={alive:?} new_child_pids={new:?}"
+            ));
         }
         cx.background_executor()
             .timer(Duration::from_millis(50))
@@ -3354,21 +3357,19 @@ async fn smoke_presets(
             "presets: scene {kinds:?} terminals={terminals_left} focused={focused:?} layout_name={layout_name:?}"
         ));
     }
-    // A released entity has dropped its surface, which ends the process; one still held
-    // must report its process gone.
     let started = Instant::now();
     loop {
-        let alive = cx.update(|cx| {
-            old.iter()
-                .filter(|weak| weak.upgrade().is_some_and(|t| t.read(cx).is_alive()))
-                .count()
-        });
-        if alive == 0 {
+        let running: Vec<u32> = fixture_pids
+            .iter()
+            .copied()
+            .filter(|pid| process_exists(*pid))
+            .collect();
+        if running.is_empty() {
             break;
         }
         if started.elapsed() > SMOKE_PRESET_EXIT_TIMEOUT {
             smoke_fail(&format!(
-                "presets: {alive} closed terminal(s) still running after 5 s"
+                "presets: closed terminals' processes {running:?} still exist after 5 s"
             ));
         }
         cx.background_executor()
@@ -3376,9 +3377,10 @@ async fn smoke_presets(
             .await;
     }
     println!(
-        "smoke: presets applied={} closed={}",
+        "smoke: presets applied={} closed={} pids_gone={}",
         kinds.len(),
-        old.len()
+        fixture_pids.len(),
+        fixture_pids.len()
     );
     smoke_close_all(view, window, cx);
 }
