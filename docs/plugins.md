@@ -402,7 +402,9 @@ calm.events.on("command", (command) => {
 ```
 
 `panel` describes the right-clicked panel (`id`, `kind`, `pluginId`, `title`, `rect` in world
-coordinates, `minimized`, `pinned`) and is null for canvas items. `world` is the right-click point for
+coordinates, `minimized`, `pinned`) and is null for canvas items. For a pinned panel `rect` is
+in its pin space, not in current canvas coordinates: `rect` origin times the zoom at pin time
+is its screen origin. `world` is the right-click point for
 canvas items and null for panel items. The type is `MenuCommand` in
 `packages/calm-plugin-sdk/calm.d.ts`.
 
@@ -517,6 +519,8 @@ does not parse makes every call reject and is left as it is, never replaced by `
   rejects with `invalid_params`.
 
 `PanelInfo` is `{ id, kind, title, rect, minimized, pinned, z, focused, pluginId?, url?, resize }`.
+`pinned` is true for a panel fixed to the screen; its `rect` is in its pin space, as for a
+menu command's panel above.
 `kind` is `"terminal"`, `"browser"`, `"plugin"`, `"tui"` or `"unsupported"` (a panel from a
 layout of a newer CALM). `z` is 0 for the backmost panel. `pluginId` is set for plugin and TUI
 panels, `url` for browsers. `resize` is `{ resizable, minSize, maxSize }`, `maxSize` `null`

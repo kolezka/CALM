@@ -22,7 +22,7 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 ## Workspace
 
 - `crates/calm-core`: pure model. Geometry, camera, scene, interaction, chrome, joins,
-  resize policy, grid, layout v2 and session storage (durable writes, backups, url scrub),
+  resize policy, grid, layout v3 and session storage (durable writes, backups, url scrub),
   viewport placement, preview policy, snapping, settings and the settings form, terminal
   profiles, backgrounds, status bar rect, TUI launch, menus and plugin menus, presets (find,
   list, the Load confirmation), frame and process stats math. No GPUI, no AppKit. Everything
@@ -88,6 +88,9 @@ tab of Settings records a key per action; CALM's browser keys and Enter-to-resta
 Arrows pan the canvas when no live panel has the keyboard, Cmd+Option+arrows move the focused panel, and Shift takes larger steps (`canvas.arrow_pan_step`, `canvas.arrow_move_step`).
 `cmd-shift-backspace` deletes the focused panel (a live one confirms first, as with the menu's Delete).
 Cmd+Shift+, opens the focused panel's Settings window (written `cmd-<` in code, which is how GPUI reports that press).
+`cmd-shift-p` (action `panel.pin`, also Pin/Unpin in the panel menu) pins the focused panel to the screen: pan, zoom,
+fit-all, `cmd-shift-h` and arrow pan leave its screen position and size alone, it is never a preview, and pinned panels
+stay above unpinned ones. Inside a terminal the key wins over Ghostty's command palette.
 `cmd-ctrl-f` fullscreen, `cmd-shift-f` stats (FPS, CPU, memory; items in `developer.stats`). A click on empty canvas clears panel focus
 (`canvas.click_empty_clears_focus`). Cmd+drag snaps, Cmd+Shift+drag does not; a drag that starts on a resize edge always resizes (default
 grid 8 world units, edge snap within 8). `cmd-,` opens the native Settings window
