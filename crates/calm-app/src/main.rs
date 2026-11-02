@@ -717,6 +717,12 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         smoke_step(&mut run, "blur", async { smoke_blur(&view, window, cx) }).await;
         smoke_step(
             &mut run,
+            "status_label",
+            smoke_status_label(&view, window, cx),
+        )
+        .await;
+        smoke_step(
+            &mut run,
             "settings_dispatch",
             smoke_settings_dispatch(&view, window, cx),
         )
@@ -1264,6 +1270,110 @@ async fn smoke_run_command(
 /// grows and its web view follows; the locked plugin keeps its rect.
 /// Focuses a terminal, then the browser's page, and clicks empty canvas through the real
 /// mouse handlers each time. Focus must drop in the scene and in AppKit.
+const SMOKE_LABEL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// After the pill's text changes the label still spans the pill between its paddings. Stats
+/// off, 100% then 99%: both fit the minimum width, so the pill keeps its rect. The 100%
+/// reading follows a wide text, so the pill shrinks there: that is the positive control.
+async fn smoke_status_label(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let (show_stats, zoom_before, flash_before) = cx.update(|cx| {
+        let view = view.read(cx);
+        (
+            view.show_stats,
+            view.scene.camera.zoom,
+            view.saved_flash.clone(),
+        )
+    });
+    const WIDE: &str = "smoke-status-label-wide-text.json";
+    let wide_text = format!(
+        "Saved {WIDE}{}100%",
+        calm_core::status_bar::STATUS_BAR_SEPARATOR
+    );
+    let mut readings = Vec::new();
+    for (flash, zoom, text) in [
+        (Some(WIDE), 1.0, wide_text.as_str()),
+        (None, 1.0, "100%"),
+        (None, 0.99, "99%"),
+    ] {
+        let set = cx.update_window(window, |_, window, cx| {
+            view.update(cx, |view, cx| {
+                view.set_show_stats(false, window, cx);
+                view.saved_flash = flash.map(str::to_string);
+                view.scene.camera.zoom = zoom;
+                cx.notify();
+            })
+        });
+        if let Err(err) = set {
+            smoke_fail(&format!("status_label zoom {zoom}: {err:#}"));
+        }
+        let started = Instant::now();
+        let layout = loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let (shown, layout) = cx.update(|cx| {
+                let view = view.read(cx);
+                (
+                    view.status_bar_state().map(|(_, _, text)| text),
+                    view.status_label_layout(),
+                )
+            });
+            if let (Ok(shown), Some(layout)) = (&shown, layout)
+                && shown == text
+            {
+                break layout;
+            }
+            if started.elapsed() > SMOKE_LABEL_TIMEOUT {
+                smoke_fail(&format!(
+                    "status_label: pill shows {shown:?}, want {text:?}"
+                ));
+            }
+        };
+        readings.push((text, layout));
+    }
+    let restored = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.scene.camera.zoom = zoom_before;
+            view.saved_flash = flash_before;
+            view.set_show_stats(show_stats, window, cx);
+        })
+    });
+    if let Err(err) = restored {
+        smoke_fail(&format!("status_label restore: {err:#}"));
+    }
+    let pad = calm_core::status_bar::STATUS_BAR_PADDING_X;
+    let line = readings
+        .iter()
+        .map(|(text, (pill, x, w))| {
+            let text = text.rsplit(' ').next().unwrap_or(text);
+            format!("{text}:pill={pill:.0},label_x={x:.0},label_w={w:.0}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!("smoke: status_label {line}");
+    for (text, (pill, x, w)) in &readings {
+        if (x - pad).abs() > 0.5 || (w - (pill - 2.0 * pad)).abs() > 0.5 {
+            smoke_fail(&format!(
+                "status_label: at {text} the label is x={x} w={w}, want x={pad} w={} in a {pill} pill",
+                pill - 2.0 * pad
+            ));
+        }
+    }
+    let pills = readings
+        .iter()
+        .map(|(_, (pill, _, _))| *pill)
+        .collect::<Vec<_>>();
+    if pills[0] == pills[1] || pills[1] != pills[2] {
+        smoke_fail(&format!(
+            "status_label: pill widths {pills:?}, want a shrink then an unchanged rect, so the case was not tested"
+        ));
+    }
+}
+
 fn smoke_blur(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
     let outcome = cx.update_window(window, |_, window, cx| {
         view.update(cx, |view, cx| {

@@ -62,6 +62,7 @@ pub const STEPS: &[StepSpec] = &[
     step("browser", &[], &[]),
     step("resize", &[], &[]),
     step("blur", &[], &[]),
+    step("status_label", &[], &[]),
     step("settings_dispatch", &[], &[]),
     opt_in(step("settings_perf", &[], &[])),
     step("keybindings", &[], &[]),

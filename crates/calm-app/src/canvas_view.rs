@@ -2164,6 +2164,11 @@ impl CanvasView {
         bar.ensure_front();
     }
 
+    /// (pill width, label x, label width) as the native views report them.
+    pub fn status_label_layout(&self) -> Option<(f64, f64, f64)> {
+        self.status_bar.as_ref().map(|bar| bar.label_layout())
+    }
+
     /// (visible, topmost, text) of the status bar, or the reason it is missing.
     pub fn status_bar_state(&self) -> Result<(bool, bool, String), String> {
         match (&self.status_bar, &self.status_bar_error) {
