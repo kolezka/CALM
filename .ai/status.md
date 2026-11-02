@@ -429,6 +429,11 @@ Open questions: `.ai/open-questions.md`.
   that cause is unconfirmed. A separate CALM process was observed running for about an
   hour and was left untouched. No further retry or `origin/main` control was run, per the
   lead's instruction. These failures are not newly classified as flakes.
+  Cursor work: the status pill now changes native views only when its text or placement
+  changed, which ended one cursor set per paint (about 4 ms each with a custom pointer).
+  The bench prints `key_and_pointer_inside`. Moving panels still cost one cursor set per
+  frame; a GPUI patch (A) or a process-local guard (B) fixes that in local experiments and
+  waits for the user's choice. Unverified by hand: cursor shapes, real mouse moves.
 
 ## Not wired yet
 

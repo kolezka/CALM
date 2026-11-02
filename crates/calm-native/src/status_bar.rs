@@ -5,7 +5,7 @@
 //! kept as the topmost sibling of the panel views stays visible and blurs what is behind it.
 
 use calm_core::geometry::Rect;
-use calm_core::status_bar::{STATUS_BAR_CORNER_RADIUS, STATUS_BAR_PADDING_X};
+use calm_core::status_bar::{PillUpdate, STATUS_BAR_CORNER_RADIUS, STATUS_BAR_PADDING_X};
 use objc2::MainThreadOnly;
 use objc2::rc::Retained;
 use objc2_app_kit::{
@@ -26,6 +26,8 @@ pub struct StatusBar {
     effect: Retained<NSVisualEffectView>,
     label: Retained<NSTextField>,
     text: String,
+    /// What the views show, so an unchanged frame touches nothing.
+    shown: PillUpdate,
 }
 
 impl StatusBar {
@@ -63,17 +65,21 @@ impl StatusBar {
             effect,
             label,
             text: String::new(),
+            shown: PillUpdate::default(),
         })
     }
 
     /// Sets the text and returns its natural width in points.
     pub fn set_text(&mut self, text: &str) -> f64 {
-        if self.text != text {
-            self.label.setStringValue(&NSString::from_str(text));
-            self.text = text.to_string();
+        if let Some(width) = self.shown.cached_width(text) {
+            return width;
         }
+        self.label.setStringValue(&NSString::from_str(text));
+        self.text = text.to_string();
         self.label.sizeToFit();
-        self.label.frame().size.width
+        let width = self.label.frame().size.width;
+        self.shown.record_text(text, width);
+        width
     }
 
     pub fn text(&self) -> &str {
@@ -82,6 +88,9 @@ impl StatusBar {
 
     /// Places the bar at `rect` (top-left window points) or hides it for `None`.
     pub fn apply(&mut self, rect: Option<Rect>, viewport_height: f64) {
+        if !self.shown.placement_changed(rect, viewport_height) {
+            return;
+        }
         let Some(rect) = rect else {
             self.effect.setHidden(true);
             return;

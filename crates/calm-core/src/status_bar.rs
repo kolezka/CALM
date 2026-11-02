@@ -43,8 +43,73 @@ pub fn status_text<'a>(items: impl IntoIterator<Item = &'a str>) -> String {
         .join(STATUS_BAR_SEPARATOR)
 }
 
+/// Remembers what the native pill last showed. Any frame or visibility change on that view
+/// makes AppKit rebuild its tracking regions on the next display cycle, which sets the
+/// cursor again; with a custom pointer that costs about 4 ms. So the pill is only touched
+/// when its text or placement changed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PillUpdate {
+    text: Option<(String, f64)>,
+    placement: Option<(Option<Rect>, f64)>,
+}
+
+impl PillUpdate {
+    /// The width measured for `text` last time, or `None` when it must be measured again.
+    pub fn cached_width(&self, text: &str) -> Option<f64> {
+        self.text
+            .as_ref()
+            .filter(|(last, _)| last == text)
+            .map(|(_, width)| *width)
+    }
+
+    pub fn record_text(&mut self, text: &str, width: f64) {
+        self.text = Some((text.to_string(), width));
+    }
+
+    /// True when `rect` (or hiding, for `None`) differs from what the pill shows, and records
+    /// it. `viewport_height` is part of the key since the native frame is flipped by it.
+    pub fn placement_changed(&mut self, rect: Option<Rect>, viewport_height: f64) -> bool {
+        let next = Some((rect, viewport_height));
+        if self.placement == next {
+            return false;
+        }
+        self.placement = next;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unchanged_pill_is_not_touched_again() {
+        let mut pill = super::PillUpdate::default();
+        let rect = Some(crate::geometry::Rect::new(10.0, 20.0, 120.0, 36.0));
+        assert_eq!(pill.cached_width("100%"), None);
+        pill.record_text("100%", 41.0);
+        assert_eq!(pill.cached_width("100%"), Some(41.0));
+        assert!(pill.placement_changed(rect, 800.0));
+        assert!(!pill.placement_changed(rect, 800.0));
+    }
+
+    #[test]
+    fn a_new_text_rect_or_viewport_updates_the_pill() {
+        let mut pill = super::PillUpdate::default();
+        let rect = Some(crate::geometry::Rect::new(10.0, 20.0, 120.0, 36.0));
+        pill.record_text("100%", 41.0);
+        assert_eq!(pill.cached_width("101%"), None);
+        assert!(pill.placement_changed(rect, 800.0));
+        assert!(pill.placement_changed(
+            Some(crate::geometry::Rect::new(10.0, 20.0, 124.0, 36.0)),
+            800.0
+        ));
+        assert!(pill.placement_changed(
+            Some(crate::geometry::Rect::new(10.0, 20.0, 124.0, 36.0)),
+            900.0
+        ));
+        assert!(pill.placement_changed(None, 900.0));
+        assert!(!pill.placement_changed(None, 900.0));
+    }
+
     use super::*;
 
     const CANVAS: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);

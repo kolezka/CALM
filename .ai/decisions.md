@@ -919,3 +919,18 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
 - **No dedupe of unchanged native frames yet.** `zoom_bench` measured terminal, browser and
   plugin placement plus native order at about 0.3 ms per zoom frame, and during pan and zoom
   every frame changes anyway. Revisit if a profile shows AppKit layout cost.
+
+## The status pill is touched only when it changes (2026-11-02, branch `perf/zoom-native`)
+
+- **`calm_core::status_bar::PillUpdate` keeps the pill's last text width and placement;
+  `StatusBar` skips `sizeToFit`, `setFrame` and `setHidden` when they are unchanged.** Any
+  geometry change on a native view makes AppKit rebuild tracking regions and set the canvas
+  cursor again on the next display cycle. A custom pointer (Accessibility colors or size,
+  common) makes each set render a new image, about 4 ms. With no panels this took 241 sets
+  per bench phase down to 0 to 3. Numbers: `docs/benchmarks.md`.
+- **Moving panels still cause one cursor set per frame.** Two fixes were measured and left
+  for the user to pick: patching GPUI's `GPUIView` to set its cursor only when
+  `+[NSCursor currentCursor]` differs (upstreamable; Zed did this before switching to cursor
+  rects), or a process-local `-[NSCursor set]` guard behind a setting. Rejected: pausing
+  cursor rects while the camera moves (AppKit then sets the arrow itself every cycle) and
+  a no-op `cursorUpdate:` tracking area (AppKit ignores it).

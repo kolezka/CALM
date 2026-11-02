@@ -2239,7 +2239,15 @@ async fn smoke_camera_phases(
             .duration_since(std::time::UNIX_EPOCH)
             .expect("benchmark wall clock")
             .as_millis();
-        println!("smoke: zoom_bench variant={variant} phase={phase} start_unix_ms={unix_ms}");
+        let pointer = cx
+            .update_window(window, |_, window, _| {
+                calm_native::child::pointer_state(window)
+            })
+            .ok()
+            .flatten();
+        println!(
+            "smoke: zoom_bench variant={variant} phase={phase} start_unix_ms={unix_ms} key_and_pointer_inside={pointer:?}"
+        );
         cx.update(|cx| {
             paint_profile::start();
             view.update(cx, |view, cx| {

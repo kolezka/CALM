@@ -143,3 +143,53 @@ cursor updates or changing native scaling could alter input or visual behavior w
 proving the cause. Next checks should isolate pointer location/cursor settings manually,
 then compare native geometry strategies only if the expensive stacks remain. Real
 trackpad feel remains a manual acceptance check.
+
+## Cursor sets during motion (status pill fix), 2026-11-02
+
+Same hardware and release build. The user's system pointer is customized (Accessibility
+pointer colors), which makes every `-[NSCursor set]` render a new pointer image.
+
+Cost of one set, two instruments: a standalone timing loop in Swift, 200 sets of the same
+cursor, 4.0 to 4.2 ms per set (an empty loop of `NSCursor.current` calls: 0.005 ms); and an
+in-process counter that wrapped the real set during `zoom_bench` (an experiment, not
+shipped): 3.3 to 4.3 ms per set, 100 to 194 sets per second during bench motion.
+
+Callers, from lldb with breakpoints that only count, the window key and the pointer inside
+(the bench prints `key_and_pointer_inside`): AppKit's
+`displayCycleUpdateStructuralRegions` calls `setCursorForMouseLocation`, which sends
+`cursorUpdate:` to GPUI's whole-view cursor rect on `GPUIView` and sets its cursor again.
+Panels that move change tracking regions on every frame. With no panels, the status pill
+did the same: every paint ran `sizeToFit`, `setFrame` and `setHidden` on it.
+
+`none` variant, cursor sets per 240-frame phase, guard counter in count-only mode:
+
+| Status pill | Pan | Zoom |
+| --- | --- | --- |
+| updated every paint (before) | 241 | 241 |
+| updated when its text changed | 0 | 228 |
+| not created | 4 | 0 |
+| updated when text or placement changed (this fix) | 0 | 3 |
+
+Matrix (`CALM_ZOOM_BENCH_VARIANTS=matrix`), one run each, both exit 1 only on the
+environmental `plugins` smoke step. Main-thread CPU outside paint, p50 in ms:
+
+| Native panels | Before pan | After pan | Before zoom | After zoom |
+| --- | --- | --- | --- | --- |
+| None | 3.27 | 0.32 | 3.21 | 0.69 |
+| 8 terminals | 3.16 | 2.99 | 3.31 | 3.16 |
+| 8 browsers | 5.67 | 5.40 | 9.18 | 8.66 |
+| 8 plugins | 3.39 | 3.10 | 3.58 | 3.54 |
+
+Frame interval p50 did not change in the matrix (`none` stays at 8.33 ms). Panels still make
+one set per frame while they move, because their views really move. Two local experiments,
+neither shipped, cut that too (browser-8, two runs each, pill fix in all):
+
+| Build | Pan sets | Pan interval p50 | Zoom sets | Zoom interval p50 |
+| --- | --- | --- | --- | --- |
+| pill fix only | 510, 511 | 9.52, 11.64 | 424, 375 | 16.73, 16.31 |
+| A: GPUIView `cursorUpdate:` sets only when `currentCursor` differs | 60, 129 | 8.32, 8.32 | 93, 87 | 8.34, 8.58 |
+| B: process-local `-[NSCursor set]` guard | 116, 116 | 8.34, 8.34 | 84, 90 | 9.09, 10.19 |
+
+Real mouse moves were not measured (agents send no OS input). The user reports lag when the
+pointer moves with no panels; a mouse move repaints, and every paint updated the pill, so
+this fix should cover that case. That is inferred, not measured.
