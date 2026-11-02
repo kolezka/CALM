@@ -24,8 +24,9 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 - `crates/calm-core`: pure model. Geometry, camera, scene, interaction, chrome, joins,
   resize policy, grid, layout v2 and session storage (durable writes, backups, url scrub),
   viewport placement, preview policy, snapping, settings and the settings form, terminal
-  profiles, backgrounds, status bar rect, TUI launch, menus and plugin menus, frame and
-  process stats math. No GPUI, no AppKit. Everything here has unit tests.
+  profiles, backgrounds, status bar rect, TUI launch, menus and plugin menus, presets (find,
+  list, the Load confirmation), frame and process stats math. No GPUI, no AppKit. Everything
+  here has unit tests.
 - `crates/calm-native`: AppKit. Clip view plus zoom view for each native child, Ghostty
   parenting, WKWebView with the `calm` message handler, the browser view, the NSMenu context
   menu, the Settings window, the status pill, the runtime app icon, the process stats
@@ -35,11 +36,14 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
   `BRIDGE_METHODS`), event coalescer (`events.rs`, not wired), `gh api` client and token
   lookup (`gh_token.rs`).
 - `crates/calm-app`: the GPUI binary. Thin: maps events to `calm-core`, places native views,
-  hosts terminals, TUI apps, browsers and plugins, owns the Developer and Settings menus and
-  the libghostty adapter.
+  hosts terminals, TUI apps, browsers and plugins, owns the File (presets), Developer and
+  Settings menus and the libghostty adapter.
 - `plugins/hello-world`, `plugins/github-prs`: first-party web plugins (`github-prs` is Preact
-  TSX built with bun). `plugins/top-example`: a TUI app. `templates/plugin-tsx`,
-  `templates/plugin-tui`: starters. `packages/calm-plugin-sdk/calm.d.ts`: the `window.calm` API.
+  TSX built with bun). `plugins/calm-welcome` (the welcome page) and `plugins/calm-keys` (key
+  bindings, read through `keys.list`): plain HTML, `addMenu: false`, opened by the `welcome`
+  preset. `plugins/top-example`: a TUI app. `presets/`: built-in presets (`welcome.json`),
+  copied into the bundle. `templates/plugin-tsx`, `templates/plugin-tui`: starters.
+  `packages/calm-plugin-sdk/calm.d.ts`: the `window.calm` API.
 - `scripts/`: version bump, macOS bundle, Arch CI container, release upload.
   `.github/workflows/`: `ci.yml`, `release.yml`.
 
@@ -62,8 +66,8 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
   at `--% CPU`. A z-order mismatch is no longer a flake since #40. A run with a flake is not a pass.
   Run a control on `origin/main` before blaming a branch.
 - Plugin tests that need bun fail unless bun is installed; `CALM_SKIP_BUN_TESTS=1` skips them.
-- Not wired yet: `--bench`, layout save (`--layout` only opens), the `ask` restore dialog, the event
-  coalescer, and plugin events other than `command` (all 17 bridge methods answer; the v2
+- Not wired yet: `--bench`, the `ask` restore dialog, the event coalescer, and plugin
+  events other than `command` (all 18 bridge methods answer; the v2
   namespaces are design only). The Makefile `bench` target exists; the flag does not. Do not
   document them as working. Browser, plugin and TUI app panels and plugin menu items are
   wired.
@@ -78,7 +82,10 @@ Right-click opens Add, Settings and panel actions, plus plugin menu items; Setti
 panel menu opens that panel's own Settings window. Cmd+drag on a terminal's or page's content moves the panel, a Cmd+click still
 reaches it, and Cmd+right-click there opens the panel menu (`canvas.move_modifier`). Space+drag or
 middle-drag pans. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom. `cmd-shift-h`
-centers the world origin, `cmd-shift-0` fits all panels (both also in the View menu).
+centers the world origin, Cmd+Shift+0 (stored as `cmd-)`, which GPUI reports for it) fits all panels (both also in the View menu).
+Every key binding is a setting: `keybindings` in `settings.json` holds overrides, the Keys
+tab of Settings records a key per action; CALM's browser keys and Enter-to-restart are fixed.
+Arrows pan the canvas when no live panel has the keyboard, Cmd+Option+arrows move the focused panel, and Shift takes larger steps (`canvas.arrow_pan_step`, `canvas.arrow_move_step`).
 `cmd-shift-backspace` deletes the focused panel (a live one confirms first, as with the menu's Delete).
 Cmd+Shift+, opens the focused panel's Settings window (written `cmd-<` in code, which is how GPUI reports that press).
 `cmd-ctrl-f` fullscreen, `cmd-shift-f` stats (FPS, CPU, memory; items in `developer.stats`). A click on empty canvas clears panel focus
@@ -88,8 +95,15 @@ grid 8 world units, edge snap within 8). `cmd-,` opens the native Settings windo
 `~/.config/calm/settings.json`; `CALM_HOME` overrides the directory. A launch restores the
 last session from `session.json` (new shells, browsers at their url, plugins with their
 settings) and autosaves it; `--no-restore` starts empty, `--layout NAME` opens
-`layouts/NAME.json`, and `session.restore_on_launch` `off` turns restore off (`ask` has no
-dialog yet and restores with a notice). Distant panels become previews refreshed every 2 s.
+`layouts/NAME.json` or else the built-in preset NAME, and `session.restore_on_launch` `off`
+turns restore off (`ask` has no dialog yet and restores with a notice). A first launch (no
+`session.json`) opens the preset named by `session.first_launch_preset` (default `welcome`,
+empty for an empty canvas) and, with autosave on, saves the session at once. A preset is
+a layout file: File > Save Preset… writes `layouts/NAME.json`, File > Load Preset… lists user
+and built-in presets (a user preset hides a built-in one of the same name) and replaces the
+current panels, with one confirmation when a running terminal or app, or a browser, would
+close. Developer > Show Welcome Screen loads the first launch preset (`welcome` when that is
+empty). Distant panels become previews refreshed every 2 s.
 
 ## Rules that are easy to break
 

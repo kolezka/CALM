@@ -65,6 +65,7 @@ Every plugin folder holds a `calm-plugin.json`:
 | `entry`       | HTML file to load, relative to the plugin folder. No `..`, no `/` start. |
 | `defaultSize` | Size of a new panel in canvas points.                                    |
 | `resizable`   | Optional. `false` keeps the panel at the size it was created with.       |
+| `addMenu`     | Optional, default `true`. `false` hides the plugin from Add; presets and sessions still open it. |
 | `minSize`     | Optional `{ "width", "height" }`. Smallest size a resize may reach.      |
 | `maxSize`     | Optional `{ "width", "height" }`. Largest size a resize may reach.       |
 | `contributes` | Optional. Context menu items, see Context menu contributions.            |
@@ -79,10 +80,10 @@ Every panel can be resized by default, plugins included. Drag the right edge, th
 edge or the corner. The handle reaches a few pixels outside the panel, so it works over a
 web view too. Sizes include the 28 point title bar.
 
-The resize fields are checked when CALM loads the plugin. A bad value is a manifest error,
+These manifest fields are checked when CALM loads the plugin. A bad value is a manifest error,
 and the plugin is skipped with a message on stderr; CALM never guesses a default. Errors:
 
-- `resizable` that is not `true` or `false`, or any field set to `null`;
+- `resizable` or `addMenu` that is not `true` or `false`, or any field set to `null`;
 - a size that is not an object with exactly `width` and `height` as positive numbers;
 - a `minSize` or `maxSize` below the smallest panel, 120 by 80;
 - a `maxSize` smaller than `minSize` on either axis;
@@ -134,6 +135,7 @@ a terminal panel titled "Slack" that runs `slk`.
 | `cwd`         | no       | Working directory, absolute or starting with `~/`. Default: home.    |
 | `env`         | no       | Object of string values, set for the command only.                   |
 | `defaultSize` | no       | `{ "width", "height" }` in canvas points. Default 640 by 400.        |
+| `addMenu`     | no       | Default `true`. `false` hides the plugin from Add; presets and sessions still open it. |
 | `icon`        | no       | 1 to 4 characters, or a `.png` or `.svg` file in the plugin folder.  |
 | `title`       | no       | Title bar text. `{name}` is replaced by `name`. Default: `name`.     |
 | `accentColor` | no       | Focus ring, join divider and text icon color. Hex, see below.        |
@@ -274,6 +276,7 @@ This Slack panel uses every field:
   "version": "1.0.0",
   "apiVersion": 2,
   "capabilities": ["terminal.read"],
+  "addMenu": true,
   "description": "Slack in the terminal, through slk.",
   "command": "slk",
   "args": ["--workspace", "my team"],
@@ -440,7 +443,7 @@ if (calm.has("canvas.createPanel")) {
 }
 ```
 
-The app serves all 17 methods. An older CALM may not, so check `calm.has` before you rely
+The app serves all 18 methods. An older CALM may not, so check `calm.has` before you rely
 on one.
 
 ### Settings
@@ -545,6 +548,7 @@ trusted code (see [Trust](#trust)).
 | `calm.github.api(path)`  | Runs `gh api <path>` on the host, resolves with parsed JSON. |
 | `calm.openExternal(url)` | Opens an `http` or `https` URL in the default browser (`open`). Other schemes reject. |
 | `calm.theme.get()`       | `{ background }`, a `"#rrggbb"` string: the flat color that stands for the canvas background, also for a gradient or an image. |
+| `calm.keys.list()`       | `{ keys }`: every action in Keys tab order, then CALM's fixed keys (group `"Fixed"`). Each row is `{ id, label, group, key }`; `key` is written as macOS shows it (`"⇧⌘F"`) with the user's `keybindings` applied, or `null` when unbound. Each call reads the current settings. |
 | `calm.log(message)`      | Writes `message` to CALM's stderr, tagged with the plugin. Fire and forget: returns nothing, never waits for the host. |
 
 ### Events
@@ -593,6 +597,7 @@ stalls the canvas. An unknown method rejects with code `unknown_method`.
 | `github.api`         | Served: `gh api <path>` on the host       |
 | `openExternal`       | Served: `http` and `https` only           |
 | `theme.get`          | Served: the background's base color       |
+| `keys.list`          | Served: effective key bindings            |
 | `log`                | Served: printed to stderr, no answer       |
 
 ### Errors
@@ -664,6 +669,7 @@ the prelude and `calm.d.ts` in sync.
 | `github.api`         | `{ "path": string }`                                                 |
 | `openExternal`       | `{ "url": string }`                                                  |
 | `theme.get`          | `null`                                                               |
+| `keys.list`          | `null`                                                               |
 | `log`                | `{ "message": string }`                                              |
 
 The host answers by evaluating `window.__calm.resolve(id, ok, value)` in the page. With `ok`
@@ -794,3 +800,10 @@ Set `CALM_SKIP_BUN_TESTS=1` to explicitly skip the Bun-backed bridge tests.
   opens it in the browser. Build it first with `bun install && bun run build` in its folder.
   Menu item: "Open repo in browser" on its own panels. It opens the repo through
   `openExternal`.
+- `plugins/calm-welcome`: plain HTML. The welcome page of the built-in `welcome` preset: the
+  CALM logo, a pixel title, one instruction line and a scrolling closing line. Its panel
+  settings `title`, `instruction` and `closing` replace the default texts. No font files ship
+  with it. `addMenu: false`.
+- `plugins/calm-keys`: plain HTML. Lists the effective key bindings from `calm.keys.list()`,
+  bound keys by group with unbound actions collapsed at the end, and reads them again when
+  the page gets focus. Its colors follow `calm.theme.get()`. `addMenu: false`.

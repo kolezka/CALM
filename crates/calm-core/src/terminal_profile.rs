@@ -14,6 +14,10 @@ use crate::chrome::{ChromeOverrides, lay_overrides, parse_hex_color};
 use crate::scene::PanelOverrides;
 
 pub const DEFAULT_TITLE_TEMPLATE: &str = "Terminal";
+/// The lowest content opacity: below it a terminal's text is hard to read.
+pub const MIN_CONTENT_OPACITY: f64 = 0.2;
+/// A terminal's content opacity when no layer sets one: fully opaque.
+pub const DEFAULT_CONTENT_OPACITY: f64 = 1.0;
 /// Becomes the terminal's number: plain terminals opened since CALM started, from 1.
 pub const PLACEHOLDER_INDEX: &str = "{n}";
 /// Becomes the directory the terminal started in, with the home folder shown as `~`.
@@ -293,6 +297,12 @@ pub struct TerminalFields {
     pub title_color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_colors: Option<TerminalColorsSetting>,
+    /// 0.2 to 1: how opaque the terminal's content is.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_content_opacity"
+    )]
+    pub content_opacity: Option<f64>,
     /// Profiles only. The global switch is `panels.terminal_user_config`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_ghostty_user_config: Option<bool>,
@@ -404,6 +414,11 @@ pub enum TerminalIcon {
     AppImage(PathBuf),
 }
 
+/// Env every terminal starts with, under the defaults, profile and app layers.
+/// gpui-libghostty 0.3.1 exports `TERM_PROGRAM=gpui-ghostty`, so apps that choose features
+/// by terminal name (kitty graphics, for one) fall back. Ghostty proper exports `ghostty`.
+pub const BUILTIN_ENV: &[(&str, &str)] = &[("TERM_PROGRAM", "ghostty")];
+
 /// What a TUI app's manifest sets, laid between the profile and the panel overrides.
 /// The app fills it from the manifest; calm-core never reads manifests.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -439,6 +454,8 @@ pub struct ResolvedTerminal {
     pub icon: Option<TerminalIcon>,
     pub overrides: ChromeOverrides,
     pub colors: Option<TerminalColors>,
+    /// 0.2 to 1.
+    pub content_opacity: f64,
     pub use_user_config: bool,
     pub command: Option<String>,
     pub args: Vec<String>,
@@ -524,6 +541,25 @@ pub(crate) fn check_color(path: &str, value: &Option<String>) -> Result<(), Stri
     }
 }
 
+/// serde's own type error does not name the field.
+pub(crate) fn deserialize_content_opacity<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<f64>::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("\"content_opacity\": {error}")))
+}
+
+/// Also rejects NaN, which no range contains.
+pub(crate) fn check_content_opacity(path: &str, value: Option<f64>) -> Result<(), String> {
+    match value {
+        Some(value) if !(MIN_CONTENT_OPACITY..=1.0).contains(&value) => {
+            Err(format!("\"{path}\" is {value}, expected 0.2 to 1"))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// `/usr/bin/env` runs the command, so a leading `-` or a `=` would be misread.
 fn check_command(path: &str, command: &str) -> Result<(), String> {
     if command.trim().is_empty() {
@@ -575,6 +611,7 @@ impl TerminalFields {
         if let Some(colors) = &self.terminal_colors {
             colors.parse(&at("terminal_colors"))?;
         }
+        check_content_opacity(&at("content_opacity"), self.content_opacity)?;
         if let Some(command) = &self.command {
             check_command(&at("command"), command)?;
         }
@@ -702,7 +739,11 @@ impl TerminalSettings {
         };
         // Command and args are one unit: the layer that sets the command gives the args.
         let launch = if top.command.is_some() { top } else { base };
-        let mut env = base.env.clone().unwrap_or_default();
+        let mut env: BTreeMap<String, String> = BUILTIN_ENV
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        env.extend(base.env.clone().unwrap_or_default());
         env.extend(top.env.clone().unwrap_or_default());
         ResolvedTerminal {
             profile: chosen.map(|profile| profile.id.clone()),
@@ -726,6 +767,10 @@ impl TerminalSettings {
                 .as_ref()
                 .or(base.terminal_colors.as_ref())
                 .and_then(|colors| colors.parse("terminal_colors").ok()),
+            content_opacity: top
+                .content_opacity
+                .or(base.content_opacity)
+                .unwrap_or(DEFAULT_CONTENT_OPACITY),
             use_user_config: top.use_ghostty_user_config.unwrap_or(user_config),
             command: launch.command.clone(),
             args: launch.args.clone().unwrap_or_default(),
@@ -784,6 +829,9 @@ impl TerminalSettings {
                 resolved.colors = Some(colors);
             }
         }
+        if let Some(opacity) = overrides.content_opacity {
+            resolved.content_opacity = opacity;
+        }
         resolved
     }
 }
@@ -824,7 +872,8 @@ pub fn display_cwd(path: &Path, home: &Path) -> String {
 
 /// The argv for a terminal. With no command it is the login shell. With env it goes through
 /// `/usr/bin/env`, and a bare shell then gets `-l` so it still reads the login profile:
-/// Ghostty's `exec -l` marks only argv[0] as a login process, which is `env` there.
+/// Ghostty's `exec -l` marks only argv[0] as a login process, which is `env` there, so
+/// bash's `exec -l` marks the command again, as Ghostty would have without env.
 pub fn launch_argv(resolved: &ResolvedTerminal, login_shell: &str) -> Vec<String> {
     let mut argv = Vec::new();
     if !resolved.env.is_empty() {
@@ -835,21 +884,20 @@ pub fn launch_argv(resolved: &ResolvedTerminal, login_shell: &str) -> Vec<String
                 .iter()
                 .map(|(key, value)| format!("{key}={value}")),
         );
+        argv.extend(RELOGIN.iter().map(|word| word.to_string()));
     }
     match &resolved.command {
         Some(command) => {
             argv.push(command.clone());
             argv.extend(resolved.args.iter().cloned());
         }
-        None => {
-            argv.push(login_shell.to_string());
-            if !resolved.env.is_empty() {
-                argv.push("-l".to_string());
-            }
-        }
+        None => argv.push(login_shell.to_string()),
     }
     argv
 }
+
+/// Re-applies the login mark after `/usr/bin/env`. `calm` fills `$0`.
+const RELOGIN: [&str; 4] = ["/bin/bash", "-c", "exec -l \"$@\"", "calm"];
 
 #[cfg(test)]
 mod tests {
@@ -1101,7 +1149,11 @@ mod tests {
         let bare = TerminalSettings::default().resolve(None, false);
         assert_eq!(bare.title_template, DEFAULT_TITLE_TEMPLATE);
         assert_eq!(bare.overrides, ChromeOverrides::default());
-        assert!(!bare.use_user_config && bare.icon.is_none() && bare.env.is_empty());
+        assert!(!bare.use_user_config && bare.icon.is_none());
+        assert_eq!(
+            bare.env.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["TERM_PROGRAM"]
+        );
     }
 
     #[test]
@@ -1145,19 +1197,102 @@ mod tests {
     }
 
     #[test]
+    fn every_terminal_identifies_as_ghostty_unless_a_layer_overrides_it() {
+        // gpui-libghostty exports TERM_PROGRAM=gpui-ghostty, which apps that pick
+        // features by terminal name (kitty graphics in slk) do not recognize.
+        let program = |resolved: &ResolvedTerminal| resolved.env.get("TERM_PROGRAM").cloned();
+        let ghostty = Some("ghostty".to_string());
+        let bare = TerminalSettings::default();
+        assert_eq!(program(&bare.resolve(None, false)), ghostty);
+        let typed = AppLayer::typed_command();
+        let panel = bare.resolve_for_panel(None, false, Some(&typed), &PanelOverrides::default());
+        assert_eq!(program(&panel), ghostty);
+        assert_eq!(
+            launch_argv(&bare.resolve(None, false), "/bin/zsh"),
+            [
+                &["/usr/bin/env", "TERM_PROGRAM=ghostty"][..],
+                &RELOGIN,
+                &["/bin/zsh"]
+            ]
+            .concat()
+        );
+
+        // Defaults, a profile and an app manifest can each replace it.
+        let settings = parse(
+            r#"{"env": {"TERM_PROGRAM": "defaults"},
+                "profiles": [{"id": "p", "name": "P", "env": {"TERM_PROGRAM": "profile"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            program(&settings.resolve(None, false)).as_deref(),
+            Some("defaults")
+        );
+        assert_eq!(
+            program(&settings.resolve(Some("p"), false)).as_deref(),
+            Some("profile")
+        );
+        let app = AppLayer {
+            env: [("TERM_PROGRAM".to_string(), "app".to_string())].into(),
+            ..AppLayer::default()
+        };
+        let resolved =
+            settings.resolve_for_panel(Some("p"), false, Some(&app), &PanelOverrides::default());
+        assert_eq!(program(&resolved).as_deref(), Some("app"));
+    }
+
+    /// Runs `argv` the way Ghostty does: `exec -l` puts a `-` on argv[0] only.
+    fn run_like_ghostty(argv: &[String]) -> String {
+        use std::os::unix::process::CommandExt as _;
+        let name = argv[0].rsplit('/').next().unwrap_or_default();
+        let output = std::process::Command::new(&argv[0])
+            .arg0(format!("-{name}"))
+            .args(&argv[1..])
+            .env_remove("TERM_PROGRAM")
+            .output()
+            .expect("spawn");
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).expect("utf8")
+    }
+
+    #[test]
+    fn a_configured_command_starts_as_a_login_process_whatever_the_env() {
+        // A profile command that is a shell must still read its login profile (PATH).
+        let probe = "shopt -q login_shell && echo login || echo plain; echo \"$TERM_PROGRAM\"";
+        let mut resolved = TerminalSettings::default().resolve(None, false);
+        resolved.command = Some("/bin/bash".into());
+        resolved.args = vec!["-c".into(), probe.into()];
+        assert_eq!(
+            run_like_ghostty(&launch_argv(&resolved, "/bin/sh")),
+            "login\nghostty\n"
+        );
+        resolved.env.insert("A".into(), "1".into());
+        assert_eq!(
+            run_like_ghostty(&launch_argv(&resolved, "/bin/sh")),
+            "login\nghostty\n"
+        );
+        // Control: with no env at all Ghostty marks the command itself.
+        resolved.env.clear();
+        assert_eq!(
+            run_like_ghostty(&launch_argv(&resolved, "/bin/sh")),
+            "login\n\n"
+        );
+    }
+
+    #[test]
     fn launch_argv_wraps_env_and_keeps_the_shell_a_login_shell() {
         let mut resolved = TerminalSettings::default().resolve(None, true);
+        resolved.env.clear();
         assert_eq!(launch_argv(&resolved, "/bin/zsh"), vec!["/bin/zsh"]);
         resolved.env.insert("A".into(), "1".into());
         assert_eq!(
             launch_argv(&resolved, "/bin/zsh"),
-            vec!["/usr/bin/env", "A=1", "/bin/zsh", "-l"]
+            [&["/usr/bin/env", "A=1"][..], &RELOGIN, &["/bin/zsh"]].concat()
         );
         resolved.command = Some("htop".into());
         resolved.args = vec!["-d".into(), "5".into()];
         assert_eq!(
             launch_argv(&resolved, "/bin/zsh"),
-            vec!["/usr/bin/env", "A=1", "htop", "-d", "5"]
+            [&["/usr/bin/env", "A=1"][..], &RELOGIN, &["htop", "-d", "5"]].concat()
         );
     }
 
@@ -1365,7 +1500,8 @@ mod tests {
                 ("A", "defaults"),
                 ("B", "profile"),
                 ("C", "manifest"),
-                ("D", "manifest")
+                ("D", "manifest"),
+                ("TERM_PROGRAM", "ghostty")
             ]
         );
     }
@@ -1486,5 +1622,63 @@ mod tests {
                 .env,
             settings.resolve(Some("p"), false).env
         );
+    }
+
+    #[test]
+    fn content_opacity_resolves_panel_over_profile_over_defaults() {
+        let settings = parse(
+            r#"{"content_opacity": 0.9,
+                "profiles": [{"id": "dim", "name": "Dim", "content_opacity": 0.6}]}"#,
+        )
+        .unwrap();
+        let none = PanelOverrides::default();
+        let own = PanelOverrides {
+            content_opacity: Some(0.4),
+            ..PanelOverrides::default()
+        };
+        let typed = AppLayer::typed_command();
+        let opacity = |profile, app, overrides| {
+            settings
+                .resolve_for_panel(profile, true, app, overrides)
+                .content_opacity
+        };
+        assert_eq!(opacity(None, None, &none), 0.9);
+        assert_eq!(opacity(Some("dim"), None, &none), 0.6);
+        assert_eq!(opacity(Some("dim"), Some(&typed), &none), 0.6);
+        assert_eq!(opacity(Some("dim"), None, &own), 0.4);
+        let bare = parse("{}").unwrap();
+        assert_eq!(
+            bare.resolve_for_panel(None, true, None, &none)
+                .content_opacity,
+            DEFAULT_CONTENT_OPACITY
+        );
+    }
+
+    #[test]
+    fn content_opacity_in_settings_is_range_checked() {
+        assert_eq!(
+            error(r#"{"content_opacity": 0.1}"#),
+            "\"terminal.content_opacity\" is 0.1, expected 0.2 to 1"
+        );
+        assert!(
+            error(r#"{"profiles": [{"id": "p", "name": "P", "content_opacity": 1.5}]}"#)
+                .contains("terminal.profiles[0].content_opacity")
+        );
+        assert!(parse(r#"{"content_opacity": 0.2}"#).is_ok());
+    }
+
+    #[test]
+    fn content_opacity_of_the_wrong_type_names_the_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 2, "terminal": {"content_opacity": "0.5"}}"#,
+        )
+        .unwrap();
+        let error = crate::settings::read_settings_from(&path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("content_opacity"), "{error}");
     }
 }

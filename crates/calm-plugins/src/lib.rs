@@ -21,6 +21,7 @@ pub use github::{GH_MAX_OUTPUT, GH_TIMEOUT, GhClient, GhError};
 pub use manifest::{
     BackendRestart, BackendSpec, BackendStart, Discovery, Engines, InstalledPlugin, NO_BUILTIN_ENV,
     PluginContent, PluginError, PluginManifest, PluginSearch, PluginWarning, Shadowed, Size,
-    discover, discover_search, plugin_dirs, plugin_search, workspace_plugins_dir,
+    builtin_preset_dirs, discover, discover_search, plugin_dirs, plugin_search,
+    workspace_plugins_dir,
 };
 pub use tui::{DEFAULT_TUI_SIZE, TuiIcon, TuiRestart, TuiSpec, TuiTerminalColors, parse_hex_color};

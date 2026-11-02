@@ -9,8 +9,8 @@ page explains how the parts work together.
 
 - `calm-core`: the pure model. Geometry, camera, scene, input state machine, snapping,
   joins, resize policy, grid, preview policy, settings, terminal profiles, stats math,
-  layout v2 and the session storage primitives, TUI launch logic. No GPUI, no AppKit, unit
-  tested.
+  layout v2 and the session storage primitives, restore planning, presets, TUI launch
+  logic. No GPUI, no AppKit, unit tested.
 - `calm-native`: every AppKit call and every `unsafe` block. Native child views, web views,
   the browser view, the context menu, the Settings window, the status pill, the runtime app
   icon, the process stats sampler.
@@ -78,8 +78,10 @@ gesture becomes `InputHandler::begin_content_move` and the usual drag; released 
 slop it is a click, and the monitor replays the held events to the native view.
 Cmd+right-click opens the panel menu. Only the topmost panel's content counts, never chrome.
 
-Inside a terminal, keys stop propagating and `t`, `b`, `escape`, `enter` are bound to
-`NoAction` in the `Terminal` key context, so canvas shortcuts do not steal them. Browser
+Inside a terminal, keys stop propagating, and every binding without Cmd or Ctrl (by default
+`t`, `b`, `escape`, `enter`) also gets `NoAction` in the `Terminal` key context, so canvas
+shortcuts do not steal typing. The bindings come from settings (`calm-app/src/keymap.rs`)
+and are rebuilt after every settings change. Browser
 pages get editing and navigation shortcuts through an NSEvent local monitor, since GPUI
 takes key equivalents first.
 
@@ -127,14 +129,46 @@ process still asks first. An unknown method rejects with `unknown_method`. Every
 
 Settings live in one `settings.json`, written privately through a temp file and rename.
 `calm-core::layout` holds the layout v2 format and the session storage primitives (durable
-writes, backup rotation, url scrubbing). The app does not call them yet: there is no
-autosave and no restore, and a launch starts an empty canvas.
+writes, backup rotation, url scrubbing). Autosave writes the scene to `session.json` after a
+quiet period and on quit.
+
+## Restore and presets
+
+At launch `calm-app` reads the settings, then asks `calm_core::restore` for a plan. The
+source comes from the flags and `session.restore_on_launch`: `--layout NAME` wins, then
+`--no-restore`, then the setting (`off` starts empty). The smoke skips this and never reads
+the real session.
+
+- **Session.** `session.json` is read and its panels are built back to front. A malformed
+  or unsupported file is moved aside and the canvas starts empty; an unreadable one turns
+  autosave off for that launch.
+- **First launch.** When the source is the session and `session.json` does not exist, the
+  plan opens the preset named by `session.first_launch_preset` (default `welcome`) and asks
+  for one save right away, so the next launch restores the session instead. With autosave
+  off nothing is written, and the preset opens again next time. There is no first-run
+  marker. An empty setting, or a preset that cannot be read (with a notice), starts empty.
+- **Named layout.** `--layout NAME` opens that preset; a missing one starts empty and keeps
+  the name.
+
+A preset is a layout file, the same v2 format as the session. `calm_core::preset` finds one
+by name in the user dir (`layouts/` under `$CALM_HOME` or `~/.config/calm`) first, then in
+the built-in dirs from `calm_plugins::builtin_preset_dirs()`: the repo's `presets/` for a
+debug build or one run from a cargo `target` folder, and `CALM.app/Contents/Resources/presets`
+in the bundle. A user preset hides a built-in one with the same name.
+
+File > Save Preset… writes the scene to `layouts/NAME.json`, asking first when that replaces
+a user preset or hides a built-in one. File > Load Preset… and Developer > Show Welcome
+Screen run in a task outside any GPUI update and ask through blocking native dialogs (choose,
+confirm, alert). Every choice is made before anything closes: the preset is read first, then
+one confirmation names what would close, when `panels.confirm_close` is on and a running
+terminal or app, or a browser, would close. Cancel at any step leaves the canvas as it
+was. A load closes every current panel, ending its process, and builds the preset's
+panels through the same path as a session restore.
 
 ## Not built
 
-Session autosave and restore, layout save and load, `--layout`, `--bench`, most of the
-plugin API v2 surface (phase 1 and the coalescer core are built) and the Ghostty shim
-patch. See `.ai/status.md`.
+`--bench`, the `ask` restore dialog, most of the plugin API v2 surface (phase 1 and the
+coalescer core are built) and the Ghostty shim patch. See `.ai/status.md`.
 
 ## Verified on
 

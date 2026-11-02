@@ -24,6 +24,15 @@ one means a new entry, not an edit.
   CALM shaped to their own workflow, not to the author's taste. Cost: more settings to
   validate, test and document, and more states to support. If it proves wrong, fold rarely
   used settings back into fixed defaults.
+- **CALM is proprietary, the plugin SDK and templates are MIT (2026-11-02, #71, #72).**
+  `LICENSE` says all rights reserved; crates point at it with `license-file` and are
+  `publish = false`. `packages/calm-plugin-sdk/` and `templates/` carry an MIT `LICENSE`, so
+  plugins built from them can use any license. Third-party notices for shipped code live in
+  `THIRD_PARTY_NOTICES`, written by `gmake notices` (cargo-about plus
+  `third_party/notices/`). Reason (#71): CALM can be sold or relicensed later, and plugin
+  authors can copy the types and starters into their own code. Cost not recorded; the
+  `LICENSE` text publishes the repo for viewing only. This replaces the earlier MIT plan in
+  the backlog.
 
 ## Architecture
 
@@ -125,6 +134,12 @@ one means a new entry, not an edit.
   per-launch file and exits 0. 127 means command not found and never auto-restarts. Cost:
   a 127 from the program itself reads as not found; a killed wrapper gives "code unknown".
   The Ghostty fork planned in Plugin API v2 could replace this.
+- **The wrapper runs at least 0.4 s (2026-11-02, `fix/tui-quick-exit-banner`).** On macOS
+  Ghostty treats any child exit under `abnormal-command-exit-runtime` (250 ms) as a failed
+  launch, whatever the exit code, and replaces the output with "Ghostty failed to launch the
+  requested command". gpui-libghostty 0.3.1 cannot set that key, so the wrapper starts a
+  background `sleep 0.4` and waits for it before exiting (`tui::MIN_WRAPPER_RUNTIME`).
+  Longer runs are not delayed. Cost: a quick command's closing line shows up to 0.4 s late.
 - **TUI look comes from the manifest; confirmation colors stay fixed.** `accentColor`,
   `titleBarColor` and `titleColor` override the theme per panel, but a close confirmation
   always paints the theme's warning bar, border and text, so a plugin cannot hide it. The
@@ -341,6 +356,15 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   alone are an error. `env` merges key by key. Other fields are taken whole.
 - **Env goes through `/usr/bin/env` in argv.** gpui-libghostty 0.3.1 has no env option.
   Values are never printed, and Settings masks them, but `ps` shows them. Documented.
+- **Terminals export `TERM_PROGRAM=ghostty` (2026-11-02).** gpui-libghostty 0.3.1 sets
+  `gpui-ghostty`, which apps that choose features by terminal name do not know: slk fell
+  back to half-block images instead of kitty graphics. The engine is Ghostty's, so the
+  name is honest. It sits under every env layer (`BUILTIN_ENV`), so `terminal.env`, a
+  profile or a manifest can set another value. `TERM` stays `xterm-256color`: the build
+  ships no `xterm-ghostty` terminfo. Cost: every terminal now starts through
+  `/usr/bin/env`, then `/bin/bash -c 'exec -l "$@"'`, which puts back the login mark
+  Ghostty's `exec -l` gave the command: a profile `command` such as `/bin/zsh` still reads
+  its login profile (review finding on PR #67; before, any profile with `env` lost it).
 - **Live recolor uses `TerminalThemeState::apply`.** It exists in 0.3.1 and keeps the process.
   It cannot remove a theme or flip the user config, so those apply to new terminals.
 - **The panel's profile is kept beside the scene, not in `PanelKind`.** Layouts are not
@@ -581,7 +605,7 @@ These shipped with #41, next to "Restore at launch" above.
   Reason: the panel keeps its place and the bad url never loads. Cost: the user sees a
   blank page and has to type the address again.
 
-## Bridge control (2026-11-01, `feat/plugin-bridge-control`)
+## Bridge control (2026-11-01, PR #44)
 
 - **Window work leaves `dispatch` as `HostEffect`s.** `dispatch` stays pure over a
   `HostContext` and the canvas applies `Open`, `Focus` and `Close` with the window. The
@@ -628,7 +652,7 @@ These shipped with #41, next to "Restore at launch" above.
   is wanted, add one `menus.labels` settings block for all built-in menu labels rather than
   one setting per label.
 
-## Native occlusion (2026-11-01, `fix/native-occlusion`)
+## Native occlusion (2026-11-01, PR #54)
 
 - **Native views are masked by the panels above them.** Native views are subviews of the
   GPUI host, so they draw over all GPUI paint, and a back panel's content covered a front
@@ -656,7 +680,7 @@ These shipped with #41, next to "Restore at launch" above.
   press (`calm_core::occlusion::PointerGate`). A move event with no button held drops any
   remembered press, since GPUI only sends a release to hovered views.
 
-## Per-panel settings (2026-11-01, `feat/panel-settings`)
+## Per-panel settings (2026-11-01, PR #57)
 
 - **Each field is inherited or set.** The panel Settings window shows every field with its
   inherited value until the user sets it. Clearing a field puts it back to inherited, and
@@ -709,14 +733,54 @@ These shipped with #41, next to "Restore at launch" above.
   with the session. An unknown profile id opens with the defaults and one notice; the saved
   kind keeps the id, so it comes back if the profile does.
 - **Panel shortcuts: Cmd+Shift+Backspace deletes, Cmd+Shift+, opens Settings.** Both
-  are hard-coded like the other canvas bindings until key bindings become settings. Plain
+  are defaults of the key binding settings below. Plain
   `cmd-backspace` stays with shell and web fields, where Ghostty and WKWebView use it to
   delete to the start of the line. The Settings key is written `cmd-<` in code because GPUI
   reports the Cmd+Shift+, press that way (with Cmd held it drops Shift for punctuation and
   keeps the shifted character); a `cmd-shift-,` binding would never match. On layouts where
   `<` is on another key, the shortcut moves with it.
 
-## TUI apps are terminals (2026-11-02, `feat/tui-extends-terminal`)
+## Key bindings are settings (2026-11-02, PR #62)
+
+Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One table in
+`calm-core/src/keymap.rs` owns every action, its default and scope; `keybindings` in
+`settings.json` stores overrides only (`null` unbinds); the Keys tab edits them.
+
+- **Keys are recorded, not typed.** A typed `cmd-shift-,` would be accepted and never fire,
+  because GPUI reports that press as `cmd-<`. The recorder turns one AppKit key-down into
+  the string GPUI will report, through a pure copy of GPUI's rule
+  (`keystroke_from_parts`, mirroring `gpui-pre-macos 0.3.4` `events.rs`). Keep the two in
+  step on a GPUI upgrade.
+- **A key already in use is refused, not swapped.** The row shows "Used by <label>" for
+  3 s. Swapping would silently move a shortcut the user did not touch.
+- **`NoAction` in terminals is derived.** Any binding without Cmd or Ctrl also binds
+  `NoAction` in the `Terminal` context, so a focused terminal keeps typing keys, whatever
+  the user binds.
+- **Reserved:** CALM's ten browser keys (`calm-native/src/browser.rs`) and Space without
+  Cmd, Ctrl or Alt (hold-to-pan, which ignores Shift). They are listed read-only in the tab,
+  with Enter-to-restart.
+- **Keys that never fire are errors:** Shift with a printable non-letter (GPUI reports the
+  shifted character), and `fn` with arrow, page, home, end, delete, insert and F keys (GPUI
+  clears `fn` on them). Named keys keep Shift, so `cmd-shift-backspace` is valid.
+- **Fit All default is `cmd-)`.** The old `cmd-shift-0` binding never matched: a test on the
+  pre-change code showed a `cmd-shift-0` binding does not match the `cmd-)` keystroke GPUI
+  reports for Cmd+Shift+0 on a US layout, and no binding matched `cmd-)`
+  (`fit_all_matches_the_press_gpui_reports_for_cmd_shift_0`).
+- **The arrow keys from #68 are rows too**: eight pan rows (View) and eight move rows
+  (Panels) with #68's keys as defaults, so the table has 36 actions. Their terminal
+  `NoAction` entries now come from the derived rule instead of a hand list.
+- **Menu commands refuse `fn`, `enter` and `tab`.** GPUI's menu builder drops `fn` and
+  passes `enter` and `tab` through unconverted, so the menu item would get a different key
+  than the binding (`fn-cmd-k` would show and fire as Cmd+K). Canvas actions may use them.
+- **Reset is checked like a recording.** If another row took the default meanwhile, Reset
+  is refused with "Used by"; otherwise the saved file would fail validation at the next
+  launch and the whole settings file would be set aside.
+- **Any click off the recorder, or a tab change, stops recording**, so a key meant for
+  another field is never recorded. Clicks are never swallowed.
+- **Symbols use Apple's modifier order** `⌃⌥⇧⌘`, so Cmd+Shift+Backspace shows as `⇧⌘⌫`.
+  The close prompt names its keys in words (`Close? enter / esc`), as the user chose.
+
+## TUI apps are terminals (2026-11-02, PR #63)
 
 - **A TUI app is `PanelKind::Terminal` with `app: Some(TerminalApp { plugin_id,
   plugin_version })`.** Built by `PanelKind::app_terminal`, read with `.app()`.
@@ -755,3 +819,90 @@ These shipped with #41, next to "Restore at launch" above.
   saved terminals with a `command`. Their exit now shows "[calm] <name> exited with code N"
   and follows `terminal.command_restart`. Plugin API kind `tui` and `PanelInfo.kind` "tui"
   are unchanged.
+
+## Color wells without opacity (2026-11-02, PR #74)
+
+- **Every CALM color well sets `supportsAlpha = false`.** The `Control::Color` builder in
+  `settings_window.rs` (the only `NSColorWell` CALM creates) turns it off, so the picker
+  shows no opacity slider. Why every well: no CALM color well keeps alpha today
+  (`rgb_from_ns`, `BindingKind::Color`), chrome wells included, so a slider anywhere would
+  be a control that does nothing. This replaces the spec's "terminal wells only". Turn it
+  back on per well when chrome alpha is wired (the gap is in `.ai/status.md`). The
+  deprecated app-wide `NSColor::setIgnoresAlpha` was rejected; macOS 14, CALM's floor, has
+  the per-well API.
+- **Previews fade in bytes.** A preview is GPUI-drawn, so the native fade does not reach
+  it. `take_snapshot` scales the snapshot's alpha by `content_opacity` with
+  `preview::fade_pixels`, straight alpha, because gpui's sprite pipeline blends with
+  `SourceAlpha` (`gpui-pre-apple` 0.3.4 `metal_renderer.rs`). Bytes round half away from zero.
+  Ghostty's snapshot bytes are premultiplied, so every snapshot first goes through
+  `preview::unpremultiply_pixels`, then the fade.
+
+## Launching terminal's env is scrubbed (2026-11-02, PR #69)
+
+- **`main` unsets the launching terminal's identity before CALM starts any thread.** The
+  function is `unsafe` and its caller owns that guarantee. GPUI's pre-main constructors only
+  register classes (source-read in review); system framework start-up is not audited. Started from
+  iTerm2, every canvas terminal inherited `ITERM_SESSION_ID` and `LC_TERMINAL`. Claude Code
+  2.1.316 treats `ITERM_SESSION_ID` alone as "inside iTerm2", so agent teams split the iTerm2
+  tab CALM was launched from. `TERM_PROGRAM` did not leak into Ghostty terminals: the
+  gpui-libghostty shim sets it (`gpui-ghostty`), and since #67 CALM sets `ghostty`. Other
+  children (`gh`, `process.exec`, plugin helpers) did get `TERM_PROGRAM=iTerm.app`. The list is in
+  `calm_core::host_env` (iTerm2, Terminal.app, tmux, screen, kitty, WezTerm, Alacritty,
+  Zellij); `GHOSTTY_*`, `TERM`, `LC_ALL`/`LC_CTYPE` stay.
+- Hard-coded on purpose: it is a correctness fix, not a look or behavior choice. A user who
+  wants one of these names in a terminal can set it in a terminal profile's env.
+- Done in CALM's own environment, not per spawn: `gpui-libghostty` 0.3.1 has no env option,
+  and one place then covers every child (terminals, TUI apps, plugins, `gh`) instead of each
+  argv builder growing `env -u` flags.
+- Smoke step `terminal_env` spawns `/usr/bin/env` and fails on any listed name. It only
+  discriminates when smoke runs from a terminal that sets them (iTerm2, tmux).
+
+## Presets and welcome screen (2026-11-02, PR #75)
+
+Spec: `docs/superpowers/specs/2026-11-02-presets-and-welcome-design.md`.
+
+- **The welcome screen is a default preset, not a modal.** A first launch with no
+  `session.json` opens the built-in `welcome` preset: a welcome plugin panel, a browser on
+  `https://calm.raqz.link` and a key bindings panel. Reason: the user wanted it on the canvas
+  and saw presets as the general mechanism. Cost: the welcome panels are ordinary panels a
+  user can close for good.
+- **Presets are layouts.** Same `LayoutFile` v2 format; Save Preset… finally wires layout
+  save. User presets shadow built-in ones by name. Cost: none new; one format to keep valid.
+- **Loading a preset closes the current panels and ends their processes, after one
+  confirmation** (user). Cancel changes nothing.
+- **No first-run marker** (user). No session file means first launch. With autosave off, or
+  after a corrupt session is moved aside and nothing is saved since, the preset opens again.
+- **No music in the welcome panel** (user). Reverses the 2026-11-01 keygen-music idea.
+- **`"addMenu": false` manifest field** hides a plugin from the Add menu, instead of a
+  special case for the welcome plugin's id.
+
+Rulings made while building it (2026-11-02). Each changes or settles a point of the plan.
+
+- **Key bindings come from a bridge method, `keys.list`, not a checked-in `keys.json`.**
+  #62 made every key a setting, so a static file would show the defaults, not the user's
+  keys. `calm-keys` asks at runtime and reads again when its page gets focus. The spec
+  allowed a bridge method that returns the keymap. Cost: an 18th bridge method to document
+  and keep.
+- **`keys.list` ignores its params, like `theme.get`.** It does not reject junk params. Why:
+  the same rule across the read-only bridge methods. Cost: junk params are accepted
+  silently, as they already are for `theme.get`.
+- **Save Preset, Load Preset and Show Welcome Screen are keymap rows with no default key**
+  (`app.save_preset`, `app.load_preset`, `developer.show_welcome`). Why: customization first,
+  and #62 makes every action rebindable. Save and Load sit in the `App` group, because #62 has
+  no File group and adding one is a Keys tab design change. Cost: three more rows in the Keys
+  tab.
+- **No bundled font in the welcome page.** No pixel font found could ship offline under a
+  license that fits. The title is drawn with the system monospace stack on a small canvas and
+  scaled up by whole pixels. Cost: a weaker keygen look.
+- **Welcome preset layout:** browser at (-620, -380) 560x420, key bindings at (260, -380)
+  360x420, welcome at (-280, 60) 560x320, camera offset (-640, -400) at zoom 1. The plan's
+  layout left the key bindings panel outside the first view. A unit test asserts every panel
+  is inside the first 1280x800 view and none overlap. Cost: a less balanced first screen.
+- **Load decides everything before it closes anything.** The preset is chosen and read and
+  the one confirmation answered first; cancel or an error at any step leaves the canvas as
+  it was. If the confirmation summary (the count of closing panels per kind) changed while a
+  dialog was open, the load is refused with an alert. A panel replaced by one of the same
+  kind keeps the counts equal and is not detected, and with no confirmation (none of those
+  panels, or `panels.confirm_close` off) nothing is compared. The Load confirmation and a
+  normal panel close share one rule (`close_confirms`): a running terminal or app, or a
+  browser, asks first.

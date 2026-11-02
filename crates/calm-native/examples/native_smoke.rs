@@ -72,6 +72,7 @@ fn main() {
     let mtm = MainThreadMarker::new().unwrap_or_else(|| fail("not on the main thread"));
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    choice_popup_check(mtm);
 
     let content_rect = NSRect::new(NSPoint::new(100.0, 100.0), NSSize::new(WIDTH, HEIGHT));
     // SAFETY: standard NSWindow initializer on the main thread.
@@ -239,6 +240,7 @@ fn main() {
         c.size.width,
         c.size.height - 40.0,
     )];
+    covered.paint = covered.visible.clone();
     child.apply(&covered, HEIGHT, scale);
     let layer = clip
         .layer()
@@ -291,6 +293,7 @@ fn main() {
         fail("covered strip is not masked out of paint and hit testing");
     }
     covered.visible.clear();
+    covered.paint.clear();
     child.apply(&covered, HEIGHT, scale);
     let hidden = clip.isHidden();
     child.set_visible(true);
@@ -315,9 +318,9 @@ fn main() {
     let menu = ContextMenu::build(&sample).unwrap_or_else(|e| fail(&e.to_string()));
     let (items, submenus) = menu.counts();
     println!("native_smoke: menu items={items} submenus={submenus}");
-    // Add, then inside it the Native header, Terminal, Browser, a separator, the Plugins
-    // header and Hello World. Headers are real menu items.
-    if (items, submenus) != (7, 1) {
+    // Add, then inside it the Native header, Terminal, Run Command, Browser, a separator,
+    // the Plugins header and Hello World. Headers are real menu items.
+    if (items, submenus) != (8, 1) {
         fail("menu tree does not match the sample spec");
     }
 
@@ -494,4 +497,19 @@ fn settings_window_check() {
         fail("pending text edit was lost during form rebuild");
     }
     window_slot.borrow_mut().take();
+}
+
+/// The pop-up behind `choose`, built and read back, never shown. Repeated titles must stay
+/// separate items so a selected index maps back to the option it came from.
+fn choice_popup_check(mtm: MainThreadMarker) {
+    let options: Vec<String> = ["Alpha", "Alpha", "Beta"].map(String::from).to_vec();
+    let popup = calm_native::prompt::choice_popup(mtm, &options);
+    let items = popup.numberOfItems();
+    let first = calm_native::prompt::selected_choice(&popup, options.len());
+    popup.selectItemAtIndex(2);
+    let picked = calm_native::prompt::selected_choice(&popup, options.len());
+    println!("native_smoke: choice items={items} first={first:?} picked={picked:?}");
+    if items != 3 || first != Some(0) || picked != Some(2) {
+        fail("choice pop-up merged repeated titles or lost the selected index");
+    }
 }

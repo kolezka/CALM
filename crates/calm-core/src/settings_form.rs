@@ -11,15 +11,21 @@ use crate::browser_url::BrowserQueryMode;
 use crate::chrome::parse_hex_color;
 use crate::grid::GridKind;
 use crate::interaction::MoveModifier;
+use crate::keymap::{
+    ACTIONS, BROWSER_KEYS, Group, KeyError, RESTART_KEY, action, check_rebind, display_key,
+    effective_key, parse_key,
+};
 use crate::process_stats::{INTERVAL_MS_RANGE, MemoryUnit, clamp_interval_ms};
 use crate::scene::PanelId;
 use crate::settings::{
+    ARROW_MOVE_STEP_RANGE, ARROW_PAN_STEP_RANGE, DEFAULT_ARROW_MOVE_STEP, DEFAULT_ARROW_PAN_STEP,
     GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
     RestoreOnLaunch, SESSION_BACKUP_COUNT_RANGE, SESSION_DEBOUNCE_MS_RANGE, SNAP_EDGE_RANGE,
     SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
 };
 use crate::terminal_profile::{
-    CommandRestart, PALETTE_PRESETS, TerminalColors, TerminalColorsSetting, hex,
+    CommandRestart, DEFAULT_CONTENT_OPACITY, MIN_CONTENT_OPACITY, PALETTE_PRESETS, TerminalColors,
+    TerminalColorsSetting, hex,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,6 +50,11 @@ pub enum Control {
     Text {
         value: String,
         placeholder: String,
+    },
+    /// A recorded key binding. `None` is unbound; `default` is what Reset gives back.
+    Key {
+        value: Option<String>,
+        default: Option<String>,
     },
 }
 
@@ -80,6 +91,8 @@ pub enum FieldValue {
     Index(usize),
     Pressed,
     Text(String),
+    /// A recorded key, or `None` to unbind.
+    Key(Option<String>),
     /// Back to the inherited value.
     Reset,
 }
@@ -112,13 +125,24 @@ pub enum FormOutcome {
         rebuild: bool,
     },
     Command(FormCommand),
+    /// A recorded key was not taken; the row says why for a moment.
+    KeyRefused {
+        action: &'static str,
+        reason: KeyError,
+    },
 }
 
 pub(crate) fn checkbox(id: &str, label: &str, value: bool) -> Field {
     field(id, label, Control::Checkbox(value))
 }
 
-fn slider(id: &str, label: &str, value: f64, range: RangeInclusive<f64>, decimals: u8) -> Field {
+pub(crate) fn slider(
+    id: &str,
+    label: &str,
+    value: f64,
+    range: RangeInclusive<f64>,
+    decimals: u8,
+) -> Field {
     field(
         id,
         label,
@@ -129,6 +153,14 @@ fn slider(id: &str, label: &str, value: f64, range: RangeInclusive<f64>, decimal
             decimals,
         },
     )
+}
+
+/// A fade slider value, rounded and clamped like other sliders. NaN goes to the floor.
+pub(crate) fn content_opacity_value(value: f64) -> f64 {
+    if value.is_nan() {
+        return MIN_CONTENT_OPACITY;
+    }
+    ((value * 100.0).round() / 100.0).clamp(MIN_CONTENT_OPACITY, 1.0)
 }
 
 pub(crate) fn color(id: &str, label: &str, value: Rgb) -> Field {
@@ -161,6 +193,120 @@ pub(crate) fn section(title: &str, fields: Vec<Field>) -> Section {
         title: title.to_string(),
         fields,
     }
+}
+
+/// The stats checkbox names its key, whatever it is bound to.
+fn stats_label(settings: &Settings) -> String {
+    match action("developer.toggle_stats").and_then(|a| effective_key(&settings.keybindings, a)) {
+        Some(key) => format!("Show stats ({})", display_key(&key)),
+        None => "Show stats".to_string(),
+    }
+}
+
+/// Title of the last section, the Keys tab.
+pub const KEYS_SECTION: &str = "Keys";
+
+const GROUPS: [Group; 5] = [
+    Group::Canvas,
+    Group::Panels,
+    Group::View,
+    Group::Developer,
+    Group::App,
+];
+
+/// One row per action, grouped, then CALM's fixed keys.
+fn keys_fields(settings: &Settings) -> Vec<Field> {
+    let overrides = &settings.keybindings;
+    let mut fields = Vec::new();
+    for group in GROUPS {
+        let title = group.title();
+        fields.push(note(
+            &format!("keys.group.{}", title.to_lowercase()),
+            title,
+            String::new(),
+        ));
+        for spec in ACTIONS.iter().filter(|a| a.group == group) {
+            let value = effective_key(overrides, spec);
+            let mut row = field(
+                &format!("keys.{}", spec.id),
+                spec.label,
+                Control::Key {
+                    value,
+                    default: spec.default.map(str::to_string),
+                },
+            );
+            if overrides.contains_key(spec.id) {
+                row.state = FieldState::Set;
+            }
+            fields.push(row);
+        }
+    }
+    fields.push(note("keys.group.browser", "Browser (fixed)", String::new()));
+    for (index, (key, label)) in BROWSER_KEYS.iter().enumerate() {
+        fields.push(note(
+            &format!("keys.browser.{index}"),
+            label,
+            display_key(key),
+        ));
+    }
+    fields.push(note(
+        "keys.terminal.restart",
+        RESTART_KEY.1,
+        display_key(RESTART_KEY.0),
+    ));
+    fields
+}
+
+/// Records, clears or resets one action's key. A refused key changes nothing.
+fn apply_key_field(
+    settings: &mut Settings,
+    id: &str,
+    value: FieldValue,
+) -> Result<FormOutcome, String> {
+    let spec = action(id).ok_or_else(|| format!("unknown settings field \"keys.{id}\""))?;
+    let overrides = &mut settings.keybindings;
+    match value {
+        FieldValue::Key(Some(key)) => match check_rebind(overrides, spec, &key) {
+            Err(reason) => {
+                return Ok(FormOutcome::KeyRefused {
+                    action: spec.id,
+                    reason,
+                });
+            }
+            Ok(parsed) => {
+                let is_default = spec
+                    .default
+                    .and_then(|d| parse_key(d).ok())
+                    .is_some_and(|d| d == parsed);
+                if is_default {
+                    overrides.remove(spec.id);
+                } else {
+                    overrides.insert(spec.id.to_string(), Some(key));
+                }
+            }
+        },
+        FieldValue::Key(None) => {
+            if spec.default.is_some() {
+                overrides.insert(spec.id.to_string(), None);
+            } else {
+                overrides.remove(spec.id);
+            }
+        }
+        FieldValue::Reset => {
+            // The default may have been given to another row since; refuse like a recording.
+            if let Some(default) = spec.default
+                && let Err(reason) = check_rebind(overrides, spec, default)
+            {
+                return Ok(FormOutcome::KeyRefused {
+                    action: spec.id,
+                    reason,
+                });
+            }
+            overrides.remove(spec.id);
+        }
+        other => return Err(format!("settings field \"keys.{id}\" got {other:?}")),
+    }
+    Ok(FormOutcome::Changed { rebuild: true })
 }
 
 const GRADIENT_KINDS: [GradientKind; 2] = [GradientKind::Linear, GradientKind::Radial];
@@ -249,6 +395,20 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                     .position(|value| *value == settings.canvas.move_modifier)
                     .unwrap_or(0),
             ),
+            slider(
+                "canvas.arrow_pan_step",
+                "Arrow key pan step",
+                settings.canvas.arrow_pan_step,
+                ARROW_PAN_STEP_RANGE,
+                0,
+            ),
+            slider(
+                "canvas.arrow_move_step",
+                "Cmd+Option+arrow move step",
+                settings.canvas.arrow_move_step,
+                ARROW_MOVE_STEP_RANGE,
+                0,
+            ),
             checkbox("snap.enabled", "Snap panels", snap.enabled),
             choice("snap.grid", "Snap grid", steps, selected),
             slider(
@@ -317,6 +477,14 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                     .position(|mode| *mode == session.restore_on_launch)
                     .unwrap_or(0),
             ),
+            field(
+                "session.first_launch_preset",
+                "First launch preset",
+                Control::Text {
+                    value: session.first_launch_preset.clone(),
+                    placeholder: "empty canvas".into(),
+                },
+            ),
             checkbox("session.autosave", "Autosave", session.autosave),
             slider(
                 "session.debounce_ms",
@@ -353,7 +521,7 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
         vec![
             checkbox(
                 "developer.show_stats",
-                "Show stats (cmd-shift-f)",
+                &stats_label(settings),
                 context.show_stats,
             ),
             checkbox("developer.stats.show_fps", "FPS", stats.show_fps),
@@ -392,6 +560,7 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
             button("developer.reset", "", "Reset to Defaults"),
         ],
     ));
+    sections.push(section(KEYS_SECTION, keys_fields(settings)));
     sections
 }
 
@@ -533,6 +702,9 @@ pub fn apply_field(
     if let Some(rest) = id.strip_prefix("terminal.") {
         return apply_terminal_field(settings, rest, value);
     }
+    if let Some(rest) = id.strip_prefix("keys.") {
+        return apply_key_field(settings, rest, value);
+    }
     let background = &mut settings.background;
 
     if let Some(rest) = id.strip_prefix("gradient.stop.") {
@@ -672,6 +844,16 @@ pub fn apply_field(
             settings.canvas.click_empty_clears_focus = on;
             changed
         }
+        ("canvas.arrow_pan_step", FieldValue::Number(_)) => {
+            settings.canvas.arrow_pan_step =
+                number(ARROW_PAN_STEP_RANGE, 0).unwrap_or(DEFAULT_ARROW_PAN_STEP);
+            changed
+        }
+        ("canvas.arrow_move_step", FieldValue::Number(_)) => {
+            settings.canvas.arrow_move_step =
+                number(ARROW_MOVE_STEP_RANGE, 0).unwrap_or(DEFAULT_ARROW_MOVE_STEP);
+            changed
+        }
         ("canvas.move_modifier", FieldValue::Index(index)) => {
             settings.canvas.move_modifier =
                 *MoveModifier::ALL.get(index).ok_or("bad move modifier")?;
@@ -733,6 +915,13 @@ pub fn apply_field(
                 *RestoreOnLaunch::ALL.get(index).ok_or("bad restore mode")?;
             changed
         }
+        ("session.first_launch_preset", FieldValue::Text(name)) => {
+            if !name.is_empty() && !crate::layout::valid_layout_name(&name) {
+                return Err("bad session first launch preset".into());
+            }
+            settings.session.first_launch_preset = name;
+            changed
+        }
         ("session.autosave", FieldValue::Bool(on)) => {
             settings.session.autosave = on;
             changed
@@ -785,6 +974,8 @@ pub fn apply_field(
             | "grid.major_opacity"
             | "canvas.click_empty_clears_focus"
             | "canvas.move_modifier"
+            | "canvas.arrow_pan_step"
+            | "canvas.arrow_move_step"
             | "snap.enabled"
             | "snap.grid"
             | "snap.edge"
@@ -794,6 +985,7 @@ pub fn apply_field(
             | "panels.terminal_height"
             | "panels.preview_zoom"
             | "session.restore_on_launch"
+            | "session.first_launch_preset"
             | "session.autosave"
             | "session.debounce_ms"
             | "session.backup_count"
@@ -900,6 +1092,19 @@ fn terminal_fields(settings: &Settings) -> Vec<Field> {
             ));
         }
     }
+    fields.push(slider(
+        "terminal.content_opacity",
+        "Opacity",
+        defaults.content_opacity.unwrap_or(DEFAULT_CONTENT_OPACITY),
+        MIN_CONTENT_OPACITY..=1.0,
+        2,
+    ));
+    fields.push(note(
+        "terminal.background_opacity_note",
+        "",
+        "Background opacity: set background-opacity in your Ghostty config (Ghostty user config on)."
+            .to_string(),
+    ));
     if !terminal.profiles.is_empty() {
         let mut names = vec!["None".to_string()];
         names.extend(terminal.profiles.iter().map(|profile| profile.name.clone()));
@@ -1027,6 +1232,10 @@ fn apply_terminal_field(
                 colors.foreground = rgb.0;
             }
             set_colors(colors);
+            changed
+        }
+        ("content_opacity", FieldValue::Number(number)) => {
+            defaults.content_opacity = Some(content_opacity_value(number));
             changed
         }
         ("command_restart", FieldValue::Index(index)) => {
@@ -1185,6 +1394,7 @@ mod tests {
             Control::Choice { options, .. } => Some(FieldValue::Index(options.len() - 1)),
             Control::Button(_) => Some(FieldValue::Pressed),
             Control::Note(_) | Control::Text { .. } => None,
+            Control::Key { .. } => Some(FieldValue::Key(None)),
         }
     }
 
@@ -1350,6 +1560,59 @@ mod tests {
     }
 
     #[test]
+    fn global_terminal_tab_has_opacity_and_the_ghostty_note() {
+        let mut settings = Settings::default();
+        let form = settings_form(&settings, &FormContext::default());
+        let ids = ids(&form);
+        assert!(
+            ids.contains(&"terminal.content_opacity".to_string()),
+            "{ids:?}"
+        );
+        assert!(
+            ids.contains(&"terminal.background_opacity_note".to_string()),
+            "{ids:?}"
+        );
+        let fields: Vec<&Field> = form.iter().flat_map(|s| &s.fields).collect();
+        let slider = fields.iter().find(|f| f.id == "terminal.content_opacity");
+        assert_eq!(
+            slider.map(|f| (f.label.as_str(), &f.control)),
+            Some((
+                "Opacity",
+                &Control::Slider {
+                    min: MIN_CONTENT_OPACITY,
+                    max: 1.0,
+                    value: DEFAULT_CONTENT_OPACITY,
+                    decimals: 2,
+                }
+            ))
+        );
+        let note = fields
+            .iter()
+            .find(|f| f.id == "terminal.background_opacity_note");
+        assert_eq!(
+            note.map(|f| &f.control),
+            Some(&Control::Note(
+                "Background opacity: set background-opacity in your Ghostty config (Ghostty user config on)."
+                    .to_string()
+            ))
+        );
+        for (input, expected) in [(0.05, 0.2), (0.456, 0.46), (f64::NAN, 0.2), (3.0, 1.0)] {
+            let result = apply_field(
+                &mut settings,
+                "terminal.content_opacity",
+                FieldValue::Number(input),
+            );
+            assert!(result.is_ok(), "{input}: {result:?}");
+            assert_eq!(
+                settings.terminal.defaults.content_opacity,
+                Some(expected),
+                "{input}"
+            );
+            assert_eq!(settings.validate(), Ok(()));
+        }
+    }
+
+    #[test]
     fn sliders_clamp_and_round() {
         let mut settings = Settings::default();
         apply_field(&mut settings, "grid.opacity", FieldValue::Number(0.456)).unwrap();
@@ -1358,6 +1621,41 @@ mod tests {
         assert_eq!(settings.grid.spacing, 256.0);
         apply_field(&mut settings, "image.blur", FieldValue::Number(f64::NAN)).unwrap();
         assert_eq!(settings.background.image.filters.blur, 0.0);
+        apply_field(
+            &mut settings,
+            "canvas.arrow_pan_step",
+            FieldValue::Number(1.0),
+        )
+        .unwrap();
+        assert_eq!(settings.canvas.arrow_pan_step, 4.0);
+        apply_field(
+            &mut settings,
+            "canvas.arrow_pan_step",
+            FieldValue::Number(9999.0),
+        )
+        .unwrap();
+        assert_eq!(settings.canvas.arrow_pan_step, 400.0);
+        apply_field(
+            &mut settings,
+            "canvas.arrow_move_step",
+            FieldValue::Number(0.2),
+        )
+        .unwrap();
+        assert_eq!(settings.canvas.arrow_move_step, 1.0);
+        apply_field(
+            &mut settings,
+            "canvas.arrow_move_step",
+            FieldValue::Number(12.4),
+        )
+        .unwrap();
+        assert_eq!(settings.canvas.arrow_move_step, 12.0);
+        apply_field(
+            &mut settings,
+            "canvas.arrow_move_step",
+            FieldValue::Number(f64::NAN),
+        )
+        .unwrap();
+        assert_eq!(settings.canvas.arrow_move_step, 8.0);
         assert_eq!(settings.validate(), Ok(()));
     }
 
@@ -1403,6 +1701,7 @@ mod tests {
             session_ids,
             [
                 "session.restore_on_launch",
+                "session.first_launch_preset",
                 "session.autosave",
                 "session.debounce_ms",
                 "session.backup_count",
@@ -1515,5 +1814,235 @@ mod tests {
             apply_field(&mut settings, "gradient.stop.0.remove", FieldValue::Pressed).unwrap();
         }
         assert!(apply_field(&mut settings, "gradient.stop.0.remove", FieldValue::Pressed).is_err());
+    }
+
+    fn key_field<'a>(form: &'a [Section], id: &str) -> &'a Field {
+        form.iter()
+            .flat_map(|s| &s.fields)
+            .find(|f| f.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn keys_tab_lists_every_action_with_its_key() {
+        let form = settings_form(&Settings::default(), &FormContext::default());
+        let keys = form.iter().find(|s| s.title == KEYS_SECTION).unwrap();
+        assert_eq!(form.last().unwrap().title, KEYS_SECTION);
+        for a in crate::keymap::ACTIONS {
+            let field = key_field(&form, &format!("keys.{}", a.id));
+            assert_eq!(
+                field.control,
+                Control::Key {
+                    value: a.default.map(String::from),
+                    default: a.default.map(String::from)
+                }
+            );
+            assert_eq!(field.state, FieldState::Plain);
+        }
+        let browser: Vec<&Field> = keys
+            .fields
+            .iter()
+            .filter(|f| f.id.starts_with("keys.browser."))
+            .collect();
+        assert_eq!(browser.len(), 10);
+        assert!(
+            browser
+                .iter()
+                .all(|f| matches!(f.control, Control::Note(_)))
+        );
+        assert!(keys.fields.iter().any(|f| f.label == "Browser (fixed)"));
+        assert_eq!(
+            key_field(&form, "keys.terminal.restart").control,
+            Control::Note("↩".into())
+        );
+    }
+
+    #[test]
+    fn recording_a_used_key_is_refused_and_changes_nothing() {
+        let mut settings = Settings::default();
+        let outcome = apply_field(
+            &mut settings,
+            "keys.panel.delete",
+            FieldValue::Key(Some("cmd-=".into())),
+        );
+        assert_eq!(
+            outcome,
+            Ok(FormOutcome::KeyRefused {
+                action: "panel.delete",
+                reason: KeyError::UsedBy("Zoom in")
+            })
+        );
+        assert_eq!(KeyError::UsedBy("Zoom in").message(), "Used by Zoom in");
+        assert_eq!(settings, Settings::default());
+        let outcome = apply_field(
+            &mut settings,
+            "keys.panel.delete",
+            FieldValue::Key(Some("cmd-r".into())),
+        );
+        assert!(matches!(
+            outcome,
+            Ok(FormOutcome::KeyRefused {
+                reason: KeyError::Reserved("Reload"),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn recording_the_same_or_default_key_is_not_a_conflict() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            apply_field(
+                &mut settings,
+                "keys.panel.delete",
+                FieldValue::Key(Some("cmd-shift-backspace".into()))
+            ),
+            Ok(FormOutcome::Changed { rebuild: true })
+        );
+        assert!(settings.keybindings.is_empty());
+        apply_field(
+            &mut settings,
+            "keys.panel.delete",
+            FieldValue::Key(Some("cmd-d".into())),
+        )
+        .unwrap();
+        assert_eq!(
+            apply_field(
+                &mut settings,
+                "keys.panel.delete",
+                FieldValue::Key(Some("cmd-d".into()))
+            ),
+            Ok(FormOutcome::Changed { rebuild: true })
+        );
+        assert_eq!(
+            settings.keybindings.get("panel.delete"),
+            Some(&Some("cmd-d".into()))
+        );
+    }
+
+    #[test]
+    fn clear_and_reset_a_key() {
+        let mut settings = Settings::default();
+        apply_field(&mut settings, "keys.panel.delete", FieldValue::Key(None)).unwrap();
+        assert_eq!(settings.keybindings.get("panel.delete"), Some(&None));
+        let form = settings_form(&settings, &FormContext::default());
+        assert_eq!(key_field(&form, "keys.panel.delete").state, FieldState::Set);
+        apply_field(&mut settings, "keys.panel.delete", FieldValue::Reset).unwrap();
+        assert!(settings.keybindings.is_empty());
+        apply_field(&mut settings, "keys.app.about", FieldValue::Key(None)).unwrap();
+        assert!(
+            settings.keybindings.is_empty(),
+            "clearing an unbound default stores nothing"
+        );
+        assert!(apply_field(&mut settings, "keys.nope", FieldValue::Key(None)).is_err());
+        assert!(apply_field(&mut settings, "keys.panel.delete", FieldValue::Bool(true)).is_err());
+    }
+
+    #[test]
+    fn show_stats_label_follows_the_binding() {
+        let mut settings = Settings::default();
+        let label = |s: &Settings| {
+            key_field(
+                &settings_form(s, &FormContext::default()),
+                "developer.show_stats",
+            )
+            .label
+            .clone()
+        };
+        assert_eq!(label(&settings), "Show stats (⇧⌘F)");
+        settings
+            .keybindings
+            .insert("developer.toggle_stats".into(), Some("cmd-k".into()));
+        assert_eq!(label(&settings), "Show stats (⌘K)");
+        settings
+            .keybindings
+            .insert("developer.toggle_stats".into(), None);
+        assert_eq!(label(&settings), "Show stats");
+    }
+
+    #[test]
+    fn reset_refuses_a_default_another_row_now_uses() {
+        let mut settings = Settings::default();
+        apply_field(
+            &mut settings,
+            "keys.canvas.zoom_in",
+            FieldValue::Key(Some("cmd-k".into())),
+        )
+        .unwrap();
+        apply_field(
+            &mut settings,
+            "keys.panel.delete",
+            FieldValue::Key(Some("cmd-=".into())),
+        )
+        .unwrap();
+        let before = settings.clone();
+        let outcome = apply_field(&mut settings, "keys.canvas.zoom_in", FieldValue::Reset);
+        assert_eq!(
+            outcome,
+            Ok(FormOutcome::KeyRefused {
+                action: "canvas.zoom_in",
+                reason: KeyError::UsedBy("Delete focused panel")
+            })
+        );
+        assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn every_accepted_key_edit_leaves_settings_loadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let steps: [(&str, FieldValue); 6] = [
+            ("keys.canvas.zoom_in", FieldValue::Key(Some("cmd-k".into()))),
+            ("keys.panel.delete", FieldValue::Key(Some("cmd-=".into()))),
+            ("keys.canvas.zoom_in", FieldValue::Reset),
+            ("keys.panel.delete", FieldValue::Key(None)),
+            ("keys.canvas.zoom_in", FieldValue::Reset),
+            ("keys.panel.delete", FieldValue::Reset),
+        ];
+        let mut settings = Settings::default();
+        for (id, value) in steps {
+            if let Ok(FormOutcome::Changed { .. }) = apply_field(&mut settings, id, value.clone()) {
+                crate::settings::save_settings_to(&path, &settings).unwrap();
+                assert!(
+                    crate::settings::read_settings_from(&path).is_ok(),
+                    "{id} {value:?} saved a file that does not load"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod first_launch_preset_tests {
+    use super::*;
+    #[test]
+    fn first_launch_preset_form_shows_and_validates_text() {
+        let mut settings = Settings::default();
+        let sections = settings_form(&settings, &FormContext::default());
+        let session = sections.iter().find(|s| s.title == "Session").unwrap();
+        let field = session
+            .fields
+            .iter()
+            .find(|f| f.id == "session.first_launch_preset")
+            .expect("first launch field missing");
+        assert_eq!(field.label, "First launch preset");
+        assert_eq!(
+            field.control,
+            Control::Text {
+                value: "welcome".into(),
+                placeholder: "empty canvas".into()
+            }
+        );
+        apply_field(&mut settings, &field.id, FieldValue::Text("demo".into())).unwrap();
+        assert_eq!(settings.session.first_launch_preset, "demo");
+        assert!(
+            apply_field(
+                &mut settings,
+                &field.id,
+                FieldValue::Text("bad name".into())
+            )
+            .is_err()
+        );
+        assert_eq!(settings.session.first_launch_preset, "demo");
     }
 }

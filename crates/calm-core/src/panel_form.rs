@@ -7,15 +7,16 @@ use crate::scene::{Panel, PanelId, PanelKind, PanelOverrides, Scene, set_borderl
 use crate::settings::Settings;
 use crate::settings_form::{
     CHROME_SEED, Control, Field, FieldState, FieldValue, FormCommand, FormOutcome, Section, button,
-    checkbox, choice, color, field, note, rgb_of, section,
+    checkbox, choice, color, content_opacity_value, field, note, rgb_of, section, slider,
 };
 pub use crate::terminal_profile::ghostty_default_colors;
 use crate::terminal_profile::{
-    AppLayer, ColorSlot, PALETTE_PRESETS, PanelTerminalColors, TerminalColors, TerminalIcon, hex,
+    AppLayer, ColorSlot, DEFAULT_CONTENT_OPACITY, MIN_CONTENT_OPACITY, PALETTE_PRESETS,
+    PanelTerminalColors, TerminalColors, TerminalIcon, hex,
 };
 
 /// What the panel shows now, inherited and set fields alike.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PanelEffective {
     pub title: String,
     pub icon: Option<String>,
@@ -25,6 +26,7 @@ pub struct PanelEffective {
     pub live_colors_note: bool,
     /// The running terminal already shows a theme CALM applied. Set by the app.
     pub live_theme: bool,
+    pub content_opacity: f64,
 }
 
 /// `app` is an app panel's manifest layer, filled by the app; `None` for other panels.
@@ -60,6 +62,7 @@ pub fn panel_effective(
                 live_colors_note: resolved.colors.is_none(),
                 colors: resolved.colors,
                 live_theme: false,
+                content_opacity: resolved.content_opacity,
             }
         }
         _ => PanelEffective {
@@ -69,6 +72,7 @@ pub fn panel_effective(
             colors: None,
             live_colors_note: false,
             live_theme: false,
+            content_opacity: DEFAULT_CONTENT_OPACITY,
         },
     }
 }
@@ -223,6 +227,19 @@ pub fn panel_form(panel: &Panel, effective: &PanelEffective) -> Vec<Section> {
             ));
         }
         sections.push(section("Terminal colors", colors));
+        sections.push(section(
+            "Opacity",
+            vec![with_state(
+                slider(
+                    "panel.content_opacity",
+                    "Opacity",
+                    effective.content_opacity,
+                    MIN_CONTENT_OPACITY..=1.0,
+                    2,
+                ),
+                overrides.content_opacity.is_some(),
+            )],
+        ));
     }
 
     sections.push(section(
@@ -394,6 +411,16 @@ fn edit(panel: &mut Panel, field: &str, value: FieldValue) -> Result<FormOutcome
             };
             Ok(flipped(was, slot.is_some()))
         }
+        ("panel.content_opacity", value) => {
+            terminal_only()?;
+            let was = overrides.content_opacity.is_some();
+            overrides.content_opacity = match value {
+                FieldValue::Number(number) => Some(content_opacity_value(number)),
+                FieldValue::Reset => None,
+                _ => return Err(wrong()),
+            };
+            Ok(flipped(was, overrides.content_opacity.is_some()))
+        }
         ("panel.reset_all", FieldValue::Pressed) => {
             set_borderless(panel, false);
             panel.overrides = Default::default();
@@ -479,6 +506,96 @@ mod tests {
     }
 
     #[test]
+    fn panel_opacity_field_sets_clamps_and_resets() {
+        let settings = Settings::default();
+        let (mut scene, id) = scene_with(terminal());
+        let opacity = |scene: &Scene| scene.get(id).unwrap().overrides.content_opacity;
+        for (input, expected) in [(0.05, 0.2), (0.456, 0.46), (f64::NAN, 0.2), (7.0, 1.0)] {
+            let result = apply(
+                &mut scene,
+                id,
+                &settings,
+                "panel.content_opacity",
+                FieldValue::Number(input),
+            );
+            assert!(result.is_ok(), "{input}: {result:?}");
+            assert_eq!(opacity(&scene), Some(expected), "{input}");
+        }
+        let (sections, effective) = form(&scene, id, &settings);
+        assert_eq!(effective.content_opacity, 1.0);
+        let field = find(&sections, "panel.content_opacity");
+        assert_eq!(field.state, FieldState::Set);
+        assert_eq!(
+            field.control,
+            Control::Slider {
+                min: MIN_CONTENT_OPACITY,
+                max: 1.0,
+                value: 1.0,
+                decimals: 2,
+            }
+        );
+        let result = apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.content_opacity",
+            FieldValue::Reset,
+        );
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(opacity(&scene), None);
+        scene.get_mut(id).unwrap().overrides.content_opacity = Some(0.5);
+        let result = apply(
+            &mut scene,
+            id,
+            &settings,
+            "panel.reset_all",
+            FieldValue::Pressed,
+        );
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(opacity(&scene), None);
+    }
+
+    #[test]
+    fn panel_opacity_shows_the_inherited_value() {
+        let mut settings = Settings::default();
+        settings.terminal.defaults.content_opacity = Some(0.7);
+        let (scene, id) = scene_with(terminal());
+        let (sections, effective) = form(&scene, id, &settings);
+        assert_eq!(effective.content_opacity, 0.7);
+        let field = find(&sections, "panel.content_opacity");
+        assert_eq!(field.label, "Opacity");
+        assert_eq!(field.state, FieldState::Inherited);
+        assert!(matches!(field.control, Control::Slider { value, .. } if value == 0.7));
+        assert!(sections.iter().any(|section| {
+            section.title == "Opacity"
+                && section
+                    .fields
+                    .iter()
+                    .any(|f| f.id == "panel.content_opacity")
+        }));
+    }
+
+    #[test]
+    fn browser_form_has_no_opacity_field() {
+        let (mut scene, id) = scene_with(browser());
+        let (sections, effective) = form(&scene, id, &Settings::default());
+        assert!(!ids(&sections).contains(&"panel.content_opacity".to_string()));
+        assert_eq!(effective.content_opacity, DEFAULT_CONTENT_OPACITY);
+        let settings = Settings::default();
+        assert!(
+            apply(
+                &mut scene,
+                id,
+                &settings,
+                "panel.content_opacity",
+                FieldValue::Number(0.5),
+            )
+            .is_err()
+        );
+        assert_eq!(scene.get(id).unwrap().overrides.content_opacity, None);
+    }
+
+    #[test]
     fn browser_form_has_title_icon_borderless_only() {
         let (scene, id) = scene_with(browser());
         let (sections, _) = form(&scene, id, &Settings::default());
@@ -524,6 +641,7 @@ mod tests {
         .to_vec();
         expected.extend((0..16).map(|index| format!("panel.colors.{index}")));
         expected.extend((0..PALETTE_PRESETS.len()).map(|index| format!("panel.preset.{index}")));
+        expected.push("panel.content_opacity".into());
         expected.push("panel.reset_all".into());
         assert_eq!(ids(&sections), expected);
         assert_eq!(
@@ -1109,7 +1227,7 @@ mod tests {
             Control::Choice { options, .. } => Some(FieldValue::Index(options.len() - 1)),
             Control::Button(_) => Some(FieldValue::Pressed),
             Control::Text { .. } => Some(FieldValue::Text("Hi".into())),
-            Control::Note(_) => None,
+            Control::Note(_) | Control::Key { .. } => None,
         }
     }
 

@@ -13,12 +13,14 @@ use calm_core::chrome::{
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
-    Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool, ZoomStep,
+    ArrowDir, Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool,
+    ZoomStep,
 };
 use calm_core::join::{Axis, Join, JoinLayout, JoinedEdges, Side};
 use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
 use calm_core::menu::{self, MenuCommand, MenuItem};
-use calm_core::occlusion::native_visible_region;
+use calm_core::occlusion::{native_paint_region, native_visible_region};
+use calm_core::preset::{ClosingKind, ClosingPanel};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
@@ -42,7 +44,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, BorderStyle, Bounds, BoxShadow, ContentMask, Context, Corners, CursorStyle, DispatchPhase,
     Edges, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
-    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, ParentElement,
+    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
     PathBuilder, PinchEvent, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
     SharedString, Styled, Subscription, Task, TextAlign, TextRun, WeakEntity, Window, actions,
     canvas, div, fill, outline, point, px, quad, rgb, rgba, size,
@@ -63,7 +65,7 @@ use crate::grid_paint::{self, GridFrame, GridTextures};
 use crate::plugin_host::{self, BridgeSender, PluginPanel, Route};
 use crate::plugin_services::{self, ServiceCall};
 use crate::settings_menu::{self, SettingsState};
-use crate::terminal::{self, TerminalEvent, TerminalPanel};
+use crate::terminal::{TerminalEvent, TerminalPanel};
 use crate::terminal_profiles::{self, TerminalMeta};
 use crate::theme;
 use crate::tui_host::{self, CommandRun};
@@ -89,7 +91,23 @@ actions!(
         OpenPanelSettings,
         Cancel,
         ConfirmEnter,
-        ToggleFullscreen
+        ToggleFullscreen,
+        PanUp,
+        PanDown,
+        PanLeft,
+        PanRight,
+        PanUpFar,
+        PanDownFar,
+        PanLeftFar,
+        PanRightFar,
+        MovePanelUp,
+        MovePanelDown,
+        MovePanelLeft,
+        MovePanelRight,
+        MovePanelUpFar,
+        MovePanelDownFar,
+        MovePanelLeftFar,
+        MovePanelRightFar
     ]
 );
 
@@ -106,31 +124,6 @@ const STALE_LABEL: &str = "preview stale";
 const ZOOM_TO_FIT_MARGIN: f64 = 40.0;
 /// Added to the refresh timer so its repaint lands just after a snapshot is due.
 const PREVIEW_TIMER_MARGIN: Duration = Duration::from_millis(100);
-const CONFIRM_TITLE: &str = "Close? enter / esc";
-
-pub fn key_bindings() -> Vec<gpui::KeyBinding> {
-    use gpui::KeyBinding;
-    let ctx = Some(KEY_CONTEXT);
-    vec![
-        KeyBinding::new("cmd-=", ZoomIn, ctx),
-        KeyBinding::new("cmd--", ZoomOut, ctx),
-        KeyBinding::new("cmd-0", ZoomReset, ctx),
-        KeyBinding::new("cmd-shift-h", CenterOnOrigin, ctx),
-        KeyBinding::new("cmd-shift-0", FitAll, ctx),
-        KeyBinding::new("cmd-shift-backspace", DeletePanel, ctx),
-        KeyBinding::new("cmd-<", OpenPanelSettings, ctx),
-        KeyBinding::new("t", DrawTerminal, ctx),
-        KeyBinding::new("b", DrawBrowser, ctx),
-        KeyBinding::new("escape", Cancel, ctx),
-        KeyBinding::new("enter", ConfirmEnter, ctx),
-        KeyBinding::new("cmd-ctrl-f", ToggleFullscreen, ctx),
-        // A focused terminal gets these keys; canvas zoom and fullscreen still apply.
-        KeyBinding::new("t", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("b", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("escape", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("enter", NoAction, Some(terminal::KEY_CONTEXT)),
-    ]
-}
 
 /// Autosave state for one launch. Present only once autosave has started.
 struct Autosave {
@@ -257,6 +250,8 @@ pub struct CanvasView {
     pub(crate) content_monitor_error: Option<String>,
     pub(crate) content_move: ContentMove,
     pub(crate) content_press_mods: Option<calm_core::interaction::Modifiers>,
+    /// The close prompt, naming the keys Confirm and Cancel are bound to.
+    confirm_title: String,
 }
 
 impl CanvasView {
@@ -345,11 +340,13 @@ impl CanvasView {
             content_monitor_error: None,
             content_move: ContentMove::default(),
             content_press_mods: None,
+            confirm_title: calm_core::keymap::confirm_prompt(&Default::default()),
         }
     }
 
     /// Carries out a launch plan whose quarantine is done: builds its panels, then
     /// starts autosave to `session` on the result, so an untouched start never writes.
+    /// A plan with `save_at_start` (a first-launch preset) writes once right away.
     pub fn apply_restore_plan(
         &mut self,
         plan: RestorePlan,
@@ -362,14 +359,7 @@ impl CanvasView {
             notices.extend(self.restore_layout(layout, window, cx));
         }
         self.layout_name = plan.layout_name;
-        for notice in &notices {
-            eprintln!("calm: {notice}");
-        }
-        self.restore_notice = match notices.len() {
-            0 => None,
-            1 => notices.pop(),
-            n => Some(format!("{} (+{} more on stderr)", notices[0], n - 1)),
-        };
+        self.show_restore_notices(notices);
         self.autosave_gate = plan.autosave.launch_gate(self.autosave_gate);
         match plan.autosave {
             AutosaveStart::On => {
@@ -381,8 +371,82 @@ impl CanvasView {
             }
             AutosaveStart::Off(reason) => self.autosave_notice = Some(reason),
         }
+        // A first-launch preset becomes the session now, so the next launch restores it.
+        // With autosave off nothing is written.
+        if plan.save_at_start {
+            self.write_now(true);
+        }
         window.refresh();
         cx.notify();
+    }
+
+    /// Logs every restore notice and puts the first in the status pill.
+    fn show_restore_notices(&mut self, mut notices: Vec<String>) {
+        for notice in &notices {
+            eprintln!("calm: {notice}");
+        }
+        self.restore_notice = match notices.len() {
+            0 => None,
+            1 => notices.pop(),
+            n => Some(format!("{} (+{} more on stderr)", notices[0], n - 1)),
+        };
+    }
+
+    /// Replaces the canvas with `layout`: closes every panel through the confirmed close
+    /// path, ending its process, then builds the preset. Asks nothing; the caller has
+    /// already confirmed. The next autosave tick records the result.
+    pub fn apply_preset(
+        &mut self,
+        layout: LayoutFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut effects: Vec<Effect> = self
+            .scene
+            .panels
+            .iter()
+            .map(|panel| Effect::ClosePanel(panel.id))
+            .collect();
+        effects.push(Effect::ClearFocus);
+        // A pending inline close prompt would point at a panel that is gone.
+        self.input.confirming = None;
+        self.apply_effects(effects, window, cx);
+        let notices = self.restore_layout(layout, window, cx);
+        self.layout_name = None;
+        self.show_restore_notices(notices);
+        self.sync_native_order(cx);
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Whether closing `id` asks first when `panels.confirm_close` is on. A browser's
+    /// page is state too, so it confirms like a running terminal or app.
+    pub(crate) fn close_confirms(&self, id: PanelId, cx: &App) -> bool {
+        self.terminal(id)
+            .is_some_and(|terminal| terminal.read(cx).is_alive())
+            || self.browser(id).is_some()
+    }
+
+    /// Every panel a preset load would close, for its confirmation. A panel whose kind
+    /// this build cannot read is closed too but never confirms, so it is not counted.
+    pub(crate) fn closing_panels(&self, cx: &App) -> Vec<ClosingPanel> {
+        self.scene
+            .panels
+            .iter()
+            .filter_map(|panel| {
+                let kind = match &panel.kind {
+                    PanelKind::Terminal { app: Some(_), .. } => ClosingKind::App,
+                    PanelKind::Terminal { app: None, .. } => ClosingKind::Terminal,
+                    PanelKind::Browser { .. } => ClosingKind::Browser,
+                    PanelKind::Plugin { .. } => ClosingKind::Plugin,
+                    PanelKind::Unsupported { .. } => return None,
+                };
+                Some(ClosingPanel {
+                    kind,
+                    confirms: self.close_confirms(panel.id, cx),
+                })
+            })
+            .collect()
     }
 
     fn plugin_installed(&self, plugin_id: &str, tui: bool) -> bool {
@@ -680,9 +744,16 @@ impl CanvasView {
         }
     }
 
-    /// The quit hook: writes the latest scene now. Waits for a write in flight, and the
-    /// ordered writer drops that older write if it runs after this one.
+    /// The quit hook: writes the latest scene now, if it changed since the last save.
     pub fn save_on_quit(&mut self) {
+        self.write_now(false);
+    }
+
+    /// Writes the latest scene through the autosave writer, on this thread. Without
+    /// `force` it writes only an unsaved change. Waits for a write in flight, and the
+    /// ordered writer drops that older write if it runs after this one. Does nothing
+    /// when autosave is not running.
+    fn write_now(&mut self, force: bool) {
         let revision = self.scene.sync_revision();
         let Some(autosave) = self.autosave.as_mut() else {
             return;
@@ -691,7 +762,7 @@ impl CanvasView {
         // The live revision, not the clock's: a change since the last tick must be saved.
         let pending =
             autosave.clock.changed_since_submit(revision) || autosave.queue.in_flight().is_some();
-        if !queued && !pending {
+        if !force && !queued && !pending {
             return;
         }
         autosave.clock.submitted(revision);
@@ -724,6 +795,9 @@ impl CanvasView {
         self.input.click_empty_clears_focus =
             self.settings.settings.canvas.click_empty_clears_focus;
         self.input.move_modifier = self.settings.settings.canvas.move_modifier;
+        self.confirm_title = calm_core::keymap::confirm_prompt(&self.settings.settings.keybindings);
+        self.input.arrow_pan_step = self.settings.settings.canvas.arrow_pan_step;
+        self.input.arrow_move_step = self.settings.settings.canvas.arrow_move_step;
     }
 
     pub fn set_show_stats(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -788,12 +862,8 @@ impl CanvasView {
                     self.focus_handle.focus(window, cx);
                 }
                 Effect::ClosePanelRequested(id) => {
-                    // A browser's page is state too, so it confirms like a running terminal.
-                    let alive = self
-                        .terminal(id)
-                        .is_some_and(|terminal| terminal.read(cx).is_alive())
-                        || self.browser(id).is_some();
-                    let confirm = alive && self.settings.settings.panels.confirm_close;
+                    let confirm =
+                        self.close_confirms(id, cx) && self.settings.settings.panels.confirm_close;
                     queue.push_back(self.input.request_close(id, confirm));
                 }
                 Effect::ConfirmClose(_) => {
@@ -983,12 +1053,14 @@ impl CanvasView {
     /// The prompt is modal, so it runs in a task outside this update, like the menus.
     fn prompt_run_command(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
-            let answer = calm_native::prompt_text(
-                RUN_COMMAND_TITLE,
-                "",
-                RUN_COMMAND_NOTE,
-                RUN_COMMAND_PLACEHOLDER,
-            );
+            let answer = calm_native::prompt_text(&calm_native::TextPrompt {
+                title: RUN_COMMAND_TITLE,
+                message: "",
+                note: RUN_COMMAND_NOTE,
+                placeholder: RUN_COMMAND_PLACEHOLDER,
+                initial: "",
+                ok: "Run",
+            });
             let command = match answer {
                 Ok(Some(command)) => command,
                 Ok(None) => return,
@@ -1289,6 +1361,11 @@ impl CanvasView {
         // A restart replaces the native view without changing its panel id.
         self.native_order.clear();
         self.spawn_terminal(id, options, window, cx)?;
+        if let Some(terminal) = self.terminal(id) {
+            terminal.update(cx, |terminal, _| {
+                terminal.set_content_opacity(resolved.content_opacity)
+            });
+        }
         if supervised {
             let terminal = self
                 .terminal(id)
@@ -1380,6 +1457,12 @@ impl CanvasView {
         let applied = meta.applied_colors;
         let resolved = self.resolve_terminal(id);
         self.refresh_terminal_chrome(id, &resolved);
+        // Before the unchanged-colors return: opacity changes on its own.
+        if let Some(terminal) = self.terminal(id) {
+            terminal.update(cx, |terminal, _| {
+                terminal.set_content_opacity(resolved.content_opacity)
+            });
+        }
         let Some(colors) = resolved.colors.filter(|colors| Some(*colors) != applied) else {
             return;
         };
@@ -1641,6 +1724,7 @@ impl CanvasView {
             viewport: self.viewport.size,
             background,
             default_terminal_size,
+            keybindings: &self.settings.settings.keybindings,
             plugins: &self.installed_plugins,
         };
         let Some(route) = plugin_host::route(&mut host, &request) else {
@@ -1851,6 +1935,14 @@ impl CanvasView {
                     (terminal.frame_count(), terminal.is_alive())
                 })
             })
+            .collect()
+    }
+
+    /// The native view's opacity per terminal, in creation order.
+    pub fn terminal_opacities(&self, cx: &App) -> Vec<(PanelId, f64)> {
+        self.terminals
+            .iter()
+            .map(|(id, terminal)| (*id, terminal.read(cx).native_opacity()))
             .collect()
     }
 
@@ -2086,6 +2178,14 @@ impl CanvasView {
         window: &Window,
     ) -> Vec<(PanelId, TerminalContent)> {
         let joins = JoinLayout::compute(&self.scene.panels).joins;
+        let preview_below_zoom = self.settings.settings.panels.preview_below_zoom;
+        let live = live_terminals(
+            self.terminals.iter().map(|(id, _)| *id),
+            &self.scene,
+            viewport,
+            modal_open,
+            preview_below_zoom,
+        );
         let mut contents = Vec::new();
         for (id, browser) in &mut self.browsers {
             let Some(panel) = self.scene.get(*id) else {
@@ -2098,7 +2198,7 @@ impl CanvasView {
                 modal_open,
                 self.settings.settings.panels.preview_below_zoom,
             );
-            let placement = terminal_placement(panel, &self.scene, &joins, viewport);
+            let placement = terminal_placement(panel, &self.scene, &joins, viewport, &live);
             browser.apply_mode(mode, placement, window);
             match browser.mode() {
                 PanelMode::Live => contents.push((*id, TerminalContent::Live)),
@@ -2278,6 +2378,42 @@ impl CanvasView {
         self.input.key_zoom(step, center, &mut self.scene);
         window.refresh();
         cx.notify();
+    }
+
+    /// Arrow keys pan only while the canvas itself has the keyboard, as Escape does.
+    fn arrow_pan(
+        &mut self,
+        dir: ArrowDir,
+        large: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if calm_native::host_view_is_first_responder(window) != Some(true) {
+            return;
+        }
+        // False during a draw, drag or resize: a pan there would desync the preview.
+        if self.input.arrow_pan(dir, large, &mut self.scene) {
+            window.refresh();
+            cx.notify();
+        }
+    }
+
+    /// Cmd+Option+arrow moves the focused panel, without snapping.
+    fn arrow_move(
+        &mut self,
+        dir: ArrowDir,
+        large: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.focused else {
+            return;
+        };
+        // False during a draw, drag or resize: the drag would overwrite the move.
+        if self.input.arrow_move(id, dir, large, &mut self.scene) {
+            window.refresh();
+            cx.notify();
+        }
     }
 
     /// Jumps the camera: `CenterOnOrigin` keeps the zoom, `FitAll` frames every panel.
@@ -2466,6 +2602,7 @@ struct PaintSnapshot {
     state: Interaction,
     focused: Option<PanelId>,
     confirming: Option<PanelId>,
+    confirm_title: String,
     hover: Option<(PanelId, Option<ChromeButton>)>,
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Panels with a plugin web view.
@@ -2496,6 +2633,40 @@ enum TerminalContent {
     Preview(PreviewImage<Arc<RenderImage>>),
 }
 
+/// What a panel's content area holds, for the underfill decision.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ContentKind {
+    LiveTerminal,
+    TerminalPreviewImage,
+    TerminalPreviewEmpty,
+    Other,
+}
+
+impl ContentKind {
+    fn of(panel: &Panel, content: Option<&TerminalContent>) -> Self {
+        if !matches!(panel.kind, PanelKind::Terminal { .. }) {
+            return Self::Other;
+        }
+        match content {
+            Some(TerminalContent::Live) => Self::LiveTerminal,
+            Some(TerminalContent::Preview(PreviewImage::Fresh(_) | PreviewImage::Stale(_))) => {
+                Self::TerminalPreviewImage
+            }
+            Some(TerminalContent::Preview(PreviewImage::None)) => Self::TerminalPreviewEmpty,
+            None => Self::Other,
+        }
+    }
+}
+
+/// Whether CALM paints its own fill under the content. A terminal and its snapshot get
+/// none, so see-through pixels show the canvas and the panel below.
+fn paints_content_underfill(kind: ContentKind) -> bool {
+    !matches!(
+        kind,
+        ContentKind::LiveTerminal | ContentKind::TerminalPreviewImage
+    )
+}
+
 /// The mode a terminal panel gets this frame. Render and paint both use it, so input
 /// targets match what paint applies. `viewport` is the canvas area; only its size counts.
 fn terminal_mode(
@@ -2517,15 +2688,35 @@ fn terminal_mode(
     )
 }
 
+/// Terminals that are placed live this frame, by the same rule as `terminal_mode`.
+fn live_terminals(
+    ids: impl IntoIterator<Item = PanelId>,
+    scene: &Scene,
+    viewport: Rect,
+    modal_open: bool,
+    preview_below_zoom: f64,
+) -> HashSet<PanelId> {
+    ids.into_iter()
+        .filter(|id| {
+            scene.get(*id).is_some_and(|panel| {
+                terminal_mode(panel, scene, viewport, modal_open, preview_below_zoom)
+                    == PanelMode::Live
+            })
+        })
+        .collect()
+}
+
 /// A panel's native placement in window points, or `None` when minimized or off screen.
 /// `viewport` is the canvas area in window points. `visible` leaves out every panel in
 /// front and every join divider painted above it, since native views draw over all GPUI
-/// chrome.
+/// chrome. `paint` also keeps the content of a front terminal in `live`, which draws
+/// above this one and lets it show through.
 fn terminal_placement(
     panel: &Panel,
     scene: &Scene,
     joins: &[Join],
     viewport: Rect,
+    live: &HashSet<PanelId>,
 ) -> Option<NativePlacement> {
     if panel.minimized {
         return None;
@@ -2536,6 +2727,14 @@ fn terminal_placement(
     placement.container.origin.y += viewport.origin.y;
     placement.visible =
         native_visible_region(scene, joins, panel.id, placement.container, viewport.origin);
+    placement.paint = native_paint_region(
+        scene,
+        joins,
+        panel.id,
+        placement.container,
+        viewport.origin,
+        &|id| live.contains(&id),
+    );
     Some(placement)
 }
 
@@ -2680,8 +2879,19 @@ impl PaintSnapshot {
         });
     }
 
+    fn live_terminals(&self, viewport: Rect) -> HashSet<PanelId> {
+        live_terminals(
+            self.terminals.iter().map(|(id, _)| *id),
+            &self.scene,
+            viewport,
+            self.modal_open,
+            self.settings.panels.preview_below_zoom,
+        )
+    }
+
     /// Mode and placement per plugin panel, by the same rules as terminals.
     fn plugin_modes(&self, viewport: Rect) -> Vec<(PanelId, PanelMode, Option<NativePlacement>)> {
+        let live = self.live_terminals(viewport);
         self.plugin_ids
             .iter()
             .filter_map(|id| self.scene.get(*id))
@@ -2696,7 +2906,7 @@ impl PaintSnapshot {
                 (
                     panel.id,
                     mode,
-                    terminal_placement(panel, &self.scene, &self.joins.joins, viewport),
+                    terminal_placement(panel, &self.scene, &self.joins.joins, viewport, &live),
                 )
             })
             .collect()
@@ -2712,6 +2922,7 @@ impl PaintSnapshot {
     ) -> (HashMap<PanelId, TerminalContent>, bool) {
         let mut contents = HashMap::new();
         let mut changed = false;
+        let live = self.live_terminals(viewport);
         for (id, terminal) in &self.terminals {
             let Some(panel) = self.scene.get(*id) else {
                 continue;
@@ -2723,7 +2934,8 @@ impl PaintSnapshot {
                 self.modal_open,
                 self.settings.panels.preview_below_zoom,
             );
-            let placement = terminal_placement(panel, &self.scene, &self.joins.joins, viewport);
+            let placement =
+                terminal_placement(panel, &self.scene, &self.joins.joins, viewport, &live);
             let content = terminal.update(cx, |terminal, _| {
                 changed |= terminal.mode() != mode;
                 terminal.apply_mode(mode, placement, window);
@@ -2915,10 +3127,17 @@ impl PaintSnapshot {
             body_screen.size.width + outward(Side::Left) + outward(Side::Right),
             body_screen.size.height + outward(Side::Top) + outward(Side::Bottom),
         );
+        let see_through =
+            !panel.minimized && !paints_content_underfill(ContentKind::of(panel, content));
+        let ring_fill = if see_through {
+            rgba(0)
+        } else {
+            rgba(colors.bar)
+        };
         window.paint_quad(quad(
             to_bounds(ring, origin),
             panel_corners(panel, edges, zoom, BORDER_PX),
-            rgba(colors.bar),
+            ring_fill,
             Edges {
                 top: border(Side::Top),
                 right: border(Side::Right),
@@ -2941,10 +3160,28 @@ impl PaintSnapshot {
                 content_screen.size.width,
                 BORDER_PX,
             );
+            if see_through && bar_shown {
+                let bar = Rect::new(
+                    body_screen.origin.x,
+                    body_screen.origin.y,
+                    body_screen.size.width,
+                    content_screen.origin.y - body_screen.origin.y,
+                );
+                window.paint_quad(quad(
+                    to_bounds(bar, origin),
+                    panel_corners(panel, edges, zoom, 0.0),
+                    rgba(colors.bar),
+                    Edges::default(),
+                    rgba(0),
+                    BorderStyle::Solid,
+                ));
+            }
             if bar_shown {
                 window.paint_quad(fill(to_bounds(divider, origin), rgb(theme::PANEL_DIVIDER)));
             }
-            window.paint_quad(fill(content_bounds, rgb(theme::CONTENT_PLACEHOLDER)));
+            if !see_through {
+                window.paint_quad(fill(content_bounds, rgb(theme::CONTENT_PLACEHOLDER)));
+            }
             match content {
                 Some(TerminalContent::Preview(
                     PreviewImage::Fresh(image) | PreviewImage::Stale(image),
@@ -3019,7 +3256,7 @@ impl PaintSnapshot {
                     align: TextAlign::Left,
                     color: colors.title,
                 };
-                paint_text(CONFIRM_TITLE, line, look, zoom, origin, window, cx);
+                paint_text(&self.confirm_title, line, look, zoom, origin, window, cx);
             }
         }
         if !bar_shown || !details_visible(zoom) {
@@ -3130,7 +3367,7 @@ impl PaintSnapshot {
         }
         let noted;
         let title = match self.title_notes.get(&panel.id) {
-            _ if confirming => CONFIRM_TITLE,
+            _ if confirming => self.confirm_title.as_str(),
             Some(note) => {
                 noted = format!("{own_title} ({note})");
                 noted.as_str()
@@ -3321,6 +3558,7 @@ impl Render for CanvasView {
             state: self.input.state,
             focused: self.focused,
             confirming: self.input.confirming,
+            confirm_title: self.confirm_title.clone(),
             hover: self.hover,
             terminals: self.terminals.clone(),
             plugin_ids: self.plugin_panels.iter().map(|(id, _)| *id).collect(),
@@ -3343,6 +3581,13 @@ impl Render for CanvasView {
         // Only live terminals take input; a preview's clicks and scrolls go to the canvas.
         // The mode comes from the current scene, not last paint, so a target never
         // outlives the switch to `Preview`.
+        let live = live_terminals(
+            self.terminals.iter().map(|(id, _)| *id),
+            &self.scene,
+            viewport,
+            snapshot.modal_open,
+            snapshot.settings.panels.preview_below_zoom,
+        );
         let placements: Vec<Option<NativePlacement>> = self
             .terminals
             .iter()
@@ -3359,7 +3604,13 @@ impl Render for CanvasView {
                         ) == PanelMode::Live
                     })
                     .and_then(|panel| {
-                        terminal_placement(panel, &self.scene, &snapshot.joins.joins, viewport)
+                        terminal_placement(
+                            panel,
+                            &self.scene,
+                            &snapshot.joins.joins,
+                            viewport,
+                            &live,
+                        )
                     })
             })
             .collect();
@@ -3432,6 +3683,54 @@ impl Render for CanvasView {
                 cx.listener(|view, _: &ConfirmEnter, window, cx| view.confirm_enter(window, cx)),
             )
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
+            .on_action(cx.listener(|view, _: &PanUp, window, cx| {
+                view.arrow_pan(ArrowDir::Up, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelUp, window, cx| {
+                view.arrow_move(ArrowDir::Up, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanUpFar, window, cx| {
+                view.arrow_pan(ArrowDir::Up, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelUpFar, window, cx| {
+                view.arrow_move(ArrowDir::Up, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanDown, window, cx| {
+                view.arrow_pan(ArrowDir::Down, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelDown, window, cx| {
+                view.arrow_move(ArrowDir::Down, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanDownFar, window, cx| {
+                view.arrow_pan(ArrowDir::Down, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelDownFar, window, cx| {
+                view.arrow_move(ArrowDir::Down, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanLeft, window, cx| {
+                view.arrow_pan(ArrowDir::Left, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelLeft, window, cx| {
+                view.arrow_move(ArrowDir::Left, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanLeftFar, window, cx| {
+                view.arrow_pan(ArrowDir::Left, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelLeftFar, window, cx| {
+                view.arrow_move(ArrowDir::Left, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanRight, window, cx| {
+                view.arrow_pan(ArrowDir::Right, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelRight, window, cx| {
+                view.arrow_move(ArrowDir::Right, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanRightFar, window, cx| {
+                view.arrow_pan(ArrowDir::Right, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelRightFar, window, cx| {
+                view.arrow_move(ArrowDir::Right, true, window, cx)
+            }))
             .on_action(cx.listener(|view, _: &ToggleFps, window, cx| {
                 view.set_show_stats(!view.show_stats, window, cx)
             }))
@@ -3522,62 +3821,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn panel_settings_shortcut_is_available_with_terminal_focus() {
-        // macOS GPUI represents US cmd-shift-comma as cmd-<.
-        let keystroke = gpui::Keystroke::parse("cmd-<").unwrap();
-        let bindings = key_bindings();
-        assert!(
-            !bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&NoAction)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
-            }),
-            "terminal context must not block the panel settings shortcut"
-        );
-        assert!(
-            bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&OpenPanelSettings)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
-            }),
-            "canvas must bind cmd-< to OpenPanelSettings"
-        );
-        assert!(
-            !settings_menu::key_bindings().iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&settings_menu::OpenSettings)
-            }),
-            "panel settings shortcut must not also open global settings"
-        );
+    fn only_terminals_with_content_skip_the_underfill() {
+        assert!(!paints_content_underfill(ContentKind::LiveTerminal));
+        assert!(!paints_content_underfill(ContentKind::TerminalPreviewImage));
+        assert!(paints_content_underfill(ContentKind::TerminalPreviewEmpty));
+        assert!(paints_content_underfill(ContentKind::Other));
     }
 
     #[test]
-    fn delete_panel_shortcut_is_available_with_terminal_focus() {
-        let keystroke = gpui::Keystroke::parse("cmd-shift-backspace").unwrap();
-        let bindings = key_bindings();
-        assert!(
-            !bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&NoAction)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
-            }),
-            "terminal context must not block the delete shortcut"
+    fn confirm_title_names_the_bound_keys() {
+        let mut settings = calm_core::settings::Settings::default();
+        assert_eq!(
+            calm_core::keymap::confirm_prompt(&settings.keybindings),
+            "Close? enter / esc"
         );
-        assert!(
-            bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&DeletePanel)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
-            }),
-            "canvas must bind cmd-shift-backspace to DeletePanel"
+        settings
+            .keybindings
+            .insert("canvas.confirm".into(), Some("y".into()));
+        assert_eq!(
+            calm_core::keymap::confirm_prompt(&settings.keybindings),
+            "Close? y / esc"
         );
     }
 

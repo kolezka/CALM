@@ -12,8 +12,11 @@ pub struct NativePlacement {
     pub logical_size: Size,
     pub zoom: f64,
     /// The parts of `container` not under a panel in front, disjoint, same space as
-    /// `container`. `place_native` sets `[container]`; see `occlusion`.
+    /// `container`. The input region. `place_native` sets `[container]`; see `occlusion`.
     pub visible: Vec<Rect>,
+    /// The parts of `container` that paint, same space as `visible`. Wider than `visible`
+    /// under a live terminal's content. `place_native` sets `[container]`.
+    pub paint: Vec<Rect>,
 }
 
 /// Returns `None` when no part of the content is inside the viewport.
@@ -33,6 +36,7 @@ pub fn place_native(
         logical_size: content_world.size,
         zoom: camera.zoom,
         visible: vec![container],
+        paint: vec![container],
     })
 }
 
@@ -77,6 +81,7 @@ mod tests {
         assert_eq!(placement.logical_size, Size::new(400.0, 300.0));
         assert_eq!(placement.zoom, 1.0);
         assert_eq!(placement.visible, vec![placement.container]);
+        assert_eq!(placement.paint, vec![placement.container]);
     }
 
     #[test]

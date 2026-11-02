@@ -30,6 +30,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
 cp "$target_dir/release/calm-app" "$app/Contents/MacOS/calm-app"
 cp "$repo_root/assets/brand/CALM.icns" "$app/Contents/Resources/CALM.icns"
+cp "$repo_root/LICENSE" "$repo_root/THIRD_PARTY_NOTICES" "$app/Contents/Resources/"
 # First-party plugins ship in Resources/plugins, where the app looks for built-ins.
 mkdir -p "$app/Contents/Resources/plugins"
 for manifest in "$repo_root"/plugins/*/calm-plugin.json; do
@@ -41,6 +42,12 @@ for manifest in "$repo_root"/plugins/*/calm-plugin.json; do
     rsync -a --exclude node_modules --exclude src --exclude '*.lock' \
         --exclude package.json --exclude tsconfig.json \
         "$plugin_dir/" "$app/Contents/Resources/plugins/$name/"
+done
+
+mkdir -p "$app/Contents/Resources/presets"
+for preset in "$repo_root"/presets/*.json; do
+    [[ -f "$preset" ]] || continue
+    cp "$preset" "$app/Contents/Resources/presets/"
 done
 
 sed "s/@VERSION@/$version/g" "$repo_root/scripts/Info.plist.template" >"$app/Contents/Info.plist"

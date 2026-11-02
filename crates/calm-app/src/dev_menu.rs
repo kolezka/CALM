@@ -1,31 +1,28 @@
-//! Menu bar: the app menu with About and Quit, the View menu with camera jumps and the Developer menu
-//! with the FPS readout toggle.
+//! Menu bar: the app menu with About and Quit, the File menu with presets, the View menu
+//! with camera jumps and the Developer menu with the FPS readout toggle.
 
 use calm_core::frame_stats::FrameStats;
-use gpui::{App, KeyBinding, Menu, MenuItem, actions};
+use gpui::{App, Menu, MenuItem, actions};
 
 use crate::canvas_view::{CenterOnOrigin, FitAll};
+use crate::preset_menu::{LoadPreset, SavePreset, ShowWelcome};
 
 actions!(calm, [ToggleFps, ResetFps, Quit, About]);
 
 /// The About panel credits line.
 pub const ABOUT_CREDITS: &str = "Infinite canvas for terminals, browsers and plugins.";
 
-pub fn key_bindings() -> Vec<KeyBinding> {
-    // No context, so the shortcuts also work while a terminal has focus.
-    vec![
-        KeyBinding::new("cmd-shift-f", ToggleFps, None),
-        KeyBinding::new("cmd-q", Quit, None),
-    ]
-}
-
-/// The first menu becomes the app menu on macOS, so View and Developer come after it.
+/// The first menu becomes the app menu on macOS, so File, View and Developer come after it.
 pub fn menus(show_stats: bool) -> Vec<Menu> {
     vec![
         Menu::new("CALM").items([
             MenuItem::action("About CALM", About),
             MenuItem::separator(),
             MenuItem::action("Quit CALM", Quit),
+        ]),
+        Menu::new("File").items([
+            MenuItem::action("Save Preset…", SavePreset),
+            MenuItem::action("Load Preset…", LoadPreset),
         ]),
         Menu::new("View").items([
             MenuItem::action("Center on Origin", CenterOnOrigin),
@@ -34,6 +31,8 @@ pub fn menus(show_stats: bool) -> Vec<Menu> {
         Menu::new("Developer").items([
             MenuItem::action("Show Stats", ToggleFps).checked(show_stats),
             MenuItem::action("Reset FPS Stats", ResetFps),
+            MenuItem::separator(),
+            MenuItem::action("Show Welcome Screen", ShowWelcome),
         ]),
     ]
 }
