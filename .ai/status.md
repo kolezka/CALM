@@ -253,6 +253,8 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
+- `fix/settings-above-canvas`, no PR yet: global and panel Settings windows stay above the
+  canvas as its child windows. Smoke asserts it; not checked by eye in fullscreen yet.
 - `feat/panel-settings`, no PR yet: per-panel settings. Settings… in every panel menu opens
   one native Settings window per panel (tabs, each field inherited or set with Reset to
   global), saved as the panel's `overrides`: title, icon (built-in or an image copied to

@@ -20,9 +20,11 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor, NSColorSpace,
     NSColorWell, NSControl, NSFont, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSScrollView,
-    NSSlider, NSTabView, NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSSlider, NSTabView, NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowOrderingMode,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{NSInteger, NSPoint, NSRect, NSSize, NSString};
+use raw_window_handle::HasWindowHandle;
 
 use crate::NativeError;
 
@@ -536,9 +538,49 @@ impl SettingsWindow {
         })
     }
 
-    pub fn show(&self) {
+    /// Shows the window as a child of `parent`, so it stays above the canvas until hidden.
+    /// Without a parent it still opens, but the canvas can cover it.
+    pub fn show_above(&self, parent: &impl HasWindowHandle) {
+        match crate::content_gesture::ns_window(parent) {
+            Ok(parent) => {
+                if self.window.parentWindow().as_deref() != Some(&*parent) {
+                    self.detach_from_parent();
+                    // SAFETY: both windows are live and retained, and we are on the main
+                    // thread (`self.mtm`). A child window joins its parent's Space too.
+                    unsafe {
+                        parent.addChildWindow_ordered(&self.window, NSWindowOrderingMode::Above)
+                    };
+                }
+            }
+            Err(err) => eprintln!("calm: settings window has no parent: {err}"),
+        }
         self.window.makeKeyAndOrderFront(None);
         NSApplication::sharedApplication(self.mtm).activate();
+    }
+
+    /// True while AppKit keeps this window above `parent`, for the smoke.
+    pub fn is_child_of(&self, parent: &impl HasWindowHandle) -> bool {
+        let Ok(parent) = crate::content_gesture::ns_window(parent) else {
+            return false;
+        };
+        self.window.parentWindow().as_deref() == Some(&*parent)
+    }
+
+    /// Closes as the title bar button does, for the smoke.
+    pub fn perform_close(&self) {
+        self.window.performClose(None);
+    }
+
+    /// True while the window has any parent, for the smoke.
+    pub fn has_parent(&self) -> bool {
+        self.window.parentWindow().is_some()
+    }
+
+    /// A hidden child would come back whenever its parent is ordered front.
+    fn detach_from_parent(&self) {
+        if let Some(parent) = self.window.parentWindow() {
+            parent.removeChildWindow(&self.window);
+        }
     }
 
     /// AppKit's identity for the window, stable while it exists.
@@ -547,12 +589,14 @@ impl SettingsWindow {
     }
 
     pub fn hide(&self) {
+        self.detach_from_parent();
         self.window.orderOut(None);
     }
 
     /// Closes the window for good, for a window whose subject is gone.
     pub fn close(&self) {
         self.window.makeFirstResponder(None);
+        self.detach_from_parent();
         self.window.close();
     }
 
