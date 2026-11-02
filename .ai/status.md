@@ -262,6 +262,11 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
+- `fix/terminal-env-scrub`: CALM unsets the launching terminal's identity (`ITERM_*`,
+  `TERM_PROGRAM*`, `LC_TERMINAL*`, `TMUX`, `TMUX_PANE`, ...) at startup, so Claude Code agent teams no
+  longer split the iTerm2 tab CALM runs in. Smoke `terminal_env` checks a `std::process`
+  child; that a Ghostty surface child sees the scrubbed env is inferred, not yet observed.
+
 - PR #62 (`docs/keybindings-spec`): every key binding is a setting with a Keys tab in
   Settings, recorded by pressing the key, applied live. Smoke step `keybindings` prints
   `smoke: keybindings override=true old_gone=true restored=true recorder_stops=true tab_stops=true`. By eye,

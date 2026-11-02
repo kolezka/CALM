@@ -804,3 +804,23 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
   saved terminals with a `command`. Their exit now shows "[calm] <name> exited with code N"
   and follows `terminal.command_restart`. Plugin API kind `tui` and `PanelInfo.kind` "tui"
   are unchanged.
+
+## Launching terminal's env is scrubbed (2026-11-02, `fix/terminal-env-scrub`)
+
+- **`main` unsets the launching terminal's identity before CALM starts any thread.** The
+  function is `unsafe` and its caller owns that guarantee. GPUI's pre-main constructors only
+  register classes (source-read in review); system framework start-up is not audited. Started from
+  iTerm2, every canvas terminal inherited `ITERM_SESSION_ID` and `LC_TERMINAL`. Claude Code
+  2.1.316 treats `ITERM_SESSION_ID` alone as "inside iTerm2", so agent teams split the iTerm2
+  tab CALM was launched from. `TERM_PROGRAM` did not leak into Ghostty terminals: the
+  gpui-libghostty shim sets it (`gpui-ghostty`), and since #67 CALM sets `ghostty`. Other
+  children (`gh`, `process.exec`, plugin helpers) did get `TERM_PROGRAM=iTerm.app`. The list is in
+  `calm_core::host_env` (iTerm2, Terminal.app, tmux, screen, kitty, WezTerm, Alacritty,
+  Zellij); `GHOSTTY_*`, `TERM`, `LC_ALL`/`LC_CTYPE` stay.
+- Hard-coded on purpose: it is a correctness fix, not a look or behavior choice. A user who
+  wants one of these names in a terminal can set it in a terminal profile's env.
+- Done in CALM's own environment, not per spawn: `gpui-libghostty` 0.3.1 has no env option,
+  and one place then covers every child (terminals, TUI apps, plugins, `gh`) instead of each
+  argv builder growing `env -u` flags.
+- Smoke step `terminal_env` spawns `/usr/bin/env` and fails on any listed name. It only
+  discriminates when smoke runs from a terminal that sets them (iTerm2, tmux).
