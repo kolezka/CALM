@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-02-presets-and-welcome-design.md`
 
-**Base:** PR #63 (`feat: TUI panels extend terminals, add Run Command`), branch head `ba4834a`, 2026-11-02. Start only after #63 is merged to `main`, then rebase this branch on it. Line numbers below are from `ba4834a`; recheck them after the rebase. What this plan uses from #63:
+**Base:** `main` at `d21a7c9` (PR #63 `feat: TUI panels extend terminals, add Run Command`, merged 2026-11-02; it also carries #60's shortcuts). Line numbers below were taken at #63's head `ba4834a` and can be off by a few lines; find each spot by the symbol named next to it. What this plan uses from #63:
 
 - `PanelKind::Tui` is gone. A TUI app panel is `PanelKind::Terminal { app: Some(TerminalApp { plugin_id, .. }), .. }`; build one with `PanelKind::app_terminal(id, version)`.
 - `crates/calm-native/src/prompt.rs` has `prompt_text(title, message, note, placeholder) -> Result<Option<String>, NativeError>` (Run and Cancel buttons) and `prompt_value`. Task 5 extends this file; it does not add a second prompt.
@@ -202,7 +202,7 @@ Flows (each runs in `cx.spawn_in` like `prompt_run_command`, never inside an upd
 - Modify: `crates/calm-core/src/lib.rs`, `crates/calm-app/src/canvas_view.rs:109-128` (test only)
 
 **Interfaces:**
-- Produces: `pub struct KeyHelp { pub keys: &'static str, pub action: &'static str, pub binding: Option<&'static str> }` and `pub const KEY_HELP: &[KeyHelp]`. `binding` is the GPUI keystroke text for real bindings (`"cmd-shift-h"`) and `None` for gestures (`"Space+drag"`, `"Pinch"`). Entries, in order, from `CLAUDE.md` "In the app": t then drag (terminal), b then drag (browser), right-click (menu), Cmd+drag on content (move panel), Space+drag or middle-drag (pan), Pinch or Cmd+scroll (zoom), cmd-= / cmd-- / cmd-0 (zoom in, out, reset), cmd-shift-h (center origin), cmd-shift-0 (fit all), cmd-ctrl-f (fullscreen), cmd-shift-f (stats), alt while dragging (no snapping), cmd-, (Settings), cmd-q (quit). Escape and Enter are internal and not listed.
+- Produces: `pub struct KeyHelp { pub keys: &'static str, pub action: &'static str, pub binding: Option<&'static str> }` and `pub const KEY_HELP: &[KeyHelp]`. `binding` is the GPUI keystroke text for real bindings (`"cmd-shift-h"`) and `None` for gestures (`"Space+drag"`, `"Pinch"`). Entries, in order, from `CLAUDE.md` "In the app": t then drag (terminal), b then drag (browser), right-click (menu), Cmd+drag on content (move panel), Space+drag or middle-drag (pan), Pinch or Cmd+scroll (zoom), cmd-= / cmd-- / cmd-0 (zoom in, out, reset), cmd-shift-h (center origin), cmd-shift-0 (fit all), cmd-shift-backspace (delete the focused panel), cmd-shift-, (the focused panel's Settings; registered as `cmd-<`, so `binding: Some("cmd-<")` with `keys: "cmd-shift-,"`), cmd-ctrl-f (fullscreen), cmd-shift-f (stats), alt while dragging (no snapping), cmd-, (Settings), cmd-q (quit). Escape and Enter are internal and not listed.
 - `plugins/calm-keys/keys.json`: `[{"keys": "...", "action": "..."}]` generated from `KEY_HELP`.
 
 - [ ] **Step 1: Write the failing tests:**

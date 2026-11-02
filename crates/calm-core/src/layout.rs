@@ -555,6 +555,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(0.0, 0.0, MIN_PANEL_SIZE.width, MIN_PANEL_SIZE.height),
         );
@@ -577,6 +578,7 @@ mod tests {
                 command: Some("htop".into()),
                 cwd: Some(PathBuf::from("/tmp")),
                 profile: None,
+                app: None,
             },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
@@ -639,6 +641,7 @@ mod tests {
                 command: Some("zsh".into()),
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
@@ -1139,6 +1142,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
@@ -1423,6 +1427,7 @@ mod tests {
                     command: command.map(String::from),
                     cwd: cwd.map(PathBuf::from),
                     profile: None,
+                    app: None,
                 },
                 Rect::new(index as f64 * 500.0, 0.0, 400.0, 300.0),
             );
@@ -1453,10 +1458,7 @@ mod tests {
             Rect::new(-500.0, 0.0, 420.0, 300.0),
         );
         let tui = scene.add(
-            PanelKind::Tui {
-                plugin_id: "top-example".into(),
-                plugin_version: Some("1.2.3".into()),
-            },
+            PanelKind::app_terminal("top-example", Some("1.2.3".into())),
             Rect::new(-500.0, 400.0, 480.0, 320.0),
         );
         if let Some(panel) = scene.get_mut(tui) {
@@ -1495,6 +1497,7 @@ mod tests {
                     command: None,
                     cwd: None,
                     profile: None,
+                    app: None,
                 },
                 Rect::new(0.0, 0.0, 400.0, 300.0),
             );
@@ -1537,10 +1540,7 @@ mod tests {
             )
             .unwrap();
             let loaded = load_layout_from(dir.path(), &format!("tui{version}")).unwrap();
-            let expected = PanelKind::Tui {
-                plugin_id: "top-example".into(),
-                plugin_version: None,
-            };
+            let expected = PanelKind::app_terminal("top-example", None);
             assert_eq!(loaded.panels[0].kind, expected, "version {version}");
             let saved = serde_json::to_value(&loaded.panels[0].kind).unwrap();
             assert_eq!(
@@ -1581,16 +1581,14 @@ mod tests {
                     command: Some("htop".into()),
                     cwd: Some(PathBuf::from("/tmp")),
                     profile: None,
+                    app: None,
                 },
                 &PanelKind::Plugin {
                     plugin_id: "github-prs".into(),
                     plugin_version: None,
                     settings: serde_json::json!({"repos": ["a/b"]}),
                 },
-                &PanelKind::Tui {
-                    plugin_id: "top-example".into(),
-                    plugin_version: None,
-                },
+                &PanelKind::app_terminal("top-example", None),
                 &PanelKind::Browser {
                     url: "https://example.com".into(),
                     page_zoom: None,
@@ -1793,6 +1791,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
@@ -1843,6 +1842,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             },
             Rect::new(0.0, 0.0, 400.0, 300.0),
         );
@@ -1933,6 +1933,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: None,
+                app: None,
             }
         );
     }

@@ -51,8 +51,10 @@ failure. Machine load was ruled out: `main` failed at load 17 too.
 
 - A run that hit a flake did not pass. Do not report it as rc=0.
 - Before blaming a branch, run the same smoke on `origin/main` as a control.
-- Unconfirmed: a TUI "second exit not reported after restart" failure, seen on branches,
-  0 of 1 runs on `main`.
+- A TUI or typed command exit that is never reported is a real failure, not a flake. It was
+  the `tui-exit` flake, and likely the unconfirmed "second exit not reported after
+  restart": a terminal's tick loop started on its first paint. Since `feat/tui-extends-terminal` it
+  starts at spawn.
 
 Failures seen before (`.ai/backlog.md` item 6). `crates/calm-app/src/smoke_runner.rs`
 (`KNOWN_FLAKES`) matches failure messages against this list; keep the two in step.
@@ -60,7 +62,6 @@ Checked in this order:
 
 - `stats-pill`: "stats: sampler has CPU but the status bar does not show it".
 - `few-frames`: "only N frames with show_stats on".
-- `tui-exit`: "tui: ran=... status=...", the TUI exit waits timing out.
 - `preview-cadence`: "preview refresh outside 1..=3 snapshots".
 - `window-hidden`: any other message with `window_visible=Some(false)`.
 

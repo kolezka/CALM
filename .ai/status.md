@@ -266,6 +266,18 @@ Open questions: `.ai/open-questions.md`.
   profile. Policy is unit tested (`calm_core::gesture`, `calm-app` `content_move`); the
   AppKit monitor is tested on its state machine only.
 - No PR yet: a Linux port plan.
+- `feat/tui-extends-terminal`, PR #63, not merged: a TUI app is a terminal with an app
+  attached (`PanelKind::app_terminal`, `.app()`), still saved as `type=tui`. One spawn,
+  refresh, recolor and exit path for shells, typed commands and apps. App panels get the
+  Settings sections "Title bar colors" and "Terminal colors" with presets, and inherit
+  defaults and profile env. Looks stack defaults, profile, manifest, panel overrides. Add >
+  Run Command… (after Terminal and Terminal Profiles) asks for a command in an NSAlert and
+  opens a terminal running it in the login shell, supervised, titled `{name}`, saved in the
+  session and run again on restore. `terminal.command_restart` (`never`, `on_exit`,
+  `prompt`, default `prompt`) sets what a typed command does on exit. A terminal's tick loop
+  starts at spawn, which removes the `tui-exit` smoke flake. Core rules are unit tested. The
+  app-side spawn, exit and restart of typed commands and app recolor are checked by the smoke
+  only; the NSAlert prompt is never driven by agents (manual pass owed).
 - `fix/native-occlusion`, PR #54: a back panel's native view (Ghostty, WKWebView, the
   browser's address bar, a plugin page) no longer covers the title bar and ring of a panel
   in front of it. `calm_core::occlusion` computes the visible part of each native container
@@ -338,6 +350,11 @@ Open questions: `.ai/open-questions.md`.
   web views.
 - TUI apps: a real `slk`, fish as login shell, the glyph and image icon at all zooms, the
   accent ring and terminal colors.
+- Run Command (`feat/tui-extends-terminal`): Add > Run Command…, type `htop`, Run; quit
+  htop with `q`, check the "[calm] htop exited with code 0" line, press Enter and see it
+  start again. Cancel and blank input open nothing. Open a Top panel's Settings… and change
+  its title bar, accent and terminal colors; the panel recolors live. Reset on the accent
+  brings back the manifest's orange (`#ff8a3d`), not the profile's accent.
 - Terminals: mouse selection at zoom 1.0 and 1.7, cmd-v paste, Polish letters through the
   input method, resize reflow, Enter to confirm close, pinch feel, `htop`.
 - Terminal profiles: the live recolor, the profile submenu, the Settings > Terminal controls.

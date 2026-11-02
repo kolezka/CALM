@@ -112,8 +112,16 @@ impl TerminalPanel {
                 host,
             };
             terminal.sync_focus(window);
+            // From spawn, not first paint: a window that does not paint must still see
+            // the process exit.
+            terminal.start_ticking(cx);
             terminal
         }))
+    }
+
+    /// Whether the tick loop that services the surface and reports the exit runs.
+    pub fn is_ticking(&self) -> bool {
+        self.tick_task.is_some()
     }
 
     /// Recolors the running surface through libghostty's theme update. The process and
@@ -263,7 +271,8 @@ impl TerminalPanel {
         }
         self.surface.tick();
         self.service_clipboard(cx);
-        self.check_exit(cx);
+        // No exit check here: at spawn nobody is subscribed yet. An exit wakes the loop,
+        // which checks after the caller subscribed.
         let wakeup = self.surface.wakeup();
         let terminal = cx.entity().downgrade();
         self.tick_task = Some(cx.spawn(async move |_, cx| {

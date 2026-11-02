@@ -8,9 +8,10 @@ use calm_core::tui;
 use gpui_libghostty::{TerminalColor, TerminalConfiguration, TerminalOptions, TerminalTheme};
 
 use crate::terminal;
+use crate::tui_host::CommandRun;
 
-/// What CALM remembers about one plain terminal after it started.
-#[derive(Clone, Debug, PartialEq)]
+/// What CALM remembers about one terminal after it started: plain shells, typed
+/// commands and TUI apps alike.
 pub struct TerminalMeta {
     /// The profile asked for. `None` uses the default profile, read again on every change.
     pub profile: Option<String>,
@@ -22,6 +23,8 @@ pub struct TerminalMeta {
     pub applied_colors: Option<TerminalColors>,
     /// The configuration it started with, for smoke: default, user, user+override, custom.
     pub configuration: &'static str,
+    /// An app or a typed command: its supervisor and launch. `None` for a plain shell.
+    pub run: Option<CommandRun>,
 }
 
 pub fn home_dir() -> PathBuf {
@@ -58,14 +61,14 @@ pub fn terminal_start(
     panel_cwd.unwrap_or_else(|| start_dir(mode, inherited, home))
 }
 
-/// Launch options for a plain terminal. A `command` stored on the panel wins over the
-/// profile's; the env and args then do not apply.
+/// Launch options for a terminal. `command_line` (a supervised run's wrapper) wins over the
+/// profile's command, args and env, which it already carries.
 pub fn options(
     resolved: &ResolvedTerminal,
-    panel_command: Option<&str>,
+    command_line: Option<&str>,
     cwd: PathBuf,
 ) -> TerminalOptions {
-    let command = match panel_command {
+    let command = match command_line {
         Some(command) => command.to_string(),
         None => tui::command_line(&launch_argv(resolved, &login_shell())),
     };

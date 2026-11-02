@@ -19,12 +19,13 @@ native children.
 
 `calm_core::scene::PanelKind`:
 
-- `Terminal { command, cwd }`: a Ghostty surface.
+- `Terminal { command, cwd, profile, app }`: a Ghostty surface. A `command` makes it a typed
+  command (Run Command), supervised with exit handling. `app: Some(TerminalApp { plugin_id,
+  plugin_version })` makes it a TUI app panel (`PanelKind::app_terminal`, read with
+  `.app()`), saved as `type=tui` with only the plugin id, version and optional profile;
+  command, args and env stay in the manifest.
 - `Browser { url }`: a native address bar plus a WKWebView. No `calm` bridge.
 - `Plugin { plugin_id, settings }`: the plugin's HTML entry in a WKWebView with the bridge.
-- `Tui { plugin_id }`: a Ghostty surface running a TUI plugin's command. Only the id is
-  stored; command, args and env stay in the manifest. Lives in the terminals list, so it
-  shares terminal placement, preview, resize and close.
 
 ## Crates
 
@@ -124,7 +125,8 @@ calm-app       GPUI binary: CanvasView, hosts per panel kind, plugin services, m
   browsers, plugins and settings. Render builds a paint snapshot; paint draws everything.
 - `terminal/`: `TerminalPanel` with the libghostty adapter (CALM copy of gpui-libghostty
   0.3.1, MIT).
-- `tui_host.rs`: TUI panels, status wrapper files, restart.
+- `tui_host.rs`: `CommandRun`, the supervised run of an app or typed command inside a
+  terminal: manifest layer, status wrapper files, restart.
 - `browser_panel.rs`: browser panels around `BrowserView`.
 - `plugin_host.rs`: plugin discovery report, plugin panels, `served_methods`, `route` and
   `dispatch` (the bridge calls served on the UI thread).

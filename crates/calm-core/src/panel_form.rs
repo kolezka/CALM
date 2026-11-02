@@ -11,7 +11,7 @@ use crate::settings_form::{
 };
 pub use crate::terminal_profile::ghostty_default_colors;
 use crate::terminal_profile::{
-    ColorSlot, PALETTE_PRESETS, PanelTerminalColors, TerminalColors, TerminalIcon, hex,
+    AppLayer, ColorSlot, PALETTE_PRESETS, PanelTerminalColors, TerminalColors, TerminalIcon, hex,
 };
 
 /// What the panel shows now, inherited and set fields alike.
@@ -27,7 +27,12 @@ pub struct PanelEffective {
     pub live_theme: bool,
 }
 
-pub fn panel_effective(panel: &Panel, settings: &Settings) -> PanelEffective {
+/// `app` is an app panel's manifest layer, filled by the app; `None` for other panels.
+pub fn panel_effective(
+    panel: &Panel,
+    settings: &Settings,
+    app: Option<&AppLayer>,
+) -> PanelEffective {
     let overrides = &panel.overrides;
     let title = overrides
         .title
@@ -38,11 +43,14 @@ pub fn panel_effective(panel: &Panel, settings: &Settings) -> PanelEffective {
             let resolved = settings.terminal.resolve_for_panel(
                 profile.as_deref(),
                 settings.panels.terminal_user_config,
+                app,
                 overrides,
             );
             let inherited_icon = resolved.icon.map(|icon| match icon {
                 TerminalIcon::Text(text) => text,
-                TerminalIcon::Image(path) => path.display().to_string(),
+                TerminalIcon::Image(path) | TerminalIcon::AppImage(path) => {
+                    path.display().to_string()
+                }
             });
             PanelEffective {
                 title,
@@ -412,6 +420,7 @@ mod tests {
             command: None,
             cwd: None,
             profile: None,
+            app: None,
         }
     }
 
@@ -430,7 +439,7 @@ mod tests {
 
     fn form(scene: &Scene, id: PanelId, settings: &Settings) -> (Vec<Section>, PanelEffective) {
         let panel = scene.get(id).unwrap();
-        let effective = panel_effective(panel, settings);
+        let effective = panel_effective(panel, settings, None);
         (panel_form(panel, &effective), effective)
     }
 
@@ -919,7 +928,7 @@ mod tests {
     fn live_theme_note_says_the_change_applies_to_new_terminals() {
         let (scene, id) = scene_with(terminal());
         let panel = scene.get(id).unwrap();
-        let mut effective = panel_effective(panel, &Settings::default());
+        let mut effective = panel_effective(panel, &Settings::default(), None);
         let note = |effective: &PanelEffective| match &find(
             &panel_form(panel, effective),
             "panel.colors.note",
@@ -1138,5 +1147,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn manifest_layer() -> AppLayer {
+        let mut colors = ghostty_default_colors();
+        colors.palette[2] = 0x123456;
+        AppLayer {
+            chrome: ChromeOverrides {
+                accent: None,
+                title_bar: Some(0x445566ff),
+                title: None,
+            },
+            colors: Some(colors),
+            ..AppLayer::default()
+        }
+    }
+
+    #[test]
+    fn an_app_panel_shows_terminal_sections_with_manifest_values() {
+        let (mut scene, id) = scene_with(PanelKind::app_terminal("top-example", None));
+        let settings = Settings::default();
+        let app = manifest_layer();
+        let panel = scene.get(id).unwrap();
+        let effective = panel_effective(panel, &settings, Some(&app));
+        let sections = panel_form(panel, &effective);
+        let titles: Vec<&str> = sections.iter().map(|s| s.title.as_str()).collect();
+        assert!(titles.contains(&"Title bar colors"), "{titles:?}");
+        assert!(titles.contains(&"Terminal colors"), "{titles:?}");
+        assert_eq!(effective.chrome.title_bar, Some(0x445566ff));
+        assert_eq!(effective.colors.unwrap().palette[2], 0x123456);
+        // A panel color edit is accepted on an app panel and wins over the manifest.
+        apply_panel_field(
+            &mut scene,
+            id,
+            "panel.colors.2",
+            FieldValue::Color(Rgb(0x654321)),
+        )
+        .unwrap();
+        let panel = scene.get(id).unwrap();
+        let effective = panel_effective(panel, &settings, Some(&app));
+        assert_eq!(effective.colors.unwrap().palette[2], 0x654321);
+        // Reset falls back to the manifest.
+        apply_panel_field(&mut scene, id, "panel.colors.2", FieldValue::Reset).unwrap();
+        let panel = scene.get(id).unwrap();
+        let effective = panel_effective(panel, &settings, Some(&app));
+        assert_eq!(effective.colors.unwrap().palette[2], 0x123456);
     }
 }
