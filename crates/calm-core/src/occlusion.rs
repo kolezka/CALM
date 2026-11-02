@@ -120,20 +120,24 @@ pub fn native_paint_region(
             .any(|panel| panel.id == other)
     };
     let panels = scene.panels[index + 1..].iter().flat_map(|panel| {
-        let outline = occluder_rect(panel, &scene.camera);
+        let camera = scene.camera_of(panel);
+        let outline = occluder_rect(panel, &camera);
         if live_native(panel.id) && !panel.minimized {
-            subtract(
-                outline,
-                scene.camera.world_rect_to_screen(content_rect(panel)),
-            )
+            subtract(outline, camera.world_rect_to_screen(content_rect(panel)))
         } else {
             vec![outline]
         }
     });
+    // Both panels of a join share one camera, so either gives the divider's.
     let dividers = joins
         .iter()
         .filter(|join| in_front(join.first) || in_front(join.second))
-        .map(|join| scene.camera.world_rect_to_screen(join.divider));
+        .map(|join| {
+            let camera = scene
+                .get(join.first)
+                .map_or(scene.camera, |panel| scene.camera_of(panel));
+            camera.world_rect_to_screen(join.divider)
+        });
     let occluders = panels.chain(dividers).map(|mut rect| {
         rect.origin.x += offset.x;
         rect.origin.y += offset.y;
@@ -639,5 +643,32 @@ mod tests {
             native_visible_region(&scene, &[], PanelId(999), CONTAINER, Point::new(0.0, 0.0)),
             vec![CONTAINER]
         );
+    }
+
+    #[test]
+    fn native_paint_region_uses_pin_camera() {
+        let mut scene = Scene::default();
+        let back = scene.add(terminal(), Rect::new(0.0, 0.0, 1000.0, 1000.0));
+        scene.camera.zoom = 2.0;
+        let front = scene.add(terminal(), Rect::new(50.0, 50.0, 100.0, 100.0));
+        assert!(scene.set_pinned(front, true));
+        scene.camera.zoom = 0.5;
+        let container = scene
+            .camera
+            .world_rect_to_screen(crate::scene::content_rect(scene.get(back).unwrap()));
+        let front_panel = scene.get(front).unwrap();
+        let outline = occluder_rect(front_panel, &scene.camera_of(front_panel));
+        let not_live = |_: PanelId| false;
+        assert_eq!(
+            native_paint_region(&scene, &[], back, container, ORIGIN, &not_live),
+            visible_region(container, [outline])
+        );
+        // A live pinned front keeps its content hole in its own camera.
+        let live = move |id: PanelId| id == front;
+        let content = scene
+            .camera_of(front_panel)
+            .world_rect_to_screen(crate::scene::content_rect(front_panel));
+        let pieces = native_paint_region(&scene, &[], back, container, ORIGIN, &live);
+        assert_exact(&pieces, container, &subtract(outline, content));
     }
 }

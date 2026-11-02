@@ -206,6 +206,8 @@ export interface MenuWhen {
   /** Plugin ids. Matches plugin and TUI panels of those plugins. */
   plugin?: string[];
   minimized?: boolean;
+  /** `true`: pinned panels only. `false`: panels on the canvas only. */
+  pinned?: boolean;
 }
 
 /** The capability words. Declarative only. */
@@ -302,9 +304,14 @@ export interface PanelInfo {
   id: PanelId;
   kind: PanelKind;
   title: string;
-  /** World units, title bar included. */
+  /**
+   * World units, title bar included. For a pinned panel the units are its pin space:
+   * `rect` origin times the zoom at pin time is its screen origin.
+   */
   rect: Rect;
   minimized: boolean;
+  /** Fixed to the screen instead of the canvas. */
+  pinned: boolean;
   /** Stacking position, 0 is backmost. */
   z: number;
   focused: boolean;
@@ -370,9 +377,14 @@ export interface MenuCommandPanel {
   /** Set for plugin and TUI panels. */
   pluginId: string | null;
   title: string;
-  /** World coordinates, chrome included. */
+  /**
+   * World coordinates, chrome included. For a pinned panel the coordinates are its pin
+   * space: `rect` origin times the zoom at pin time is its screen origin.
+   */
   rect: Rect;
   minimized: boolean;
+  /** Fixed to the screen instead of the canvas. */
+  pinned: boolean;
 }
 
 /** The payload of the `command` event. */

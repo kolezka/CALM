@@ -19,6 +19,8 @@ pub const CHROME_HEIGHT: f64 = 28.0;
 pub const MINIMIZED_CHIP: Size = Size::new(200.0, 28.0);
 /// How far a duplicate sits from its source, in world units. A multiple of the snap grid.
 pub const DUPLICATE_OFFSET: f64 = 32.0;
+/// Screen points of a pinned borderless panel's top edge that stay inside the viewport.
+pub const PINNED_BORDERLESS_BAND: f64 = 24.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PanelId(pub u64);
@@ -388,7 +390,8 @@ impl PanelKind {
 pub struct Panel {
     pub id: PanelId,
     pub kind: PanelKind,
-    /// World coordinates, chrome strip included.
+    /// World coordinates, chrome strip included. For a pinned panel, coordinates of
+    /// `Scene::camera_of` it, so `rect.origin * pin` is its screen origin.
     pub rect: Rect,
     pub title: String,
     pub minimized: bool,
@@ -396,11 +399,20 @@ pub struct Panel {
     /// Not saved in layouts. Set from the kind on add; a plugin's manifest can change it through
     /// `Scene::set_resize_policy`.
     pub resize: ResizePolicy,
+    /// The canvas zoom when the panel was pinned. `None` for a panel that pans and zooms.
+    pub pin: Option<f64>,
+}
+
+impl Panel {
+    pub fn is_pinned(&self) -> bool {
+        self.pin.is_some()
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Scene {
-    /// Back to front: the last panel is topmost. Change panels through `Scene` methods or
+    /// Back to front: the last panel is topmost. Pinned panels all come after unpinned
+    /// ones. Change panels through `Scene` methods or
     /// `get_mut`, so the revision moves.
     pub panels: Vec<Panel>,
     /// Direct writes are fine: `sync_revision` notices a changed camera.
@@ -499,7 +511,7 @@ impl Scene {
         changed
     }
 
-    /// Adds a panel on top. Ids are never reused, even after a remove.
+    /// Adds a panel on top of the unpinned tier. Ids are never reused, even after a remove.
     pub fn add(&mut self, kind: PanelKind, rect: Rect) -> PanelId {
         self.add_with_overrides(kind, rect, PanelOverrides::default())
     }
@@ -529,15 +541,20 @@ impl Scene {
         };
         let title = kind.default_title();
         let resize = ResizePolicy::derive(&kind, None);
-        self.panels.push(Panel {
-            id,
-            kind,
-            rect,
-            title,
-            minimized: false,
-            overrides,
-            resize,
-        });
+        let index = self.first_pinned_index();
+        self.panels.insert(
+            index,
+            Panel {
+                id,
+                kind,
+                rect,
+                title,
+                minimized: false,
+                overrides,
+                resize,
+                pin: None,
+            },
+        );
         id
     }
 
@@ -571,24 +588,117 @@ impl Scene {
         self.panels.get_mut(index)
     }
 
+    /// Moves a panel to the top of its tier.
     pub fn bring_to_front(&mut self, id: PanelId) {
-        if let Some(index) = self.index_of(id)
-            && index + 1 != self.panels.len()
-        {
+        if let Some(index) = self.index_of(id) {
             let panel = self.panels.remove(index);
-            self.panels.push(panel);
+            let target = if panel.is_pinned() {
+                self.panels.len()
+            } else {
+                self.first_pinned_index()
+            };
+            self.reinsert(index, target, panel);
+        }
+    }
+
+    /// Moves a panel to the bottom of its tier.
+    pub fn send_to_back(&mut self, id: PanelId) {
+        if let Some(index) = self.index_of(id) {
+            let panel = self.panels.remove(index);
+            let target = if panel.is_pinned() {
+                self.first_pinned_index()
+            } else {
+                0
+            };
+            self.reinsert(index, target, panel);
+        }
+    }
+
+    /// Puts a panel taken from `from` back at `to`, bumping only when the order changed.
+    fn reinsert(&mut self, from: usize, to: usize, panel: Panel) {
+        self.panels.insert(to, panel);
+        if to != from {
             self.bump();
         }
     }
 
-    pub fn send_to_back(&mut self, id: PanelId) {
-        if let Some(index) = self.index_of(id)
-            && index != 0
-        {
-            let panel = self.panels.remove(index);
-            self.panels.insert(0, panel);
+    /// The camera a panel is drawn and hit with: the canvas camera, or for a pinned
+    /// panel a fixed camera at its pin zoom.
+    pub fn camera_of(&self, panel: &Panel) -> Camera {
+        match panel.pin {
+            Some(zoom) => pin_camera(zoom),
+            None => self.camera,
+        }
+    }
+
+    /// The canvas world point `gap` right of `panel`'s top right corner, the gap measured
+    /// in the panel's own space. Used to place a new unpinned panel beside it.
+    pub fn canvas_point_right_of(&self, panel: &Panel, gap: f64) -> Point {
+        let anchor = Point::new(
+            panel.rect.origin.x + panel.rect.size.width + gap,
+            panel.rect.origin.y,
+        );
+        if !panel.is_pinned() {
+            return anchor;
+        }
+        let screen = self.camera_of(panel).world_to_screen(anchor);
+        self.camera.screen_to_world(screen)
+    }
+
+    /// Pins or unpins a panel without moving it on screen. Its size never changes.
+    /// The panel goes to the top of its new tier. Returns true if it changed.
+    pub fn set_pinned(&mut self, id: PanelId, pinned: bool) -> bool {
+        let Some(index) = self.index_of(id) else {
+            return false;
+        };
+        if self.panels[index].is_pinned() == pinned {
+            return false;
+        }
+        let mut panel = self.panels.remove(index);
+        let screen = self.camera_of(&panel).world_to_screen(panel.rect.origin);
+        if pinned {
+            let zoom = self.camera.zoom;
+            panel.pin = Some(zoom);
+            panel.rect.origin = pin_camera(zoom).screen_to_world(screen);
+            self.panels.push(panel);
+        } else {
+            panel.pin = None;
+            panel.rect.origin = self.camera.screen_to_world(screen);
+            let target = self.first_pinned_index();
+            self.panels.insert(target, panel);
+        }
+        self.bump();
+        true
+    }
+
+    /// Moves each pinned panel so its title strip (its chip when minimized, a top band
+    /// when borderless) is fully inside `viewport`. Returns true if any moved.
+    pub fn clamp_pinned(&mut self, viewport: Size) -> bool {
+        let mut moved = false;
+        for panel in self.panels.iter_mut() {
+            let Some(zoom) = panel.pin else {
+                continue;
+            };
+            let keep = pinned_keep_rect(panel, zoom);
+            let x = clamp_axis(keep.origin.x, keep.size.width, viewport.width);
+            let y = clamp_axis(keep.origin.y, keep.size.height, viewport.height);
+            if x != keep.origin.x || y != keep.origin.y {
+                panel.rect.origin.x += (x - keep.origin.x) / zoom;
+                panel.rect.origin.y += (y - keep.origin.y) / zoom;
+                moved = true;
+            }
+        }
+        if moved {
             self.bump();
         }
+        moved
+    }
+
+    fn first_pinned_index(&self) -> usize {
+        self.panels
+            .iter()
+            .position(Panel::is_pinned)
+            .unwrap_or(self.panels.len())
     }
 
     /// Adds a copy of `id` on top, shifted by `DUPLICATE_OFFSET`, never minimized.
@@ -609,30 +719,34 @@ impl Scene {
             size: source.rect.size,
         };
         let overrides = source.overrides.clone();
-        Some(self.add_with_overrides(kind, rect, overrides))
+        let pin = source.pin;
+        let copy = self.add_with_overrides(kind, rect, overrides);
+        if let Some(zoom) = pin
+            && let Some(index) = self.index_of(copy)
+        {
+            let mut panel = self.panels.remove(index);
+            panel.pin = Some(zoom);
+            self.panels.push(panel);
+        }
+        Some(copy)
     }
 
-    /// Topmost panel under `world`. A minimized panel only hits its chip.
-    pub fn hit_test(&self, world: Point) -> Option<PanelId> {
+    /// Topmost panel under the screen point, each panel tested in its own camera.
+    /// A minimized panel only hits its chip.
+    pub fn hit_test_screen(&self, screen: Point) -> Option<PanelId> {
         self.panels
             .iter()
             .rev()
-            .find(|panel| {
-                let hit_rect = if panel.minimized {
-                    chip_rect(panel)
-                } else {
-                    panel.rect
-                };
-                hit_rect.contains(world)
-            })
+            .find(|panel| hit_rect(panel).contains(self.camera_of(panel).screen_to_world(screen)))
             .map(|panel| panel.id)
     }
 
-    /// Smallest world rect covering every panel as drawn (a minimized panel is its chip).
-    /// `None` when the scene is empty.
+    /// Smallest world rect covering every unpinned panel as drawn (a minimized panel is
+    /// its chip). `None` when there is none.
     pub fn bounds(&self) -> Option<Rect> {
         self.panels
             .iter()
+            .filter(|panel| !panel.is_pinned())
             .map(|panel| {
                 if panel.minimized {
                     chip_rect(panel)
@@ -646,6 +760,43 @@ impl Scene {
     fn index_of(&self, id: PanelId) -> Option<usize> {
         self.panels.iter().position(|panel| panel.id == id)
     }
+}
+
+fn pin_camera(zoom: f64) -> Camera {
+    Camera {
+        offset: Point::new(0.0, 0.0),
+        zoom,
+    }
+}
+
+fn hit_rect(panel: &Panel) -> Rect {
+    if panel.minimized {
+        chip_rect(panel)
+    } else {
+        panel.rect
+    }
+}
+
+/// The screen rect of a pinned panel that `clamp_pinned` keeps inside the viewport.
+fn pinned_keep_rect(panel: &Panel, zoom: f64) -> Rect {
+    let camera = pin_camera(zoom);
+    if panel.minimized {
+        return camera.world_rect_to_screen(chip_rect(panel));
+    }
+    let strip = chrome_height(panel);
+    let mut keep = camera.world_rect_to_screen(Rect {
+        origin: panel.rect.origin,
+        size: Size::new(panel.rect.size.width, strip),
+    });
+    if strip == 0.0 {
+        keep.size.height = PINNED_BORDERLESS_BAND.min(panel.rect.size.height * zoom);
+    }
+    keep
+}
+
+/// Start of a span of `len` moved into `0..limit`; the start wins when it cannot fit.
+fn clamp_axis(start: f64, len: f64, limit: f64) -> f64 {
+    start.min(limit - len).max(0.0)
 }
 
 pub fn chip_rect(panel: &Panel) -> Rect {
@@ -788,6 +939,25 @@ mod tests {
                 Box::new(|s, _, _| s.camera.pan_by_screen(10.0, 0.0)),
             ),
             ("touch", Box::new(|s, _, _| s.touch())),
+            (
+                "pin",
+                Box::new(|s, back, _| {
+                    let _ = s.set_pinned(back, true);
+                }),
+            ),
+            (
+                "clamp_pinned",
+                Box::new(|s, back, _| {
+                    s.set_pinned(back, true);
+                    s.sync_revision();
+                    s.get_mut(back).unwrap().rect.origin.x = -9000.0;
+                    s.sync_revision();
+                    // Only the clamp is left to bump here.
+                    let before = s.revision();
+                    assert!(s.clamp_pinned(Size::new(800.0, 600.0)));
+                    assert_ne!(s.revision(), before);
+                }),
+            ),
         ];
         for (name, change) in cases {
             assert!(bumps(change), "{name} did not bump the revision");
@@ -804,9 +974,9 @@ mod tests {
                 }),
             ),
             (
-                "hit_test",
+                "hit_test_screen",
                 Box::new(|s, _, _| {
-                    let _ = s.hit_test(Point::new(1.0, 1.0));
+                    let _ = s.hit_test_screen(Point::new(1.0, 1.0));
                 }),
             ),
             (
@@ -1042,9 +1212,9 @@ mod tests {
         let mut scene = Scene::default();
         let back = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
         let front = scene.add(terminal(), Rect::new(100.0, 100.0, 200.0, 200.0));
-        assert_eq!(scene.hit_test(Point::new(150.0, 150.0)), Some(front));
-        assert_eq!(scene.hit_test(Point::new(50.0, 50.0)), Some(back));
-        assert_eq!(scene.hit_test(Point::new(1000.0, 1000.0)), None);
+        assert_eq!(scene.hit_test_screen(Point::new(150.0, 150.0)), Some(front));
+        assert_eq!(scene.hit_test_screen(Point::new(50.0, 50.0)), Some(back));
+        assert_eq!(scene.hit_test_screen(Point::new(1000.0, 1000.0)), None);
     }
 
     #[test]
@@ -1055,7 +1225,7 @@ mod tests {
         scene.bring_to_front(back);
         let order: Vec<PanelId> = scene.panels.iter().map(|panel| panel.id).collect();
         assert_eq!(order, vec![front, back]);
-        assert_eq!(scene.hit_test(Point::new(150.0, 150.0)), Some(back));
+        assert_eq!(scene.hit_test_screen(Point::new(150.0, 150.0)), Some(back));
     }
 
     #[test]
@@ -1066,7 +1236,7 @@ mod tests {
         scene.send_to_back(front);
         let order: Vec<PanelId> = scene.panels.iter().map(|panel| panel.id).collect();
         assert_eq!(order, vec![front, back]);
-        assert_eq!(scene.hit_test(Point::new(150.0, 150.0)), Some(back));
+        assert_eq!(scene.hit_test_screen(Point::new(150.0, 150.0)), Some(back));
         scene.send_to_back(PanelId(99));
         assert_eq!(scene.panels.len(), 2);
     }
@@ -1176,10 +1346,10 @@ mod tests {
         if let Some(panel) = scene.get_mut(id) {
             panel.minimized = true;
         }
-        assert_eq!(scene.hit_test(Point::new(10.0, 10.0)), Some(id));
-        assert_eq!(scene.hit_test(Point::new(199.0, 27.0)), Some(id));
-        assert_eq!(scene.hit_test(Point::new(10.0, 100.0)), None);
-        assert_eq!(scene.hit_test(Point::new(300.0, 10.0)), None);
+        assert_eq!(scene.hit_test_screen(Point::new(10.0, 10.0)), Some(id));
+        assert_eq!(scene.hit_test_screen(Point::new(199.0, 27.0)), Some(id));
+        assert_eq!(scene.hit_test_screen(Point::new(10.0, 100.0)), None);
+        assert_eq!(scene.hit_test_screen(Point::new(300.0, 10.0)), None);
         let panel = scene.get(id).unwrap();
         assert_eq!(chip_rect(panel), Rect::new(0.0, 0.0, 200.0, 28.0));
     }
@@ -1352,5 +1522,275 @@ mod tests {
             profile: None,
         };
         assert_eq!(overrides.validate(&app), Ok(()));
+    }
+
+    fn ids(scene: &Scene) -> Vec<PanelId> {
+        scene.panels.iter().map(|panel| panel.id).collect()
+    }
+
+    /// Every pinned panel comes after every unpinned one.
+    fn assert_tiers(scene: &Scene) {
+        let first_pinned = scene.panels.iter().position(Panel::is_pinned);
+        if let Some(first) = first_pinned {
+            assert!(
+                scene.panels[first..].iter().all(Panel::is_pinned),
+                "unpinned panel above a pinned one: {:?}",
+                ids(scene)
+            );
+        }
+    }
+
+    fn screen_rect(scene: &Scene, id: PanelId) -> Rect {
+        let panel = scene.get(id).unwrap();
+        scene.camera_of(panel).world_rect_to_screen(panel.rect)
+    }
+
+    #[test]
+    fn pin_keeps_screen_rect_through_pan_and_zoom() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(300.0, 200.0, 400.0, 300.0));
+        scene.camera = Camera {
+            offset: Point::new(100.0, 50.0),
+            zoom: 2.0,
+        };
+        let before = screen_rect(&scene, id);
+        assert!(scene.set_pinned(id, true));
+        assert!(scene.get(id).unwrap().is_pinned());
+        assert_eq!(scene.get(id).unwrap().pin, Some(2.0));
+        assert_eq!(screen_rect(&scene, id), before);
+        scene.camera.pan_by_screen(-250.0, 80.0);
+        scene.camera.zoom_by(0.5, Point::new(40.0, 40.0));
+        assert_eq!(screen_rect(&scene, id), before);
+        assert!(!scene.set_pinned(id, true), "pinning twice is no change");
+    }
+
+    #[test]
+    fn unpin_after_zoom_change_keeps_screen_origin() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(300.0, 200.0, 400.0, 300.0));
+        scene.camera = Camera {
+            offset: Point::new(100.0, 50.0),
+            zoom: 2.0,
+        };
+        scene.set_pinned(id, true);
+        let pinned_origin = screen_rect(&scene, id).origin;
+        scene.camera = Camera {
+            offset: Point::new(-40.0, 10.0),
+            zoom: 0.5,
+        };
+        assert!(scene.set_pinned(id, false));
+        assert_eq!(scene.get(id).unwrap().pin, None);
+        assert_eq!(scene.camera_of(scene.get(id).unwrap()), scene.camera);
+        let after = screen_rect(&scene, id).origin;
+        assert!((after.x - pinned_origin.x).abs() < 1e-9);
+        assert!((after.y - pinned_origin.y).abs() < 1e-9);
+        assert!(!scene.set_pinned(id, false), "unpinning twice is no change");
+    }
+
+    #[test]
+    fn pin_and_unpin_never_change_size() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(10.0, 20.0, 410.0, 330.0));
+        let size = scene.get(id).unwrap().rect.size;
+        scene.camera.zoom = 3.0;
+        scene.set_pinned(id, true);
+        assert_eq!(scene.get(id).unwrap().rect.size, size);
+        scene.camera.zoom = 0.25;
+        scene.set_pinned(id, false);
+        assert_eq!(scene.get(id).unwrap().rect.size, size);
+    }
+
+    #[test]
+    fn pinned_panels_stay_above_unpinned() {
+        let mut scene = Scene::default();
+        let a = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        let b = scene.add(terminal(), Rect::new(10.0, 0.0, 200.0, 200.0));
+        let c = scene.add(terminal(), Rect::new(20.0, 0.0, 200.0, 200.0));
+        assert!(scene.set_pinned(a, true));
+        assert_eq!(ids(&scene), vec![b, c, a]);
+        assert!(scene.set_pinned(b, true));
+        assert_eq!(ids(&scene), vec![c, a, b]);
+        let d = scene.add(terminal(), Rect::new(30.0, 0.0, 200.0, 200.0));
+        assert_eq!(ids(&scene), vec![c, d, a, b]);
+        assert_tiers(&scene);
+        scene.bring_to_front(c);
+        assert_eq!(ids(&scene), vec![d, c, a, b]);
+        scene.send_to_back(b);
+        assert_eq!(ids(&scene), vec![d, c, b, a]);
+        scene.bring_to_front(b);
+        assert_eq!(ids(&scene), vec![d, c, a, b]);
+        scene.send_to_back(c);
+        assert_eq!(ids(&scene), vec![c, d, a, b]);
+        assert_tiers(&scene);
+        // Unpin lands on top of the unpinned tier.
+        assert!(scene.set_pinned(a, false));
+        assert_eq!(ids(&scene), vec![c, d, a, b]);
+        assert!(scene.set_pinned(b, false));
+        assert_eq!(ids(&scene), vec![c, d, a, b]);
+        assert_tiers(&scene);
+    }
+
+    #[test]
+    fn tier_moves_at_the_tier_edge_keep_the_revision() {
+        let mut scene = Scene::default();
+        let back = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        let pinned = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        scene.set_pinned(pinned, true);
+        let before = scene.sync_revision();
+        scene.bring_to_front(back);
+        scene.send_to_back(pinned);
+        assert_eq!(scene.sync_revision(), before);
+        assert_eq!(ids(&scene), vec![back, pinned]);
+    }
+
+    #[test]
+    fn hit_test_screen_prefers_pinned_over_unpinned_under_it() {
+        // The default camera: offset (0, 0), zoom 1.
+        let mut scene = Scene::default();
+        let pinned = scene.add(terminal(), Rect::new(100.0, 100.0, 200.0, 200.0));
+        scene.set_pinned(pinned, true);
+        // Added later, but stays below the pinned panel.
+        let under = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 400.0));
+        assert_eq!(
+            scene.hit_test_screen(Point::new(150.0, 150.0)),
+            Some(pinned)
+        );
+        assert_eq!(scene.hit_test_screen(Point::new(50.0, 50.0)), Some(under));
+        // Panning moves the unpinned panel away; the pinned one stays.
+        scene.camera.pan_by_screen(-1000.0, 0.0);
+        assert_eq!(
+            scene.hit_test_screen(Point::new(150.0, 150.0)),
+            Some(pinned)
+        );
+        assert_eq!(scene.hit_test_screen(Point::new(50.0, 50.0)), None);
+        // A minimized pinned panel hits only its chip.
+        scene.get_mut(pinned).unwrap().minimized = true;
+        assert_eq!(
+            scene.hit_test_screen(Point::new(150.0, 110.0)),
+            Some(pinned)
+        );
+        assert_eq!(scene.hit_test_screen(Point::new(150.0, 250.0)), None);
+    }
+
+    #[test]
+    fn bounds_ignore_pinned() {
+        let mut scene = Scene::default();
+        let free = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        let pinned = scene.add(terminal(), Rect::new(5000.0, 5000.0, 200.0, 200.0));
+        scene.set_pinned(pinned, true);
+        assert_eq!(scene.bounds(), Some(scene.get(free).unwrap().rect));
+        scene.remove(free);
+        assert_eq!(scene.bounds(), None);
+    }
+
+    #[test]
+    fn clamp_pinned_pulls_offscreen_panel_back() {
+        let viewport = Size::new(800.0, 600.0);
+        let mut scene = Scene::default();
+        scene.camera.zoom = 2.0;
+        let right = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 150.0));
+        let left = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 150.0));
+        let chip = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 150.0));
+        let bare = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 150.0));
+        let free = scene.add(terminal(), Rect::new(-5000.0, -5000.0, 200.0, 150.0));
+        for id in [right, left, chip, bare] {
+            scene.set_pinned(id, true);
+        }
+        // Pinned at zoom 2, so screen = rect * 2.
+        scene.get_mut(right).unwrap().rect.origin = Point::new(390.0, 290.0);
+        scene.get_mut(left).unwrap().rect.origin = Point::new(-150.0, -40.0);
+        scene.get_mut(chip).unwrap().rect.origin = Point::new(395.0, 100.0);
+        scene.get_mut(chip).unwrap().minimized = true;
+        set_borderless(scene.get_mut(bare).unwrap(), true);
+        scene.get_mut(bare).unwrap().rect.origin = Point::new(100.0, 295.0);
+        let before = scene.sync_revision();
+        assert!(scene.clamp_pinned(viewport));
+        assert_ne!(scene.sync_revision(), before);
+
+        // Title strip: 400 x 56 on screen, fully inside.
+        let strip = screen_rect(&scene, right);
+        assert_eq!(strip.origin, Point::new(400.0, 600.0 - CHROME_HEIGHT * 2.0));
+        let strip = screen_rect(&scene, left);
+        assert_eq!(strip.origin, Point::new(0.0, 0.0));
+        // Chip: 400 x 56 on screen.
+        let chip_screen = scene.get(chip).unwrap().rect.origin;
+        assert_eq!(chip_screen, Point::new(200.0, 100.0));
+        // Borderless: a band of PINNED_BORDERLESS_BAND screen points at the top stays in.
+        let bare_screen = screen_rect(&scene, bare);
+        assert_eq!(bare_screen.origin.x, 200.0);
+        assert_eq!(bare_screen.origin.y, 600.0 - PINNED_BORDERLESS_BAND);
+        // Unpinned panels are left alone.
+        assert_eq!(
+            scene.get(free).unwrap().rect.origin,
+            Point::new(-5000.0, -5000.0)
+        );
+
+        let settled = scene.sync_revision();
+        assert!(!scene.clamp_pinned(viewport));
+        assert_eq!(scene.sync_revision(), settled);
+    }
+
+    #[test]
+    fn duplicate_of_pinned_is_pinned_on_top() {
+        let mut scene = Scene::default();
+        scene.camera.zoom = 1.5;
+        let pinned = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        let other = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        scene.set_pinned(pinned, true);
+        scene.set_pinned(other, true);
+        let free = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        let copy = scene.duplicate(pinned, |_| None).unwrap();
+        assert_eq!(scene.get(copy).unwrap().pin, Some(1.5));
+        assert_eq!(ids(&scene), vec![free, pinned, other, copy]);
+        let source = scene.get(pinned).unwrap().rect.origin;
+        assert_eq!(
+            scene.get(copy).unwrap().rect.origin,
+            Point::new(source.x + DUPLICATE_OFFSET, source.y + DUPLICATE_OFFSET)
+        );
+        let free_copy = scene.duplicate(free, |_| None).unwrap();
+        assert_eq!(scene.get(free_copy).unwrap().pin, None);
+        assert_eq!(ids(&scene), vec![free, free_copy, pinned, other, copy]);
+        assert_tiers(&scene);
+    }
+
+    #[test]
+    fn point_right_of_unpinned_panel_is_the_world_anchor() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(300.0, 200.0, 400.0, 300.0));
+        scene.camera = Camera {
+            offset: Point::new(120.0, -40.0),
+            zoom: 0.75,
+        };
+        let panel = scene.get(id).unwrap();
+        assert_eq!(
+            scene.canvas_point_right_of(panel, 24.0),
+            Point::new(300.0 + 400.0 + 24.0, 200.0)
+        );
+    }
+
+    #[test]
+    fn point_right_of_pinned_panel_lands_beside_it_on_screen() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(300.0, 200.0, 400.0, 300.0));
+        scene.camera.zoom = 2.0;
+        scene.set_pinned(id, true);
+        scene.camera = Camera {
+            offset: Point::new(120.0, -40.0),
+            zoom: 0.75,
+        };
+        let panel = scene.get(id).unwrap().clone();
+        let point = scene.canvas_point_right_of(&panel, 24.0);
+        // Screen right edge plus the gap at pin zoom 2, top edge, both on screen.
+        let pin_screen = scene.camera_of(&panel).world_rect_to_screen(panel.rect);
+        let want_screen = Point::new(pin_screen.right() + 24.0 * 2.0, pin_screen.origin.y);
+        let got_screen = scene.camera.world_to_screen(point);
+        assert!(
+            (got_screen.x - want_screen.x).abs() < 1e-9,
+            "{got_screen:?}"
+        );
+        assert!(
+            (got_screen.y - want_screen.y).abs() < 1e-9,
+            "{got_screen:?}"
+        );
     }
 }

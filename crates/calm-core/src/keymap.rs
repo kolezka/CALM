@@ -137,6 +137,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         false,
     ),
     row(
+        "panel.pin",
+        "Pin / unpin focused panel",
+        Group::Panels,
+        Scope::Canvas,
+        Some("cmd-shift-p"),
+        false,
+    ),
+    row(
         "panel.move_up",
         "Move panel up",
         Group::Panels,
@@ -910,6 +918,7 @@ mod tests {
                 "canvas.confirm",
                 "panel.delete",
                 "panel.settings",
+                "panel.pin",
                 "panel.move_up",
                 "panel.move_down",
                 "panel.move_left",
@@ -960,8 +969,21 @@ mod tests {
         assert!(defaults.contains(&("canvas.fit_all", Some("cmd-)"))));
         assert!(defaults.contains(&("panel.settings", Some("cmd-<"))));
         assert!(defaults.contains(&("app.about", None)));
-        assert_eq!(defaults.iter().filter(|(_, d)| d.is_some()).count(), 32);
+        assert_eq!(defaults.iter().filter(|(_, d)| d.is_some()).count(), 33);
         assert!(defaults.contains(&("canvas.draw_markdown", Some("m"))));
+    }
+
+    #[test]
+    fn panel_pin_action_has_free_default_key() {
+        let pin = action("panel.pin").expect("panel.pin");
+        assert_eq!(pin.label, "Pin / unpin focused panel");
+        assert_eq!(
+            (pin.group, pin.scope, pin.in_menu),
+            (Group::Panels, Scope::Canvas, false)
+        );
+        assert_eq!(pin.default, Some("cmd-shift-p"));
+        // check_rebind refuses a key any other action already has by default.
+        assert!(check_rebind(&KeyOverrides::new(), pin, "cmd-shift-p").is_ok());
     }
 
     #[test]

@@ -907,6 +907,27 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   normal panel close share one rule (`close_confirms`): a running terminal or app, or a
   browser, asks first.
 
+## Pinned panels (2026-11-02)
+
+Spec: `docs/superpowers/specs/2026-11-02-pinned-panels-design.md`.
+
+- **A pin is the zoom at pin time, `Panel.pin: Option<f64>`.** A pinned panel's camera is
+  `Camera { offset: (0, 0), zoom: pin }` and its `rect` stays in that space, so
+  `rect.origin * pin` is its screen origin. Every per-panel step goes through
+  `Scene::camera_of`, and `Scene::hit_test_screen` replaced the world-point `hit_test`.
+  Why: the logical size never changes on pin or unpin, so a terminal's grid is untouched.
+  Cost: plugins see a pinned panel's `rect` in pin space, not in canvas coordinates.
+- **Pinned panels are always above unpinned ones (the tier order).** It is kept in scene
+  order, so native z-order follows with no extra rule. Bring to Front and Send to Back work
+  inside a tier. Cost: an unpinned panel can never cover a pinned one.
+- **Snapping and joins only between panels with the same `pin` value.** Rects in different
+  camera spaces cannot be compared. Cost: two panels pinned at different zooms never snap.
+- **Layout version 3.** An older build refuses a file with pins instead of placing them
+  wrong. Versions 1 and 2 still load. Cost: a session saved by this build does not open in
+  an older one.
+- **Default key `cmd-shift-p`** (user), over the key plan v1 proposed. Cost: inside a terminal
+  it shadows Ghostty's command palette key.
+
 ## Canvas text sizes snap to half points (2026-11-02, branch `perf/zoom-pan`)
 
 - **Title and other canvas text use `text_size_px`: `12 * zoom` rounded to 0.5 pt.** GPUI

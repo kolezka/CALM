@@ -29,6 +29,8 @@ pub const PANEL_MINIMIZE: &str = "panel.minimize";
 pub const PANEL_ZOOM_TO_FIT: &str = "panel.zoom_to_fit";
 pub const PANEL_BRING_TO_FRONT: &str = "panel.bring_to_front";
 pub const PANEL_SEND_TO_BACK: &str = "panel.send_to_back";
+/// Pins a panel to the screen, or unpins it back to the canvas.
+pub const PANEL_PIN: &str = "panel.pin";
 pub const PANEL_DUPLICATE: &str = "panel.duplicate";
 /// Goes through the same confirmed close as every other close.
 pub const PANEL_DELETE: &str = "panel.delete";
@@ -66,6 +68,7 @@ pub enum MenuCommand {
     ZoomToFit,
     BringToFront,
     SendToBack,
+    TogglePin,
     Duplicate,
     Delete,
     Restart,
@@ -178,8 +181,8 @@ pub fn terminal_profile_choice(id: &str) -> Option<&str> {
 }
 
 /// Right click on a panel's chrome strip or minimized chip.
-/// Zoom to Fit needs the full panel, so a minimized panel omits it. Duplicate is offered
-/// for terminals and markdown panels only.
+/// Zoom to Fit needs the full panel on the canvas, so a minimized or pinned panel omits it.
+/// Duplicate is offered for terminals and markdown panels only.
 /// `can_restart` adds Restart on top, for an app or typed command whose process exited.
 pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
     let minimize = if panel.minimized {
@@ -192,13 +195,15 @@ pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
         items.extend([action(PANEL_RESTART, "Restart"), MenuItem::Separator]);
     }
     items.push(action(PANEL_MINIMIZE, minimize));
-    if !panel.minimized {
+    if !panel.minimized && !panel.is_pinned() {
         items.push(action(PANEL_ZOOM_TO_FIT, "Zoom to Fit"));
     }
+    let pin = if panel.is_pinned() { "Unpin" } else { "Pin" };
     items.extend([
         MenuItem::Separator,
         action(PANEL_BRING_TO_FRONT, "Bring to Front"),
         action(PANEL_SEND_TO_BACK, "Send to Back"),
+        action(PANEL_PIN, pin),
     ]);
     items.extend([MenuItem::Separator, action(PANEL_SETTINGS, "Settings…")]);
     if panel.kind.is_terminal() || matches!(panel.kind, PanelKind::Markdown { .. }) {
@@ -208,9 +213,15 @@ pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
     items
 }
 
-/// A restored panel that cannot run (missing plugin, unknown kind) offers Delete only.
-pub fn placeholder_menu() -> Vec<MenuItem> {
-    vec![action(PANEL_DELETE, "Delete")]
+/// A restored panel that cannot run (missing plugin, unknown kind) offers Pin or Unpin,
+/// then Delete.
+pub fn placeholder_menu(pinned: bool) -> Vec<MenuItem> {
+    let pin = if pinned { "Unpin" } else { "Pin" };
+    vec![
+        action(PANEL_PIN, pin),
+        MenuItem::Separator,
+        action(PANEL_DELETE, "Delete"),
+    ]
 }
 
 /// Maps a chosen id to a command. A new panel's origin is the right-click point `world`.
@@ -251,6 +262,7 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
         PANEL_ZOOM_TO_FIT => Some(MenuCommand::ZoomToFit),
         PANEL_BRING_TO_FRONT => Some(MenuCommand::BringToFront),
         PANEL_SEND_TO_BACK => Some(MenuCommand::SendToBack),
+        PANEL_PIN => Some(MenuCommand::TogglePin),
         PANEL_DUPLICATE => Some(MenuCommand::Duplicate),
         PANEL_DELETE => Some(MenuCommand::Delete),
         PANEL_SETTINGS => Some(MenuCommand::PanelSettings),
@@ -493,6 +505,7 @@ mod tests {
             title: "Terminal".to_string(),
             minimized,
             overrides: crate::scene::PanelOverrides::default(),
+            pin: None,
             resize: crate::resize::ResizePolicy::FREE,
         }
     }
@@ -516,6 +529,7 @@ mod tests {
                 MenuItem::Separator,
                 action("panel.bring_to_front", "Bring to Front"),
                 action("panel.send_to_back", "Send to Back"),
+                action("panel.pin", "Pin"),
                 MenuItem::Separator,
                 action("panel.settings", "Settings…"),
                 MenuItem::Separator,
@@ -535,10 +549,46 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_menu_is_delete_only() {
-        let items = placeholder_menu();
-        assert_eq!(items.len(), 1);
-        assert!(matches!(&items[0], MenuItem::Action { id, .. } if id == PANEL_DELETE));
+    fn panel_menu_pinned_says_unpin_and_drops_zoom_to_fit() {
+        let mut pinned = panel(terminal_kind(), false);
+        pinned.pin = Some(1.0);
+        let items = panel_menu(&pinned, false);
+        assert!(!items.contains(&action("panel.zoom_to_fit", "Zoom to Fit")));
+        assert!(!items.contains(&action("panel.pin", "Pin")));
+        let send = items
+            .iter()
+            .position(|i| *i == action("panel.send_to_back", "Send to Back"))
+            .unwrap();
+        assert_eq!(items[send + 1], action("panel.pin", "Unpin"));
+    }
+
+    #[test]
+    fn menu_action_maps_panel_pin() {
+        assert_eq!(PANEL_PIN, "panel.pin");
+        assert_eq!(
+            menu_action("panel.pin", Point::new(0.0, 0.0), &[]),
+            Some(MenuCommand::TogglePin)
+        );
+    }
+
+    #[test]
+    fn placeholder_menu_is_pin_then_delete() {
+        assert_eq!(
+            placeholder_menu(false),
+            vec![
+                action("panel.pin", "Pin"),
+                MenuItem::Separator,
+                action("panel.delete", "Delete"),
+            ]
+        );
+        assert_eq!(
+            placeholder_menu(true),
+            vec![
+                action("panel.pin", "Unpin"),
+                MenuItem::Separator,
+                action("panel.delete", "Delete"),
+            ]
+        );
     }
 
     #[test]
@@ -580,7 +630,7 @@ mod tests {
                 assert!(items.contains(&settings), "{kind:?} minimized={minimized}");
             }
         }
-        assert!(!placeholder_menu().contains(&settings));
+        assert!(!placeholder_menu(false).contains(&settings));
     }
 
     #[test]

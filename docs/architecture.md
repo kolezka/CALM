@@ -9,7 +9,7 @@ page explains how the parts work together.
 
 - `calm-core`: the pure model. Geometry, camera, scene, input state machine, snapping,
   joins, resize policy, grid, preview policy, settings, terminal profiles, stats math,
-  layout v2 and the session storage primitives, restore planning, presets, TUI launch
+  layout v3 and the session storage primitives, restore planning, presets, TUI launch
   logic. No GPUI, no AppKit, unit tested.
 - `calm-native`: every AppKit call and every `unsafe` block. Native child views, web views,
   the browser view, the context menu, the Settings window, the status pill, the runtime app
@@ -47,6 +47,10 @@ is that size times the camera zoom. Ghostty and WKWebView attach to the zoom vie
 
 - Every paint computes `place_native(content_rect, camera, canvas)` per panel and applies
   it. `None` (minimized or off screen) hides the view; the process keeps running.
+- The camera is per panel: `Scene::camera_of(panel)`. A pinned panel (`Panel.pin`, the
+  zoom at pin time) uses `Camera { offset: (0, 0), zoom: pin }`, so pan and zoom never
+  move it. Hit testing (`Scene::hit_test_screen`), chrome, resize and occlusion use the same
+  camera. Pinned panels sit above unpinned ones in scene order, so native z-order follows.
 - Zoom only changes frames. `surface.set_frame(0, 0, logical size, scale)` runs on every
   placement; the surface skips unchanged frames, so only a panel resize reflows the grid.
 - Native views draw above everything GPUI paints. GPUI never paints over a live native rect.
@@ -134,7 +138,7 @@ process still asks first. An unknown method rejects with `unknown_method`. Every
 ## Settings and storage
 
 Settings live in one `settings.json`, written privately through a temp file and rename.
-`calm-core::layout` holds the layout v2 format and the session storage primitives (durable
+`calm-core::layout` holds the layout v3 format and the session storage primitives (durable
 writes, backup rotation, url scrubbing). Autosave writes the scene to `session.json` after a
 quiet period and on quit.
 
@@ -156,7 +160,7 @@ the real session.
 - **Named layout.** `--layout NAME` opens that preset; a missing one starts empty and keeps
   the name.
 
-A preset is a layout file, the same v2 format as the session. `calm_core::preset` finds one
+A preset is a layout file, the same v3 format as the session. `calm_core::preset` finds one
 by name in the user dir (`layouts/` under `$CALM_HOME` or `~/.config/calm`) first, then in
 the built-in dirs from `calm_plugins::builtin_preset_dirs()`: the repo's `presets/` for a
 debug build or one run from a cargo `target` folder, and `CALM.app/Contents/Resources/presets`

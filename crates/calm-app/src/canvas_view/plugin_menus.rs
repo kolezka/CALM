@@ -45,7 +45,7 @@ impl CanvasView {
     pub fn panel_menu(&self, id: PanelId) -> Option<Vec<MenuItem>> {
         let panel = self.scene.get(id)?;
         if self.placeholder(id).is_some() {
-            return Some(menu::placeholder_menu());
+            return Some(menu::placeholder_menu(panel.is_pinned()));
         }
         let can_restart = self
             .command_run(id)
@@ -102,10 +102,7 @@ impl CanvasView {
             clicked_panel
                 .as_ref()
                 .map_or(Point::new(0.0, 0.0), |panel| {
-                    Point::new(
-                        panel.rect.origin.x + panel.rect.size.width + NEW_PANEL_GAP,
-                        panel.rect.origin.y,
-                    )
+                    self.scene.canvas_point_right_of(panel, NEW_PANEL_GAP)
                 })
         });
 

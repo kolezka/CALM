@@ -50,8 +50,11 @@ pages), built by `web/Dockerfile` and hosted on Coolify at https://calm.raqz.lin
 
 - `geometry`: `Point`, `Size`, `Rect`.
 - `camera`: world to screen mapping, zoom limits, zoom about a point, `Camera::fit`.
-- `scene`: `Scene` of `Panel`s with `PanelId`, `PanelKind`, back-to-front order, `hit_test`,
-  `bring_to_front`, `content_rect`, `chip_rect`.
+- `scene`: `Scene` of `Panel`s with `PanelId`, `PanelKind`, back-to-front order, `hit_test_screen`,
+  `bring_to_front`, `content_rect`, `chip_rect`. `Panel.pin` (`Option<f64>`, the zoom at pin
+  time) pins a panel to the screen; `camera_of(panel)` gives the camera every per-panel step
+  uses (hit test, chrome, resize, placement, paint, occlusion). Pinned panels sit after
+  unpinned ones in the order (the tier order).
 - `interaction`: `InputHandler` state machine (`Idle`, `Drawing`, `Dragging`, `Resizing`,
   `Panning`) that turns input plus a `Tool` into `Effect`s.
 - `chrome`: title bar layout, hit testing, hover, icon and button strokes, and
@@ -81,7 +84,7 @@ pages), built by `web/Dockerfile` and hosted on Coolify at https://calm.raqz.lin
 - `terminal_profile`: the `terminal` section, profiles, resolution and launch argv.
 - `process_stats`: CPU and memory math for the stats readout (ticks to ns, `CpuTracker`,
   `MemoryUnit`, interval range).
-- `layout`: layout v2 format (v1 migrates on read, `PanelKind::Unsupported` keeps unknown
+- `layout`: layout v3 format (`pin` per panel; v1 and v2 load, `PanelKind::Unsupported` keeps unknown
   kinds' bytes), validation, and session storage: `write_durable`, `write_layout_file`
   (stamps `saved_at_unix`, scrubs browser urls), `session_path`, `rotate_backups`,
   `SessionWriter`, `move_aside`. Not called by the app yet, except `write_durable` and

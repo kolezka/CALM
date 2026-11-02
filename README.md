@@ -109,7 +109,11 @@ designed but not built. Plugins run as trusted code. See [Plugins](#plugins) and
 - Panels placed edge to edge join into one block with a single divider.
 - Title bars with a kind icon, focus ring and hover buttons for minimize and close.
 - Right-click a title bar for Minimize or Restore, Zoom to Fit, Bring to Front, Send to Back,
-  Duplicate (terminals) and Delete.
+  Pin or Unpin, Duplicate (terminals) and Delete.
+- Pin a panel (`cmd-shift-p` or Pin in its menu) to fix it to the screen. It keeps its
+  screen position and size while you pan and zoom, stays live (a modal still shows it as a preview) and stays
+  above unpinned panels. You can still move and resize it. Unpin keeps it where it is on
+  screen, and its size follows the canvas zoom again.
 - Closing a running terminal or a browser asks first. This can be turned off.
 - A click on empty canvas, left or right, drops panel focus: the focus ring goes and typing
   goes back to the canvas. Pans and zooms keep focus. Off with
@@ -187,6 +191,7 @@ so on first launch right-click it and pick Open. See [docs/release.md](docs/rele
 | Zoom                  | Pinch, or `cmd` and scroll             |
 | Fit all panels        | Cmd+Shift+0                            |
 | Delete focused panel  | `cmd-shift-backspace` (confirms a live one) |
+| Pin or unpin focused panel | `cmd-shift-p`                     |
 | Settings              | `cmd-,`                                |
 
 Every key is a default; change any of them in Settings > Keys.
@@ -207,6 +212,7 @@ Every key is a default; change any of them in Settings > Keys.
 | Panel menu from its content     | `cmd`-right-click on a terminal or page   |
 | Delete focused panel            | `cmd-shift-backspace` (confirms a live one) |
 | Focused panel Settings          | `cmd-shift-,`                             |
+| Pin or unpin the focused panel  | `cmd-shift-p` (inside a terminal it wins over Ghostty's command palette) |
 | Pan                             | Space and drag, middle-drag, scroll       |
 | Pan in steps                    | Arrow keys when no panel has the keyboard, Shift for bigger steps |
 | Move the focused panel          | `cmd-option` and arrows, Shift for bigger steps |
