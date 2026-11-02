@@ -1,27 +1,52 @@
 ![CALM pixel-art logo and infinite canvas tagline](assets/brand/banner-animated.gif)
 
-> [!WARNING]
-> CALM is an early prototype. I am preparing the first release candidate of the alpha
-> version for the first weeks of November 2026. It will be available to install as a
-> `.dmg` image or through Homebrew.
+**One pan and zoom canvas on macOS. Ghostty terminals, a live browser and your own plugins
+side by side, all of them still running while you move around.**
 
-# CALM
-
-An infinite pan and zoom canvas for macOS that hosts live terminals, browsers and plugins
-side by side.
+**[calm.raqz.link](https://calm.raqz.link)** · [Docs](#documentation) · [Plugins](https://calm.raqz.link/plugins/)
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)
 ![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-arm64-555555)
 ![Rust 1.95+](https://img.shields.io/badge/Rust-1.95%2B-orange?logo=rust)
 
-## What is CALM
+> [!WARNING]
+> CALM is an early prototype and nothing has been released yet. The first release candidate
+> of the alpha is planned for the first weeks of November 2026, as a `.dmg` image or through
+> Homebrew. Until then you build it from source.
 
-CALM replaces a stack of windows and tabs with one large canvas. Draw a rectangle and you get
-a real Ghostty terminal or a web browser in it. Arrange panels like notes on a whiteboard,
-zoom out to see the whole workspace, zoom in to work. Every panel keeps running while you
-pan, zoom or minimize it. Only an explicit, confirmed close ends it.
+![CALM canvas with a Slack TUI app, a browser panel, htop and two neofetch terminals side by side](assets/screenshots/canvas.png)
 
-## Features
+# CALM
+
+## Why CALM
+
+Stacked windows and tabs hide each other. A canvas does not. Draw a rectangle and you get a
+real Ghostty terminal or a web browser in it. Arrange panels like notes on a whiteboard, zoom
+out to see the whole workspace, zoom in to work.
+
+Every panel keeps running while you pan, zoom or minimize it. Only an explicit, confirmed
+close ends it. Zooming scales the view and never the terminal, so rows and columns stay put.
+Panels dropped edge to edge join into one block with a single divider. Distant panels become
+still previews refreshed every two seconds, which is what keeps twenty live terminals cheap
+to paint.
+
+## Highlights
+
+- **Terminals.** Live Ghostty surfaces, as many as you like, at any size. Use your own Ghostty
+  config, or named profiles with their own colors, command and start folder.
+- **Browser.** Real web pages in a panel, with an address bar, back, forward and reload. Type
+  a host and it opens, type anything else and it searches.
+- **TUI apps.** One manifest turns a terminal program into an Add menu entry, so a tool like
+  `htop` or a Slack client lands on the canvas as a panel instead of a window.
+- **Plugins.** Panels written in HTML and JavaScript (TSX optional) that talk to CALM through
+  `window.calm` and add items to the right-click menus.
+- **Make it yours.** Backgrounds, grid, snapping, terminal colors and every key binding are
+  settings, changed live in a native Settings window.
+- **Picks up where you left off.** A launch restores the last session (panels, order and
+  camera, with fresh processes) and autosaves it as you work. `--no-restore` starts empty.
+
+<details>
+<summary>All features</summary>
 
 ### Canvas
 
@@ -41,9 +66,15 @@ pan, zoom or minimize it. Only an explicit, confirmed close ends it.
 ### Panels
 
 - Live Ghostty terminals, optionally using your own Ghostty config.
+- Add > Run Command… opens a terminal running one command, say `htop`, and restarts it when
+  it exits according to `terminal.command_restart`.
+- `cmd`-drag on a terminal's or page's content moves the panel; a `cmd`-click still reaches
+  the content (`canvas.move_modifier`).
 - Terminal defaults and named profiles: title, icon, chrome colors, Ghostty colors, command,
   arguments, start folder and environment. Color changes recolor running terminals in place.
   Profiles show under Add > Terminal Profiles.
+- See-through terminals: `content_opacity` from 0.2 to 1 fades a terminal's text and
+  background while its title bar stays solid.
 - Move and resize with snapping to an 8 unit grid and to nearby panel edges. Browser and
   plugin panels resize from just outside their right and bottom edges.
 - Panels placed edge to edge join into one block with a single divider.
@@ -86,15 +117,23 @@ pan, zoom or minimize it. Only an explicit, confirmed close ends it.
 - Grid spacing, color and opacity. Snapping on or off, grid step and edge distance.
 - Changes show live on the canvas and persist to `settings.json`.
 
-## Requirements
+</details>
 
-- macOS 14 or newer on Apple Silicon (arm64).
-- To build: Rust 1.95 or newer, Zig 0.16, the Xcode command line tools with the Metal
-  Toolchain, GNU Make 4 (`gmake`), `gh` and `bun`.
+## Who it is for
 
-## Install
+CALM suits you if you keep many terminals, a browser and a few small tools open at once and
+want to see them all in one place, laid out the way you think about the work.
 
-No release has been published yet. Build from source:
+It is the wrong tool if you want:
+
+- a tabbed terminal, because CALM is one canvas instead
+- a sandbox for untrusted plugins, because plugins run as trusted code
+- a shipped download today, because there is no release yet
+
+## Get started
+
+You need macOS 14 or newer on Apple Silicon (arm64). To build: Rust 1.95 or newer, Zig 0.16,
+the Xcode command line tools with the Metal Toolchain, GNU Make 4 (`gmake`), `gh` and `bun`.
 
 ```sh
 git clone https://github.com/kolezka/CALM.git
@@ -104,12 +143,26 @@ cargo run --release -p calm-app   # add -- --fullscreen to start fullscreen
 ```
 
 [docs/dev-setup.md](docs/dev-setup.md) lists every prerequisite and how to install it.
-Future releases will ship a macOS zip. The app is ad-hoc signed, not notarized, so on first
-launch right-click it and pick Open. See [docs/release.md](docs/release.md).
+Releases will ship as a `.dmg` or through Homebrew. The app is ad-hoc signed, not notarized,
+so on first launch right-click it and pick Open. See [docs/release.md](docs/release.md).
 
-## Usage
+### First keys
 
-Every key below is a default; change any of them in Settings > Keys.
+| Action                | How                                    |
+| --------------------- | -------------------------------------- |
+| Draw a terminal       | `t`, then drag on the canvas           |
+| Draw a browser        | `b`, then drag on the canvas           |
+| Add a panel or plugin | Right-click empty canvas               |
+| Pan                   | Space and drag, middle-drag, scroll    |
+| Zoom                  | Pinch, or `cmd` and scroll             |
+| Fit all panels        | Cmd+Shift+0                            |
+| Delete focused panel  | `cmd-shift-backspace` (confirms a live one) |
+| Settings              | `cmd-,`                                |
+
+Every key is a default; change any of them in Settings > Keys.
+
+<details>
+<summary>All keys</summary>
 
 | Action                          | How                                       |
 | ------------------------------- | ----------------------------------------- |
@@ -118,27 +171,37 @@ Every key below is a default; change any of them in Settings > Keys.
 | Cancel drawing                  | `Esc`                                     |
 | Add a panel or plugin           | Right-click empty canvas                  |
 | Panel actions                   | Right-click a title bar                   |
+| Run a command in a terminal     | Right-click > Add > Run Command…          |
+| Move a panel by its content     | `cmd`-drag on a terminal or page          |
+| Panel menu from its content     | `cmd`-right-click on a terminal or page   |
 | Delete focused panel            | `cmd-shift-backspace` (confirms a live one) |
 | Focused panel Settings          | `cmd-shift-,`                             |
 | Pan                             | Space and drag, middle-drag, scroll       |
+| Pan in steps                    | Arrow keys when no panel has the keyboard, Shift for bigger steps |
+| Move the focused panel          | `cmd-option` and arrows, Shift for bigger steps |
 | Zoom                            | Pinch, or `cmd` and scroll                |
 | Zoom in, out, reset             | `cmd-=`, `cmd--`, `cmd-0`                 |
 | Center on origin                | `cmd-shift-h`                             |
 | Fit all panels                  | Cmd+Shift+0 (stored as `cmd-)`)           |
-| Move or resize without snapping | Hold `cmd-shift` while dragging                 |
+| Move or resize without snapping | Hold `cmd-shift` while dragging           |
 | Settings                        | `cmd-,`                                   |
 | Fullscreen                      | `cmd-ctrl-f`                              |
 | Show FPS, CPU and memory        | `cmd-shift-f`                             |
 
 Scrolling over empty canvas pans it. Scrolling over a terminal scrolls the terminal.
 
+</details>
+
 ## Plugins
 
 A plugin is a folder with a `calm-plugin.json` manifest and an HTML entry page. CALM finds it
 at startup, lists it in the Add menu (unless its manifest sets `"addMenu": false`) and runs
 it in a panel. Plugins are trusted code that you install yourself, with full access, so only
-install plugins you have read or whose author you trust. The host serves all 18 bridge
-methods of the v1 API, including opening, focusing and listing panels and `process.exec`. The wider v2 API (events, camera, terminal and browser
+install plugins you have read or whose author you trust.
+
+The host answers all 18 bridge methods of the v1 API, including opening, focusing and listing
+panels and `process.exec`. Of the plugin events, only `command` is delivered today. From the
+v2 API, error codes and `calm.has` are built; the rest (events, camera, terminal and browser
 control, plugin backends) is design only.
 
 From a clone, `gmake plugins && cargo run -p calm-app` builds the first-party plugins and shows
@@ -149,7 +212,7 @@ A development build reads the repository's `plugins/` folder directly; installed
 
 A TUI app plugin needs no HTML: its manifest names a command, and CALM runs it in a terminal
 panel. See "TUI apps" in [docs/plugins.md](docs/plugins.md#tui-apps) and
-`templates/plugin-tui`.
+[templates/plugin-tui](templates/plugin-tui/README.md).
 
 ```json
 {
@@ -176,17 +239,17 @@ from the TSX template in [templates/plugin-tsx](templates/plugin-tsx/README.md).
 - GitHub access for plugins goes through `gh`. Either run `gh auth login`, or put
   `GITHUB_TOKEN=<your token>` in `~/.config/calm/.env` (`chmod 600` it). Order:
   `GH_TOKEN` or `GITHUB_TOKEN` in CALM's environment, then `$CALM_HOME/.env`, then in dev
-  builds the checkout's `.env`, then `gh`'s own login. Details in
-  [docs/plugins.md](docs/plugins.md#github-access).
+  builds the checkout's `.env`, then `gh`'s own login. Plugin code never sees the token.
+  Details in [docs/plugins.md](docs/plugins.md#github-access).
 
 ## Project status
 
 CALM is an early prototype. Nothing has been released and the GUI has had limited manual
 testing.
 
-A launch restores the last session (panels, order and camera, with fresh processes) and
-autosaves it. Not built yet: saving named layouts and the File menu, the `ask` restore
-dialog, a benchmark mode, and about half of the plugin bridge.
+Session restore and autosave work. Not built yet: saving named layouts and the File menu
+(`--layout` only opens an existing layout), the `ask` restore dialog, a benchmark mode, and
+most of the plugin API v2 (all 17 v1 bridge methods answer).
 
 ## Documentation
 
@@ -198,7 +261,7 @@ dialog, a benchmark mode, and about half of the plugin bridge.
 - [Design spec](docs/superpowers/specs/2026-10-31-calm-design.md) and
   [prototype plan](docs/superpowers/plans/2026-10-31-calm-prototype.md).
 - [Plugin API v2 design](docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md)
-  (phase 1 built, the rest is design).
+  (phase 1, error codes and `calm.has`, is built; the rest is design).
 - [Canvas persistence plan](docs/superpowers/plans/2026-10-31-canvas-persistence.md)
   (Tasks 1 to 5 merged: storage, autosave and restore at launch).
 - [Claude Code mods integration](docs/superpowers/specs/2026-10-31-claude-code-mods-integration.md)
