@@ -430,8 +430,12 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
     cause: window occlusion or the display link stopping. Not confirmed.
 - Chrome colors (accent, title bar, title) accept `#rrggbbaa` in the data model, but
   `rgb_from_ns` (`settings_window.rs`) drops the picker's alpha, so no color well can set
-  one. Since `feat/terminal-transparency` the picker hides its opacity slider app-wide
+  one. Since `feat/terminal-transparency` every CALM well sets `supportsAlpha = false`
   (`.ai/decisions.md`, "Color wells without opacity").
+- Terminal previews: `gpui-libghostty` 0.3.1 copies Ghostty's IOSurface as is, and Ghostty
+  renders premultiplied alpha, but gpui's sprite pipeline blends it as straight alpha. Pixels
+  with alpha below 255 (a see-through background) show too dark in a preview. Opaque pixels
+  are unaffected. Fix: un-premultiply the snapshot before the `RenderImage`. Not done.
 - Escape on the close confirmation does not redraw until the next event.
 - Panel bottom corners are square because the native view is square.
 - Chrome hover is tracked from GPUI mouse moves only, so buttons can stay visible over a

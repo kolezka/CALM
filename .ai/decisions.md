@@ -758,14 +758,17 @@ These shipped with #41, next to "Restore at launch" above.
 
 ## Color wells without opacity (2026-11-02, `feat/terminal-transparency`)
 
-- **The color picker hides its opacity slider app-wide.** `NSColor::setIgnoresAlpha(true)`
-  runs once, before the first Settings or Panel Settings window opens. Why app-wide: no
-  CALM color well keeps alpha today (`rgb_from_ns`, `BindingKind::Color`), chrome wells
-  included, so a slider anywhere would be a control that does nothing. This replaces the
-  spec's "terminal wells only" with one switch, decided at plan time.
-- Cost: `setIgnoresAlpha` is deprecated in favor of per-well `NSColorWell.supportsAlpha`.
-  Per-well opacity returns when chrome alpha is wired (the gap is in `.ai/status.md`).
+- **Every CALM color well sets `supportsAlpha = false`.** The `Control::Color` builder in
+  `settings_window.rs` (the only `NSColorWell` CALM creates) turns it off, so the picker
+  shows no opacity slider. Why every well: no CALM color well keeps alpha today
+  (`rgb_from_ns`, `BindingKind::Color`), chrome wells included, so a slider anywhere would
+  be a control that does nothing. This replaces the spec's "terminal wells only". Turn it
+  back on per well when chrome alpha is wired (the gap is in `.ai/status.md`). The
+  deprecated app-wide `NSColor::setIgnoresAlpha` was rejected; macOS 14, CALM's floor, has
+  the per-well API.
 - **Previews fade in bytes.** A preview is GPUI-drawn, so the native fade does not reach
   it. `take_snapshot` scales the snapshot's alpha by `content_opacity` with
   `preview::fade_pixels`, straight alpha, because gpui's sprite pipeline blends with
   `SourceAlpha` (`gpui-pre-apple` 0.3.4 `metal_renderer.rs`). Bytes round half away from zero.
+  Ghostty's snapshot bytes are premultiplied, so gpui draws see-through pixels too dark.
+  That mismatch predates the fade and is in `.ai/status.md`.
