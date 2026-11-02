@@ -19,7 +19,7 @@ use calm_core::interaction::{
 use calm_core::join::{Axis, Join, JoinLayout, JoinedEdges, Side};
 use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
 use calm_core::menu::{self, MenuCommand, MenuItem};
-use calm_core::occlusion::native_visible_region;
+use calm_core::occlusion::{native_paint_region, native_visible_region};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
@@ -1287,6 +1287,11 @@ impl CanvasView {
         // A restart replaces the native view without changing its panel id.
         self.native_order.clear();
         self.spawn_terminal(id, options, window, cx)?;
+        if let Some(terminal) = self.terminal(id) {
+            terminal.update(cx, |terminal, _| {
+                terminal.set_content_opacity(resolved.content_opacity)
+            });
+        }
         if supervised {
             let terminal = self
                 .terminal(id)
@@ -1378,6 +1383,12 @@ impl CanvasView {
         let applied = meta.applied_colors;
         let resolved = self.resolve_terminal(id);
         self.refresh_terminal_chrome(id, &resolved);
+        // Before the unchanged-colors return: opacity changes on its own.
+        if let Some(terminal) = self.terminal(id) {
+            terminal.update(cx, |terminal, _| {
+                terminal.set_content_opacity(resolved.content_opacity)
+            });
+        }
         let Some(colors) = resolved.colors.filter(|colors| Some(*colors) != applied) else {
             return;
         };
@@ -1852,6 +1863,14 @@ impl CanvasView {
             .collect()
     }
 
+    /// The native view's opacity per terminal, in creation order.
+    pub fn terminal_opacities(&self, cx: &App) -> Vec<(PanelId, f64)> {
+        self.terminals
+            .iter()
+            .map(|(id, terminal)| (*id, terminal.read(cx).native_opacity()))
+            .collect()
+    }
+
     /// (mode, has a snapshot) per terminal, in creation order.
     pub fn terminal_previews(&self, cx: &App) -> Vec<(PanelMode, bool)> {
         self.terminals
@@ -2084,6 +2103,14 @@ impl CanvasView {
         window: &Window,
     ) -> Vec<(PanelId, TerminalContent)> {
         let joins = JoinLayout::compute(&self.scene.panels).joins;
+        let preview_below_zoom = self.settings.settings.panels.preview_below_zoom;
+        let live = live_terminals(
+            self.terminals.iter().map(|(id, _)| *id),
+            &self.scene,
+            viewport,
+            modal_open,
+            preview_below_zoom,
+        );
         let mut contents = Vec::new();
         for (id, browser) in &mut self.browsers {
             let Some(panel) = self.scene.get(*id) else {
@@ -2096,7 +2123,7 @@ impl CanvasView {
                 modal_open,
                 self.settings.settings.panels.preview_below_zoom,
             );
-            let placement = terminal_placement(panel, &self.scene, &joins, viewport);
+            let placement = terminal_placement(panel, &self.scene, &joins, viewport, &live);
             browser.apply_mode(mode, placement, window);
             match browser.mode() {
                 PanelMode::Live => contents.push((*id, TerminalContent::Live)),
@@ -2531,6 +2558,40 @@ enum TerminalContent {
     Preview(PreviewImage<Arc<RenderImage>>),
 }
 
+/// What a panel's content area holds, for the underfill decision.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ContentKind {
+    LiveTerminal,
+    TerminalPreviewImage,
+    TerminalPreviewEmpty,
+    Other,
+}
+
+impl ContentKind {
+    fn of(panel: &Panel, content: Option<&TerminalContent>) -> Self {
+        if !matches!(panel.kind, PanelKind::Terminal { .. }) {
+            return Self::Other;
+        }
+        match content {
+            Some(TerminalContent::Live) => Self::LiveTerminal,
+            Some(TerminalContent::Preview(PreviewImage::Fresh(_) | PreviewImage::Stale(_))) => {
+                Self::TerminalPreviewImage
+            }
+            Some(TerminalContent::Preview(PreviewImage::None)) => Self::TerminalPreviewEmpty,
+            None => Self::Other,
+        }
+    }
+}
+
+/// Whether CALM paints its own fill under the content. A terminal and its snapshot get
+/// none, so see-through pixels show the canvas and the panel below.
+fn paints_content_underfill(kind: ContentKind) -> bool {
+    !matches!(
+        kind,
+        ContentKind::LiveTerminal | ContentKind::TerminalPreviewImage
+    )
+}
+
 /// The mode a terminal panel gets this frame. Render and paint both use it, so input
 /// targets match what paint applies. `viewport` is the canvas area; only its size counts.
 fn terminal_mode(
@@ -2552,15 +2613,35 @@ fn terminal_mode(
     )
 }
 
+/// Terminals that are placed live this frame, by the same rule as `terminal_mode`.
+fn live_terminals(
+    ids: impl IntoIterator<Item = PanelId>,
+    scene: &Scene,
+    viewport: Rect,
+    modal_open: bool,
+    preview_below_zoom: f64,
+) -> HashSet<PanelId> {
+    ids.into_iter()
+        .filter(|id| {
+            scene.get(*id).is_some_and(|panel| {
+                terminal_mode(panel, scene, viewport, modal_open, preview_below_zoom)
+                    == PanelMode::Live
+            })
+        })
+        .collect()
+}
+
 /// A panel's native placement in window points, or `None` when minimized or off screen.
 /// `viewport` is the canvas area in window points. `visible` leaves out every panel in
 /// front and every join divider painted above it, since native views draw over all GPUI
-/// chrome.
+/// chrome. `paint` also keeps the content of a front terminal in `live`, which draws
+/// above this one and lets it show through.
 fn terminal_placement(
     panel: &Panel,
     scene: &Scene,
     joins: &[Join],
     viewport: Rect,
+    live: &HashSet<PanelId>,
 ) -> Option<NativePlacement> {
     if panel.minimized {
         return None;
@@ -2571,6 +2652,14 @@ fn terminal_placement(
     placement.container.origin.y += viewport.origin.y;
     placement.visible =
         native_visible_region(scene, joins, panel.id, placement.container, viewport.origin);
+    placement.paint = native_paint_region(
+        scene,
+        joins,
+        panel.id,
+        placement.container,
+        viewport.origin,
+        &|id| live.contains(&id),
+    );
     Some(placement)
 }
 
@@ -2715,8 +2804,19 @@ impl PaintSnapshot {
         });
     }
 
+    fn live_terminals(&self, viewport: Rect) -> HashSet<PanelId> {
+        live_terminals(
+            self.terminals.iter().map(|(id, _)| *id),
+            &self.scene,
+            viewport,
+            self.modal_open,
+            self.settings.panels.preview_below_zoom,
+        )
+    }
+
     /// Mode and placement per plugin panel, by the same rules as terminals.
     fn plugin_modes(&self, viewport: Rect) -> Vec<(PanelId, PanelMode, Option<NativePlacement>)> {
+        let live = self.live_terminals(viewport);
         self.plugin_ids
             .iter()
             .filter_map(|id| self.scene.get(*id))
@@ -2731,7 +2831,7 @@ impl PaintSnapshot {
                 (
                     panel.id,
                     mode,
-                    terminal_placement(panel, &self.scene, &self.joins.joins, viewport),
+                    terminal_placement(panel, &self.scene, &self.joins.joins, viewport, &live),
                 )
             })
             .collect()
@@ -2747,6 +2847,7 @@ impl PaintSnapshot {
     ) -> (HashMap<PanelId, TerminalContent>, bool) {
         let mut contents = HashMap::new();
         let mut changed = false;
+        let live = self.live_terminals(viewport);
         for (id, terminal) in &self.terminals {
             let Some(panel) = self.scene.get(*id) else {
                 continue;
@@ -2758,7 +2859,8 @@ impl PaintSnapshot {
                 self.modal_open,
                 self.settings.panels.preview_below_zoom,
             );
-            let placement = terminal_placement(panel, &self.scene, &self.joins.joins, viewport);
+            let placement =
+                terminal_placement(panel, &self.scene, &self.joins.joins, viewport, &live);
             let content = terminal.update(cx, |terminal, _| {
                 changed |= terminal.mode() != mode;
                 terminal.apply_mode(mode, placement, window);
@@ -2950,10 +3052,17 @@ impl PaintSnapshot {
             body_screen.size.width + outward(Side::Left) + outward(Side::Right),
             body_screen.size.height + outward(Side::Top) + outward(Side::Bottom),
         );
+        let see_through =
+            !panel.minimized && !paints_content_underfill(ContentKind::of(panel, content));
+        let ring_fill = if see_through {
+            rgba(0)
+        } else {
+            rgba(colors.bar)
+        };
         window.paint_quad(quad(
             to_bounds(ring, origin),
             panel_corners(panel, edges, zoom, BORDER_PX),
-            rgba(colors.bar),
+            ring_fill,
             Edges {
                 top: border(Side::Top),
                 right: border(Side::Right),
@@ -2976,10 +3085,28 @@ impl PaintSnapshot {
                 content_screen.size.width,
                 BORDER_PX,
             );
+            if see_through && bar_shown {
+                let bar = Rect::new(
+                    body_screen.origin.x,
+                    body_screen.origin.y,
+                    body_screen.size.width,
+                    content_screen.origin.y - body_screen.origin.y,
+                );
+                window.paint_quad(quad(
+                    to_bounds(bar, origin),
+                    panel_corners(panel, edges, zoom, 0.0),
+                    rgba(colors.bar),
+                    Edges::default(),
+                    rgba(0),
+                    BorderStyle::Solid,
+                ));
+            }
             if bar_shown {
                 window.paint_quad(fill(to_bounds(divider, origin), rgb(theme::PANEL_DIVIDER)));
             }
-            window.paint_quad(fill(content_bounds, rgb(theme::CONTENT_PLACEHOLDER)));
+            if !see_through {
+                window.paint_quad(fill(content_bounds, rgb(theme::CONTENT_PLACEHOLDER)));
+            }
             match content {
                 Some(TerminalContent::Preview(
                     PreviewImage::Fresh(image) | PreviewImage::Stale(image),
@@ -3379,6 +3506,13 @@ impl Render for CanvasView {
         // Only live terminals take input; a preview's clicks and scrolls go to the canvas.
         // The mode comes from the current scene, not last paint, so a target never
         // outlives the switch to `Preview`.
+        let live = live_terminals(
+            self.terminals.iter().map(|(id, _)| *id),
+            &self.scene,
+            viewport,
+            snapshot.modal_open,
+            snapshot.settings.panels.preview_below_zoom,
+        );
         let placements: Vec<Option<NativePlacement>> = self
             .terminals
             .iter()
@@ -3395,7 +3529,13 @@ impl Render for CanvasView {
                         ) == PanelMode::Live
                     })
                     .and_then(|panel| {
-                        terminal_placement(panel, &self.scene, &snapshot.joins.joins, viewport)
+                        terminal_placement(
+                            panel,
+                            &self.scene,
+                            &snapshot.joins.joins,
+                            viewport,
+                            &live,
+                        )
                     })
             })
             .collect();
@@ -3604,6 +3744,14 @@ fn installed_version(plugins: &[InstalledPlugin], plugin_id: &str) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_terminals_with_content_skip_the_underfill() {
+        assert!(!paints_content_underfill(ContentKind::LiveTerminal));
+        assert!(!paints_content_underfill(ContentKind::TerminalPreviewImage));
+        assert!(paints_content_underfill(ContentKind::TerminalPreviewEmpty));
+        assert!(paints_content_underfill(ContentKind::Other));
+    }
 
     #[test]
     fn confirm_title_names_the_bound_keys() {

@@ -805,6 +805,23 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
   and follows `terminal.command_restart`. Plugin API kind `tui` and `PanelInfo.kind` "tui"
   are unchanged.
 
+## Color wells without opacity (2026-11-02, `feat/terminal-transparency`)
+
+- **Every CALM color well sets `supportsAlpha = false`.** The `Control::Color` builder in
+  `settings_window.rs` (the only `NSColorWell` CALM creates) turns it off, so the picker
+  shows no opacity slider. Why every well: no CALM color well keeps alpha today
+  (`rgb_from_ns`, `BindingKind::Color`), chrome wells included, so a slider anywhere would
+  be a control that does nothing. This replaces the spec's "terminal wells only". Turn it
+  back on per well when chrome alpha is wired (the gap is in `.ai/status.md`). The
+  deprecated app-wide `NSColor::setIgnoresAlpha` was rejected; macOS 14, CALM's floor, has
+  the per-well API.
+- **Previews fade in bytes.** A preview is GPUI-drawn, so the native fade does not reach
+  it. `take_snapshot` scales the snapshot's alpha by `content_opacity` with
+  `preview::fade_pixels`, straight alpha, because gpui's sprite pipeline blends with
+  `SourceAlpha` (`gpui-pre-apple` 0.3.4 `metal_renderer.rs`). Bytes round half away from zero.
+  Ghostty's snapshot bytes are premultiplied, so every snapshot first goes through
+  `preview::unpremultiply_pixels`, then the fade.
+
 ## Launching terminal's env is scrubbed (2026-11-02, `fix/terminal-env-scrub`)
 
 - **`main` unsets the launching terminal's identity before CALM starts any thread.** The

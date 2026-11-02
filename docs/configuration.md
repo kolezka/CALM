@@ -203,6 +203,9 @@ with the neon chrome and palette. Image icons live in the settings folder, so th
   entries are required, each `#rrggbb` with no alpha. Other keys are errors.
   Ghostty 0.3.1 takes colors only as a full set, so a partial set is refused rather than
   filled in with made-up values.
+- `content_opacity`: how opaque the terminal's text and background are, a number from 0.2
+  to 1. Default 1. The title bar stays solid. Your Ghostty `background-opacity` still
+  applies on top.
 - `use_ghostty_user_config` (profiles only): read your Ghostty config for this profile. The
   default for all terminals is `panels.terminal_user_config` (Settings > Panels), so this key
   at the top of `terminal` is an error.
@@ -274,11 +277,13 @@ profile. Duplicate keeps the source terminal's profile.
 Settings > Terminal edits the defaults: a switch for custom title bar colors with three color
 wells, a switch for custom terminal colors with background, foreground and 16 palette wells,
 Load buttons for three built-in palettes (CALM Neon, Solarized Dark, Ghostty Default), the
-default profile and "Restart typed commands". The environment shows keys with masked values.
+default profile, "Restart typed commands" and the default opacity. The environment shows
+keys with masked values.
 
 Not in the window yet: title template, icon, launch fields, and adding, duplicating,
 renaming or deleting profiles. These need text input the window does not have. Edit
 `settings.json` for them.
 
 Each open terminal, TUI apps included, also has its own Settings window: Settings… in its
-right-click menu. What it sets wins over the defaults, the profile and the manifest.
+right-click menu. What it sets wins over the defaults, the profile and the manifest. Its
+Opacity setting fades that terminal alone.

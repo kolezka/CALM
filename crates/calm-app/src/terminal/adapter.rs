@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use calm_core::geometry::Point;
 use calm_core::occlusion::{PointerGate, region_contains};
-use calm_core::preview::{PanelMode, PreviewImage, refresh_due};
+use calm_core::preview::{PanelMode, PreviewImage, fade_pixels, refresh_due, unpremultiply_pixels};
 use calm_core::viewport::{NativePlacement, unzoom_mouse_position};
 use calm_native::NativeChild;
 use gpui::{
@@ -53,6 +53,8 @@ pub struct TerminalPanel {
     snapshot_count: u64,
     snapshot_error_logged: bool,
     exit_reported: bool,
+    /// Resolved content opacity, kept for the preview path.
+    content_opacity: f64,
     _subscriptions: Vec<Subscription>,
     host: NativeChild,
 }
@@ -108,6 +110,7 @@ impl TerminalPanel {
                 snapshot_count: 0,
                 snapshot_error_logged: false,
                 exit_reported: false,
+                content_opacity: 1.0,
                 _subscriptions: subscriptions,
                 host,
             };
@@ -128,6 +131,21 @@ impl TerminalPanel {
     /// the screen contents stay; whether the user config is read was fixed at spawn.
     pub fn apply_theme(&mut self, theme: &TerminalTheme) -> Result<(), String> {
         self.theme.apply(&mut self.surface, theme)
+    }
+
+    /// Fades the native view. The process and the screen contents stay.
+    pub fn set_content_opacity(&mut self, opacity: f64) {
+        self.content_opacity = opacity;
+        self.host.set_opacity(opacity);
+    }
+
+    pub fn content_opacity(&self) -> f64 {
+        self.content_opacity
+    }
+
+    /// What the native view shows, read back from AppKit.
+    pub fn native_opacity(&self) -> f64 {
+        self.host.opacity()
     }
 
     pub fn is_alive(&self) -> bool {
@@ -195,7 +213,13 @@ impl TerminalPanel {
         self.snapshot_at = Some(Instant::now());
         self.snapshot_count += 1;
         match self.surface.snapshot_frame() {
-            Ok(frame) => {
+            Ok(mut frame) => {
+                // Ghostty's surface is premultiplied; gpui blends with SourceAlpha (straight).
+                unpremultiply_pixels(frame.buffer_mut());
+                let opacity = self.content_opacity();
+                if opacity < 1.0 {
+                    fade_pixels(frame.buffer_mut(), opacity, false);
+                }
                 let image = Arc::new(RenderImage::new([frame]));
                 if let Some(old) = self.preview.refreshed(image) {
                     window.drop_image(old).ok();

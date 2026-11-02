@@ -312,6 +312,31 @@ Open questions: `.ai/open-questions.md`.
   notch of the rear view (known limitation). A restack without a paint keeps the old mask until the next
   paint. `native_smoke` checks the mask piece, hit testing and full cover in AppKit; the
   look over real Ghostty and WKWebView content is unverified (manual pass owed).
+- `feat/terminal-transparency` (branch, not merged): CALM paints no fill under a live
+  terminal's content (the ring quad is transparent, the title bar gets its own fill), and
+  `NativePlacement::paint` (`occlusion::native_paint_region`) masks a back native view only
+  under a live front terminal's title bar and ring, so it shows through the front terminal.
+  `visible` stays the input region: a press in the overlap still goes to the front panel.
+  A preview, minimized or hidden front panel still cuts the back view out.
+  Why the throwaway spike (fills removed, Ghostty `background-opacity = 0.5`) showed a back
+  terminal's text through a front one although the back was masked there: not reproduced,
+  since agents do not drive the GUI. No stale mask was found. `native_visible_region` cuts
+  the front panel's whole outline out of the back container (unit tests
+  `panel_above_occludes_with_its_ring`, `input_region_is_unchanged_by_live_front_panels`),
+  and every paint recomputes every placement and reapplies the mask (`apply_terminal_modes`,
+  `apply_browser_modes`, `plugin_modes`; the dedupe key is the clip-local pieces, so a new
+  panel on top changes the key even when the back placement does not move). The likely
+  cause is the preview path: modes are global (`decide_mode`), so while a menu is open
+  (`modal_open`, for example the right-click Add menu) or below `preview_below_zoom` both
+  terminals are GPUI-drawn snapshots in scene order with no native view and no mask, and
+  with the content fill gone a front snapshot with see-through background pixels shows the
+  back snapshot's text. Not confirmed by eye. On this branch a terminal preview with a
+  snapshot drops CALM's fill too, so it looks like the live panel (`paints_content_underfill`);
+  a preview with no snapshot yet keeps the opaque fill and the title. The mask's rendered look over Ghostty's own layer is still unverified (manual pass owed).
+  A terminal's content fade (`content_opacity`) also fades its preview: `take_snapshot`
+  scales the snapshot's alpha bytes (`preview::fade_pixels`, straight alpha). Look unverified.
+  Snapshots are converted from premultiplied (the shim `memcpy`s Ghostty's IOSurface,
+  which Ghostty blends premultiplied) to straight alpha for GPUI (`preview::unpremultiply_pixels`).
 
 ## Not wired yet
 
@@ -406,6 +431,17 @@ Open questions: `.ai/open-questions.md`.
   Cmd+right-click menu on both, the panel Settings window and its tabs, Reset to global,
   the borderless look. The panel form does not yet explain that untouched terminal colors come
   from Ghostty Default when no palette is set.
+- See-through terminals (`feat/terminal-transparency`), by eye. With Ghostty
+  `background-opacity = 0.5`: the canvas shows through a terminal; a back terminal shows
+  through a front one, and a click in the overlap reaches the front one; the shadow under a
+  see-through terminal. The fade (Panel Settings > Opacity) at 20%, 70% and 100%, with the
+  title bar staying solid. A faded terminal's preview. No opacity slider in any color picker.
+  Two overlapping live terminals at normal zoom with no menu open: is the back text visible
+  through the front one? Then open the right-click Add menu, or zoom out until previews, and
+  see whether the view changes. This tells whether the spike's back text came from preview
+  mode. Change a terminal's Opacity while it is a preview: the next preview refresh and the
+  return to live both show the new fade. Over a contrasting canvas (a bright color or an
+  image), a terminal switching from live to preview and back keeps the same look.
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
 
@@ -430,6 +466,10 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
     right after the FPS step printed fps=123.9. Another run failed one step earlier with
     "only 1 frames with show_stats on". So the sampler works and paint stalls. Suspected
     cause: window occlusion or the display link stopping. Not confirmed.
+- Chrome colors (accent, title bar, title) accept `#rrggbbaa` in the data model, but
+  `rgb_from_ns` (`settings_window.rs`) drops the picker's alpha, so no color well can set
+  one. Since `feat/terminal-transparency` every CALM well sets `supportsAlpha = false`
+  (`.ai/decisions.md`, "Color wells without opacity").
 - Escape on the close confirmation does not redraw until the next event.
 - Panel bottom corners are square because the native view is square.
 - Chrome hover is tracked from GPUI mouse moves only, so buttons can stay visible over a

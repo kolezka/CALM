@@ -13,6 +13,7 @@ use crate::browser_url::{BrowserQueryMode, scrub_for_save, scrub_text_for_save};
 use crate::camera::{Camera, MAX_ZOOM, MIN_ZOOM};
 use crate::geometry::Rect;
 use crate::scene::{PanelKind, PanelOverrides, Scene};
+use crate::terminal_profile::check_content_opacity;
 
 pub const LAYOUT_VERSION: u32 = 2;
 /// The oldest version `load_layout_from` migrates.
@@ -491,6 +492,8 @@ pub fn load_layout_from(dir: &Path, name: &str) -> Result<LayoutFile, LayoutErro
 /// Rejects numbers that would break camera or hit-test math. JSON cannot carry
 /// NaN or infinity (serde_json refuses them), so the non-finite checks guard
 /// in-memory values; the zoom range check is what file input actually hits.
+/// Of the overrides, only `content_opacity` is checked here, and on an unknown kind only
+/// its range.
 fn validate_layout(layout: &LayoutFile) -> Result<(), String> {
     let zoom = layout.camera.zoom;
     if !zoom.is_finite() || !(MIN_ZOOM..=MAX_ZOOM).contains(&zoom) {
@@ -518,6 +521,14 @@ fn validate_layout(layout: &LayoutFile) -> Result<(), String> {
                 "panels[{index}].rect is {rect:?}, expected finite numbers"
             ));
         }
+        // A kind from a newer CALM may allow the field, so only the range is checked.
+        let checked = match &panel.kind {
+            PanelKind::Unsupported { .. } => {
+                check_content_opacity("overrides.content_opacity", panel.overrides.content_opacity)
+            }
+            kind => panel.overrides.validate_content_opacity(kind),
+        };
+        checked.map_err(|error| format!("panels[{index}]: {error}"))?;
     }
     Ok(())
 }
@@ -1855,6 +1866,7 @@ mod tests {
             terminal_colors: Some(crate::terminal_profile::PanelTerminalColors::from_colors(
                 &crate::terminal_profile::PALETTE_PRESETS[0].colors,
             )),
+            content_opacity: None,
             borderless: Some(true),
         };
         scene.get_mut(id).unwrap().overrides = overrides.clone();
@@ -1959,5 +1971,86 @@ mod tests {
         assert!(load_layout_from(dir.path(), "present").is_ok());
         let error = load_layout_from(dir.path(), "session").unwrap_err();
         assert!(matches!(error, LayoutError::NotFound(_)), "{error:?}");
+    }
+
+    #[test]
+    fn content_opacity_override_roundtrips_and_is_optional() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = v2_json_with_kinds(&[r#"{"type": "terminal", "command": null, "cwd": null}"#]);
+        let with = |value: &str| {
+            plain.replacen(
+                r#""minimized": false"#,
+                &format!(r#""minimized": false, "overrides": {{"content_opacity": {value}}}"#),
+                1,
+            )
+        };
+        std::fs::write(dir.path().join("plain.json"), &plain).unwrap();
+        let loaded = load_layout_from(dir.path(), "plain").unwrap();
+        assert_eq!(loaded.panels[0].overrides.content_opacity, None);
+
+        std::fs::write(dir.path().join("faded.json"), with("0.5")).unwrap();
+        let loaded = load_layout_from(dir.path(), "faded").unwrap();
+        assert_eq!(loaded.panels[0].overrides.content_opacity, Some(0.5));
+        save_layout_in(dir.path(), "again", &loaded, BrowserQueryMode::Keep).unwrap();
+        let again = load_layout_from(dir.path(), "again").unwrap();
+        assert_eq!(again.panels[0].overrides, loaded.panels[0].overrides);
+
+        std::fs::write(dir.path().join("text.json"), with(r#""0.5""#)).unwrap();
+        let error = load_layout_from(dir.path(), "text")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("content_opacity"), "{error}");
+    }
+
+    /// The `Malformed` message from loading `kind` with `"content_opacity": value`.
+    fn content_opacity_load(kind: &str, value: &str) -> Result<LayoutFile, String> {
+        let text = v2_json_with_kinds(&[kind]).replacen(
+            r#""minimized": false"#,
+            &format!(r#""minimized": false, "overrides": {{"content_opacity": {value}}}"#),
+            1,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("s.json"), &text).unwrap();
+        match load_layout_from(dir.path(), "s") {
+            Ok(layout) => Ok(layout),
+            Err(LayoutError::Malformed { message, .. }) => Err(message),
+            Err(other) => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn load_range_checks_content_opacity_on_an_unknown_kind_but_allows_it() {
+        let loaded = content_opacity_load(UNKNOWN_KIND, "0.5").unwrap();
+        assert!(matches!(
+            loaded.panels[0].kind,
+            PanelKind::Unsupported { .. }
+        ));
+        assert_eq!(loaded.panels[0].overrides.content_opacity, Some(0.5));
+        let message = content_opacity_load(UNKNOWN_KIND, "0.05").expect_err("0.05");
+        assert!(
+            message.contains("panels[0]") && message.contains("overrides.content_opacity"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn load_rejects_content_opacity_out_of_range_or_off_a_terminal() {
+        let terminal = r#"{"type": "terminal", "command": null, "cwd": null}"#;
+        let browser = r#"{"type": "browser", "url": "https://example.com"}"#;
+        // Positive control: an in-range value on a terminal loads.
+        let loaded = content_opacity_load(terminal, "0.5").unwrap();
+        assert_eq!(loaded.panels[0].overrides.content_opacity, Some(0.5));
+        for bad in ["0.05", "1.01"] {
+            let message = content_opacity_load(terminal, bad).expect_err(bad);
+            assert!(
+                message.contains("panels[0]") && message.contains("overrides.content_opacity"),
+                "{bad}: {message}"
+            );
+        }
+        let message = content_opacity_load(browser, "0.5").expect_err("browser");
+        assert!(
+            message.contains("panels[0]") && message.contains("applies only to terminal panels"),
+            "{message}"
+        );
     }
 }

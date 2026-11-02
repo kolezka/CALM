@@ -6,7 +6,7 @@ use crate::camera::Camera;
 use crate::chrome::RING_PX;
 use crate::geometry::{Point, Rect};
 use crate::join::Join;
-use crate::scene::{PanelId, Scene, chip_rect};
+use crate::scene::{PanelId, Scene, chip_rect, content_rect};
 
 /// The screen rect a panel covers: its body (or chip when minimized) plus the ring around
 /// it. Shadows are ignored. Same space as `camera.world_rect_to_screen`.
@@ -88,12 +88,28 @@ pub fn visible_region(container: Rect, occluders: impl IntoIterator<Item = Rect>
 /// window points. Panels after `id` in `scene.panels` (in front of it) occlude, and so does
 /// the divider of every join in `joins` painted after `id`: paint puts a divider on right
 /// after the later of its two panels, and it fills the gap the panels' rings leave open.
+/// This is the input region: a press here belongs to panel `id`.
 pub fn native_visible_region(
     scene: &Scene,
     joins: &[Join],
     id: PanelId,
     container: Rect,
     offset: Point,
+) -> Vec<Rect> {
+    native_paint_region(scene, joins, id, container, offset, &|_| false)
+}
+
+/// The part of panel `id`'s native container that may paint, as `native_visible_region`,
+/// except that a front panel for which `live_native` is true occludes only its title bar
+/// strip and ring. Its own native view draws above, so whatever shows through its content
+/// is the panel below.
+pub fn native_paint_region(
+    scene: &Scene,
+    joins: &[Join],
+    id: PanelId,
+    container: Rect,
+    offset: Point,
+    live_native: &dyn Fn(PanelId) -> bool,
 ) -> Vec<Rect> {
     let Some(index) = scene.panels.iter().position(|panel| panel.id == id) else {
         return vec![container];
@@ -103,9 +119,17 @@ pub fn native_visible_region(
             .iter()
             .any(|panel| panel.id == other)
     };
-    let panels = scene.panels[index + 1..]
-        .iter()
-        .map(|panel| occluder_rect(panel, &scene.camera));
+    let panels = scene.panels[index + 1..].iter().flat_map(|panel| {
+        let outline = occluder_rect(panel, &scene.camera);
+        if live_native(panel.id) && !panel.minimized {
+            subtract(
+                outline,
+                scene.camera.world_rect_to_screen(content_rect(panel)),
+            )
+        } else {
+            vec![outline]
+        }
+    });
     let dividers = joins
         .iter()
         .filter(|join| in_front(join.first) || in_front(join.second))
@@ -440,6 +464,80 @@ mod tests {
                 "panel {id:?}"
             );
         }
+    }
+
+    /// Back 0..200 and front 100..300 on both axes, overlapping; content below a 28 bar.
+    fn overlapping_pair() -> (Scene, PanelId, PanelId, Rect) {
+        let mut scene = Scene::default();
+        let back = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
+        let front = scene.add(terminal(), Rect::new(100.0, 100.0, 200.0, 200.0));
+        let container = scene
+            .camera
+            .world_rect_to_screen(crate::scene::content_rect(scene.get(back).unwrap()));
+        (scene, back, front, container)
+    }
+
+    const ORIGIN: Point = Point::new(0.0, 0.0);
+    const IN_FRONT_CONTENT: Point = Point::new(150.0, 150.0);
+    const IN_FRONT_BAR: Point = Point::new(150.0, 110.0);
+    const IN_FRONT_RING: Point = Point::new(99.5, 150.0);
+
+    #[test]
+    fn paint_region_keeps_a_back_panel_under_a_live_front_terminal_content() {
+        let (scene, back, front, container) = overlapping_pair();
+        let live = move |id: PanelId| id == front;
+        let pieces = native_paint_region(&scene, &[], back, container, ORIGIN, &live);
+        assert_disjoint_inside(&pieces, container);
+        assert!(
+            region_contains(&pieces, IN_FRONT_CONTENT),
+            "content cut out"
+        );
+        assert!(!region_contains(&pieces, IN_FRONT_BAR), "title bar exposed");
+        assert!(!region_contains(&pieces, IN_FRONT_RING), "ring exposed");
+        let front_panel = scene.get(front).unwrap();
+        let outline = occluder_rect(front_panel, &scene.camera);
+        let content = crate::scene::content_rect(front_panel);
+        assert_exact(&pieces, container, &subtract(outline, content));
+    }
+
+    #[test]
+    fn paint_region_still_cuts_under_a_preview_or_minimized_front() {
+        let (mut scene, back, front, container) = overlapping_pair();
+        let visible = native_visible_region(&scene, &[], back, container, ORIGIN);
+        let not_live = |_: PanelId| false;
+        assert_eq!(
+            native_paint_region(&scene, &[], back, container, ORIGIN, &not_live),
+            visible
+        );
+        // A minimized front is a GPUI chip even if the caller calls it live.
+        scene.get_mut(front).unwrap().minimized = true;
+        let live = move |id: PanelId| id == front;
+        assert_eq!(
+            native_paint_region(&scene, &[], back, container, ORIGIN, &live),
+            native_visible_region(&scene, &[], back, container, ORIGIN)
+        );
+    }
+
+    #[test]
+    fn input_region_is_unchanged_by_live_front_panels() {
+        let (scene, back, front, container) = overlapping_pair();
+        let visible = native_visible_region(&scene, &[], back, container, ORIGIN);
+        let outline = occluder_rect(scene.get(front).unwrap(), &scene.camera);
+        assert_eq!(visible, visible_region(container, [outline]));
+        assert!(!region_contains(&visible, IN_FRONT_CONTENT));
+    }
+
+    #[test]
+    fn paint_region_keeps_dividers_in_front_of_a_live_pair() {
+        let (scene, joins, rear, container) = rear_behind_joined_pair();
+        let live = |_: PanelId| true;
+        let pieces = native_paint_region(&scene, &joins, rear, container, ORIGIN, &live);
+        assert!(
+            !region_contains(&pieces, Point::new(1202.0, 800.0)),
+            "gap exposed"
+        );
+        // Inside the left pair panel's content, the rear shows through.
+        assert!(region_contains(&pieces, Point::new(800.0, 800.0)));
     }
 
     #[test]
