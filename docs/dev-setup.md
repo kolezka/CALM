@@ -35,7 +35,7 @@ settings.
 The smoke runs a fixed list of named steps (`terminals`, `zorder`, `join`, `app_icon`,
 `native_reorder`, `plugins`, `tui`, `show_stats`, `fps`, `stats`, `preview`,
 `preview_cadence`, `grid`, `preview_input_targets`, `live`, `background`, `browser`,
-`resize`, `blur`, `settings_dispatch`, `github_api`, `plugin_menus`, `session`). The list
+`resize`, `blur`, `settings_dispatch`, `keybindings`, `github_api`, `plugin_menus`, `session`). The list
 lives in `crates/calm-app/src/smoke_runner.rs`. A failed step does not stop the run. Each
 step prints `smoke: step <name> PASS`, `FAIL <label> <reason>` or `SKIPPED <reason>`. A step
 is skipped only when a step it needs failed (for example `preview_cadence` needs `preview`).

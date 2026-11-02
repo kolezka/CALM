@@ -1,0 +1,24 @@
+Copyright (c) 2026 Mariusz Rakus. All rights reserved.
+
+This software and its source code, documentation and assets (the "Software") are
+the proprietary property of Mariusz Rakus. The Software is published for viewing
+only.
+
+No license or other right is granted to use, copy, modify, merge, publish,
+distribute, sublicense, sell or create derivative works of the Software, in
+whole or in part, without the prior written permission of the copyright holder.
+
+Exceptions: the following directories are licensed separately under the MIT
+License, as stated in the LICENSE file inside each of them:
+
+  - packages/calm-plugin-sdk/
+  - templates/
+
+Third-party components remain under their own licenses.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE.
+
+For licensing enquiries, contact the copyright holder through
+https://github.com/kolezka.
