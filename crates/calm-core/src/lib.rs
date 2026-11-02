@@ -9,6 +9,7 @@ pub mod frame_stats;
 pub mod geometry;
 pub mod gesture;
 pub mod grid;
+pub mod host_env;
 pub mod interaction;
 pub mod join;
 pub mod layout;
