@@ -21,6 +21,8 @@ a real Ghostty terminal or a web browser in it. Arrange panels like notes on a w
 zoom out to see the whole workspace, zoom in to work. Every panel keeps running while you
 pan, zoom or minimize it. Only an explicit, confirmed close ends it.
 
+![CALM canvas with a Slack TUI app, a browser panel, htop and two neofetch terminals side by side](assets/screenshots/canvas.png)
+
 ## Features
 
 ### Canvas
