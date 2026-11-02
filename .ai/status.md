@@ -451,6 +451,15 @@ Open questions: `.ai/open-questions.md`.
   replaces it once upstream lands (zed-industries/zed#66403). Unverified by hand: cursor
   shapes over terminals, pages, links, chrome and resize edges; leaving and re-entering
   the window; menus and the Settings window.
+- Branch `perf/integrated`, review fixes on top of 305f70e: the status pill lays its label
+  out again after any text change, even when the pill keeps its rect (smoke step
+  `status_label` reads the frames back at 100% then 99%). The cursor guard skips only while
+  both event monitors are registered (`smoke: cursor_guard monitors=`), and reapplying an
+  unchanged setting no longer drops its trust. `settings_perf` waits for an acknowledged
+  close flush (3 s bound) instead of sleeping 100 ms. One full smoke on this branch had
+  paint stall failures (fps, stats, preview, resize, status_label) that did not repeat on
+  the next run; cause unconfirmed. Gates after the fixes: `gmake ci` and a standalone smoke
+  30/30, `window_close_save` passed.
 
 ## Not wired yet
 
