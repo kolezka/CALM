@@ -386,10 +386,44 @@ section {
 }
 
 .features,
+.extend,
 .why,
 .discover {
   padding-block: 3rem;
   border-top: 1px solid var(--grid);
+}
+
+.extend-lead {
+  max-width: 68ch;
+}
+
+.snippet {
+  margin: 0 0 1.5rem;
+  padding: 1rem 1.15rem;
+  overflow-x: auto;
+  background: var(--plate);
+  border: 1px solid var(--grid);
+  border-left: 3px solid var(--cyan);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--white);
+}
+
+.snippet code {
+  padding: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
+}
+
+.snippet .dim {
+  color: var(--muted);
+}
+
+.extend-note {
+  margin: 1.2rem 0 0;
+  font-size: 0.9rem;
 }
 
 .cards {

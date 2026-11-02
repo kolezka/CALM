@@ -5,7 +5,7 @@
 //! kept as the topmost sibling of the panel views stays visible and blurs what is behind it.
 
 use calm_core::geometry::Rect;
-use calm_core::status_bar::{STATUS_BAR_CORNER_RADIUS, STATUS_BAR_PADDING_X};
+use calm_core::status_bar::{PillUpdate, STATUS_BAR_CORNER_RADIUS, STATUS_BAR_PADDING_X};
 use objc2::MainThreadOnly;
 use objc2::rc::Retained;
 use objc2_app_kit::{
@@ -26,6 +26,8 @@ pub struct StatusBar {
     effect: Retained<NSVisualEffectView>,
     label: Retained<NSTextField>,
     text: String,
+    /// What the views show, so an unchanged frame touches nothing.
+    shown: PillUpdate,
 }
 
 impl StatusBar {
@@ -63,17 +65,21 @@ impl StatusBar {
             effect,
             label,
             text: String::new(),
+            shown: PillUpdate::default(),
         })
     }
 
     /// Sets the text and returns its natural width in points.
     pub fn set_text(&mut self, text: &str) -> f64 {
-        if self.text != text {
-            self.label.setStringValue(&NSString::from_str(text));
-            self.text = text.to_string();
+        if let Some(width) = self.shown.cached_width(text) {
+            return width;
         }
+        self.label.setStringValue(&NSString::from_str(text));
+        self.text = text.to_string();
         self.label.sizeToFit();
-        self.label.frame().size.width
+        let width = self.label.frame().size.width;
+        self.shown.record_text(text, width);
+        width
     }
 
     pub fn text(&self) -> &str {
@@ -81,18 +87,28 @@ impl StatusBar {
     }
 
     /// Places the bar at `rect` (top-left window points) or hides it for `None`.
+    /// The label is laid out again whenever its text changed, even if the pill did not move.
     pub fn apply(&mut self, rect: Option<Rect>, viewport_height: f64) {
+        let layout = self.shown.placement(rect, viewport_height);
         let Some(rect) = rect else {
-            self.effect.setHidden(true);
+            if layout.frame {
+                self.effect.setHidden(true);
+            }
             return;
         };
-        let flipped = Rect::new(
-            rect.origin.x,
-            viewport_height - rect.bottom(),
-            rect.size.width,
-            rect.size.height,
-        );
-        self.effect.setFrame(ns_rect(flipped));
+        if layout.frame {
+            let flipped = Rect::new(
+                rect.origin.x,
+                viewport_height - rect.bottom(),
+                rect.size.width,
+                rect.size.height,
+            );
+            self.effect.setFrame(ns_rect(flipped));
+            self.effect.setHidden(false);
+        }
+        if !layout.label {
+            return;
+        }
         let label_height = self.label.frame().size.height;
         self.label.setFrame(ns_rect(Rect::new(
             STATUS_BAR_PADDING_X,
@@ -100,7 +116,6 @@ impl StatusBar {
             (rect.size.width - 2.0 * STATUS_BAR_PADDING_X).max(0.0),
             label_height,
         )));
-        self.effect.setHidden(false);
     }
 
     /// Keeps the bar above every panel view. Panels restack with `bring_to_front` and new
@@ -120,6 +135,16 @@ impl StatusBar {
     pub fn is_front(&self) -> bool {
         // SAFETY: as in `ensure_front`.
         unsafe { self.effect.superview() }.is_some_and(|parent| self.is_front_in(&parent))
+    }
+
+    /// (pill width, label x, label width) in points, read back from the views.
+    pub fn label_layout(&self) -> (f64, f64, f64) {
+        let label = self.label.frame();
+        (
+            self.effect.frame().size.width,
+            label.origin.x,
+            label.size.width,
+        )
     }
 
     pub fn is_visible(&self) -> bool {

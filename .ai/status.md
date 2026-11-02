@@ -430,7 +430,57 @@ Open questions: `.ai/open-questions.md`.
 ## In progress (not on `main`)
 
 - Open PRs: #70 (plan the Claude Code integration).
+- Branch `perf/settings-path`, no PR yet: Settings window changes save after
+  `session.settings_save_ms` of quiet (default 400) and on window close or quit, and the
+  keymap and menus rebuild only when key bindings or `grid.show` change. Per change 10 ms
+  to 0.07 ms (`docs/benchmarks.md`). Opt-in smoke step `settings_perf`
+  (`CALM_SMOKE_ONLY=settings_perf`). GPUI's 33 ms frame cap for an inactive window is
+  now a setting, `canvas.limit_inactive_fps`, default off (applies after restart); its
+  effect with Settings open is not yet checked in the GUI. Real trackpad input with
+  Settings open is not measured. Closing the canvas window drops the view before quit runs,
+  so a held settings save and the last session write now also run when the view is
+  released (`_release` in `canvas_view.rs`). Checked by `tests/window_close_save.rs`
+  (ignored by default, macOS GUI session): the opt-in `window_close_save` smoke step closes
+  the window with both saves pending, the test decodes the kept files.
 - No PR yet: a Linux port plan.
+- Branch `perf/zoom-pan` (no PR yet): canvas text sizes snap to 0.5 pt so zoom reuses
+  GPUI's glyph cache, and the opt-in `zoom_bench` smoke step (`CALM_SMOKE_ONLY=zoom_bench`)
+  times paint sections. Numbers in `docs/benchmarks.md`. Unverified: how titles look while
+  zooming (manual GUI check).
+- Branch `perf/zoom-native` (no PR yet): extends that diagnostic with a native-kind matrix
+  (`CALM_ZOOM_BENCH_VARIANTS=matrix`), render-start intervals, maximum-rate missed-slot
+  estimates, calling-thread CPU outside paint and first-painted-frame epoch markers. Two
+  release matrices and two Time Profiler recordings exit 0. The precise browser-8 trace
+  shows substantial AppKit cursor-image and CA commit work after paint. It does not prove
+  WebKit re-tiling, Ghostty resizing or input backlog as the user's cause. No production
+  workaround applied. Pointer location, accessibility cursor settings, actual presentation
+  drops and real pinch feel remain unverified. Method and numbers: `docs/benchmarks.md`.
+  Verification: `gmake ci` passed with smoke 29/29, but two later standalone smokes failed
+  the browser resize check (page stayed 320x142 instead of 400x202). The second also failed
+  join, FPS, stats and preview checks. Standalone GUI acceptance is blocked by the window
+  environment, not passed: other CALM windows may occlude the smoke and stall paint, but
+  that cause is unconfirmed. A separate CALM process was observed running for about an
+  hour and was left untouched. No further retry or `origin/main` control was run, per the
+  lead's instruction. These failures are not newly classified as flakes.
+  Cursor work: the status pill now changes native views only when its text or placement
+  changed, which ended one cursor set per paint (about 4 ms each with a custom pointer).
+  The bench prints `key_and_pointer_inside`. Moving panels still cost one cursor set per
+  frame; the user picked the process-local guard (B): `calm-native::cursor_guard` skips a
+  `-[NSCursor set]` that repeats the current cursor, setting
+  `canvas.skip_repeated_cursor_sets` (default on). With the pointer moving over a browser,
+  pan p50 went 13.86 to 8.40 ms and zoom 16.64 to 9.52 ms (one run each). The GPUI patch (A)
+  replaces it once upstream lands (zed-industries/zed#66403). Unverified by hand: cursor
+  shapes over terminals, pages, links, chrome and resize edges; leaving and re-entering
+  the window; menus and the Settings window.
+- Branch `perf/integrated`, review fixes on top of 305f70e: the status pill lays its label
+  out again after any text change, even when the pill keeps its rect (smoke step
+  `status_label` reads the frames back at 100% then 99%). The cursor guard skips only while
+  both event monitors are registered (`smoke: cursor_guard monitors=`), and reapplying an
+  unchanged setting no longer drops its trust. `settings_perf` waits for an acknowledged
+  close flush (3 s bound) instead of sleeping 100 ms. One full smoke on this branch had
+  paint stall failures (fps, stats, preview, resize, status_label) that did not repeat on
+  the next run; cause unconfirmed. Gates after the fixes: `gmake ci` and a standalone smoke
+  30/30, `window_close_save` passed.
 
 ## Not wired yet
 
@@ -464,8 +514,9 @@ Open questions: `.ai/open-questions.md`.
   installed manifest `plugin_version`. Unverified: whether `on_app_quit` fires on cmd-q and
   on every quit path (the smoke calls the quit save directly, not through a real quit), and
   the manual "drag writes `session.json` about 1 s later" check.
-- `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
-  target calls a flag that is missing.
+- `--bench` is not built. The Makefile `bench` target calls a flag that is missing.
+  `docs/benchmarks.md` holds only numbers from opt-in smoke steps (`zoom_bench`,
+  `settings_perf`).
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
   or exit code from Ghostty, and TUI `fontSize`, `fontFamily` and `padding` are rejected.
 - Bun lookup for plugin backends (`plugins.bun_path`) is decided but not built; no plugin

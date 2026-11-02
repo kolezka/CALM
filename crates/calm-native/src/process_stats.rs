@@ -56,6 +56,30 @@ unsafe extern "C" {
     fn kill(pid: c_int, signal: c_int) -> c_int;
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct Timespec {
+    seconds: i64,
+    nanoseconds: i64,
+}
+
+unsafe extern "C" {
+    fn clock_gettime(clock: u32, time: *mut Timespec) -> c_int;
+}
+
+/// CPU consumed by the calling thread, including system time but excluding waits.
+pub fn thread_cpu_time() -> io::Result<std::time::Duration> {
+    let mut time = Timespec::default();
+    // SAFETY: CLOCK_THREAD_CPUTIME_ID is 16 on Darwin; time matches struct timespec.
+    if unsafe { clock_gettime(16, &mut time) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(std::time::Duration::new(
+        time.seconds as u64,
+        time.nanoseconds as u32,
+    ))
+}
+
 /// `EPERM` from `<errno.h>`: the process exists but belongs to someone else.
 const EPERM: i32 = 1;
 
@@ -233,6 +257,18 @@ mod tests {
             }
         }
         x
+    }
+
+    #[test]
+    fn thread_cpu_clock_counts_work_but_not_waits() {
+        let before = thread_cpu_time().unwrap();
+        busy(Duration::from_millis(50));
+        let used = thread_cpu_time().unwrap() - before;
+        assert!(used >= Duration::from_millis(1), "busy CPU {used:?}");
+        let before_wait = thread_cpu_time().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let waited = thread_cpu_time().unwrap() - before_wait;
+        assert!(waited < Duration::from_millis(20), "sleep CPU {waited:?}");
     }
 
     #[test]

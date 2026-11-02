@@ -43,8 +43,138 @@ pub fn status_text<'a>(items: impl IntoIterator<Item = &'a str>) -> String {
         .join(STATUS_BAR_SEPARATOR)
 }
 
+/// Remembers what the native pill last showed. Any frame or visibility change on that view
+/// makes AppKit rebuild its tracking regions on the next display cycle, which sets the
+/// cursor again; with a custom pointer that costs about 4 ms. So the pill is only touched
+/// when its text or placement changed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PillUpdate {
+    text: Option<(String, f64)>,
+    placement: Option<(Option<Rect>, f64)>,
+    /// Measuring the text resizes the label, so it needs laying out again.
+    label_stale: bool,
+}
+
+/// What the native pill has to touch for a placement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PillLayout {
+    /// The outer view's frame or visibility changed.
+    pub frame: bool,
+    /// The label needs its frame set inside the pill.
+    pub label: bool,
+}
+
+impl PillUpdate {
+    /// The width measured for `text` last time, or `None` when it must be measured again.
+    pub fn cached_width(&self, text: &str) -> Option<f64> {
+        self.text
+            .as_ref()
+            .filter(|(last, _)| last == text)
+            .map(|(_, width)| *width)
+    }
+
+    pub fn record_text(&mut self, text: &str, width: f64) {
+        self.text = Some((text.to_string(), width));
+        self.label_stale = true;
+    }
+
+    /// What changed since the last placement, and records `rect` (or hiding, for `None`).
+    /// `viewport_height` is part of the key since the native frame is flipped by it.
+    pub fn placement(&mut self, rect: Option<Rect>, viewport_height: f64) -> PillLayout {
+        let next = Some((rect, viewport_height));
+        let frame = self.placement != next;
+        self.placement = next;
+        let label = rect.is_some() && (frame || self.label_stale);
+        if label {
+            self.label_stale = false;
+        }
+        PillLayout { frame, label }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unchanged_pill_is_not_touched_again() {
+        let mut pill = super::PillUpdate::default();
+        let rect = Some(crate::geometry::Rect::new(10.0, 20.0, 120.0, 36.0));
+        assert_eq!(pill.cached_width("100%"), None);
+        pill.record_text("100%", 41.0);
+        assert_eq!(pill.cached_width("100%"), Some(41.0));
+        assert!(pill.placement(rect, 800.0).frame);
+        assert!(!pill.placement(rect, 800.0).frame);
+    }
+
+    #[test]
+    fn a_new_text_rect_or_viewport_updates_the_pill() {
+        let mut pill = super::PillUpdate::default();
+        let rect = Some(crate::geometry::Rect::new(10.0, 20.0, 120.0, 36.0));
+        pill.record_text("100%", 41.0);
+        assert_eq!(pill.cached_width("101%"), None);
+        assert!(pill.placement(rect, 800.0).frame);
+        assert!(
+            pill.placement(
+                Some(crate::geometry::Rect::new(10.0, 20.0, 124.0, 36.0)),
+                800.0
+            )
+            .frame
+        );
+        assert!(
+            pill.placement(
+                Some(crate::geometry::Rect::new(10.0, 20.0, 124.0, 36.0)),
+                900.0
+            )
+            .frame
+        );
+        assert!(pill.placement(None, 900.0).frame);
+        assert!(!pill.placement(None, 900.0).frame);
+    }
+
+    #[test]
+    fn a_text_change_with_an_unchanged_rect_still_lays_out_the_label() {
+        // Stats off, 100% to 99%: both fit the minimum width, so the outer rect is the same,
+        // but measuring "99%" resized the label and it must be laid out again.
+        let mut pill = super::PillUpdate::default();
+        let rect = Some(crate::geometry::Rect::new(10.0, 20.0, 96.0, 36.0));
+        pill.record_text("100%", 33.0);
+        let first = pill.placement(rect, 800.0);
+        assert_eq!(
+            first,
+            super::PillLayout {
+                frame: true,
+                label: true
+            }
+        );
+        pill.record_text("99%", 25.0);
+        assert_eq!(
+            pill.placement(rect, 800.0),
+            super::PillLayout {
+                frame: false,
+                label: true
+            },
+            "a changed text must re-lay out the label even when the outer rect is unchanged"
+        );
+        assert_eq!(pill.placement(rect, 800.0), super::PillLayout::default());
+    }
+
+    #[test]
+    fn a_text_change_while_hidden_lays_out_the_label_when_shown() {
+        let mut pill = super::PillUpdate::default();
+        let rect = Some(crate::geometry::Rect::new(10.0, 20.0, 96.0, 36.0));
+        pill.record_text("100%", 33.0);
+        pill.placement(rect, 800.0);
+        pill.placement(None, 800.0);
+        pill.record_text("99%", 25.0);
+        assert_eq!(pill.placement(None, 800.0), super::PillLayout::default());
+        assert_eq!(
+            pill.placement(rect, 800.0),
+            super::PillLayout {
+                frame: true,
+                label: true
+            }
+        );
+    }
+
     use super::*;
 
     const CANVAS: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);

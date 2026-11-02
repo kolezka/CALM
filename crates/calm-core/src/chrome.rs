@@ -184,6 +184,16 @@ pub fn details_visible(zoom: f64) -> bool {
     TITLE_BAR_HEIGHT * zoom >= MIN_DETAIL_PX
 }
 
+/// Screen font sizes of canvas text snap to multiples of this, in points (one device pixel
+/// on a Retina screen). GPUI rasterizes and caches glyphs per exact font size, so text at
+/// `base * zoom` would rasterize every glyph anew on each frame of a zoom.
+pub const TEXT_SIZE_STEP_PX: f64 = 0.5;
+
+/// The screen font size for text of `base` world units at `zoom`, on the step grid.
+pub fn text_size_px(base: f64, zoom: f64) -> f64 {
+    (base * zoom / TEXT_SIZE_STEP_PX).round() * TEXT_SIZE_STEP_PX
+}
+
 /// Stroke polylines for an icon, in unit square coordinates (0..1, y down).
 pub fn icon_strokes(icon: PanelIcon) -> Vec<Vec<(f64, f64)>> {
     match icon {
@@ -497,6 +507,26 @@ mod color_tests {
 mod tests {
     use super::*;
     use crate::scene::{MINIMIZED_CHIP, content_rect};
+
+    /// Each distinct size is a fresh glyph rasterization in GPUI, so a zoom gesture must
+    /// reuse a small fixed set of sizes however many fractional zooms it passes through.
+    #[test]
+    fn a_zoom_sweep_yields_few_text_sizes() {
+        let (low, high, base) = (0.3_f64, 3.0_f64, 12.0);
+        let mut sizes: Vec<u64> = (0..1000)
+            .map(|i| low * (high / low).powf(f64::from(i) / 999.0) * 1.000_37)
+            .map(|zoom| {
+                let size = text_size_px(base, zoom);
+                assert!((size - base * zoom).abs() <= TEXT_SIZE_STEP_PX / 2.0 + 1e-9);
+                size.to_bits()
+            })
+            .collect();
+        sizes.sort_unstable();
+        sizes.dedup();
+        // 3.6 to 36 points on a half point grid.
+        let bound = ((base * high - base * low) / TEXT_SIZE_STEP_PX) as usize + 2;
+        assert!(sizes.len() <= bound, "{} sizes, bound {bound}", sizes.len());
+    }
 
     fn terminal() -> PanelKind {
         PanelKind::Terminal {

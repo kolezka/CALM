@@ -3,9 +3,9 @@
 A CALM plugin is a folder with a manifest and an HTML page. CALM shows the page in a panel on
 the canvas and gives it a small JavaScript API, `window.calm`, for talking to the host.
 
-Status: plugin panels and TUI app panels work. Of the `window.calm` calls, only four are
-served by the host so far (see [Host support](#host-support)). Plugin API v2 is a design, not
-built.
+Status: plugin panels and TUI app panels work. The host serves all 18 `window.calm` calls
+(see [Host support](#host-support)). Of the events, only `command` is sent so far. Plugin API
+v2 is a design, not built, apart from error codes and `calm.has`.
 
 ## Trust
 
