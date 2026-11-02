@@ -76,6 +76,7 @@ release-upload: ## Build the macOS zip and attach it to release VERSION.
 notices: ## Regenerate THIRD_PARTY_NOTICES (needs cargo-about).
 	@command -v cargo-about >/dev/null 2>&1 || { printf 'error: cargo-about is missing; run cargo install --locked cargo-about --features cli\n' >&2; exit 1; }
 	@cargo about generate --locked about.hbs -o THIRD_PARTY_NOTICES
+	@perl -0pi -e 's/[ \t\r]+$$//mg; s/\n+\z/\n/' THIRD_PARTY_NOTICES
 
 plugins: ## Install and build every plugin package (needs bun).
 	@command -v bun >/dev/null 2>&1 || { printf 'error: bun is missing; install it from https://bun.sh, then rerun gmake plugins\n' >&2; exit 1; }

@@ -666,7 +666,7 @@ Used by:
   exr 1.74.2
   sha1_smol 1.0.1
 
-Copyright (c) <year> <owner>. 
+Copyright (c) <year> <owner>.
 
 Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
 
@@ -780,7 +780,7 @@ Used by:
 
 clang fuzzing harness for qoi_decode
 
-Compile and run with: 
+Compile and run with:
 	clang -fsanitize=address,fuzzer -g -O0 qoifuzz.c && ./a.out
 
 Dominic Szablewski - https://phoboslab.org
@@ -4872,7 +4872,7 @@ Mozilla Public License Version 2.0
     means any form of the work other than Source Code Form.
 
 1.7. "Larger Work"
-    means a work that combines Covered Software with other material, in 
+    means a work that combines Covered Software with other material, in
     a separate file or files, that is not Covered Software.
 
 1.8. "License"
@@ -5435,5 +5435,3 @@ Julian Seward, jseward@acm.org
 bzip2/libbzip2 version 1.1.0 of 6 September 2010
 
 --------------------------------------------------------------------------
-
-
