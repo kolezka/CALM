@@ -79,6 +79,7 @@ actions!(
         DrawTerminal,
         DrawBrowser,
         DeletePanel,
+        OpenPanelSettings,
         Cancel,
         ConfirmEnter,
         ToggleFullscreen
@@ -110,6 +111,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("cmd-shift-h", CenterOnOrigin, ctx),
         KeyBinding::new("cmd-shift-0", FitAll, ctx),
         KeyBinding::new("cmd-shift-backspace", DeletePanel, ctx),
+        KeyBinding::new("cmd-<", OpenPanelSettings, ctx),
         KeyBinding::new("t", DrawTerminal, ctx),
         KeyBinding::new("b", DrawBrowser, ctx),
         KeyBinding::new("escape", Cancel, ctx),
@@ -3254,6 +3256,11 @@ impl Render for CanvasView {
                     view.apply_effects(vec![Effect::ClosePanelRequested(id)], window, cx);
                 }
             }))
+            .on_action(cx.listener(|view, _: &OpenPanelSettings, window, cx| {
+                if let Some(id) = view.focused {
+                    view.open_panel_settings(id, window, cx);
+                }
+            }))
             .on_action(cx.listener(|view, _: &Cancel, window, cx| view.cancel(window, cx)))
             .on_action(
                 cx.listener(|view, _: &ConfirmEnter, window, cx| view.confirm_enter(window, cx)),
@@ -3347,6 +3354,40 @@ fn installed_version(plugins: &[InstalledPlugin], plugin_id: &str) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panel_settings_shortcut_is_available_with_terminal_focus() {
+        // macOS GPUI represents US cmd-shift-comma as cmd-<.
+        let keystroke = gpui::Keystroke::parse("cmd-<").unwrap();
+        let bindings = key_bindings();
+        assert!(
+            !bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&NoAction)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
+            }),
+            "terminal context must not block the panel settings shortcut"
+        );
+        assert!(
+            bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&OpenPanelSettings)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
+            }),
+            "canvas must bind cmd-< to OpenPanelSettings"
+        );
+        assert!(
+            !settings_menu::key_bindings().iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&settings_menu::OpenSettings)
+            }),
+            "panel settings shortcut must not also open global settings"
+        );
+    }
 
     #[test]
     fn delete_panel_shortcut_is_available_with_terminal_focus() {
