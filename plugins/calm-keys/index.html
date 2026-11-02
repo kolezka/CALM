@@ -48,6 +48,7 @@
       summary { cursor: default; color: var(--muted); }
       .hint { color: var(--muted); margin: 6px 0; }
       .error { color: var(--error); white-space: pre-wrap; }
+      li.sentence { justify-content: flex-start; gap: 0; }
     </style>
   </head>
   <body>
@@ -56,14 +57,19 @@
     <ul>
       <li><span>Pan</span><span class="key">Space+drag, middle-drag</span></li>
       <li><span>Zoom</span><span class="key">Pinch, Cmd+scroll</span></li>
-      <li><span>Move a panel (snaps)</span><span class="key">Cmd+drag</span></li>
-      <li><span>Move without snapping</span><span class="key">Cmd+Shift+drag</span></li>
+      <li><span>Move a panel (snaps)</span><span class="key">Cmd+drag (default)</span></li>
+      <li><span>Move without snapping</span><span class="key">Cmd+Shift+drag (default)</span></li>
       <li><span>Open the menu</span><span class="key">Right-click</span></li>
-      <li><span>Draw a terminal</span><span class="key">t, then drag</span></li>
-      <li><span>Draw a browser</span><span class="key">b, then drag</span></li>
     </ul>
+    <ul id="draw"></ul>
+    <p class="hint">Cmd is the default modifier for moving; the <code>canvas.move_modifier</code> setting changes it.</p>
     <script>
       var root = document.getElementById("keys");
+      var drawList = document.getElementById("draw");
+      var DRAW_ACTIONS = [
+        { id: "canvas.draw_terminal", label: "Draw a terminal", what: "a terminal" },
+        { id: "canvas.draw_browser", label: "Draw a browser", what: "a browser" },
+      ];
 
       function el(tag, className, text) {
         var node = document.createElement(tag);
@@ -73,6 +79,7 @@
       }
 
       function showError(message) {
+        drawList.replaceChildren();
         root.replaceChildren(el("p", "error", "Could not load key bindings: " + message));
       }
 
@@ -81,6 +88,22 @@
         item.appendChild(el("span", "", label));
         if (key) item.appendChild(el("span", "key", key));
         return item;
+      }
+
+      // Drawing hints use the live keys, so a rebound or unbound draw key reads right.
+      function renderDrawHints(keys) {
+        var items = DRAW_ACTIONS.map(function (action) {
+          var entry = keys.find(function (candidate) { return candidate.id === action.id; });
+          var item = el("li", "sentence");
+          if (!entry || entry.key === null || entry.key === undefined) {
+            item.appendChild(el("span", "", action.label + ": not bound"));
+          } else {
+            item.appendChild(el("span", "key", entry.key));
+            item.appendChild(el("span", "", ", then drag draws " + action.what));
+          }
+          return item;
+        });
+        drawList.replaceChildren.apply(drawList, items);
       }
 
       // Bound rows by group in the order the host sends them, unbound ones collapsed at the end.
@@ -124,6 +147,7 @@
         calm.keys.list().then(function (result) {
           if (!result || !Array.isArray(result.keys)) throw new Error("unexpected answer");
           render(result.keys);
+          renderDrawHints(result.keys);
         }).catch(function (err) {
           showError(err && err.message ? err.message : String(err));
         });
