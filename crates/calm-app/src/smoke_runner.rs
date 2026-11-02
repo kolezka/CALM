@@ -32,6 +32,7 @@ pub const STEPS: &[StepSpec] = &[
     step("zorder", &["terminals"], &[]),
     step("join", &["terminals"], &[]),
     step("app_icon", &[], &[]),
+    step("terminal_env", &[], &[]),
     step("native_reorder", &[], &[]),
     step("plugins", &[], &[]),
     step("tui", &[], &[]),
@@ -56,6 +57,7 @@ pub const STEPS: &[StepSpec] = &[
     step("panel_overrides", &["terminals"], &[]),
     step("panel_settings", &[], &[]),
     step("session", &[], &[]),
+    step("presets", &[], &["session"]),
 ];
 
 /// Failures seen before and written up in `.ai/conventions.md` ("Smoke flakes").

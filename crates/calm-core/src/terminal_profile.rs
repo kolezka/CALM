@@ -14,6 +14,10 @@ use crate::chrome::{ChromeOverrides, lay_overrides, parse_hex_color};
 use crate::scene::PanelOverrides;
 
 pub const DEFAULT_TITLE_TEMPLATE: &str = "Terminal";
+/// The lowest content opacity: below it a terminal's text is hard to read.
+pub const MIN_CONTENT_OPACITY: f64 = 0.2;
+/// A terminal's content opacity when no layer sets one: fully opaque.
+pub const DEFAULT_CONTENT_OPACITY: f64 = 1.0;
 /// Becomes the terminal's number: plain terminals opened since CALM started, from 1.
 pub const PLACEHOLDER_INDEX: &str = "{n}";
 /// Becomes the directory the terminal started in, with the home folder shown as `~`.
@@ -293,6 +297,12 @@ pub struct TerminalFields {
     pub title_color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_colors: Option<TerminalColorsSetting>,
+    /// 0.2 to 1: how opaque the terminal's content is.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_content_opacity"
+    )]
+    pub content_opacity: Option<f64>,
     /// Profiles only. The global switch is `panels.terminal_user_config`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub use_ghostty_user_config: Option<bool>,
@@ -444,6 +454,8 @@ pub struct ResolvedTerminal {
     pub icon: Option<TerminalIcon>,
     pub overrides: ChromeOverrides,
     pub colors: Option<TerminalColors>,
+    /// 0.2 to 1.
+    pub content_opacity: f64,
     pub use_user_config: bool,
     pub command: Option<String>,
     pub args: Vec<String>,
@@ -529,6 +541,25 @@ pub(crate) fn check_color(path: &str, value: &Option<String>) -> Result<(), Stri
     }
 }
 
+/// serde's own type error does not name the field.
+pub(crate) fn deserialize_content_opacity<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<f64>::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("\"content_opacity\": {error}")))
+}
+
+/// Also rejects NaN, which no range contains.
+pub(crate) fn check_content_opacity(path: &str, value: Option<f64>) -> Result<(), String> {
+    match value {
+        Some(value) if !(MIN_CONTENT_OPACITY..=1.0).contains(&value) => {
+            Err(format!("\"{path}\" is {value}, expected 0.2 to 1"))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// `/usr/bin/env` runs the command, so a leading `-` or a `=` would be misread.
 fn check_command(path: &str, command: &str) -> Result<(), String> {
     if command.trim().is_empty() {
@@ -580,6 +611,7 @@ impl TerminalFields {
         if let Some(colors) = &self.terminal_colors {
             colors.parse(&at("terminal_colors"))?;
         }
+        check_content_opacity(&at("content_opacity"), self.content_opacity)?;
         if let Some(command) = &self.command {
             check_command(&at("command"), command)?;
         }
@@ -735,6 +767,10 @@ impl TerminalSettings {
                 .as_ref()
                 .or(base.terminal_colors.as_ref())
                 .and_then(|colors| colors.parse("terminal_colors").ok()),
+            content_opacity: top
+                .content_opacity
+                .or(base.content_opacity)
+                .unwrap_or(DEFAULT_CONTENT_OPACITY),
             use_user_config: top.use_ghostty_user_config.unwrap_or(user_config),
             command: launch.command.clone(),
             args: launch.args.clone().unwrap_or_default(),
@@ -792,6 +828,9 @@ impl TerminalSettings {
             if let Some(colors) = own.over(&base) {
                 resolved.colors = Some(colors);
             }
+        }
+        if let Some(opacity) = overrides.content_opacity {
+            resolved.content_opacity = opacity;
         }
         resolved
     }
@@ -1583,5 +1622,63 @@ mod tests {
                 .env,
             settings.resolve(Some("p"), false).env
         );
+    }
+
+    #[test]
+    fn content_opacity_resolves_panel_over_profile_over_defaults() {
+        let settings = parse(
+            r#"{"content_opacity": 0.9,
+                "profiles": [{"id": "dim", "name": "Dim", "content_opacity": 0.6}]}"#,
+        )
+        .unwrap();
+        let none = PanelOverrides::default();
+        let own = PanelOverrides {
+            content_opacity: Some(0.4),
+            ..PanelOverrides::default()
+        };
+        let typed = AppLayer::typed_command();
+        let opacity = |profile, app, overrides| {
+            settings
+                .resolve_for_panel(profile, true, app, overrides)
+                .content_opacity
+        };
+        assert_eq!(opacity(None, None, &none), 0.9);
+        assert_eq!(opacity(Some("dim"), None, &none), 0.6);
+        assert_eq!(opacity(Some("dim"), Some(&typed), &none), 0.6);
+        assert_eq!(opacity(Some("dim"), None, &own), 0.4);
+        let bare = parse("{}").unwrap();
+        assert_eq!(
+            bare.resolve_for_panel(None, true, None, &none)
+                .content_opacity,
+            DEFAULT_CONTENT_OPACITY
+        );
+    }
+
+    #[test]
+    fn content_opacity_in_settings_is_range_checked() {
+        assert_eq!(
+            error(r#"{"content_opacity": 0.1}"#),
+            "\"terminal.content_opacity\" is 0.1, expected 0.2 to 1"
+        );
+        assert!(
+            error(r#"{"profiles": [{"id": "p", "name": "P", "content_opacity": 1.5}]}"#)
+                .contains("terminal.profiles[0].content_opacity")
+        );
+        assert!(parse(r#"{"content_opacity": 0.2}"#).is_ok());
+    }
+
+    #[test]
+    fn content_opacity_of_the_wrong_type_names_the_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 2, "terminal": {"content_opacity": "0.5"}}"#,
+        )
+        .unwrap();
+        let error = crate::settings::read_settings_from(&path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("content_opacity"), "{error}");
     }
 }

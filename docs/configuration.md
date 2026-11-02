@@ -73,13 +73,15 @@ saved data and offers only Delete. A session file that cannot be parsed is moved
 off for that launch. An empty start never touches the last session until the first change,
 which rotates it into `session.json.1`.
 
-Launch flags win over the setting: `--layout NAME` opens `layouts/NAME.json` (a missing one
-starts empty, a malformed one exits with code 2), then `--no-restore` starts empty.
+Launch flags win over the setting: `--layout NAME` opens `layouts/NAME.json`, or else the
+built-in preset NAME (a missing one starts empty, a malformed one exits with code 2), then
+`--no-restore` starts empty.
 
 ```json
 {
   "session": {
     "restore_on_launch": "on",
+    "first_launch_preset": "welcome",
     "autosave": true,
     "debounce_ms": 1000,
     "backup_count": 3,
@@ -90,6 +92,15 @@ starts empty, a malformed one exits with code 2), then `--no-restore` starts emp
 
 - `restore_on_launch`: `on` (default), `off` or `ask`. `ask` has no dialog yet: it
   restores like `on` and says so in the status pill.
+- `first_launch_preset` (string, default `"welcome"`): the preset a launch opens when there is
+  no `session.json` and the launch would restore it (no `--layout` or `--no-restore`,
+  `restore_on_launch` not `off`). A malformed session never opens it. `""` starts with an
+  empty canvas. A name matches `^[A-Za-z0-9_-]+$`; anything else is an error. CALM looks
+  for `layouts/NAME.json` first, then the built-in presets. A preset that is missing or
+  cannot be read gives an empty canvas and a notice. With autosave on, the opened preset is
+  saved as the session right away, so the next launch restores it. Developer > Show Welcome
+  Screen opens this preset again (`welcome` when the value is empty). Settings shows it as
+  "First launch preset".
 - `autosave` (default `true`).
 - `debounce_ms` (default 1000, 250 to 10000): quiet time after the last change before a save.
 - `backup_count` (default 3, 0 to 20): how many `session.json.<n>` backups to keep.
@@ -203,6 +214,9 @@ with the neon chrome and palette. Image icons live in the settings folder, so th
   entries are required, each `#rrggbb` with no alpha. Other keys are errors.
   Ghostty 0.3.1 takes colors only as a full set, so a partial set is refused rather than
   filled in with made-up values.
+- `content_opacity`: how opaque the terminal's text and background are, a number from 0.2
+  to 1. Default 1. The title bar stays solid. Your Ghostty `background-opacity` still
+  applies on top.
 - `use_ghostty_user_config` (profiles only): read your Ghostty config for this profile. The
   default for all terminals is `panels.terminal_user_config` (Settings > Panels), so this key
   at the top of `terminal` is an error.
@@ -274,11 +288,13 @@ profile. Duplicate keeps the source terminal's profile.
 Settings > Terminal edits the defaults: a switch for custom title bar colors with three color
 wells, a switch for custom terminal colors with background, foreground and 16 palette wells,
 Load buttons for three built-in palettes (CALM Neon, Solarized Dark, Ghostty Default), the
-default profile and "Restart typed commands". The environment shows keys with masked values.
+default profile, "Restart typed commands" and the default opacity. The environment shows
+keys with masked values.
 
 Not in the window yet: title template, icon, launch fields, and adding, duplicating,
 renaming or deleting profiles. These need text input the window does not have. Edit
 `settings.json` for them.
 
 Each open terminal, TUI apps included, also has its own Settings window: Settings… in its
-right-click menu. What it sets wins over the defaults, the profile and the manifest.
+right-click menu. What it sets wins over the defaults, the profile and the manifest. Its
+Opacity setting fades that terminal alone.

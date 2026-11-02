@@ -12,12 +12,20 @@ pub const QUICK_EXIT: Duration = Duration::from_secs(10);
 /// `on-exit` gives up after this many quick exits in a row.
 pub const MAX_QUICK_EXITS: u32 = 5;
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
+/// Ghostty's `abnormal-command-exit-runtime` default. gpui-libghostty cannot set it.
+pub const GHOSTTY_ABNORMAL_EXIT_RUNTIME: Duration = Duration::from_millis(250);
+/// The wrapper never exits sooner than this. `STATUS_SCRIPT` spells it as `sleep 0.4`.
+pub const MIN_WRAPPER_RUNTIME: Duration = Duration::from_millis(400);
 
 /// Runs the command, writes its exit code to `$1`, prints a closing line, exits 0.
-/// Exiting 0 keeps Ghostty's own "exited abnormally" text out; the code is in the file.
+/// On macOS Ghostty calls any exit under `abnormal-command-exit-runtime` a failed launch,
+/// whatever the code, and hides the output. So a background `sleep` keeps the script alive
+/// at least `MIN_WRAPPER_RUNTIME`. Exiting 0 keeps it quiet on other platforms.
 /// The traps are handlers, not ignores, so the command still gets Ctrl-C.
 pub const STATUS_SCRIPT: &str = r#"status=$1 name=$2 dir=$3
 shift 3
+sleep 0.4 </dev/null >/dev/null 2>&1 &
+guard=$!
 trap : INT QUIT
 "$@"
 code=$?
@@ -28,6 +36,7 @@ if [ "$code" -eq 127 ]; then
 else
   printf '\n[calm] %s exited with code %s\n' "$name" "$code"
 fi
+wait "$guard" 2>/dev/null
 exit 0"#;
 
 /// Runs `"$0" "$@"` in the user's login shell, so its profile sets `PATH`.
@@ -319,6 +328,50 @@ mod tests {
         status_file: "/tmp/s",
         plugin_dir: "/p",
     };
+
+    /// Runs the wrapper the way `argv` lays it out and returns its exit status and run time.
+    fn run_wrapper(status: &str, command: &[&str]) -> (std::process::ExitStatus, Duration) {
+        let started = std::time::Instant::now();
+        let output = Command::new("/bin/sh")
+            .args(["-c", STATUS_SCRIPT, "calm-tui", status, "name", ""])
+            .args(command)
+            .output()
+            .unwrap();
+        (output.status, started.elapsed())
+    }
+
+    #[test]
+    fn the_guard_in_the_script_matches_the_minimum_runtime() {
+        let guard = format!("sleep {} ", MIN_WRAPPER_RUNTIME.as_secs_f64());
+        assert!(
+            STATUS_SCRIPT.contains(&guard),
+            "expected {guard:?} in the script"
+        );
+        assert!(MIN_WRAPPER_RUNTIME > GHOSTTY_ABNORMAL_EXIT_RUNTIME);
+    }
+
+    #[test]
+    fn the_wrapper_outlives_ghosttys_abnormal_exit_check_and_keeps_the_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let status = dir.path().join("status");
+        let status = status.to_str().unwrap();
+        for (command, code) in [
+            (&["/usr/bin/true"][..], "0\n"),
+            (&["/bin/sh", "-c", "exit 3"][..], "3\n"),
+        ] {
+            let (exit, ran_for) = run_wrapper(status, command);
+            assert!(exit.success(), "the wrapper always exits 0: {exit}");
+            assert!(
+                ran_for >= GHOSTTY_ABNORMAL_EXIT_RUNTIME,
+                "{command:?} wrapper ran {ran_for:?}, Ghostty flags anything under {GHOSTTY_ABNORMAL_EXIT_RUNTIME:?}"
+            );
+            assert!(
+                ran_for < Duration::from_secs(1),
+                "{command:?} took {ran_for:?}"
+            );
+            assert_eq!(std::fs::read_to_string(status).unwrap(), code);
+        }
+    }
 
     #[test]
     fn argv_without_shell_runs_command_under_the_status_wrapper() {

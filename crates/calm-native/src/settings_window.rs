@@ -866,6 +866,8 @@ impl SettingsWindow {
                     NSColorWell::alloc(mtm),
                     rect(CONTROL_X, y + 1.0, 60.0, 26.0),
                 );
+                // `rgb_from_ns` drops alpha, so the picker must not offer it.
+                well.setSupportsAlpha(false);
                 well.setColor(&ns_from_rgb(*color));
                 (Retained::into_super(well), BindingKind::Color)
             }

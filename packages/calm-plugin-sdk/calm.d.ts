@@ -261,6 +261,22 @@ export interface CalmTheme {
   get(): Promise<Theme>;
 }
 
+/** One effective key binding: an action with the user's override applied, or a fixed key. */
+export interface KeyHelpRow {
+  /** Action id such as "panel.delete", or "fixed.browser.<n>" and "fixed.restart" for fixed keys. */
+  id: string;
+  label: string;
+  /** Group title such as "Canvas" or "View"; fixed keys use "Fixed". */
+  group: string;
+  /** The key as macOS writes it, like "⇧⌘F". `null` when the action is unbound. */
+  key: string | null;
+}
+
+export interface CalmKeys {
+  /** Every action and fixed key in Keys tab order, with the current settings applied. */
+  list(): Promise<{ keys: KeyHelpRow[] }>;
+}
+
 /** Host to plugin events. Served by the prelude, not a host request. */
 export interface CalmEvents {
   /** Returns a function that removes the handler. */
@@ -275,6 +291,7 @@ export interface Calm {
   process: CalmProcess;
   github: CalmGithub;
   theme: CalmTheme;
+  keys: CalmKeys;
   events: CalmEvents;
   openExternal(url: string): Promise<void>;
   /** Synchronous: whether this host serves `method`, such as "panel.setTitle". Served by the prelude. */
