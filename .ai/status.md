@@ -406,6 +406,16 @@ Open questions: `.ai/open-questions.md`.
   Cmd+right-click menu on both, the panel Settings window and its tabs, Reset to global,
   the borderless look. The panel form does not yet explain that untouched terminal colors come
   from Ghostty Default when no palette is set.
+- See-through terminals (`feat/terminal-transparency`), by eye. With Ghostty
+  `background-opacity = 0.5`: the canvas shows through a terminal; a back terminal shows
+  through a front one, and a click in the overlap reaches the front one; the shadow under a
+  see-through terminal. The fade (Panel Settings > Opacity) at 20%, 70% and 100%, with the
+  title bar staying solid. A faded terminal's preview. No opacity slider in any color picker.
+  Two overlapping live terminals at normal zoom with no menu open: is the back text visible
+  through the front one? Then open the right-click Add menu, or zoom out until previews, and
+  see whether the view changes. This tells whether the spike's back text came from preview
+  mode. Change a terminal's Opacity while it is a preview: the next preview refresh and the
+  return to live both show the new fade.
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
 
