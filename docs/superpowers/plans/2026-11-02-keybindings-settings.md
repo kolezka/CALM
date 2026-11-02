@@ -1,5 +1,7 @@
 # Editable Key Bindings Implementation Plan
 
+> **Execution (user's choice, 2026-11-02):** native, the lead implements every task in one session after #63 merges; one fresh cross-family reviewer checks the whole branch before merge.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Every CALM key binding becomes a setting, listed and recorded in a Keys tab of the Settings window, applied live and saved as overrides in `settings.json`.
@@ -174,9 +176,9 @@ Grammar rules for `parse_key` (narrower than `Keystroke::parse`, `keystroke.rs:1
 - bad value: `"keybindings.{id}" is "{value}": {message}`
 - conflict between effective keys: same format with `UsedBy`, naming the overridden id (if both are overridden, the later one in `ACTIONS` order).
 
-`display_key` symbols: modifiers `⌘ ⌃ ⌥ ⇧`, then `fn ` for fn; keys `backspace ⌫`, `delete ⌦`, `enter ↩`, `tab ⇥`, `escape ⎋`, `space Space`, `up ↑`, `down ↓`, `left ←`, `right →`, `pageup ⇞`, `pagedown ⇟`, `home ↖`, `end ↘`, `insert Ins`, `f5 F5`; letters uppercased; other chars as written.
+`display_key` symbols: modifiers in the order `⌃ ⌥ ⇧ ⌘`, then `fn ` for fn; keys `backspace ⌫`, `delete ⌦`, `enter ↩`, `tab ⇥`, `escape ⎋`, `space Space`, `up ↑`, `down ↓`, `left ←`, `right →`, `pageup ⇞`, `pagedown ⇟`, `home ↖`, `end ↘`, `insert Ins`, `f5 F5`; letters uppercased; other chars as written.
 
-`confirm_prompt`: `"Close?"` followed by ` {confirm} / {cancel}` using `display_key`, dropping an unbound side and the ` / ` with it.
+`confirm_prompt`: `"Close?"` followed by ` {confirm} / {cancel}` in words, not symbols (user's choice): the stored key string with `escape` shown as `esc`, e.g. `enter`, `esc`, `y`, `cmd-y`. An unbound side is dropped together with the ` / `.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -305,11 +307,11 @@ fn menu_cannot_show_fn_enter_or_tab() {
 #[test]
 fn confirm_prompt_follows_the_bindings() {
     let mut overrides = KeyOverrides::new();
-    assert_eq!(confirm_prompt(&overrides), "Close? ↩ / ⎋");
+    assert_eq!(confirm_prompt(&overrides), "Close? enter / esc");
     overrides.insert("canvas.confirm".into(), Some("y".into()));
-    assert_eq!(confirm_prompt(&overrides), "Close? Y / ⎋");
+    assert_eq!(confirm_prompt(&overrides), "Close? y / esc");
     overrides.insert("canvas.cancel".into(), None);
-    assert_eq!(confirm_prompt(&overrides), "Close? Y");
+    assert_eq!(confirm_prompt(&overrides), "Close? y");
     overrides.insert("canvas.confirm".into(), None);
     assert_eq!(confirm_prompt(&overrides), "Close?");
 }
