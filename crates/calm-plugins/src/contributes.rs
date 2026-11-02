@@ -15,7 +15,7 @@ const CONTRIBUTES_FIELDS: &[&str] = &["menus"];
 const ITEM_FIELDS: &[&str] = &[
     "id", "title", "location", "when", "group", "order", "icon", "open", "run",
 ];
-const WHEN_FIELDS: &[&str] = &["kind", "plugin", "minimized"];
+const WHEN_FIELDS: &[&str] = &["kind", "plugin", "minimized", "pinned"];
 pub const MAX_MENU_ITEMS: usize = 32;
 pub const MAX_TITLE_CHARS: usize = 80;
 
@@ -154,7 +154,7 @@ fn parse_when(value: &Value) -> Result<MenuWhen, String> {
         .find(|key| !WHEN_FIELDS.contains(&key.as_str()))
     {
         return Err(format!(
-            ".when.{key}: unknown field, expected \"kind\", \"plugin\" or \"minimized\""
+            ".when.{key}: unknown field, expected \"kind\", \"plugin\", \"minimized\" or \"pinned\""
         ));
     }
     let mut when = MenuWhen::default();
@@ -183,6 +183,13 @@ fn parse_when(value: &Value) -> Result<MenuWhen, String> {
             minimized
                 .as_bool()
                 .ok_or_else(|| format!(".when.minimized: must be a boolean, got {minimized}"))?,
+        );
+    }
+    if let Some(pinned) = object.get("pinned") {
+        when.pinned = Some(
+            pinned
+                .as_bool()
+                .ok_or_else(|| format!(".when.pinned: must be a boolean, got {pinned}"))?,
         );
     }
     Ok(when)
@@ -258,7 +265,7 @@ mod tests {
                 {"id":"here","title":"New here","location":"canvas","open":"new"},
                 {"id":"rename","title":"Rename","location":"panel","group":"edit",
                  "order":-2,"icon":"R",
-                 "when":{"kind":["plugin"],"plugin":["p"],"minimized":false}}
+                 "when":{"kind":["plugin"],"plugin":["p"],"minimized":false,"pinned":true}}
             ]}"#)
         .unwrap();
         assert_eq!(manifest.menus.len(), 2);
@@ -277,6 +284,7 @@ mod tests {
                 kinds: vec![KindName::Plugin],
                 plugins: vec!["p".to_string()],
                 minimized: Some(false),
+                pinned: Some(true),
             }
         );
     }
@@ -320,7 +328,7 @@ mod tests {
             (
                 item(r#"{"id":"x","title":"X","location":"panel","when":{"focused":true}}"#),
                 "contributes.menus[0].when.focused: unknown field, expected \"kind\", \
-                 \"plugin\" or \"minimized\"",
+                 \"plugin\", \"minimized\" or \"pinned\"",
             ),
             (
                 item(
@@ -373,6 +381,10 @@ mod tests {
             (
                 item(r#"{"id":"x","title":"X","location":"panel","when":{"minimized":1}}"#),
                 "contributes.menus[0].when.minimized: must be a boolean, got 1",
+            ),
+            (
+                item(r#"{"id":"x","title":"X","location":"panel","when":{"pinned":"yes"}}"#),
+                "contributes.menus[0].when.pinned: must be a boolean, got \"yes\"",
             ),
             (
                 item(r#"{"id":"x","title":"X","location":"canvas","order":1.5}"#),

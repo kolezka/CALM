@@ -91,17 +91,20 @@ pub struct JoinLayout {
 }
 
 impl JoinLayout {
-    /// Minimized panels never join. O(n^2) over the panels: n stays in the tens.
+    /// Minimized panels never join. Panels join only within one camera space: unpinned
+    /// with unpinned, pinned with pinned at the same pin zoom, since their rects are
+    /// otherwise not comparable. O(n^2) over the panels: n stays in the tens.
     pub fn compute(panels: &[Panel]) -> Self {
-        let rects: Vec<(PanelId, Rect)> = panels
-            .iter()
-            .filter(|panel| !panel.minimized)
-            .map(|panel| (panel.id, panel.rect))
-            .collect();
+        let listed: Vec<&Panel> = panels.iter().filter(|panel| !panel.minimized).collect();
+        let rects: Vec<(PanelId, Rect)> =
+            listed.iter().map(|panel| (panel.id, panel.rect)).collect();
         let mut joins = Vec::new();
         let mut links = Vec::new();
         for (i, a) in rects.iter().enumerate() {
             for (j, b) in rects.iter().enumerate().skip(i + 1) {
+                if listed[i].pin != listed[j].pin {
+                    continue;
+                }
                 if let Some(join) = join_between(*a, *b) {
                     joins.push(join);
                     links.push((i, j));
@@ -463,5 +466,23 @@ mod tests {
             vec![(0.0, 10.0), (40.0, 60.0), (80.0, 100.0)]
         );
         assert!(uncovered((0.0, 100.0), vec![(-5.0, 105.0)]).is_empty());
+    }
+
+    #[test]
+    fn joins_stay_within_one_camera_space() {
+        let rects = [
+            Rect::new(0.0, 0.0, 300.0, 200.0),
+            Rect::new(301.0, 0.0, 300.0, 200.0),
+        ];
+        let (mut scene, ids) = scene(&rects);
+        scene.set_pinned(ids[1], true);
+        assert!(JoinLayout::compute(&scene.panels).joins.is_empty());
+        scene.set_pinned(ids[0], true);
+        scene.get_mut(ids[0]).unwrap().rect = rects[0];
+        scene.get_mut(ids[1]).unwrap().rect = rects[1];
+        assert_eq!(JoinLayout::compute(&scene.panels).joins.len(), 1);
+        // Another pin zoom is another space: the rects no longer line up on screen.
+        scene.get_mut(ids[1]).unwrap().pin = Some(2.0);
+        assert!(JoinLayout::compute(&scene.panels).joins.is_empty());
     }
 }

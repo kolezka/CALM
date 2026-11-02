@@ -171,10 +171,11 @@ pub fn chrome_hit(panel: &Panel, world: Point) -> Option<ChromeButton> {
     }
 }
 
-/// The panel under the pointer and the button under it, if any. Drives hover styling.
-pub fn hover_target(scene: &Scene, world: Point) -> Option<(PanelId, Option<ChromeButton>)> {
-    let id = scene.hit_test(world)?;
+/// The panel under the screen point and the button under it, if any. Drives hover styling.
+pub fn hover_target(scene: &Scene, screen: Point) -> Option<(PanelId, Option<ChromeButton>)> {
+    let id = scene.hit_test_screen(screen)?;
     let panel = scene.get(id)?;
+    let world = scene.camera_of(panel).screen_to_world(screen);
     Some((id, chrome_hit(panel, world)))
 }
 
@@ -724,5 +725,29 @@ mod tests {
                 assert!((0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y));
             }
         }
+    }
+
+    #[test]
+    fn hover_target_on_pinned_title_bar() {
+        let (mut scene, id) = scene_with_panel();
+        scene.camera.zoom = 2.0;
+        assert!(scene.set_pinned(id, true));
+        scene.camera.zoom = 0.5;
+        scene.camera.offset = Point::new(300.0, 300.0);
+        let panel = scene.get(id).unwrap();
+        let camera = scene.camera_of(panel);
+        let layout = title_bar_layout(panel);
+        let close = layout.close.unwrap();
+        let on_close =
+            camera.world_to_screen(Point::new(close.origin.x + 1.0, close.origin.y + 1.0));
+        assert_eq!(
+            hover_target(&scene, on_close),
+            Some((id, Some(ChromeButton::Close)))
+        );
+        let on_bar = camera.world_to_screen(Point::new(
+            panel.rect.origin.x + 60.0,
+            panel.rect.origin.y + 5.0,
+        ));
+        assert_eq!(hover_target(&scene, on_bar), Some((id, None)));
     }
 }

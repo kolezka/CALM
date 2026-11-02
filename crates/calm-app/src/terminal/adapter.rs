@@ -274,6 +274,11 @@ impl TerminalPanel {
         self.host.stack_index()
     }
 
+    /// The native container frame as AppKit has it, `None` while hidden.
+    pub fn native_frame(&self) -> Option<calm_core::geometry::Rect> {
+        self.host.shown_frame()
+    }
+
     fn set_visible(&mut self, visible: bool) {
         if self.visible == visible {
             return;

@@ -61,6 +61,7 @@ pub const STEPS: &[StepSpec] = &[
     step("background", &[], &[]),
     step("browser", &[], &[]),
     step("resize", &[], &[]),
+    step("pin", &[], &[]),
     step("blur", &[], &[]),
     step("status_label", &[], &[]),
     step("settings_dispatch", &[], &[]),
@@ -72,6 +73,7 @@ pub const STEPS: &[StepSpec] = &[
     step("panel_settings", &[], &[]),
     step("session", &[], &[]),
     step("presets", &[], &["session"]),
+    step("pin_restore", &[], &["presets"]),
     // Closes the window, so it must stay last.
     opt_in(step("window_close_save", &[], &[])),
 ];

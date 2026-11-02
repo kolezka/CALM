@@ -54,8 +54,8 @@ impl ContentGesture {
 /// The panel whose content is under `screen`. Only the topmost panel at the point
 /// counts, so a chip or a chrome strip in front blocks the content behind it.
 pub fn content_gesture_target(scene: &Scene, screen: Point) -> Option<PanelId> {
-    let world = scene.camera.screen_to_world(screen);
-    let panel = scene.get(scene.hit_test(world)?)?;
+    let panel = scene.get(scene.hit_test_screen(screen)?)?;
+    let world = scene.camera_of(panel).screen_to_world(screen);
     (!panel.minimized && content_rect(panel).contains(world)).then_some(panel.id)
 }
 

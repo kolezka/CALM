@@ -15,7 +15,7 @@ use crate::geometry::Rect;
 use crate::scene::{PanelKind, PanelOverrides, Scene};
 use crate::terminal_profile::check_content_opacity;
 
-pub const LAYOUT_VERSION: u32 = 2;
+pub const LAYOUT_VERSION: u32 = 3;
 /// The oldest version `load_layout_from` migrates.
 pub const LAYOUT_VERSION_V1: u32 = 1;
 
@@ -43,6 +43,9 @@ pub struct LayoutPanel {
     /// A missing key means no overrides; no overrides writes no key.
     #[serde(default, skip_serializing_if = "PanelOverrides::is_empty")]
     pub overrides: PanelOverrides,
+    /// The canvas zoom at pin time; `rect` is in that pin space. No key when unpinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<f64>,
 }
 
 /// Version 1 shape, read only.
@@ -60,7 +63,7 @@ struct LayoutPanelV1 {
     minimized: bool,
 }
 
-/// A v1 layout as v2: no timestamp, no overrides. The kinds already default their new
+/// A v1 layout in the current shape: no timestamp, no overrides, no pins. The kinds already default their new
 /// fields to `None`. Nothing else changes.
 fn migrate_v1(v1: LayoutFileV1) -> LayoutFile {
     LayoutFile {
@@ -76,6 +79,7 @@ fn migrate_v1(v1: LayoutFileV1) -> LayoutFile {
                 title: panel.title,
                 minimized: panel.minimized,
                 overrides: PanelOverrides::default(),
+                pin: None,
             })
             .collect(),
     }
@@ -141,17 +145,22 @@ impl Scene {
                     title: panel.title.clone(),
                     minimized: panel.minimized,
                     overrides: panel.overrides.clone(),
+                    pin: panel.pin,
                 })
                 .collect(),
         }
     }
 
-    /// Panels get fresh ids and keep their order. Rects below the minimum are
-    /// enlarged, the same rule `Scene::add_with_overrides` applies.
+    /// Panels get fresh ids and keep their order, except that pinned panels go after
+    /// unpinned ones (the tier order). Rects below the minimum are enlarged, the same
+    /// rule `Scene::add_with_overrides` applies. A pinned rect is kept in its pin space.
     pub fn from_layout(layout: LayoutFile) -> Scene {
         let mut scene = Scene::default();
         scene.camera = layout.camera;
-        for layout_panel in layout.panels {
+        // `add_with_overrides` inserts below the pinned tier, so pins are set after
+        // every panel is in place.
+        let mut pins = Vec::new();
+        for layout_panel in tier_order(layout.panels) {
             let id = scene.add_with_overrides(
                 layout_panel.kind,
                 layout_panel.rect,
@@ -161,9 +170,23 @@ impl Scene {
                 panel.title = layout_panel.title;
                 panel.minimized = layout_panel.minimized;
             }
+            pins.push((id, layout_panel.pin));
+        }
+        for (id, pin) in pins {
+            if let Some(panel) = scene.get_mut(id) {
+                panel.pin = pin;
+            }
         }
         scene
     }
+}
+
+/// The order panels are restored in: unpinned ones in file order, then pinned ones in
+/// file order. Add them in this order and set each pin only after all are added.
+pub fn tier_order(panels: Vec<LayoutPanel>) -> Vec<LayoutPanel> {
+    let (unpinned, pinned): (Vec<_>, Vec<_>) =
+        panels.into_iter().partition(|panel| panel.pin.is_none());
+    unpinned.into_iter().chain(pinned).collect()
 }
 
 /// `$CALM_HOME/layouts` when `CALM_HOME` is set, else `$HOME/.config/calm/layouts`.
@@ -482,7 +505,7 @@ pub fn load_layout_from(dir: &Path, name: &str) -> Result<LayoutFile, LayoutErro
     let parse_error = |error: serde_json::Error| malformed(error.to_string());
     let layout = match found {
         1 => migrate_v1(serde_json::from_str::<LayoutFileV1>(&text).map_err(parse_error)?),
-        2 => serde_json::from_str::<LayoutFile>(&text).map_err(parse_error)?,
+        2 | 3 => serde_json::from_str::<LayoutFile>(&text).map_err(parse_error)?,
         _ => return Err(LayoutError::UnsupportedVersion { path, found }),
     };
     validate_layout(&layout).map_err(malformed)?;
@@ -519,6 +542,13 @@ fn validate_layout(layout: &LayoutFile) -> Result<(), String> {
         if !numbers.iter().all(|number| number.is_finite()) {
             return Err(format!(
                 "panels[{index}].rect is {rect:?}, expected finite numbers"
+            ));
+        }
+        if let Some(pin) = panel.pin
+            && (!pin.is_finite() || !(MIN_ZOOM..=MAX_ZOOM).contains(&pin))
+        {
+            return Err(format!(
+                "panels[{index}].pin is {pin}, expected a value in [{MIN_ZOOM}, {MAX_ZOOM}]"
             ));
         }
         // A kind from a newer CALM may allow the field, so only the range is checked.
@@ -635,7 +665,7 @@ mod tests {
         assert_eq!(entries.len(), 1, "temp file must not be left behind");
 
         let loaded = load_layout_from(dir.path(), "work").unwrap();
-        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.version, LAYOUT_VERSION);
         let restored = Scene::from_layout(loaded);
         assert_eq!(restored.camera, scene.camera);
         assert_eq!(restored.panels.len(), scene.panels.len());
@@ -672,12 +702,12 @@ mod tests {
         let path = dir.path().join("future.json");
         std::fs::write(
             &path,
-            r#"{"version": 3, "camera": {"offset": {"x": 0, "y": 0}, "zoom": 1}, "panels": []}"#,
+            r#"{"version": 4, "camera": {"offset": {"x": 0, "y": 0}, "zoom": 1}, "panels": []}"#,
         )
         .unwrap();
         let error = load_layout_from(dir.path(), "future").unwrap_err();
         assert!(
-            matches!(&error, LayoutError::UnsupportedVersion { path: p, found: 3 } if *p == path),
+            matches!(&error, LayoutError::UnsupportedVersion { path: p, found: 4 } if *p == path),
             "{error:?}"
         );
         assert!(error.to_string().contains(path.to_str().unwrap()));
@@ -899,6 +929,7 @@ mod tests {
                     title: "Tiny".into(),
                     minimized: false,
                     overrides: PanelOverrides::default(),
+                    pin: None,
                 },
                 LayoutPanel {
                     kind: PanelKind::Browser {
@@ -909,6 +940,7 @@ mod tests {
                     title: "Short".into(),
                     minimized: true,
                     overrides: PanelOverrides::default(),
+                    pin: None,
                 },
             ],
         };
@@ -1786,7 +1818,7 @@ mod tests {
             assert_malformed_naming(dir.path(), name, field);
         }
 
-        for (name, found) in [("v3", 3u64), ("v0", 0)] {
+        for (name, found) in [("v4", 4u64), ("v0", 0)] {
             let text = good.replacen(r#""version": 2"#, &format!(r#""version": {found}"#), 1);
             std::fs::write(dir.path().join(format!("{name}.json")), text).unwrap();
             let error = load_layout_from(dir.path(), name).unwrap_err();
@@ -2055,5 +2087,198 @@ mod tests {
             message.contains("panels[0]") && message.contains("applies only to terminal panels"),
             "{message}"
         );
+    }
+
+    fn browser_kind(url: &str) -> PanelKind {
+        PanelKind::Browser {
+            url: url.into(),
+            page_zoom: None,
+        }
+    }
+
+    #[test]
+    fn pinned_panel_round_trips_with_tier_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut scene = Scene::default();
+        scene.camera.zoom = 2.0;
+        let pinned = scene.add(
+            browser_kind("https://a.example"),
+            Rect::new(10.0, 20.0, 400.0, 300.0),
+        );
+        scene.add(
+            browser_kind("https://b.example"),
+            Rect::new(500.0, 20.0, 400.0, 300.0),
+        );
+        assert!(scene.set_pinned(pinned, true));
+        let pinned_rect = scene.get(pinned).unwrap().rect;
+
+        save_layout_in(
+            dir.path(),
+            "pins",
+            &scene.to_layout(),
+            BrowserQueryMode::Keep,
+        )
+        .unwrap();
+        let loaded = load_layout_from(dir.path(), "pins").unwrap();
+        assert_eq!(loaded.version, 3);
+        assert_eq!(loaded.panels[0].pin, None);
+        assert_eq!(loaded.panels[1].pin, Some(2.0));
+
+        let restored = Scene::from_layout(loaded);
+        assert_eq!(restored.panels[0].pin, None);
+        assert_eq!(restored.panels[1].pin, Some(2.0));
+        assert_eq!(
+            restored.panels[1].rect, pinned_rect,
+            "pinned rect is stored as is"
+        );
+        assert!(
+            matches!(&restored.panels[1].kind, PanelKind::Browser { url, .. } if url == "https://a.example")
+        );
+    }
+
+    #[test]
+    fn tier_order_keeps_file_order_within_each_tier() {
+        let panel = |title: &str, pin: Option<f64>| LayoutPanel {
+            kind: browser_kind(title),
+            rect: Rect::new(0.0, 0.0, 400.0, 300.0),
+            title: title.into(),
+            minimized: false,
+            overrides: PanelOverrides::default(),
+            pin,
+        };
+        let ordered = tier_order(vec![
+            panel("p1", Some(1.0)),
+            panel("u1", None),
+            panel("p2", Some(0.5)),
+            panel("u2", None),
+        ]);
+        let titles: Vec<&str> = ordered.iter().map(|panel| panel.title.as_str()).collect();
+        assert_eq!(titles, ["u1", "u2", "p1", "p2"]);
+        assert_eq!(ordered[2].pin, Some(1.0));
+    }
+
+    #[test]
+    fn from_layout_puts_pinned_panels_after_unpinned_in_file_order() {
+        let panel = |url: &str, pin: Option<f64>| LayoutPanel {
+            kind: browser_kind(url),
+            rect: Rect::new(0.0, 0.0, 400.0, 300.0),
+            title: url.into(),
+            minimized: false,
+            overrides: PanelOverrides::default(),
+            pin,
+        };
+        let layout = LayoutFile {
+            version: LAYOUT_VERSION,
+            saved_at_unix: None,
+            camera: Camera::default(),
+            panels: vec![
+                panel("p1", Some(1.0)),
+                panel("u1", None),
+                panel("p2", Some(0.5)),
+                panel("u2", None),
+            ],
+        };
+        let scene = Scene::from_layout(layout);
+        let order: Vec<(&str, Option<f64>)> = scene
+            .panels
+            .iter()
+            .map(|panel| (panel.title.as_str(), panel.pin))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("u1", None),
+                ("u2", None),
+                ("p1", Some(1.0)),
+                ("p2", Some(0.5))
+            ]
+        );
+    }
+
+    #[test]
+    fn v2_layout_still_loads_unpinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let browser = r#"{"type": "browser", "url": "https://example.com"}"#;
+        std::fs::write(
+            dir.path().join("old.json"),
+            v2_json_with_kinds(&[browser, browser]),
+        )
+        .unwrap();
+        let loaded = load_layout_from(dir.path(), "old").unwrap();
+        assert!(loaded.panels.iter().all(|panel| panel.pin.is_none()));
+        let scene = Scene::from_layout(loaded);
+        assert_eq!(scene.panels.len(), 2);
+        assert!(scene.panels.iter().all(|panel| !panel.is_pinned()));
+    }
+
+    #[test]
+    fn layout_rejects_non_finite_or_out_of_range_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        let browser = r#"{"type": "browser", "url": "https://example.com"}"#;
+        let with_pin = |pin: &str| {
+            v2_json_with_kinds(&[browser])
+                .replacen(r#""version": 2"#, r#""version": 3"#, 1)
+                .replacen(
+                    r#""minimized": false"#,
+                    &format!(r#""minimized": false, "pin": {pin}"#),
+                    1,
+                )
+        };
+        // Positive control: the bounds and a middle value load.
+        for good in ["0.1", "1", "4.0"] {
+            std::fs::write(dir.path().join("good.json"), with_pin(good)).unwrap();
+            let loaded = load_layout_from(dir.path(), "good").unwrap();
+            assert_eq!(loaded.panels[0].pin, Some(good.parse().unwrap()), "{good}");
+        }
+        for (name, bad) in [
+            ("low", "0.05"),
+            ("high", "4.5"),
+            ("zero", "0"),
+            ("neg", "-1"),
+        ] {
+            std::fs::write(dir.path().join(format!("{name}.json")), with_pin(bad)).unwrap();
+            assert_malformed_naming(dir.path(), name, "panels[0].pin");
+        }
+
+        let mut scene = Scene::default();
+        scene.add(
+            browser_kind("https://example.com"),
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        let mut layout = scene.to_layout();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            layout.panels[0].pin = Some(bad);
+            let message = validate_layout(&layout).unwrap_err();
+            assert!(message.contains("panels[0].pin"), "{bad}: {message}");
+        }
+    }
+
+    #[test]
+    fn unpinned_layout_has_no_pin_key() {
+        let mut scene = Scene::default();
+        scene.add(
+            browser_kind("https://a.example"),
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        let pinned = scene.add(
+            browser_kind("https://b.example"),
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+        );
+        let json = serde_json::to_value(scene.to_layout()).unwrap();
+        assert!(json["panels"][0].get("pin").is_none(), "{json}");
+        assert!(json["panels"][1].get("pin").is_none(), "{json}");
+
+        scene.set_pinned(pinned, true);
+        let json = serde_json::to_value(scene.to_layout()).unwrap();
+        assert!(json["panels"][0].get("pin").is_none(), "{json}");
+        assert_eq!(json["panels"][1]["pin"], serde_json::json!(1.0));
+    }
+
+    #[test]
+    fn builtin_welcome_preset_loads() {
+        let presets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../presets");
+        let loaded = load_layout_from(&presets, "welcome").unwrap();
+        assert!(!loaded.panels.is_empty());
+        assert!(loaded.panels.iter().all(|panel| panel.pin.is_none()));
     }
 }
