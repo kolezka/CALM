@@ -1,12 +1,14 @@
 //! The Settings menu bar menu and the Settings window glue.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use calm_core::settings::{Settings, save_settings_to};
 use calm_core::settings_form::{
-    FieldValue, FormCommand, FormContext, FormOutcome, apply_field, settings_form,
+    FieldValue, FormCommand, FormContext, FormOutcome, WINDOW_CLOSED_FIELD, apply_field,
+    settings_form,
 };
+use calm_core::settings_save::{SaveDebounce, keymap_affected};
 use calm_native::{SettingsWindow, WindowLayout, choose_image_file};
 use gpui::{
     App, AppContext as _, Context, InteractiveElement, Menu, MenuItem, Window, WindowHandle,
@@ -30,6 +32,8 @@ pub struct SettingsState {
     pub path: PathBuf,
     /// Shown at the top of the Settings window, such as a rejected file that was set aside.
     pub notice: Option<String>,
+    /// A Settings window change not yet written, held while a slider or well is dragged.
+    pub save: SaveDebounce,
 }
 
 /// Every menu bar menu, so the Developer and Settings menus are always set together.
@@ -113,22 +117,77 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let old_session = self.settings.settings.session.clone();
+        self.apply_settings_change(change, false, window, cx);
+    }
+
+    /// With `debounced`, the write waits for `session.settings_save_ms` of quiet, so a
+    /// drag writes once. The key bindings and menus rebuild only when they read a change.
+    fn apply_settings_change(
+        &mut self,
+        change: impl FnOnce(&mut Settings),
+        debounced: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let old = self.settings.settings.clone();
         change(&mut self.settings.settings);
-        if let Err(err) = save_settings_to(&self.settings.path, &self.settings.settings) {
-            eprintln!("calm: {err}");
+        if debounced {
+            self.schedule_settings_save(cx);
+        } else {
+            self.settings.save.take_pending();
+            self.write_settings();
         }
         self.apply_settings_to_input();
-        self.reconcile_autosave(&old_session, cx);
+        self.reconcile_autosave(&old.session, cx);
         self.terminal_settings_changed(cx);
         self.sync_stats_timer(cx);
         self.refresh_all_panel_settings();
-        let show_stats = self.show_stats;
-        let settings = self.settings.settings.clone();
-        // Keys may have changed too, so the keymap is rebuilt along with the menus.
-        cx.defer(move |cx| crate::keymap::apply(cx, &settings, show_stats));
+        if keymap_affected(&old, &self.settings.settings) {
+            let show_stats = self.show_stats;
+            let settings = self.settings.settings.clone();
+            cx.defer(move |cx| crate::keymap::apply(cx, &settings, show_stats));
+        }
         window.refresh();
         cx.notify();
+    }
+
+    fn write_settings(&self) {
+        if let Err(err) = save_settings_to(&self.settings.path, &self.settings.settings) {
+            eprintln!("calm: {err}");
+        }
+    }
+
+    fn settings_save_delay(&self) -> Duration {
+        Duration::from_millis(self.settings.settings.session.settings_save_ms)
+    }
+
+    /// Each change starts a timer; only the one that finds the drag quiet writes.
+    fn schedule_settings_save(&mut self, cx: &mut Context<Self>) {
+        let delay = self.settings_save_delay();
+        self.settings.save.note_change(Instant::now());
+        if delay.is_zero() {
+            self.save_settings_if_due();
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            this.update(cx, |view, _| view.save_settings_if_due()).ok();
+        })
+        .detach();
+    }
+
+    fn save_settings_if_due(&mut self) {
+        let delay = self.settings_save_delay();
+        if self.settings.save.take_due(Instant::now(), delay) {
+            self.write_settings();
+        }
+    }
+
+    /// Writes a held change now: the Settings window closed or the app quits.
+    pub fn flush_settings_save(&mut self) {
+        if self.settings.save.take_pending() {
+            self.write_settings();
+        }
     }
 
     pub fn form_context(&self) -> FormContext {
@@ -185,20 +244,26 @@ impl CanvasView {
         }
     }
 
-    fn settings_field_changed(
+    pub(crate) fn settings_field_changed(
         &mut self,
         id: &str,
         value: FieldValue,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if id == WINDOW_CLOSED_FIELD {
+            self.flush_settings_save();
+            return;
+        }
         let mut next = self.settings.settings.clone();
         match apply_field(&mut next, id, value) {
-            Ok(FormOutcome::Changed { rebuild }) => {
+            // A value change, as a slider or color well sends on every tick of a drag.
+            Ok(FormOutcome::Changed { rebuild: false }) => {
+                self.apply_settings_change(|s| *s = next, true, window, cx);
+            }
+            Ok(FormOutcome::Changed { rebuild: true }) => {
                 self.update_settings(|s| *s = next, window, cx);
-                if rebuild {
-                    self.refresh_settings_form();
-                }
+                self.refresh_settings_form();
             }
             Ok(FormOutcome::Command(FormCommand::SetShowStats(show))) => {
                 self.set_show_stats(show, window, cx);

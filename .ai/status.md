@@ -409,6 +409,13 @@ Open questions: `.ai/open-questions.md`.
 ## In progress (not on `main`)
 
 - Open PRs: #70 (plan the Claude Code integration).
+- Branch `perf/settings-path`, no PR yet: Settings window changes save after
+  `session.settings_save_ms` of quiet (default 400) and on window close or quit, and the
+  keymap and menus rebuild only when key bindings or `grid.show` change. Per change 10 ms
+  to 0.07 ms (`docs/benchmarks.md`). Opt-in smoke step `settings_perf`
+  (`CALM_SMOKE_ONLY=settings_perf`). Open: GPUI caps requested frames of the inactive
+  canvas at 33 ms, so the FPS readout reads about 25 fps while Settings is key; plain pan
+  frames are not capped. Real trackpad input with Settings open is not measured.
 - No PR yet: a Linux port plan.
 
 ## Not wired yet
@@ -443,7 +450,7 @@ Open questions: `.ai/open-questions.md`.
   installed manifest `plugin_version`. Unverified: whether `on_app_quit` fires on cmd-q and
   on every quit path (the smoke calls the quit save directly, not through a real quit), and
   the manual "drag writes `session.json` about 1 s later" check.
-- `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
+- `--bench` is not built. `docs/benchmarks.md` holds only the settings path numbers. The Makefile `bench`
   target calls a flag that is missing.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
   or exit code from Ghostty, and TUI `fontSize`, `fontFamily` and `padding` are rejected.

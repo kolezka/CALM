@@ -12,6 +12,18 @@ pub struct StepSpec {
     pub requires: &'static [&'static str],
     /// Must have run first (any result). The filter pulls them in.
     pub after: &'static [&'static str],
+    /// Runs only when `CALM_SMOKE_ONLY` names it, as a slow measurement does.
+    pub opt_in: bool,
+}
+
+/// A step that a plain smoke run leaves out.
+const fn opt_in(name: &'static str) -> StepSpec {
+    StepSpec {
+        name,
+        requires: &[],
+        after: &[],
+        opt_in: true,
+    }
 }
 
 const fn step(
@@ -23,6 +35,7 @@ const fn step(
         name,
         requires,
         after,
+        opt_in: false,
     }
 }
 
@@ -51,6 +64,7 @@ pub const STEPS: &[StepSpec] = &[
     step("resize", &[], &[]),
     step("blur", &[], &[]),
     step("settings_dispatch", &[], &[]),
+    opt_in("settings_perf"),
     step("keybindings", &[], &[]),
     step("github_api", &[], &[]),
     step("plugin_menus", &[], &[]),
@@ -89,11 +103,11 @@ pub fn classify(message: &str) -> String {
         .map_or_else(|| "new".to_string(), |(id, _)| format!("known-flake:{id}"))
 }
 
-/// The steps to run. `None` (variable unset) runs all; a value names steps, and their
+/// The steps to run. `None` (variable unset) runs all but opt-in steps; a value names steps, and their
 /// `requires` and `after` steps are added. Empty values and unknown names are errors.
 pub fn select(only: Option<&str>) -> Result<BTreeSet<&'static str>, String> {
     let Some(raw) = only else {
-        return Ok(STEPS.iter().map(|s| s.name).collect());
+        return Ok(STEPS.iter().filter(|s| !s.opt_in).map(|s| s.name).collect());
     };
     let names: Vec<&str> = raw
         .split(',')
@@ -316,7 +330,10 @@ mod tests {
 
     #[test]
     fn no_filter_selects_every_step() {
-        assert_eq!(select(None).unwrap().len(), STEPS.len());
+        assert_eq!(
+            select(None).unwrap().len(),
+            STEPS.iter().filter(|s| !s.opt_in).count()
+        );
     }
 
     #[test]
@@ -403,5 +420,15 @@ mod tests {
             Outcome::Skipped("needs terminals, which failed".into()),
         );
         assert_eq!(run.exit_code(), 1);
+    }
+
+    #[test]
+    fn opt_in_steps_run_only_when_named() {
+        assert!(!select(None).unwrap().contains("settings_perf"));
+        assert!(
+            select(Some("settings_perf"))
+                .unwrap()
+                .contains("settings_perf")
+        );
     }
 }

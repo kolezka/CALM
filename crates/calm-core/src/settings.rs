@@ -97,6 +97,8 @@ pub struct Settings {
 }
 
 pub const SESSION_DEBOUNCE_MS_RANGE: RangeInclusive<u64> = 250..=10_000;
+/// 0 writes `settings.json` on every change, as before the debounce.
+pub const SETTINGS_SAVE_MS_RANGE: RangeInclusive<u64> = 0..=5_000;
 pub const SESSION_BACKUP_COUNT_RANGE: RangeInclusive<u32> = 0..=20;
 
 /// Whether the last session comes back at launch.
@@ -133,6 +135,9 @@ pub struct SessionSettings {
     pub autosave: bool,
     /// Quiet time after the last change before an autosave.
     pub debounce_ms: u64,
+    /// Quiet time after the last Settings window change before `settings.json` is
+    /// written. Closing the window or quitting writes at once.
+    pub settings_save_ms: u64,
     /// `session.json.1` to `.n`, rotated once per launch. 0 keeps none.
     pub backup_count: u32,
     pub browser_query: BrowserQueryMode,
@@ -145,6 +150,7 @@ impl Default for SessionSettings {
             restore_on_launch: RestoreOnLaunch::On,
             autosave: true,
             debounce_ms: 1000,
+            settings_save_ms: 400,
             backup_count: 3,
             browser_query: BrowserQueryMode::StripAll,
         }
@@ -167,6 +173,14 @@ impl SessionSettings {
                 self.debounce_ms,
                 SESSION_DEBOUNCE_MS_RANGE.start(),
                 SESSION_DEBOUNCE_MS_RANGE.end()
+            ));
+        }
+        if !SETTINGS_SAVE_MS_RANGE.contains(&self.settings_save_ms) {
+            return Err(format!(
+                "\"session.settings_save_ms\" is {}, expected {} to {}",
+                self.settings_save_ms,
+                SETTINGS_SAVE_MS_RANGE.start(),
+                SETTINGS_SAVE_MS_RANGE.end()
             ));
         }
         if !SESSION_BACKUP_COUNT_RANGE.contains(&self.backup_count) {
@@ -830,7 +844,7 @@ mod tests {
             &path,
             file(
                 r#"{ "restore_on_launch": "ask", "autosave": false, "debounce_ms": 10000,
-                "backup_count": 0, "browser_query": "keep" }"#,
+                "settings_save_ms": 5000, "backup_count": 0, "browser_query": "keep" }"#,
             ),
         )
         .unwrap();
@@ -842,6 +856,7 @@ mod tests {
                 restore_on_launch: RestoreOnLaunch::Ask,
                 autosave: false,
                 debounce_ms: 10_000,
+                settings_save_ms: 5_000,
                 backup_count: 0,
                 browser_query: BrowserQueryMode::Keep,
             }
@@ -850,6 +865,11 @@ mod tests {
         for (session, field) in [
             (r#"{ "debounce_ms": 249 }"#, "session.debounce_ms"),
             (r#"{ "debounce_ms": 10001 }"#, "session.debounce_ms"),
+            (
+                r#"{ "settings_save_ms": 5001 }"#,
+                "session.settings_save_ms",
+            ),
+            (r#"{ "settings_save_ms": -1 }"#, "integer `-1`"),
             (r#"{ "backup_count": 21 }"#, "session.backup_count"),
             (r#"{ "backup_count": -1 }"#, "integer `-1`"),
             (r#"{ "restore_on_launch": "maybe" }"#, "maybe"),

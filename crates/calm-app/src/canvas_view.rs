@@ -194,6 +194,10 @@ pub struct CanvasView {
     /// The stats readout (cmd-shift-f). Which items it shows is `developer.stats`.
     pub show_stats: bool,
     pub frame_stats: FrameStats,
+    /// Records each render without asking for more frames, unlike `frame_stats`. GPUI
+    /// throttles requested frames in an inactive window, so only this one sees real
+    /// pan frames while Settings is key. Only the smoke sets it.
+    pub frame_probe: Option<FrameStats>,
     /// Latest CPU and memory reading, from `stats_timer`.
     pub process_stats: Option<ProcessSample>,
     /// Successful samples since the timer last started. The smoke waits on it.
@@ -211,6 +215,8 @@ pub struct CanvasView {
     pub settings: SettingsState,
     /// Created on first `cmd-,`, then hidden and shown.
     pub settings_window: Option<calm_native::SettingsWindow>,
+    /// Writes a held Settings window change when the app quits.
+    _settings_quit: gpui::Subscription,
     /// At most one Settings window per panel, closed with the panel.
     pub panel_settings_windows: HashMap<PanelId, calm_native::SettingsWindow>,
     /// Closed panels a late Settings change was already logged for.
@@ -306,6 +312,7 @@ impl CanvasView {
             focus_handle: cx.focus_handle(),
             show_stats: false,
             frame_stats: FrameStats::default(),
+            frame_probe: None,
             process_stats: None,
             process_samples: 0,
             stats_timer: None,
@@ -314,11 +321,16 @@ impl CanvasView {
             preview_timer: None,
             preview_input_targets: 0,
             settings: SettingsState {
+                save: Default::default(),
                 settings: Default::default(),
                 path: calm_core::settings::settings_path(),
                 notice: None,
             },
             settings_window: None,
+            _settings_quit: cx.on_app_quit(|view, _| {
+                view.flush_settings_save();
+                async {}
+            }),
             panel_settings_windows: HashMap::new(),
             gone_panel_changes: HashSet::new(),
             background: BackgroundRenderer::default(),
@@ -3534,6 +3546,9 @@ impl Focusable for CanvasView {
 impl Render for CanvasView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.autosave_tick(cx);
+        if let Some(probe) = &mut self.frame_probe {
+            probe.record(Instant::now());
+        }
         if self.show_stats && self.settings.settings.developer.stats.show_fps {
             // Each render records a frame and asks for the next one, so the readout
             // measures the frame rate the window can sustain. Off means no extra frames.

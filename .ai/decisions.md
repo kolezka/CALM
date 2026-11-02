@@ -906,3 +906,14 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   panels, or `panels.confirm_close` off) nothing is compared. The Load confirmation and a
   normal panel close share one rule (`close_confirms`): a running terminal or app, or a
   browser, asks first.
+- **Settings window changes save after a quiet time, not on every tick.** A durable write
+  (fsync) cost about 9 ms on the main thread per slider or color well tick. A value change
+  (`rebuild: false`) waits for `session.settings_save_ms` (default 400, 0 to 5000, 0 means
+  every change) and is flushed when the window closes (`NSWindowWillCloseNotification`,
+  reported as the `window.closed` field) and on quit. Menu actions, Reset and form changes
+  that rebuild the controls still save at once. Cost: a crash within the quiet time loses
+  the last tweak of a drag.
+- **Terminal and panel form refresh still run on every settings change.** Measured at
+  about 4 µs and 2 µs per change, so a "what changed" filter would add stale-state risk
+  for no gain. The keymap and menu rebuild (about 1.2 ms) is skipped unless key bindings or
+  `grid.show` changed.

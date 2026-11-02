@@ -53,13 +53,16 @@ impl FrameStats {
         if self.frames.len() < 2 {
             return None;
         }
-        let mut intervals: Vec<f64> = self
-            .frames
+        Some(percentile(&mut self.intervals_ms(), 95.0))
+    }
+
+    /// Milliseconds between consecutive frames in the window, oldest first.
+    pub fn intervals_ms(&self) -> Vec<f64> {
+        self.frames
             .iter()
             .zip(self.frames.iter().skip(1))
             .map(|(a, b)| b.saturating_duration_since(*a).as_secs_f64() * 1000.0)
-            .collect();
-        Some(percentile(&mut intervals, 95.0))
+            .collect()
     }
 
     /// Frames currently inside the window.
