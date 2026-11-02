@@ -347,7 +347,9 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   name is honest. It sits under every env layer (`BUILTIN_ENV`), so `terminal.env`, a
   profile or a manifest can set another value. `TERM` stays `xterm-256color`: the build
   ships no `xterm-ghostty` terminfo. Cost: every terminal now starts through
-  `/usr/bin/env`, and a plain shell gets `-l` for its login profile.
+  `/usr/bin/env`, then `/bin/bash -c 'exec -l "$@"'`, which puts back the login mark
+  Ghostty's `exec -l` gave the command: a profile `command` such as `/bin/zsh` still reads
+  its login profile (review finding on PR #67; before, any profile with `env` lost it).
 - **Live recolor uses `TerminalThemeState::apply`.** It exists in 0.3.1 and keeps the process.
   It cannot remove a theme or flip the user config, so those apply to new terminals.
 - **The panel's profile is kept beside the scene, not in `PanelKind`.** Layouts are not

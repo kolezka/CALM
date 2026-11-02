@@ -833,7 +833,8 @@ pub fn display_cwd(path: &Path, home: &Path) -> String {
 
 /// The argv for a terminal. With no command it is the login shell. With env it goes through
 /// `/usr/bin/env`, and a bare shell then gets `-l` so it still reads the login profile:
-/// Ghostty's `exec -l` marks only argv[0] as a login process, which is `env` there.
+/// Ghostty's `exec -l` marks only argv[0] as a login process, which is `env` there, so
+/// bash's `exec -l` marks the command again, as Ghostty would have without env.
 pub fn launch_argv(resolved: &ResolvedTerminal, login_shell: &str) -> Vec<String> {
     let mut argv = Vec::new();
     if !resolved.env.is_empty() {
@@ -844,21 +845,20 @@ pub fn launch_argv(resolved: &ResolvedTerminal, login_shell: &str) -> Vec<String
                 .iter()
                 .map(|(key, value)| format!("{key}={value}")),
         );
+        argv.extend(RELOGIN.iter().map(|word| word.to_string()));
     }
     match &resolved.command {
         Some(command) => {
             argv.push(command.clone());
             argv.extend(resolved.args.iter().cloned());
         }
-        None => {
-            argv.push(login_shell.to_string());
-            if !resolved.env.is_empty() {
-                argv.push("-l".to_string());
-            }
-        }
+        None => argv.push(login_shell.to_string()),
     }
     argv
 }
+
+/// Re-applies the login mark after `/usr/bin/env`. `calm` fills `$0`.
+const RELOGIN: [&str; 4] = ["/bin/bash", "-c", "exec -l \"$@\"", "calm"];
 
 #[cfg(test)]
 mod tests {
@@ -1170,7 +1170,12 @@ mod tests {
         assert_eq!(program(&panel), ghostty);
         assert_eq!(
             launch_argv(&bare.resolve(None, false), "/bin/zsh"),
-            vec!["/usr/bin/env", "TERM_PROGRAM=ghostty", "/bin/zsh", "-l"]
+            [
+                &["/usr/bin/env", "TERM_PROGRAM=ghostty"][..],
+                &RELOGIN,
+                &["/bin/zsh"]
+            ]
+            .concat()
         );
 
         // Defaults, a profile and an app manifest can each replace it.
@@ -1196,6 +1201,44 @@ mod tests {
         assert_eq!(program(&resolved).as_deref(), Some("app"));
     }
 
+    /// Runs `argv` the way Ghostty does: `exec -l` puts a `-` on argv[0] only.
+    fn run_like_ghostty(argv: &[String]) -> String {
+        use std::os::unix::process::CommandExt as _;
+        let name = argv[0].rsplit('/').next().unwrap_or_default();
+        let output = std::process::Command::new(&argv[0])
+            .arg0(format!("-{name}"))
+            .args(&argv[1..])
+            .env_remove("TERM_PROGRAM")
+            .output()
+            .expect("spawn");
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).expect("utf8")
+    }
+
+    #[test]
+    fn a_configured_command_starts_as_a_login_process_whatever_the_env() {
+        // A profile command that is a shell must still read its login profile (PATH).
+        let probe = "shopt -q login_shell && echo login || echo plain; echo \"$TERM_PROGRAM\"";
+        let mut resolved = TerminalSettings::default().resolve(None, false);
+        resolved.command = Some("/bin/bash".into());
+        resolved.args = vec!["-c".into(), probe.into()];
+        assert_eq!(
+            run_like_ghostty(&launch_argv(&resolved, "/bin/sh")),
+            "login\nghostty\n"
+        );
+        resolved.env.insert("A".into(), "1".into());
+        assert_eq!(
+            run_like_ghostty(&launch_argv(&resolved, "/bin/sh")),
+            "login\nghostty\n"
+        );
+        // Control: with no env at all Ghostty marks the command itself.
+        resolved.env.clear();
+        assert_eq!(
+            run_like_ghostty(&launch_argv(&resolved, "/bin/sh")),
+            "login\n\n"
+        );
+    }
+
     #[test]
     fn launch_argv_wraps_env_and_keeps_the_shell_a_login_shell() {
         let mut resolved = TerminalSettings::default().resolve(None, true);
@@ -1204,13 +1247,13 @@ mod tests {
         resolved.env.insert("A".into(), "1".into());
         assert_eq!(
             launch_argv(&resolved, "/bin/zsh"),
-            vec!["/usr/bin/env", "A=1", "/bin/zsh", "-l"]
+            [&["/usr/bin/env", "A=1"][..], &RELOGIN, &["/bin/zsh"]].concat()
         );
         resolved.command = Some("htop".into());
         resolved.args = vec!["-d".into(), "5".into()];
         assert_eq!(
             launch_argv(&resolved, "/bin/zsh"),
-            vec!["/usr/bin/env", "A=1", "htop", "-d", "5"]
+            [&["/usr/bin/env", "A=1"][..], &RELOGIN, &["htop", "-d", "5"]].concat()
         );
     }
 
