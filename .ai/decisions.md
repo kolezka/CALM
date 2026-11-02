@@ -742,6 +742,14 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
   pre-change code showed a `cmd-shift-0` binding does not match the `cmd-)` keystroke GPUI
   reports for Cmd+Shift+0 on a US layout, and no binding matched `cmd-)`
   (`fit_all_matches_the_press_gpui_reports_for_cmd_shift_0`).
+- **Menu commands refuse `fn`, `enter` and `tab`.** GPUI's menu builder drops `fn` and
+  passes `enter` and `tab` through unconverted, so the menu item would get a different key
+  than the binding (`fn-cmd-k` would show and fire as Cmd+K). Canvas actions may use them.
+- **Reset is checked like a recording.** If another row took the default meanwhile, Reset
+  is refused with "Used by"; otherwise the saved file would fail validation at the next
+  launch and the whole settings file would be set aside.
+- **Any click off the recorder, or a tab change, stops recording**, so a key meant for
+  another field is never recorded. Clicks are never swallowed.
 - **Symbols use Apple's modifier order** `⌃⌥⇧⌘`, so Cmd+Shift+Backspace shows as `⇧⌘⌫`.
   The close prompt names its keys in words (`Close? enter / esc`), as the user chose.
 

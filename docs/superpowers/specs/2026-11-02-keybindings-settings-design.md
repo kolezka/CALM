@@ -30,8 +30,9 @@ keys are settings". The user skipped the question round, so everything below tha
 - Menu items show the current key (GPUI derives menu key equivalents from the keymap, so
   rebinding plus `set_menus` refreshes them). GPUI's menu builder cannot show `fn`
   combinations, and passes `enter` and `tab` through unconverted
-  (`gpui-pre-macos-0.3.4/src/platform.rs:364-402`); such a binding still works but its menu
-  item shows no shortcut. The row notes "not shown in the menu" (lead's call).
+  (`gpui-pre-macos-0.3.4/src/platform.rs:364-402`); the final review found it drops `fn`, so
+  `fn-cmd-k` would put Cmd+K on the menu item. Menu commands therefore refuse `fn`, `enter`
+  and `tab` with a clear error; canvas actions may still use them (lead's call, 2026-11-02).
 - Any UI text that names a key follows the binding: the close confirmation
   "Close? enter / esc" and the "Show stats (cmd-shift-f)" checkbox label.
 

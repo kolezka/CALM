@@ -255,7 +255,7 @@ Open questions: `.ai/open-questions.md`.
 
 - PR #62 (`docs/keybindings-spec`): every key binding is a setting with a Keys tab in
   Settings, recorded by pressing the key, applied live. Smoke step `keybindings` prints
-  `smoke: keybindings override=true old_gone=true restored=true recorder_stops=true`. By eye,
+  `smoke: keybindings override=true old_gone=true restored=true recorder_stops=true tab_stops=true`. By eye,
   owed by the user: record a key in the Keys tab and use it; see the menu shortcut change;
   record a used key and see "Used by"; Escape and clicking away cancel recording; a non-US
   layout records the key GPUI fires.
