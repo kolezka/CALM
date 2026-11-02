@@ -1,6 +1,7 @@
 //! A markdown panel's page: a WKWebView in a `NativeChild` zoom view that shows HTML
-//! rendered by `calm_core::markdown`. It never navigates away: a clicked http, https or
-//! mailto link opens in the system default app, everything else is dropped.
+//! rendered by `calm_core::markdown`. It never navigates away: only CALM's own load and
+//! jumps inside the page stay, a clicked http, https or mailto link opens in the system
+//! default app, everything else is dropped.
 //!
 //! No `calm` message handler: the page gets no host access. The view draws no background
 //! of its own, so a page background with opacity below 1 shows the canvas through it.
@@ -10,7 +11,7 @@ use std::rc::Rc;
 
 use block2::{DynBlock, RcBlock};
 use calm_core::geometry::Size;
-use calm_core::markdown::{Navigation, navigation};
+use calm_core::markdown::{Navigation, NavigationRequest, NavigationType, navigation};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -40,23 +41,42 @@ define_class!(
         #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
         fn decide_policy(
             &self,
-            _web_view: &WKWebView,
+            web_view: &WKWebView,
             action: &WKNavigationAction,
             decision_handler: &DynBlock<dyn Fn(WKNavigationActionPolicy)>,
         ) {
-            // SAFETY: request and navigationType are always set on a navigation action.
-            let (url, clicked) = unsafe {
-                let url = action
-                    .request()
-                    .URL()
-                    .and_then(|url| url.absoluteString())
-                    .map_or_else(String::new, |url| url.to_string());
+            let url_text = |url: Option<Retained<NSURL>>| {
+                url.and_then(|url| url.absoluteString())
+                    .map(|url| url.to_string())
+            };
+            // SAFETY: request and navigationType are always set on a navigation action;
+            // targetFrame is nil for a new window, which `is_some_and` handles. Called on
+            // the main thread, where WebKit delivers delegate messages.
+            let (url, kind, main_frame) = unsafe {
+                let kind = match action.navigationType() {
+                    WKNavigationType::LinkActivated => NavigationType::LinkActivated,
+                    WKNavigationType::FormSubmitted | WKNavigationType::FormResubmitted => {
+                        NavigationType::FormSubmitted
+                    }
+                    WKNavigationType::BackForward => NavigationType::BackForward,
+                    WKNavigationType::Reload => NavigationType::Reload,
+                    _ => NavigationType::Other,
+                };
                 (
-                    url,
-                    action.navigationType() == WKNavigationType::LinkActivated,
+                    url_text(action.request().URL()).unwrap_or_default(),
+                    kind,
+                    action.targetFrame().is_some_and(|frame| frame.isMainFrame()),
                 )
             };
-            let policy = match navigation(&url, clicked) {
+            // SAFETY: a plain property read on the main thread; nil before the first load.
+            let current = url_text(unsafe { web_view.URL() });
+            let request = NavigationRequest {
+                url: &url,
+                kind,
+                main_frame,
+                current: current.as_deref(),
+            };
+            let policy = match navigation(&request) {
                 Navigation::Allow => WKNavigationActionPolicy::Allow,
                 Navigation::OpenExternally(url) => {
                     open_externally(&url);

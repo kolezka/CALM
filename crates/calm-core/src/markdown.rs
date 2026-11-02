@@ -300,15 +300,55 @@ pub fn opens_externally(url: &str) -> bool {
     }
 }
 
-/// Decides a navigation to `url`. `clicked` is true for a link the user activated.
-pub fn navigation(url: &str, clicked: bool) -> Navigation {
-    if url.to_ascii_lowercase().starts_with("about:") {
+/// How WebKit says a navigation started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavigationType {
+    LinkActivated,
+    FormSubmitted,
+    BackForward,
+    Reload,
+    /// Anything else, such as the host's own `loadHTMLString`.
+    Other,
+}
+
+/// A navigation the page asks for.
+#[derive(Clone, Copy, Debug)]
+pub struct NavigationRequest<'a> {
+    pub url: &'a str,
+    pub kind: NavigationType,
+    /// False for a subframe, or for a new window (no target frame).
+    pub main_frame: bool,
+    /// The page's URL now; `None` before the first load.
+    pub current: Option<&'a str>,
+}
+
+/// Decides a navigation the page asks for.
+pub fn navigation(request: &NavigationRequest) -> Navigation {
+    let url = request.url;
+    if request.main_frame && same_document_jump(url, request.current) {
         return Navigation::Allow;
     }
-    if clicked && opens_externally(url) {
+    // The host's `loadHTMLString` with no base URL. A page cannot start one itself: raw
+    // HTML is escaped and only CALM's own scripts run.
+    if request.main_frame
+        && request.kind == NavigationType::Other
+        && url.eq_ignore_ascii_case("about:blank")
+    {
+        return Navigation::Allow;
+    }
+    if request.kind == NavigationType::LinkActivated && opens_externally(url) {
         return Navigation::OpenExternally(url.to_string());
     }
     Navigation::Block
+}
+
+/// A jump to a fragment of the page already shown, such as a footnote.
+fn same_document_jump(url: &str, current: Option<&str>) -> bool {
+    let (Some(current), Some((base, _))) = (current, url.split_once('#')) else {
+        return false;
+    };
+    let current_base = current.split_once('#').map_or(current, |(base, _)| base);
+    base == current_base
 }
 
 /// JS that counts what rendered, for the smoke: `"h1=N table=N tasks=N code=N"`.
@@ -492,21 +532,75 @@ mod tests {
         );
     }
 
+    fn request<'a>(
+        url: &'a str,
+        kind: NavigationType,
+        main_frame: bool,
+        current: Option<&'a str>,
+    ) -> Navigation {
+        navigation(&NavigationRequest {
+            url,
+            kind,
+            main_frame,
+            current,
+        })
+    }
+
+    #[test]
+    fn only_the_host_load_and_jumps_inside_the_page_stay() {
+        use NavigationType::*;
+        let page = Some("about:blank");
+        // The host's loadHTMLString, first or again after an edit.
+        assert_eq!(request("about:blank", Other, true, None), Navigation::Allow);
+        assert_eq!(request("about:blank", Other, true, page), Navigation::Allow);
+        // A footnote jump and the jump back.
+        assert_eq!(
+            request("about:blank#fn-1", LinkActivated, true, page),
+            Navigation::Allow
+        );
+        assert_eq!(
+            request("about:blank#fnref-1", LinkActivated, true, Some("about:blank#fn-1")),
+            Navigation::Allow
+        );
+        // A clicked about: link would replace the page.
+        assert_eq!(
+            request("about:blank", LinkActivated, true, page),
+            Navigation::Block
+        );
+        assert_eq!(
+            request("about:srcdoc", LinkActivated, true, page),
+            Navigation::Block
+        );
+        assert_eq!(request("about:srcdoc", Other, true, page), Navigation::Block);
+        assert_eq!(request("about:blank", Other, false, page), Navigation::Block);
+        assert_eq!(
+            request("about:blank#x", LinkActivated, false, page),
+            Navigation::Block,
+            "a subframe never loads"
+        );
+        assert_eq!(request("about:blank", Reload, true, page), Navigation::Block);
+        assert_eq!(
+            request("about:blank", FormSubmitted, true, page),
+            Navigation::Block
+        );
+    }
+
     #[test]
     fn links_open_outside_and_the_page_never_navigates_away() {
-        assert_eq!(navigation("about:blank", false), Navigation::Allow);
-        assert_eq!(navigation("about:blank#fn-1", true), Navigation::Allow);
+        use NavigationType::*;
+        let page = Some("about:blank");
         for url in [
             "https://example.com/x",
             "http://a.b",
             "mailto:me@example.com",
         ] {
             assert_eq!(
-                navigation(url, true),
+                request(url, LinkActivated, true, page),
                 Navigation::OpenExternally(url.to_string()),
                 "{url}"
             );
-            assert_eq!(navigation(url, false), Navigation::Block, "{url}");
+            assert_eq!(request(url, Other, true, page), Navigation::Block, "{url}");
+            assert_eq!(request(url, BackForward, true, page), Navigation::Block);
         }
         for url in [
             "javascript:alert(1)",
@@ -517,8 +611,13 @@ mod tests {
             "mailto:",
             "ftp://x",
             "relative.md",
+            "about:blank#x",
         ] {
-            assert_eq!(navigation(url, true), Navigation::Block, "{url}");
+            assert_eq!(
+                request(url, LinkActivated, true, Some("https://other.example/")),
+                Navigation::Block,
+                "{url}"
+            );
         }
         assert!(opens_externally("HTTPS://EXAMPLE.COM"));
     }
