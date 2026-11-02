@@ -23,9 +23,11 @@ cargo run -p calm-app -- --fullscreen
 cargo run -p calm-app -- --smoke; echo rc=$?   # GUI gate, exits 0 when the window and terminals work
 ```
 
-`--layout` and `--bench` are not built yet, and the canvas is not saved or restored between
-launches. Settings live in `~/.config/calm/settings.json` (`$CALM_HOME/settings.json` when
-`CALM_HOME` is set) and are edited in the Settings window (`cmd-,`). See
+`--bench` is not built yet. A launch restores the last session from `session.json`, a first
+launch opens the `welcome` preset, and `--layout NAME` opens a saved preset (see
+[configuration.md](configuration.md#session)). Settings live in
+`~/.config/calm/settings.json` (`$CALM_HOME/settings.json` when `CALM_HOME` is set) and
+are edited in the Settings window (`cmd-,`). See
 [configuration.md](configuration.md). Smoke runs should use a throwaway home, for example
 `CALM_HOME=$(mktemp -d) cargo run -p calm-app -- --smoke`, so they never touch your real
 settings.

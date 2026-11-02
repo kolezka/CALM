@@ -477,6 +477,14 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                     .position(|mode| *mode == session.restore_on_launch)
                     .unwrap_or(0),
             ),
+            field(
+                "session.first_launch_preset",
+                "First launch preset",
+                Control::Text {
+                    value: session.first_launch_preset.clone(),
+                    placeholder: "empty canvas".into(),
+                },
+            ),
             checkbox("session.autosave", "Autosave", session.autosave),
             slider(
                 "session.debounce_ms",
@@ -907,6 +915,13 @@ pub fn apply_field(
                 *RestoreOnLaunch::ALL.get(index).ok_or("bad restore mode")?;
             changed
         }
+        ("session.first_launch_preset", FieldValue::Text(name)) => {
+            if !name.is_empty() && !crate::layout::valid_layout_name(&name) {
+                return Err("bad session first launch preset".into());
+            }
+            settings.session.first_launch_preset = name;
+            changed
+        }
         ("session.autosave", FieldValue::Bool(on)) => {
             settings.session.autosave = on;
             changed
@@ -970,6 +985,7 @@ pub fn apply_field(
             | "panels.terminal_height"
             | "panels.preview_zoom"
             | "session.restore_on_launch"
+            | "session.first_launch_preset"
             | "session.autosave"
             | "session.debounce_ms"
             | "session.backup_count"
@@ -1685,6 +1701,7 @@ mod tests {
             session_ids,
             [
                 "session.restore_on_launch",
+                "session.first_launch_preset",
                 "session.autosave",
                 "session.debounce_ms",
                 "session.backup_count",
@@ -1992,5 +2009,40 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod first_launch_preset_tests {
+    use super::*;
+    #[test]
+    fn first_launch_preset_form_shows_and_validates_text() {
+        let mut settings = Settings::default();
+        let sections = settings_form(&settings, &FormContext::default());
+        let session = sections.iter().find(|s| s.title == "Session").unwrap();
+        let field = session
+            .fields
+            .iter()
+            .find(|f| f.id == "session.first_launch_preset")
+            .expect("first launch field missing");
+        assert_eq!(field.label, "First launch preset");
+        assert_eq!(
+            field.control,
+            Control::Text {
+                value: "welcome".into(),
+                placeholder: "empty canvas".into()
+            }
+        );
+        apply_field(&mut settings, &field.id, FieldValue::Text("demo".into())).unwrap();
+        assert_eq!(settings.session.first_launch_preset, "demo");
+        assert!(
+            apply_field(
+                &mut settings,
+                &field.id,
+                FieldValue::Text("bad name".into())
+            )
+            .is_err()
+        );
+        assert_eq!(settings.session.first_launch_preset, "demo");
     }
 }

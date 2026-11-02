@@ -66,6 +66,7 @@ const FIELDS: &[&str] = &[
     "contributes",
     "apiVersion",
     "capabilities",
+    "addMenu",
 ];
 
 /// Web-only manifest fields, each refused on a TUI app with its own reason.

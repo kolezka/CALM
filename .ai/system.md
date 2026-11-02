@@ -111,7 +111,7 @@ pages), built by `web/Dockerfile` and hosted on Coolify at https://calm.raqz.lin
   `discover_search`, strict errors, resize fields. Depends on `calm-core`.
 - `tui`: `"kind": "tui"` manifests (`TuiSpec`, restart, look fields, icon checks).
 - `assets`: checks that an entry page's local scripts exist (the unbuilt `dist/` case).
-- `bridge`: request, response and event types, `BRIDGE_METHODS` (17), `CALM_PRELUDE_JS`,
+- `bridge`: request, response and event types, `BRIDGE_METHODS` (18), `CALM_PRELUDE_JS`,
   `host_info_js` (the `window.__calmHost` script).
 - `api`: plugin API v2 phase 1. `API_VERSION` (2), `ErrorCode` (22 codes), `ApiError
   { code, message }`, `Caller`, `ClientId`, `Capability` and `unknown_capabilities`.
@@ -177,7 +177,7 @@ Web plugins are folders with `calm-plugin.json` and an HTML entry, loaded in a `
 with `CALM_PRELUDE_JS` defining `window.calm`. Calls post to the `calm` handler as JSON
 strings; the host answers with `eval_js`. Before the prelude the host injects
 `window.__calmHost = { apiVersion, methods }` from `served_methods`, which `calm.has` reads.
-The app serves all 17 methods. TUI plugins have
+The app serves all 18 methods. TUI plugins have
 `"kind": "tui"` and run a command in a terminal panel. Both kinds may add context menu
 items with `contributes.menus`. See `docs/plugins.md` and
 `packages/calm-plugin-sdk/calm.d.ts`. Of API v2, phase 1 (codes, `calm.has`, manifest

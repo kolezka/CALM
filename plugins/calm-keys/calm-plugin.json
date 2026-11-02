@@ -1,0 +1,8 @@
+{
+  "id": "calm-keys",
+  "name": "Key Bindings",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "defaultSize": { "width": 360, "height": 420 },
+  "addMenu": false
+}

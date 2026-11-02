@@ -9,6 +9,7 @@ mod keymap;
 mod panel_settings;
 mod plugin_host;
 mod plugin_services;
+mod preset_menu;
 mod settings_menu;
 mod smoke_runner;
 mod terminal;
@@ -20,19 +21,22 @@ use calm_core::geometry::{Point, Rect, Size};
 use calm_core::grid::{GridKind, mark_primitive_bound};
 use calm_core::interaction::{Effect, ResizeEdge};
 use calm_core::join::JOIN_SNAP_GAP;
-use calm_core::layout::{load_layout_from, move_aside};
+use calm_core::layout::{LayoutError, load_layout_from, move_aside};
+use calm_core::preset::find_preset;
 use calm_core::preview::PanelMode;
 use calm_core::restore::{
-    LaunchExit, LaunchFlags, RestorePlan, Source, after_quarantine, pick_source, plan_restore,
+    FirstLaunch, LaunchExit, LaunchFlags, RestorePlan, Source, after_quarantine, pick_source,
+    plan_restore,
 };
 use calm_core::scene::{PanelId, PanelKind};
 use calm_core::settings::RestoreOnLaunch;
 use calm_core::snap::{SnapConfig, snap_move};
 use calm_core::tui::TuiState;
+use calm_native::process_stats::{child_pids, process_exists};
 use std::cell::Cell;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError, TryLockError};
 use std::task::Poll;
 use std::time::{Duration, Instant};
@@ -74,12 +78,15 @@ fn parse_args() -> Args {
 }
 
 /// Reads what the launch needs, moves a session that failed to load aside, and returns
-/// the plan. Reads only `session` and, for `--layout`, `layouts/<name>.json`.
+/// the plan. Reads `session`, `--layout NAME` from `layouts` then `builtin_presets`, and
+/// on a launch with no session file, the first-launch preset from the same places.
 fn launch_plan(
     flags: &LaunchFlags,
     setting: RestoreOnLaunch,
+    first_launch_preset: &str,
     session: &Path,
     layouts: &Path,
+    builtin_presets: &[PathBuf],
 ) -> Result<RestorePlan, LaunchExit> {
     let (source, notice) = pick_source(flags, setting);
     let dir = session.parent().unwrap_or(Path::new("."));
@@ -88,11 +95,20 @@ fn launch_plan(
         .and_then(|stem| stem.to_str())
         .unwrap_or("session");
     let session_read = load_layout_from(dir, stem);
+    let read_preset =
+        |name: &str| find_preset(name, layouts, builtin_presets).map(|(layout, _)| layout);
     let layout_read = match &source {
-        Source::NamedLayout(name) => Some(load_layout_from(layouts, name)),
+        Source::NamedLayout(name) => Some(read_preset(name)),
         _ => None,
     };
-    let mut plan = plan_restore(&source, notice, session_read, layout_read)?;
+    let first_launch = (source == Source::Session
+        && matches!(session_read, Err(LayoutError::NotFound(_)))
+        && !first_launch_preset.is_empty())
+    .then(|| FirstLaunch {
+        name: first_launch_preset.to_string(),
+        read: read_preset(first_launch_preset),
+    });
+    let mut plan = plan_restore(&source, notice, session_read, layout_read, first_launch)?;
     if let Some(path) = plan.quarantine.clone() {
         after_quarantine(&mut plan, move_aside(&path));
     }
@@ -712,6 +728,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             smoke_session_edges(&view, window, cx);
         })
         .await;
+        smoke_step(&mut run, "presets", smoke_presets(&view, window, cx)).await;
 
         for line in run.summary() {
             println!("{line}");
@@ -1947,6 +1964,30 @@ async fn smoke_plugin_menus(
     cx: &mut gpui::AsyncApp,
 ) {
     use calm_core::plugin_menu::item_menu_id;
+    // The preset-only built-ins are installed but never offered in Add.
+    let add_check = view.update(cx, |view, _| {
+        let add: Vec<String> = menu_ids(view.canvas_menu())
+            .into_iter()
+            .filter_map(|id| {
+                id.strip_prefix(calm_core::menu::ADD_PLUGIN_PREFIX)
+                    .map(str::to_string)
+            })
+            .collect();
+        for hidden in ["calm-welcome", "calm-keys"] {
+            if !view.plugin_sizes.iter().any(|(id, _)| id == hidden) {
+                return Err(format!("built-in {hidden} not installed"));
+            }
+            if add.contains(&hidden.to_string()) {
+                return Err(format!("{hidden} listed in Add: {add:?}"));
+            }
+        }
+        Ok(add)
+    });
+    let mut add = match add_check {
+        Ok(add) => add,
+        Err(err) => smoke_fail(&format!("plugin menus: {err}")),
+    };
+    add.sort();
     let fixtures = match tempfile::Builder::new()
         .prefix("calm-smoke-menus-")
         .tempdir()
@@ -2052,7 +2093,10 @@ async fn smoke_plugin_menus(
         cx,
     )
     .await;
-    println!("smoke: plugin menus items={items} invoked=ok");
+    println!(
+        "smoke: plugin menus items={items} invoked=ok add={}",
+        add.join(",")
+    );
     if let Err(err) = fixtures.close() {
         eprintln!("smoke: could not remove the plugin menus temp dir: {err}");
     }
@@ -2655,7 +2699,16 @@ fn main() {
             let session = calm_core::layout::session_path();
             let layouts = calm_core::layout::layouts_dir();
             let setting = settings.settings.session.restore_on_launch;
-            match launch_plan(&args.restore, setting, &session, &layouts) {
+            let first_launch = settings.settings.session.first_launch_preset.clone();
+            let builtin_presets = calm_plugins::builtin_preset_dirs();
+            match launch_plan(
+                &args.restore,
+                setting,
+                &first_launch,
+                &session,
+                &layouts,
+                &builtin_presets,
+            ) {
                 Ok(plan) => Some((plan, session)),
                 Err(exit) => {
                     eprintln!("calm: {}", exit.message);
@@ -2706,6 +2759,7 @@ fn main() {
         });
         if let Ok(canvas) = &opened {
             settings_menu::install_open_handler(cx, *canvas);
+            preset_menu::install(cx, *canvas);
         }
         if let Err(err) = opened {
             if smoke {
@@ -3029,6 +3083,7 @@ fn smoke_session_edges(
         quarantine: None,
         autosave: calm_core::restore::AutosaveStart::Off("smoke fixture".to_string()),
         notices: Vec::new(),
+        save_at_start: false,
     };
     let home = terminal_profiles::home_dir();
     let checked = cx.update_window(window, |_, window, cx| {
@@ -3089,18 +3144,23 @@ fn smoke_session_edges(
     println!("smoke: session edges titles=saved cwd=home command=rerun");
 }
 
-/// Runs the launch restore path on `session` with restore on.
+/// Runs the launch restore path on `session` with restore on. Presets come only from
+/// `builtin_presets` and the `layouts` dir beside `session`, never the workspace.
 fn smoke_launch(
     view: &Entity<CanvasView>,
     window: AnyWindowHandle,
     session: &Path,
+    first_launch_preset: &str,
+    builtin_presets: &[PathBuf],
     cx: &mut gpui::AsyncApp,
 ) {
     let plan = match launch_plan(
         &LaunchFlags::default(),
         RestoreOnLaunch::On,
+        first_launch_preset,
         session,
         &session.with_file_name("layouts"),
+        builtin_presets,
     ) {
         Ok(plan) => plan,
         Err(exit) => smoke_fail(&format!("session: launch plan: {}", exit.message)),
@@ -3187,6 +3247,7 @@ async fn smoke_session(
                 quarantine: None,
                 autosave: calm_core::restore::AutosaveStart::Off("smoke fixture".to_string()),
                 notices: Vec::new(),
+                save_at_start: false,
             };
             // The fixture plan closes the launch gate; later steps run their own launches.
             let gate = view.autosave_gate;
@@ -3235,7 +3296,7 @@ async fn smoke_session(
             .await;
     }
 
-    smoke_launch(view, window, &session, cx);
+    smoke_launch(view, window, &session, "", &[], cx);
     let report = view.update(cx, |view, cx| {
         let restored = view.scene.to_layout();
         let kinds: Vec<String> = view
@@ -3329,7 +3390,7 @@ async fn smoke_session(
     if let Err(err) = std::fs::write(&bad, &bytes) {
         smoke_fail(&format!("session: corrupt copy: {err}"));
     }
-    smoke_launch(view, window, &bad, cx);
+    smoke_launch(view, window, &bad, "", &[], cx);
     let (empty, autosave_on) = view.update(cx, |view, _| {
         let state = (view.scene.panels.is_empty(), view.autosave_running());
         view.stop_autosave();
@@ -3350,9 +3411,231 @@ async fn smoke_session(
             bad.exists()
         ));
     }
+
+    // No session file: the first-launch preset opens and is saved as the session at once.
+    smoke_close_all(view, window, cx);
+    view.update(cx, |view, _| {
+        view.scene = calm_core::scene::Scene::default()
+    });
+    let first_dir = root.join("first-launch");
+    let builtin = first_dir.join("builtin");
+    if let Err(err) = std::fs::create_dir_all(&builtin) {
+        smoke_fail(&format!("first launch: dir: {err}"));
+    }
+    let mut preset = calm_core::scene::Scene::default();
+    preset.add(
+        PanelKind::Browser {
+            url: "about:blank".to_string(),
+            page_zoom: None,
+        },
+        Rect::new(40.0, 40.0, 320.0, 200.0),
+    );
+    let mut preset_writer = SessionWriter::new(
+        builtin.join("smoke-welcome.json"),
+        0,
+        calm_core::browser_url::BrowserQueryMode::StripAll,
+    );
+    if let Err(err) = preset_writer.save(&preset.to_layout()) {
+        smoke_fail(&format!("first launch: preset: {err}"));
+    }
+    let first_session = first_dir.join("session.json");
+    smoke_launch(
+        view,
+        window,
+        &first_session,
+        "smoke-welcome",
+        std::slice::from_ref(&builtin),
+        cx,
+    );
+    let (panels, layout_name) = view.update(cx, |view, _| {
+        let state = (view.scene.panels.len(), view.layout_name.clone());
+        view.stop_autosave();
+        state
+    });
+    let saved = calm_core::layout::load_layout_from(&first_dir, "session")
+        .is_ok_and(|layout| layout.panels.len() == 1);
+    let line = format!("smoke: first_launch source=preset panels={panels} saved={saved}");
+    println!("{line}");
+    if panels != 1 || !saved || layout_name.is_some() {
+        smoke_fail(&format!("{line} layout_name={layout_name:?}"));
+    }
+    smoke_close_all(view, window, cx);
+
+    // The same first launch with autosave off, then with the launch gate closed, opens the
+    // preset but must leave no session file.
+    let mut unsaved = Vec::new();
+    for (case, setting, gate) in [("setting_off", false, true), ("gate_closed", true, false)] {
+        view.update(cx, |view, _| {
+            view.scene = calm_core::scene::Scene::default()
+        });
+        let previous = view.update(cx, |view, _| {
+            let previous = (view.settings.settings.session.autosave, view.autosave_gate);
+            view.settings.settings.session.autosave = setting;
+            view.autosave_gate = gate;
+            previous
+        });
+        let session = root
+            .join(format!("first-launch-{case}"))
+            .join("session.json");
+        if let Some(dir) = session.parent()
+            && let Err(err) = std::fs::create_dir_all(dir)
+        {
+            smoke_fail(&format!("first launch {case}: dir: {err}"));
+        }
+        smoke_launch(
+            view,
+            window,
+            &session,
+            "smoke-welcome",
+            std::slice::from_ref(&builtin),
+            cx,
+        );
+        let panels = view.update(cx, |view, _| {
+            let panels = view.scene.panels.len();
+            view.stop_autosave();
+            (view.settings.settings.session.autosave, view.autosave_gate) = previous;
+            panels
+        });
+        smoke_close_all(view, window, cx);
+        let written = session.exists();
+        unsaved.push(format!("{case}=panels:{panels},written:{written}"));
+        if panels != 1 || written {
+            smoke_fail(&format!(
+                "first launch {case}: panels={panels} session_written={written}"
+            ));
+        }
+    }
+    println!("smoke: first_launch_unsaved {}", unsaved.join(" "));
+
     if let Err(err) = cwd.close() {
         eprintln!("smoke: could not remove the cwd temp dir: {err}");
     }
+}
+
+/// Child exit is asynchronous, so a closed terminal gets this long to end.
+const SMOKE_PRESET_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn smoke_panel(kind: PanelKind, n: usize) -> calm_core::layout::LayoutPanel {
+    calm_core::layout::LayoutPanel {
+        kind,
+        rect: Rect::new(40.0 + 340.0 * n as f64, 40.0, 320.0, 200.0),
+        title: format!("preset panel {n}"),
+        minimized: false,
+        overrides: Default::default(),
+    }
+}
+
+/// Loads a one-panel preset over two live terminals through `apply_preset`, where Load
+/// Preset ends once the user agreed (the dialogs are skipped). The scene must then hold
+/// only the preset's panel, and the closed terminals' processes must end.
+async fn smoke_presets(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let menus = settings_menu::menus(false, &calm_core::settings::Settings::default());
+    if let Some(missing) = preset_menu::missing_menu_items(&menus) {
+        smoke_fail(&format!("presets: menu bar lacks {missing}"));
+    }
+    view.update(cx, |view, _| view.stop_autosave());
+    let mut terminals = calm_core::scene::Scene::default().to_layout();
+    for n in 0..2 {
+        terminals.panels.push(smoke_panel(
+            PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+                app: None,
+            },
+            n,
+        ));
+    }
+    let mut preset = calm_core::scene::Scene::default().to_layout();
+    preset.panels.push(smoke_panel(
+        PanelKind::Browser {
+            url: "about:blank".to_string(),
+            page_zoom: None,
+        },
+        0,
+    ));
+    // The fixture's shells are the direct children of this process that appear while it
+    // opens, read from the OS, so the check does not depend on the terminal entities.
+    let own_pid = std::process::id();
+    let before: std::collections::HashSet<u32> = child_pids(own_pid).into_iter().collect();
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| view.apply_preset(terminals, window, cx))
+    });
+    if let Err(err) = opened {
+        smoke_fail(&format!("presets: open terminals: {err}"));
+    }
+    let started = Instant::now();
+    let fixture_pids = loop {
+        let alive = view.update(cx, |view, cx| view.terminal_status(cx));
+        let mut new: Vec<u32> = child_pids(own_pid)
+            .into_iter()
+            .filter(|pid| !before.contains(pid) && process_exists(*pid))
+            .collect();
+        new.sort_unstable();
+        let started_ok = alive.len() == 2 && alive.iter().all(|(_, alive)| *alive);
+        if started_ok && new.len() == 2 {
+            break new;
+        }
+        if started.elapsed() > SMOKE_PRESET_EXIT_TIMEOUT {
+            smoke_fail(&format!(
+                "presets: terminals did not start: status={alive:?} new_child_pids={new:?}"
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    };
+    let applied = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.apply_preset(preset, window, cx);
+            let kinds = layout_kinds(&view.scene.to_layout());
+            (
+                kinds,
+                view.terminal_status(cx).len(),
+                view.focused(),
+                view.layout_name.clone(),
+            )
+        })
+    });
+    let (kinds, terminals_left, focused, layout_name) = match applied {
+        Ok(state) => state,
+        Err(err) => smoke_fail(&format!("presets: apply: {err}")),
+    };
+    if kinds != ["browser"] || terminals_left != 0 || focused.is_some() || layout_name.is_some() {
+        smoke_fail(&format!(
+            "presets: scene {kinds:?} terminals={terminals_left} focused={focused:?} layout_name={layout_name:?}"
+        ));
+    }
+    let started = Instant::now();
+    loop {
+        let running: Vec<u32> = fixture_pids
+            .iter()
+            .copied()
+            .filter(|pid| process_exists(*pid))
+            .collect();
+        if running.is_empty() {
+            break;
+        }
+        if started.elapsed() > SMOKE_PRESET_EXIT_TIMEOUT {
+            smoke_fail(&format!(
+                "presets: closed terminals' processes {running:?} still exist after 5 s"
+            ));
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    println!(
+        "smoke: presets applied={} closed={} pids_gone={}",
+        kinds.len(),
+        fixture_pids.len(),
+        fixture_pids.len()
+    );
+    smoke_close_all(view, window, cx);
 }
 
 #[cfg(test)]
@@ -3385,7 +3668,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let session = saved_session(dir.path());
         let flags = LaunchFlags::default();
-        let plan = launch_plan(&flags, RestoreOnLaunch::On, &session, dir.path()).unwrap();
+        let plan = launch_plan(&flags, RestoreOnLaunch::On, "", &session, dir.path(), &[]).unwrap();
         assert_eq!(plan.layout.map(|layout| layout.panels.len()), Some(1));
         assert!(session.exists());
     }
@@ -3398,7 +3681,7 @@ mod tests {
         bytes[0] = b'#';
         std::fs::write(&session, &bytes).unwrap();
         let flags = LaunchFlags::default();
-        let plan = launch_plan(&flags, RestoreOnLaunch::On, &session, dir.path()).unwrap();
+        let plan = launch_plan(&flags, RestoreOnLaunch::On, "", &session, dir.path(), &[]).unwrap();
         let moved = dir.path().join("session.json.invalid-0");
         assert_eq!(std::fs::read(&moved).ok(), Some(bytes), "not moved aside");
         assert!(!session.exists());
@@ -3423,9 +3706,148 @@ mod tests {
             no_restore: false,
         };
         let session = dir.path().join("session.json");
-        let exit = launch_plan(&flags, RestoreOnLaunch::On, &session, &layouts).unwrap_err();
+        let exit =
+            launch_plan(&flags, RestoreOnLaunch::On, "", &session, &layouts, &[]).unwrap_err();
         assert_eq!(exit.code, 2);
         assert!(named.exists());
         assert!(!layouts.join("work.json.invalid-0").exists());
+    }
+
+    /// A built-in preset dir holding `welcome.json` with one terminal.
+    fn builtin_welcome(dir: &Path) -> std::path::PathBuf {
+        let builtin = dir.join("builtin");
+        std::fs::create_dir(&builtin).unwrap();
+        saved_session(&builtin);
+        std::fs::rename(builtin.join("session.json"), builtin.join("welcome.json")).unwrap();
+        builtin
+    }
+
+    #[test]
+    fn launch_plan_opens_builtin_preset_on_first_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let builtin = builtin_welcome(dir.path());
+        let layouts = dir.path().join("layouts");
+        let session = dir.path().join("session.json");
+        let flags = LaunchFlags::default();
+        let plan = launch_plan(
+            &flags,
+            RestoreOnLaunch::On,
+            "welcome",
+            &session,
+            &layouts,
+            std::slice::from_ref(&builtin),
+        )
+        .unwrap();
+        assert_eq!(plan.layout.map(|layout| layout.panels.len()), Some(1));
+        assert_eq!(plan.layout_name, None);
+        assert!(plan.save_at_start);
+        // An empty setting opens nothing.
+        let plan = launch_plan(
+            &flags,
+            RestoreOnLaunch::On,
+            "",
+            &session,
+            &layouts,
+            &[builtin],
+        )
+        .unwrap();
+        assert_eq!(plan.layout, None);
+        assert!(!plan.save_at_start);
+    }
+
+    #[test]
+    fn launch_plan_layout_flag_finds_builtin_preset() {
+        let dir = tempfile::tempdir().unwrap();
+        let builtin = builtin_welcome(dir.path());
+        let layouts = dir.path().join("layouts");
+        let session = dir.path().join("session.json");
+        let flags = LaunchFlags {
+            layout: Some("welcome".to_string()),
+            no_restore: false,
+        };
+        let plan = launch_plan(
+            &flags,
+            RestoreOnLaunch::On,
+            "",
+            &session,
+            &layouts,
+            &[builtin],
+        )
+        .unwrap();
+        assert_eq!(plan.layout.map(|layout| layout.panels.len()), Some(1));
+        assert_eq!(plan.layout_name.as_deref(), Some("welcome"));
+        assert!(!plan.save_at_start);
+    }
+
+    #[test]
+    fn builtin_welcome_preset_is_valid() {
+        let empty = tempfile::tempdir().unwrap();
+        let presets = calm_plugins::builtin_preset_dirs();
+        let (layout, origin) = find_preset("welcome", empty.path(), &presets)
+            .unwrap_or_else(|err| panic!("welcome preset in {presets:?}: {err}"));
+        assert_eq!(origin, calm_core::preset::PresetOrigin::Builtin);
+        assert_eq!(layout.panels.len(), 3);
+        let plugin_id = |kind: &PanelKind| match kind {
+            PanelKind::Plugin { plugin_id, .. } => Some(plugin_id.clone()),
+            _ => None,
+        };
+        let ids: Vec<String> = layout
+            .panels
+            .iter()
+            .filter_map(|p| plugin_id(&p.kind))
+            .collect();
+        assert_eq!(
+            layout
+                .panels
+                .last()
+                .and_then(|p| plugin_id(&p.kind))
+                .as_deref(),
+            Some("calm-welcome"),
+            "the welcome panel is in front"
+        );
+        assert!(ids.iter().any(|id| id == "calm-keys"), "{ids:?}");
+        assert!(
+            layout.panels.iter().any(|p| matches!(
+                &p.kind,
+                PanelKind::Browser { url, .. } if url == "https://calm.raqz.link"
+            )),
+            "browser on https://calm.raqz.link"
+        );
+        let discovery = calm_plugins::discover(&[calm_plugins::workspace_plugins_dir()]);
+        for id in &ids {
+            let plugin = discovery
+                .plugins
+                .iter()
+                .find(|plugin| &plugin.manifest.id == id)
+                .unwrap_or_else(|| panic!("built-in plugin {id} not discovered"));
+            assert!(!plugin.manifest.add_menu, "{id} must stay out of Add");
+        }
+        // Every panel is fully on screen in the first 1280x800 view and none overlap.
+        let camera = &layout.camera;
+        let view = Rect::new(
+            camera.offset.x,
+            camera.offset.y,
+            1280.0 / camera.zoom,
+            800.0 / camera.zoom,
+        );
+        for (index, panel) in layout.panels.iter().enumerate() {
+            let rect = panel.rect;
+            assert!(
+                rect.origin.x >= view.origin.x
+                    && rect.origin.y >= view.origin.y
+                    && rect.right() <= view.right()
+                    && rect.bottom() <= view.bottom(),
+                "{} at {rect:?} is outside the first view {view:?}",
+                panel.title
+            );
+            for other in &layout.panels[index + 1..] {
+                assert!(
+                    rect.intersect(&other.rect).is_none(),
+                    "{} and {} overlap",
+                    panel.title,
+                    other.title
+                );
+            }
+        }
     }
 }

@@ -856,3 +856,53 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
   argv builder growing `env -u` flags.
 - Smoke step `terminal_env` spawns `/usr/bin/env` and fails on any listed name. It only
   discriminates when smoke runs from a terminal that sets them (iTerm2, tmux).
+
+## Presets and welcome screen (2026-11-02, PR #75)
+
+Spec: `docs/superpowers/specs/2026-11-02-presets-and-welcome-design.md`.
+
+- **The welcome screen is a default preset, not a modal.** A first launch with no
+  `session.json` opens the built-in `welcome` preset: a welcome plugin panel, a browser on
+  `https://calm.raqz.link` and a key bindings panel. Reason: the user wanted it on the canvas
+  and saw presets as the general mechanism. Cost: the welcome panels are ordinary panels a
+  user can close for good.
+- **Presets are layouts.** Same `LayoutFile` v2 format; Save Preset… finally wires layout
+  save. User presets shadow built-in ones by name. Cost: none new; one format to keep valid.
+- **Loading a preset closes the current panels and ends their processes, after one
+  confirmation** (user). Cancel changes nothing.
+- **No first-run marker** (user). No session file means first launch. With autosave off, or
+  after a corrupt session is moved aside and nothing is saved since, the preset opens again.
+- **No music in the welcome panel** (user). Reverses the 2026-11-01 keygen-music idea.
+- **`"addMenu": false` manifest field** hides a plugin from the Add menu, instead of a
+  special case for the welcome plugin's id.
+
+Rulings made while building it (2026-11-02). Each changes or settles a point of the plan.
+
+- **Key bindings come from a bridge method, `keys.list`, not a checked-in `keys.json`.**
+  #62 made every key a setting, so a static file would show the defaults, not the user's
+  keys. `calm-keys` asks at runtime and reads again when its page gets focus. The spec
+  allowed a bridge method that returns the keymap. Cost: an 18th bridge method to document
+  and keep.
+- **`keys.list` ignores its params, like `theme.get`.** It does not reject junk params. Why:
+  the same rule across the read-only bridge methods. Cost: junk params are accepted
+  silently, as they already are for `theme.get`.
+- **Save Preset, Load Preset and Show Welcome Screen are keymap rows with no default key**
+  (`app.save_preset`, `app.load_preset`, `developer.show_welcome`). Why: customization first,
+  and #62 makes every action rebindable. Save and Load sit in the `App` group, because #62 has
+  no File group and adding one is a Keys tab design change. Cost: three more rows in the Keys
+  tab.
+- **No bundled font in the welcome page.** No pixel font found could ship offline under a
+  license that fits. The title is drawn with the system monospace stack on a small canvas and
+  scaled up by whole pixels. Cost: a weaker keygen look.
+- **Welcome preset layout:** browser at (-620, -380) 560x420, key bindings at (260, -380)
+  360x420, welcome at (-280, 60) 560x320, camera offset (-640, -400) at zoom 1. The plan's
+  layout left the key bindings panel outside the first view. A unit test asserts every panel
+  is inside the first 1280x800 view and none overlap. Cost: a less balanced first screen.
+- **Load decides everything before it closes anything.** The preset is chosen and read and
+  the one confirmation answered first; cancel or an error at any step leaves the canvas as
+  it was. If the confirmation summary (the count of closing panels per kind) changed while a
+  dialog was open, the load is refused with an alert. A panel replaced by one of the same
+  kind keeps the counts equal and is not detected, and with no confirmation (none of those
+  panels, or `panels.confirm_close` off) nothing is compared. The Load confirmation and a
+  normal panel close share one rule (`close_confirms`): a running terminal or app, or a
+  browser, asks first.

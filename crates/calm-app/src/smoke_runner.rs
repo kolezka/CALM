@@ -57,6 +57,7 @@ pub const STEPS: &[StepSpec] = &[
     step("panel_overrides", &["terminals"], &[]),
     step("panel_settings", &[], &[]),
     step("session", &[], &[]),
+    step("presets", &[], &["session"]),
 ];
 
 /// Failures seen before and written up in `.ai/conventions.md` ("Smoke flakes").

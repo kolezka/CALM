@@ -78,6 +78,16 @@ pub struct RestorePlan {
     pub autosave: AutosaveStart,
     /// One line each for the status pill and stderr. Paths only, never file contents.
     pub notices: Vec<String>,
+    /// Save the session right after building: a first-launch preset was applied, so the
+    /// next launch restores it instead of opening the preset again.
+    pub save_at_start: bool,
+}
+
+/// The first-launch preset and its read. Only used when the session file is missing.
+#[derive(Debug)]
+pub struct FirstLaunch {
+    pub name: String,
+    pub read: Result<LayoutFile, LayoutError>,
 }
 
 /// A launch that must not start: a named layout the user asked for is unusable.
@@ -91,7 +101,9 @@ pub struct LaunchExit {
 /// because autosave writes that file whatever the source. `layout` is the read of the
 /// named layout, when the source is one.
 ///
-/// - A missing session is a normal empty start.
+/// - A missing session opens `first_launch` when the source is the session, and the
+///   plan asks for a save right away. An unusable preset is an empty start with a notice.
+///   Without a preset, a missing session is a normal empty start.
 /// - A malformed or unsupported session is quarantined; autosave stays on, and since the
 ///   file is gone from its place, the first save has nothing to rotate into the backups.
 /// - A session that cannot be read turns autosave off for this launch.
@@ -102,6 +114,7 @@ pub fn plan_restore(
     notice: Option<String>,
     session: Result<LayoutFile, LayoutError>,
     layout: Option<Result<LayoutFile, LayoutError>>,
+    first_launch: Option<FirstLaunch>,
 ) -> Result<RestorePlan, LaunchExit> {
     let mut plan = RestorePlan {
         layout: None,
@@ -109,6 +122,7 @@ pub fn plan_restore(
         quarantine: None,
         autosave: AutosaveStart::On,
         notices: notice.into_iter().collect(),
+        save_at_start: false,
     };
     if let Source::NamedLayout(name) = source {
         plan.layout_name = Some(name.clone());
@@ -138,7 +152,21 @@ pub fn plan_restore(
                 plan.layout = Some(file);
             }
         }
-        Err(LayoutError::NotFound(_)) => {}
+        Err(LayoutError::NotFound(_)) => {
+            if *source == Source::Session
+                && let Some(FirstLaunch { name, read }) = first_launch
+            {
+                match read {
+                    Ok(file) => {
+                        plan.layout = Some(file);
+                        plan.save_at_start = true;
+                    }
+                    Err(error) => plan
+                        .notices
+                        .push(format!("first launch preset {name}: {error}")),
+                }
+            }
+        }
         Err(LayoutError::Malformed { path, .. } | LayoutError::UnsupportedVersion { path, .. }) => {
             plan.quarantine = Some(path)
         }
@@ -345,14 +373,14 @@ mod tests {
         let (source, notice) = pick_source(&flags(None, false), RestoreOnLaunch::Ask);
         assert_eq!(source, Source::Session);
         assert_eq!(notice.as_deref(), Some(ASK_FALLBACK_NOTICE));
-        let plan = plan_restore(&source, notice, Ok(sample()), None).unwrap();
+        let plan = plan_restore(&source, notice, Ok(sample()), None, None).unwrap();
         assert!(plan.layout.is_some());
         assert_eq!(plan.notices, vec![ASK_FALLBACK_NOTICE.to_string()]);
     }
 
     #[test]
     fn valid_session_restores_with_autosave_on() {
-        let plan = plan_restore(&Source::Session, None, Ok(sample()), None).unwrap();
+        let plan = plan_restore(&Source::Session, None, Ok(sample()), None, None).unwrap();
         assert_eq!(plan.layout, Some(sample()));
         assert_eq!(plan.autosave, AutosaveStart::On);
         assert_eq!(plan.quarantine, None);
@@ -361,7 +389,7 @@ mod tests {
 
     #[test]
     fn missing_session_is_a_quiet_empty_start() {
-        let plan = plan_restore(&Source::Session, None, not_found(), None).unwrap();
+        let plan = plan_restore(&Source::Session, None, not_found(), None, None).unwrap();
         assert_eq!(plan.layout, None);
         assert_eq!(plan.quarantine, None);
         assert_eq!(plan.autosave, AutosaveStart::On);
@@ -375,7 +403,7 @@ mod tests {
             found: 9,
         });
         for read in [malformed(), unsupported] {
-            let plan = plan_restore(&Source::Session, None, read, None).unwrap();
+            let plan = plan_restore(&Source::Session, None, read, None, None).unwrap();
             assert_eq!(plan.layout, None);
             assert_eq!(plan.quarantine, Some(PathBuf::from("/s/session.json")));
             assert_eq!(plan.autosave, AutosaveStart::On);
@@ -387,14 +415,14 @@ mod tests {
         // Autosave would rotate it into the backups otherwise.
         for source in [Source::Empty, Source::NamedLayout("w".to_string())] {
             let layout = matches!(source, Source::NamedLayout(_)).then(|| Ok(sample()));
-            let plan = plan_restore(&source, None, malformed(), layout).unwrap();
+            let plan = plan_restore(&source, None, malformed(), layout, None).unwrap();
             assert_eq!(plan.quarantine, Some(PathBuf::from("/s/session.json")));
         }
     }
 
     #[test]
     fn unreadable_session_turns_autosave_off() {
-        let plan = plan_restore(&Source::Session, None, io_error(), None).unwrap();
+        let plan = plan_restore(&Source::Session, None, io_error(), None, None).unwrap();
         assert_eq!(plan.layout, None);
         assert_eq!(plan.quarantine, None);
         assert!(
@@ -405,7 +433,7 @@ mod tests {
 
     #[test]
     fn restore_off_ignores_a_valid_session() {
-        let plan = plan_restore(&Source::Empty, None, Ok(sample()), None).unwrap();
+        let plan = plan_restore(&Source::Empty, None, Ok(sample()), None, None).unwrap();
         assert_eq!(plan.layout, None);
         assert_eq!(plan.autosave, AutosaveStart::On);
     }
@@ -418,13 +446,14 @@ mod tests {
             None,
             Ok(Scene::default().to_layout()),
             Some(Ok(sample())),
+            None,
         )
         .unwrap();
         assert_eq!(plan.layout, Some(sample()));
         assert_eq!(plan.layout_name.as_deref(), Some("work"));
 
         let missing = Err(LayoutError::NotFound(PathBuf::from("/s/layouts/work.json")));
-        let plan = plan_restore(&source, None, not_found(), Some(missing)).unwrap();
+        let plan = plan_restore(&source, None, not_found(), Some(missing), None).unwrap();
         assert_eq!(plan.layout, None);
         assert_eq!(plan.layout_name.as_deref(), Some("work"));
         assert_eq!(plan.autosave, AutosaveStart::On);
@@ -438,7 +467,7 @@ mod tests {
             message: "expected value".to_string(),
         });
         // Even a bad session is left alone: the launch stops before anything moves.
-        let exit = plan_restore(&source, None, malformed(), Some(bad)).unwrap_err();
+        let exit = plan_restore(&source, None, malformed(), Some(bad), None).unwrap_err();
         assert_eq!(exit.code, 2);
         assert!(
             exit.message.contains("/s/layouts/work.json"),
@@ -449,7 +478,7 @@ mod tests {
 
     #[test]
     fn quarantine_notice_names_paths_not_contents() {
-        let mut plan = plan_restore(&Source::Session, None, malformed(), None).unwrap();
+        let mut plan = plan_restore(&Source::Session, None, malformed(), None, None).unwrap();
         after_quarantine(&mut plan, Ok(PathBuf::from("/s/session.json.invalid-0")));
         assert_eq!(plan.quarantine, None);
         assert_eq!(plan.autosave, AutosaveStart::On);
@@ -460,7 +489,7 @@ mod tests {
 
     #[test]
     fn failed_quarantine_turns_autosave_off() {
-        let mut plan = plan_restore(&Source::Session, None, malformed(), None).unwrap();
+        let mut plan = plan_restore(&Source::Session, None, malformed(), None, None).unwrap();
         after_quarantine(
             &mut plan,
             Err(io::Error::from(io::ErrorKind::PermissionDenied)),
@@ -484,7 +513,7 @@ mod tests {
 
         let read = load_layout_from(dir.path(), "session");
         assert!(matches!(read, Err(LayoutError::Malformed { .. })));
-        let mut plan = plan_restore(&Source::Session, None, read, None).unwrap();
+        let mut plan = plan_restore(&Source::Session, None, read, None, None).unwrap();
         let from = plan.quarantine.clone().unwrap();
         after_quarantine(&mut plan, move_aside(&from));
         assert_eq!(plan.autosave, AutosaveStart::On);
@@ -515,6 +544,7 @@ mod tests {
             &Source::Empty,
             None,
             load_layout_from(dir.path(), "session"),
+            None,
             None,
         )
         .unwrap();
@@ -607,7 +637,7 @@ mod tests {
             path: PathBuf::from("/s/session.json"),
             source: io::Error::from(io::ErrorKind::PermissionDenied),
         };
-        let plan = plan_restore(&Source::Session, None, Err(io), None).unwrap();
+        let plan = plan_restore(&Source::Session, None, Err(io), None, None).unwrap();
         let gate = plan.autosave.launch_gate(true);
         let on = SessionSettings::default();
         let off = SessionSettings {
@@ -636,5 +666,122 @@ mod tests {
             version_note("p", Some("1"), Some("2")).as_deref(),
             Some("plugin p: panel saved with version 1, installed 2")
         );
+    }
+
+    fn three_panels() -> LayoutFile {
+        let mut scene = Scene::default();
+        for n in 0..3 {
+            scene.add(
+                PanelKind::Browser {
+                    url: "about:blank".to_string(),
+                    page_zoom: None,
+                },
+                Rect::new(340.0 * n as f64, 0.0, 300.0, 200.0),
+            );
+        }
+        scene.to_layout()
+    }
+
+    fn welcome(read: Result<LayoutFile, LayoutError>) -> Option<FirstLaunch> {
+        Some(FirstLaunch {
+            name: "welcome".to_string(),
+            read,
+        })
+    }
+
+    #[test]
+    fn first_launch_opens_the_preset_when_no_session() {
+        let plan = plan_restore(
+            &Source::Session,
+            None,
+            not_found(),
+            None,
+            welcome(Ok(three_panels())),
+        )
+        .unwrap();
+        assert_eq!(plan.layout, Some(three_panels()));
+        assert_eq!(plan.layout_name, None);
+        assert!(plan.save_at_start);
+        assert_eq!(plan.autosave, AutosaveStart::On);
+        assert!(plan.notices.is_empty(), "{:?}", plan.notices);
+    }
+
+    #[test]
+    fn plan_restore_keeps_an_empty_session() {
+        let empty = Scene::default().to_layout();
+        let plan = plan_restore(
+            &Source::Session,
+            None,
+            Ok(empty),
+            None,
+            welcome(Ok(three_panels())),
+        )
+        .unwrap();
+        assert_eq!(plan.layout.map(|layout| layout.panels.len()), Some(0));
+        assert!(!plan.save_at_start);
+    }
+
+    #[test]
+    fn malformed_session_never_opens_the_preset() {
+        let plan = plan_restore(
+            &Source::Session,
+            None,
+            malformed(),
+            None,
+            welcome(Ok(three_panels())),
+        )
+        .unwrap();
+        assert_eq!(plan.quarantine, Some(PathBuf::from("/s/session.json")));
+        assert_eq!(plan.layout, None);
+        assert!(!plan.save_at_start);
+    }
+
+    #[test]
+    fn first_launch_with_unusable_preset_starts_empty_with_notice() {
+        let missing = Err(LayoutError::NotFound(PathBuf::from(
+            "/s/layouts/welcome.json",
+        )));
+        let bad = Err(LayoutError::Malformed {
+            path: PathBuf::from("/b/welcome.json"),
+            message: "expected value".to_string(),
+        });
+        for read in [missing, bad] {
+            let plan =
+                plan_restore(&Source::Session, None, not_found(), None, welcome(read)).unwrap();
+            assert_eq!(plan.layout, None);
+            assert!(!plan.save_at_start);
+            assert_eq!(plan.autosave, AutosaveStart::On);
+            assert_eq!(plan.notices.len(), 1, "{:?}", plan.notices);
+            assert!(
+                plan.notices[0].starts_with("first launch preset welcome: "),
+                "{}",
+                plan.notices[0]
+            );
+        }
+    }
+
+    #[test]
+    fn no_restore_and_off_ignore_the_preset() {
+        let plan = plan_restore(
+            &Source::Empty,
+            None,
+            not_found(),
+            None,
+            welcome(Ok(three_panels())),
+        )
+        .unwrap();
+        assert_eq!(plan.layout, None);
+        assert!(!plan.save_at_start);
+        // A named layout wins over the preset too.
+        let plan = plan_restore(
+            &Source::NamedLayout("work".to_string()),
+            None,
+            not_found(),
+            Some(Ok(sample())),
+            welcome(Ok(three_panels())),
+        )
+        .unwrap();
+        assert_eq!(plan.layout, Some(sample()));
+        assert!(!plan.save_at_start);
     }
 }

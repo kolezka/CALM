@@ -53,7 +53,11 @@ unsafe extern "C" {
     fn proc_pid_rusage(pid: c_int, flavor: c_int, buffer: *mut c_void) -> c_int;
     fn proc_listchildpids(ppid: c_int, buffer: *mut c_void, buffersize: c_int) -> c_int;
     fn mach_timebase_info(info: *mut MachTimebaseInfo) -> c_int;
+    fn kill(pid: c_int, signal: c_int) -> c_int;
 }
+
+/// `EPERM` from `<errno.h>`: the process exists but belongs to someone else.
+const EPERM: i32 = 1;
 
 /// Raw counters of one process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,8 +113,23 @@ fn read_with_timebase(pid: u32, (numer, denom): (u32, u32)) -> io::Result<Proces
     })
 }
 
+/// Whether a process with `pid` exists, by sending it signal 0 (nothing is delivered).
+/// An exited child that nobody has reaped yet still counts as existing.
+pub fn process_exists(pid: u32) -> bool {
+    let Ok(pid) = c_int::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
+        return false;
+    }
+    // SAFETY: signal 0 only checks that `pid` exists and may be signalled; it sends nothing.
+    // A positive pid names one process, never a group.
+    let status = unsafe { kill(pid, 0) };
+    status == 0 || io::Error::last_os_error().raw_os_error() == Some(EPERM)
+}
+
 /// Direct children of `pid`. Empty when it has none or the call fails.
-fn child_pids(pid: u32) -> Vec<u32> {
+pub fn child_pids(pid: u32) -> Vec<u32> {
     let Ok(pid) = c_int::try_from(pid) else {
         return Vec::new();
     };
@@ -262,6 +281,23 @@ mod tests {
         assert!(tree.processes >= 2, "{tree:?}");
         // Switching scope restarts the CPU delta.
         assert_eq!(tree.cpu_percent, None);
+    }
+
+    #[test]
+    fn child_pids_and_process_exists_follow_a_child() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let listed = child_pids(std::process::id()).contains(&pid);
+        let running = process_exists(pid);
+        child.kill().ok();
+        child.wait().ok();
+        assert!(listed, "child {pid} not among this process's children");
+        assert!(running);
+        assert!(!process_exists(pid), "reaped child {pid} still exists");
+        assert!(!process_exists(0));
     }
 
     #[test]

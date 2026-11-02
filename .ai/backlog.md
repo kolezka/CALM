@@ -88,7 +88,7 @@ manual test bed. Ideas: Scratchpad (storage, settings, menus), Repo Pulse (`gith
   `feat/example-plugins`, holds one unmerged commit (`4985f5f`, adds the TUI panel kind and
   a null storage miss to `calm.d.ts` and `docs/plugins.md`). No plugin code. That commit
   is worth landing on its own, as a small types fix.
-- Former blocker, cleared by #44: all 17 bridge methods are served. Events still have no senders except `command`.
+- Former blocker, cleared by #44: all 17 bridge methods of that time are served (18 since `keys.list`, #75). Events still have no senders except `command`.
 - Origin: example plugins brief in the prototype session.
 
 ### 8. Show plugin capabilities to the user

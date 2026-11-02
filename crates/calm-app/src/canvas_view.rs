@@ -20,6 +20,7 @@ use calm_core::join::{Axis, Join, JoinLayout, JoinedEdges, Side};
 use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::occlusion::{native_paint_region, native_visible_region};
+use calm_core::preset::{ClosingKind, ClosingPanel};
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
@@ -345,6 +346,7 @@ impl CanvasView {
 
     /// Carries out a launch plan whose quarantine is done: builds its panels, then
     /// starts autosave to `session` on the result, so an untouched start never writes.
+    /// A plan with `save_at_start` (a first-launch preset) writes once right away.
     pub fn apply_restore_plan(
         &mut self,
         plan: RestorePlan,
@@ -357,14 +359,7 @@ impl CanvasView {
             notices.extend(self.restore_layout(layout, window, cx));
         }
         self.layout_name = plan.layout_name;
-        for notice in &notices {
-            eprintln!("calm: {notice}");
-        }
-        self.restore_notice = match notices.len() {
-            0 => None,
-            1 => notices.pop(),
-            n => Some(format!("{} (+{} more on stderr)", notices[0], n - 1)),
-        };
+        self.show_restore_notices(notices);
         self.autosave_gate = plan.autosave.launch_gate(self.autosave_gate);
         match plan.autosave {
             AutosaveStart::On => {
@@ -376,8 +371,82 @@ impl CanvasView {
             }
             AutosaveStart::Off(reason) => self.autosave_notice = Some(reason),
         }
+        // A first-launch preset becomes the session now, so the next launch restores it.
+        // With autosave off nothing is written.
+        if plan.save_at_start {
+            self.write_now(true);
+        }
         window.refresh();
         cx.notify();
+    }
+
+    /// Logs every restore notice and puts the first in the status pill.
+    fn show_restore_notices(&mut self, mut notices: Vec<String>) {
+        for notice in &notices {
+            eprintln!("calm: {notice}");
+        }
+        self.restore_notice = match notices.len() {
+            0 => None,
+            1 => notices.pop(),
+            n => Some(format!("{} (+{} more on stderr)", notices[0], n - 1)),
+        };
+    }
+
+    /// Replaces the canvas with `layout`: closes every panel through the confirmed close
+    /// path, ending its process, then builds the preset. Asks nothing; the caller has
+    /// already confirmed. The next autosave tick records the result.
+    pub fn apply_preset(
+        &mut self,
+        layout: LayoutFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut effects: Vec<Effect> = self
+            .scene
+            .panels
+            .iter()
+            .map(|panel| Effect::ClosePanel(panel.id))
+            .collect();
+        effects.push(Effect::ClearFocus);
+        // A pending inline close prompt would point at a panel that is gone.
+        self.input.confirming = None;
+        self.apply_effects(effects, window, cx);
+        let notices = self.restore_layout(layout, window, cx);
+        self.layout_name = None;
+        self.show_restore_notices(notices);
+        self.sync_native_order(cx);
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Whether closing `id` asks first when `panels.confirm_close` is on. A browser's
+    /// page is state too, so it confirms like a running terminal or app.
+    pub(crate) fn close_confirms(&self, id: PanelId, cx: &App) -> bool {
+        self.terminal(id)
+            .is_some_and(|terminal| terminal.read(cx).is_alive())
+            || self.browser(id).is_some()
+    }
+
+    /// Every panel a preset load would close, for its confirmation. A panel whose kind
+    /// this build cannot read is closed too but never confirms, so it is not counted.
+    pub(crate) fn closing_panels(&self, cx: &App) -> Vec<ClosingPanel> {
+        self.scene
+            .panels
+            .iter()
+            .filter_map(|panel| {
+                let kind = match &panel.kind {
+                    PanelKind::Terminal { app: Some(_), .. } => ClosingKind::App,
+                    PanelKind::Terminal { app: None, .. } => ClosingKind::Terminal,
+                    PanelKind::Browser { .. } => ClosingKind::Browser,
+                    PanelKind::Plugin { .. } => ClosingKind::Plugin,
+                    PanelKind::Unsupported { .. } => return None,
+                };
+                Some(ClosingPanel {
+                    kind,
+                    confirms: self.close_confirms(panel.id, cx),
+                })
+            })
+            .collect()
     }
 
     fn plugin_installed(&self, plugin_id: &str, tui: bool) -> bool {
@@ -675,9 +744,16 @@ impl CanvasView {
         }
     }
 
-    /// The quit hook: writes the latest scene now. Waits for a write in flight, and the
-    /// ordered writer drops that older write if it runs after this one.
+    /// The quit hook: writes the latest scene now, if it changed since the last save.
     pub fn save_on_quit(&mut self) {
+        self.write_now(false);
+    }
+
+    /// Writes the latest scene through the autosave writer, on this thread. Without
+    /// `force` it writes only an unsaved change. Waits for a write in flight, and the
+    /// ordered writer drops that older write if it runs after this one. Does nothing
+    /// when autosave is not running.
+    fn write_now(&mut self, force: bool) {
         let revision = self.scene.sync_revision();
         let Some(autosave) = self.autosave.as_mut() else {
             return;
@@ -686,7 +762,7 @@ impl CanvasView {
         // The live revision, not the clock's: a change since the last tick must be saved.
         let pending =
             autosave.clock.changed_since_submit(revision) || autosave.queue.in_flight().is_some();
-        if !queued && !pending {
+        if !force && !queued && !pending {
             return;
         }
         autosave.clock.submitted(revision);
@@ -786,12 +862,8 @@ impl CanvasView {
                     self.focus_handle.focus(window, cx);
                 }
                 Effect::ClosePanelRequested(id) => {
-                    // A browser's page is state too, so it confirms like a running terminal.
-                    let alive = self
-                        .terminal(id)
-                        .is_some_and(|terminal| terminal.read(cx).is_alive())
-                        || self.browser(id).is_some();
-                    let confirm = alive && self.settings.settings.panels.confirm_close;
+                    let confirm =
+                        self.close_confirms(id, cx) && self.settings.settings.panels.confirm_close;
                     queue.push_back(self.input.request_close(id, confirm));
                 }
                 Effect::ConfirmClose(_) => {
@@ -981,12 +1053,14 @@ impl CanvasView {
     /// The prompt is modal, so it runs in a task outside this update, like the menus.
     fn prompt_run_command(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
         cx.spawn_in(window, async move |this, cx| {
-            let answer = calm_native::prompt_text(
-                RUN_COMMAND_TITLE,
-                "",
-                RUN_COMMAND_NOTE,
-                RUN_COMMAND_PLACEHOLDER,
-            );
+            let answer = calm_native::prompt_text(&calm_native::TextPrompt {
+                title: RUN_COMMAND_TITLE,
+                message: "",
+                note: RUN_COMMAND_NOTE,
+                placeholder: RUN_COMMAND_PLACEHOLDER,
+                initial: "",
+                ok: "Run",
+            });
             let command = match answer {
                 Ok(Some(command)) => command,
                 Ok(None) => return,
@@ -1650,6 +1724,7 @@ impl CanvasView {
             viewport: self.viewport.size,
             background,
             default_terminal_size,
+            keybindings: &self.settings.settings.keybindings,
             plugins: &self.installed_plugins,
         };
         let Some(route) = plugin_host::route(&mut host, &request) else {

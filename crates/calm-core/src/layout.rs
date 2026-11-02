@@ -533,13 +533,16 @@ fn validate_layout(layout: &LayoutFile) -> Result<(), String> {
     Ok(())
 }
 
-fn layout_path(dir: &Path, name: &str) -> Result<PathBuf, LayoutError> {
-    let path = dir.join(format!("{name}.json"));
-    let valid = !name.is_empty()
+pub fn valid_layout_name(name: &str) -> bool {
+    !name.is_empty()
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    if valid {
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn layout_path(dir: &Path, name: &str) -> Result<PathBuf, LayoutError> {
+    let path = dir.join(format!("{name}.json"));
+    if valid_layout_name(name) {
         Ok(path)
     } else {
         Err(LayoutError::Malformed {
