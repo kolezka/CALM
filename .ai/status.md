@@ -86,6 +86,9 @@ Pull requests:
   (`command`, `args`, `cwd`, `env`), validated strictly. Add > Terminal Profiles submenu;
   `t` and plain duplicates use `default_profile`. Running surfaces recolor live through
   `TerminalThemeState::apply`. Settings > Terminal edits defaults only (no text fields yet).
+- `fix/term-program-ghostty`: every terminal exports `TERM_PROGRAM=ghostty` (built-in env
+  layer, overridable), so slk and similar apps pick kitty graphics. The smoke `tui` step
+  checks the value inside a real surface. Kitty images on a zoomed canvas: not yet seen.
 - #25 Blur on outside click: a click on empty canvas clears panel focus and makes the GPUI
   host view the first responder; pans and zooms keep focus; Escape clears it only when no
   native view has the keyboard. Setting `canvas.click_empty_clears_focus` (default true).
@@ -212,6 +215,12 @@ Pull requests:
   these methods: `near`/`side`/`size`/`gap` placement, `title`, `args`, `env`,
   `appearance`, `PanelInfo.mode`, `joined`, `appearance`, `createdBy`, `tui`, `panels.*`
   names, `panels.close(id)` with a pending reply and `busy`.
+- Arrow keys (PR #68, merged as `8fee5b2`): arrows pan the canvas while it has the keyboard,
+  Shift+arrow pans 5x (`canvas.arrow_pan_step`, screen points, default 48); Cmd+Option+arrow
+  moves the focused panel without snapping, Shift for 5x (`canvas.arrow_move_step`, world
+  units, default 8). A focused terminal keeps plain and Shift arrows; panel moves still
+  apply. Both are ignored during a draw, drag or resize. Core logic and bindings are unit
+  tested; key delivery by hand is unverified.
 
 ## Persistence plan progress
 
@@ -252,6 +261,13 @@ Spec: `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Worker briefs
 Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
+
+- PR #62 (`docs/keybindings-spec`): every key binding is a setting with a Keys tab in
+  Settings, recorded by pressing the key, applied live. Smoke step `keybindings` prints
+  `smoke: keybindings override=true old_gone=true restored=true recorder_stops=true tab_stops=true`. By eye,
+  owed by the user: record a key in the Keys tab and use it; see the menu shortcut change;
+  record a used key and see "Used by"; Escape and clicking away cancel recording; a non-US
+  layout records the key GPUI fires.
 
 - `fix/settings-above-canvas`, no PR yet: global and panel Settings windows stay above the
   canvas as its child windows. Smoke asserts it; not checked by eye in fullscreen yet.
@@ -339,6 +355,9 @@ Open questions: `.ai/open-questions.md`.
 - Panel menu: each action by hand.
 - Chrome: the look, hover buttons over a live native view.
 - Camera jumps: key delivery with a terminal focused, the View menu shortcuts.
+- Arrow keys (PR #68): pan with no panel focused, Cmd+Option+arrow with a
+  terminal, a browser and a plugin page focused, and that plain arrows reach a focused
+  browser page instead of panning.
 - Status pill: blur over terminals, corners, light and dark mode, window drag from the top strip.
 - Browser panels: typing in the bar at zoom 0.5 and 2, links, `target=_blank`, shortcuts,
   scroll and pinch over a page.

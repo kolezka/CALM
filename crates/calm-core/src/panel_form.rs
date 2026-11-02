@@ -1109,7 +1109,7 @@ mod tests {
             Control::Choice { options, .. } => Some(FieldValue::Index(options.len() - 1)),
             Control::Button(_) => Some(FieldValue::Pressed),
             Control::Text { .. } => Some(FieldValue::Text("Hi".into())),
-            Control::Note(_) => None,
+            Control::Note(_) | Control::Key { .. } => None,
         }
     }
 

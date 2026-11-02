@@ -4,5 +4,6 @@
   "private": true,
   "description": "TypeScript types for the window.calm API in CALM plugins",
   "types": "calm.d.ts",
-  "files": ["calm.d.ts"]
+  "files": ["calm.d.ts"],
+  "license": "MIT"
 }

@@ -13,7 +13,8 @@ use calm_core::chrome::{
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
-    Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool, ZoomStep,
+    ArrowDir, Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool,
+    ZoomStep,
 };
 use calm_core::join::{Axis, Join, JoinLayout, JoinedEdges, Side};
 use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
@@ -43,7 +44,7 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     App, BorderStyle, Bounds, BoxShadow, ContentMask, Context, Corners, CursorStyle, DispatchPhase,
     Edges, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
-    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, ParentElement,
+    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
     PathBuilder, PinchEvent, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
     SharedString, Styled, Subscription, Task, TextAlign, TextRun, WeakEntity, Window, actions,
     canvas, div, fill, outline, point, px, quad, rgb, rgba, size,
@@ -64,7 +65,7 @@ use crate::grid_paint::{self, GridFrame, GridTextures};
 use crate::plugin_host::{self, BridgeSender, PluginPanel, Route};
 use crate::plugin_services::{self, ServiceCall};
 use crate::settings_menu::{self, SettingsState};
-use crate::terminal::{self, TerminalEvent, TerminalPanel};
+use crate::terminal::{TerminalEvent, TerminalPanel};
 use crate::terminal_profiles::{self, TerminalMeta};
 use crate::theme;
 use crate::tui_host::{self, CommandRun};
@@ -90,7 +91,23 @@ actions!(
         OpenPanelSettings,
         Cancel,
         ConfirmEnter,
-        ToggleFullscreen
+        ToggleFullscreen,
+        PanUp,
+        PanDown,
+        PanLeft,
+        PanRight,
+        PanUpFar,
+        PanDownFar,
+        PanLeftFar,
+        PanRightFar,
+        MovePanelUp,
+        MovePanelDown,
+        MovePanelLeft,
+        MovePanelRight,
+        MovePanelUpFar,
+        MovePanelDownFar,
+        MovePanelLeftFar,
+        MovePanelRightFar
     ]
 );
 
@@ -107,31 +124,6 @@ const STALE_LABEL: &str = "preview stale";
 const ZOOM_TO_FIT_MARGIN: f64 = 40.0;
 /// Added to the refresh timer so its repaint lands just after a snapshot is due.
 const PREVIEW_TIMER_MARGIN: Duration = Duration::from_millis(100);
-const CONFIRM_TITLE: &str = "Close? enter / esc";
-
-pub fn key_bindings() -> Vec<gpui::KeyBinding> {
-    use gpui::KeyBinding;
-    let ctx = Some(KEY_CONTEXT);
-    vec![
-        KeyBinding::new("cmd-=", ZoomIn, ctx),
-        KeyBinding::new("cmd--", ZoomOut, ctx),
-        KeyBinding::new("cmd-0", ZoomReset, ctx),
-        KeyBinding::new("cmd-shift-h", CenterOnOrigin, ctx),
-        KeyBinding::new("cmd-shift-0", FitAll, ctx),
-        KeyBinding::new("cmd-shift-backspace", DeletePanel, ctx),
-        KeyBinding::new("cmd-<", OpenPanelSettings, ctx),
-        KeyBinding::new("t", DrawTerminal, ctx),
-        KeyBinding::new("b", DrawBrowser, ctx),
-        KeyBinding::new("escape", Cancel, ctx),
-        KeyBinding::new("enter", ConfirmEnter, ctx),
-        KeyBinding::new("cmd-ctrl-f", ToggleFullscreen, ctx),
-        // A focused terminal gets these keys; canvas zoom and fullscreen still apply.
-        KeyBinding::new("t", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("b", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("escape", NoAction, Some(terminal::KEY_CONTEXT)),
-        KeyBinding::new("enter", NoAction, Some(terminal::KEY_CONTEXT)),
-    ]
-}
 
 /// Autosave state for one launch. Present only once autosave has started.
 struct Autosave {
@@ -258,6 +250,8 @@ pub struct CanvasView {
     pub(crate) content_monitor_error: Option<String>,
     pub(crate) content_move: ContentMove,
     pub(crate) content_press_mods: Option<calm_core::interaction::Modifiers>,
+    /// The close prompt, naming the keys Confirm and Cancel are bound to.
+    confirm_title: String,
 }
 
 impl CanvasView {
@@ -346,6 +340,7 @@ impl CanvasView {
             content_monitor_error: None,
             content_move: ContentMove::default(),
             content_press_mods: None,
+            confirm_title: calm_core::keymap::confirm_prompt(&Default::default()),
         }
     }
 
@@ -800,6 +795,9 @@ impl CanvasView {
         self.input.click_empty_clears_focus =
             self.settings.settings.canvas.click_empty_clears_focus;
         self.input.move_modifier = self.settings.settings.canvas.move_modifier;
+        self.confirm_title = calm_core::keymap::confirm_prompt(&self.settings.settings.keybindings);
+        self.input.arrow_pan_step = self.settings.settings.canvas.arrow_pan_step;
+        self.input.arrow_move_step = self.settings.settings.canvas.arrow_move_step;
     }
 
     pub fn set_show_stats(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -2354,6 +2352,42 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// Arrow keys pan only while the canvas itself has the keyboard, as Escape does.
+    fn arrow_pan(
+        &mut self,
+        dir: ArrowDir,
+        large: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if calm_native::host_view_is_first_responder(window) != Some(true) {
+            return;
+        }
+        // False during a draw, drag or resize: a pan there would desync the preview.
+        if self.input.arrow_pan(dir, large, &mut self.scene) {
+            window.refresh();
+            cx.notify();
+        }
+    }
+
+    /// Cmd+Option+arrow moves the focused panel, without snapping.
+    fn arrow_move(
+        &mut self,
+        dir: ArrowDir,
+        large: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.focused else {
+            return;
+        };
+        // False during a draw, drag or resize: the drag would overwrite the move.
+        if self.input.arrow_move(id, dir, large, &mut self.scene) {
+            window.refresh();
+            cx.notify();
+        }
+    }
+
     /// Jumps the camera: `CenterOnOrigin` keeps the zoom, `FitAll` frames every panel.
     fn frame_view(&mut self, fit_all: bool, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = self.viewport.size;
@@ -2540,6 +2574,7 @@ struct PaintSnapshot {
     state: Interaction,
     focused: Option<PanelId>,
     confirming: Option<PanelId>,
+    confirm_title: String,
     hover: Option<(PanelId, Option<ChromeButton>)>,
     terminals: Vec<(PanelId, Entity<TerminalPanel>)>,
     /// Panels with a plugin web view.
@@ -3093,7 +3128,7 @@ impl PaintSnapshot {
                     align: TextAlign::Left,
                     color: colors.title,
                 };
-                paint_text(CONFIRM_TITLE, line, look, zoom, origin, window, cx);
+                paint_text(&self.confirm_title, line, look, zoom, origin, window, cx);
             }
         }
         if !bar_shown || !details_visible(zoom) {
@@ -3204,7 +3239,7 @@ impl PaintSnapshot {
         }
         let noted;
         let title = match self.title_notes.get(&panel.id) {
-            _ if confirming => CONFIRM_TITLE,
+            _ if confirming => self.confirm_title.as_str(),
             Some(note) => {
                 noted = format!("{own_title} ({note})");
                 noted.as_str()
@@ -3395,6 +3430,7 @@ impl Render for CanvasView {
             state: self.input.state,
             focused: self.focused,
             confirming: self.input.confirming,
+            confirm_title: self.confirm_title.clone(),
             hover: self.hover,
             terminals: self.terminals.clone(),
             plugin_ids: self.plugin_panels.iter().map(|(id, _)| *id).collect(),
@@ -3506,6 +3542,54 @@ impl Render for CanvasView {
                 cx.listener(|view, _: &ConfirmEnter, window, cx| view.confirm_enter(window, cx)),
             )
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
+            .on_action(cx.listener(|view, _: &PanUp, window, cx| {
+                view.arrow_pan(ArrowDir::Up, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelUp, window, cx| {
+                view.arrow_move(ArrowDir::Up, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanUpFar, window, cx| {
+                view.arrow_pan(ArrowDir::Up, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelUpFar, window, cx| {
+                view.arrow_move(ArrowDir::Up, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanDown, window, cx| {
+                view.arrow_pan(ArrowDir::Down, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelDown, window, cx| {
+                view.arrow_move(ArrowDir::Down, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanDownFar, window, cx| {
+                view.arrow_pan(ArrowDir::Down, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelDownFar, window, cx| {
+                view.arrow_move(ArrowDir::Down, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanLeft, window, cx| {
+                view.arrow_pan(ArrowDir::Left, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelLeft, window, cx| {
+                view.arrow_move(ArrowDir::Left, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanLeftFar, window, cx| {
+                view.arrow_pan(ArrowDir::Left, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelLeftFar, window, cx| {
+                view.arrow_move(ArrowDir::Left, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanRight, window, cx| {
+                view.arrow_pan(ArrowDir::Right, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelRight, window, cx| {
+                view.arrow_move(ArrowDir::Right, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanRightFar, window, cx| {
+                view.arrow_pan(ArrowDir::Right, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelRightFar, window, cx| {
+                view.arrow_move(ArrowDir::Right, true, window, cx)
+            }))
             .on_action(cx.listener(|view, _: &ToggleFps, window, cx| {
                 view.set_show_stats(!view.show_stats, window, cx)
             }))
@@ -3596,62 +3680,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn panel_settings_shortcut_is_available_with_terminal_focus() {
-        // macOS GPUI represents US cmd-shift-comma as cmd-<.
-        let keystroke = gpui::Keystroke::parse("cmd-<").unwrap();
-        let bindings = key_bindings();
-        assert!(
-            !bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&NoAction)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
-            }),
-            "terminal context must not block the panel settings shortcut"
+    fn confirm_title_names_the_bound_keys() {
+        let mut settings = calm_core::settings::Settings::default();
+        assert_eq!(
+            calm_core::keymap::confirm_prompt(&settings.keybindings),
+            "Close? enter / esc"
         );
-        assert!(
-            bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&OpenPanelSettings)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
-            }),
-            "canvas must bind cmd-< to OpenPanelSettings"
-        );
-        assert!(
-            !settings_menu::key_bindings().iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&settings_menu::OpenSettings)
-            }),
-            "panel settings shortcut must not also open global settings"
-        );
-    }
-
-    #[test]
-    fn delete_panel_shortcut_is_available_with_terminal_focus() {
-        let keystroke = gpui::Keystroke::parse("cmd-shift-backspace").unwrap();
-        let bindings = key_bindings();
-        assert!(
-            !bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&NoAction)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
-            }),
-            "terminal context must not block the delete shortcut"
-        );
-        assert!(
-            bindings.iter().any(|binding| {
-                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
-                    && binding.action().partial_eq(&DeletePanel)
-                    && binding
-                        .predicate()
-                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
-            }),
-            "canvas must bind cmd-shift-backspace to DeletePanel"
+        settings
+            .keybindings
+            .insert("canvas.confirm".into(), Some("y".into()));
+        assert_eq!(
+            calm_core::keymap::confirm_prompt(&settings.keybindings),
+            "Close? y / esc"
         );
     }
 
