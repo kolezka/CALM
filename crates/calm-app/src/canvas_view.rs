@@ -1973,7 +1973,7 @@ impl CanvasView {
             .and_then(|(_, terminal)| terminal.read(cx).native_frame())
     }
 
-    /// Records the canvas area. A size change keeps pinned panels' title bars on screen.
+    /// Records the canvas area. A size change keeps pinned panels reachable (title bar, chip or top band).
     fn set_viewport(&mut self, viewport: Rect, cx: &mut Context<Self>) {
         let resized = viewport.size != self.viewport.size;
         self.viewport = viewport;

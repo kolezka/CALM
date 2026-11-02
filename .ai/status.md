@@ -384,7 +384,8 @@ Pull requests:
     item after Send to Back in the panel menu. A pinned panel's menu has no Zoom to Fit.
   - Layout version 3 with `pin` per panel (omitted when unpinned); versions 1 and 2 still
     load. Restore and a window resize keep the tier order and move pinned panels so their
-    title bar (or minimized chip) stays reachable; part of the body may stay off screen.
+    title bar (minimized chip, or a 24 pt top band for a borderless panel) stays reachable;
+    part of the body may stay off screen.
   - Plugins: panel info has `pinned`, `contributes.menus` takes `when.pinned`.
   - Smoke steps `pin` and `pin_restore` (31 steps).
 

@@ -84,7 +84,7 @@ to paint.
 - Right-click a title bar for Minimize or Restore, Zoom to Fit, Bring to Front, Send to Back,
   Pin or Unpin, Duplicate (terminals) and Delete.
 - Pin a panel (`cmd-shift-p` or Pin in its menu) to fix it to the screen. It keeps its
-  screen position and size while you pan and zoom, never turns into a preview and stays
+  screen position and size while you pan and zoom, stays live (a modal still shows it as a preview) and stays
   above unpinned panels. You can still move and resize it. Unpin keeps it where it is on
   screen, and its size follows the canvas zoom again.
 - Closing a running terminal or a browser asks first. This can be turned off.

@@ -22,8 +22,9 @@ stays where it is on screen, at the size it has on screen.
   again (the logical size never changes).
 - Toggled by the rebindable action `panel.pin` ("Pin / unpin focused panel", default
   `cmd-shift-p`, the user's choice) on the focused panel, and by a Pin/Unpin item in the panel context menu.
-- Saved in `session.json` and presets. Restore clamps a pinned panel back on screen if
-  the window is smaller than when it was saved, and so does a window resize.
+- Saved in `session.json` and presets. Restore moves a pinned panel so its title bar
+  (minimized chip, or a top band for a borderless panel) is on screen if the window is
+  smaller than when it was saved, and so does a window resize.
 - Fit-all (Cmd+Shift+0) and scene bounds ignore pinned panels. Zoom to Fit is hidden
   for a pinned panel.
 - Plugins see `pinned: true|false` in the panel info.
