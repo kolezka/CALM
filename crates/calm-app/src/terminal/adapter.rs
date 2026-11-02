@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use calm_core::geometry::Point;
 use calm_core::occlusion::{PointerGate, region_contains};
-use calm_core::preview::{PanelMode, PreviewImage, refresh_due};
+use calm_core::preview::{PanelMode, PreviewImage, fade_pixels, refresh_due};
 use calm_core::viewport::{NativePlacement, unzoom_mouse_position};
 use calm_native::NativeChild;
 use gpui::{
@@ -139,7 +139,6 @@ impl TerminalPanel {
         self.host.set_opacity(opacity);
     }
 
-    #[expect(dead_code, reason = "the preview path reads it from Task 5 on")]
     pub fn content_opacity(&self) -> f64 {
         self.content_opacity
     }
@@ -214,7 +213,12 @@ impl TerminalPanel {
         self.snapshot_at = Some(Instant::now());
         self.snapshot_count += 1;
         match self.surface.snapshot_frame() {
-            Ok(frame) => {
+            Ok(mut frame) => {
+                let opacity = self.content_opacity();
+                if opacity < 1.0 {
+                    // gpui's sprite pipeline blends with SourceAlpha, so its BGRA is straight alpha.
+                    fade_pixels(frame.buffer_mut(), opacity, false);
+                }
                 let image = Arc::new(RenderImage::new([frame]));
                 if let Some(old) = self.preview.refreshed(image) {
                     window.drop_image(old).ok();

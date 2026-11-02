@@ -755,3 +755,17 @@ These shipped with #41, next to "Restore at launch" above.
   saved terminals with a `command`. Their exit now shows "[calm] <name> exited with code N"
   and follows `terminal.command_restart`. Plugin API kind `tui` and `PanelInfo.kind` "tui"
   are unchanged.
+
+## Color wells without opacity (2026-11-02, `feat/terminal-transparency`)
+
+- **The color picker hides its opacity slider app-wide.** `NSColor::setIgnoresAlpha(true)`
+  runs once, before the first Settings or Panel Settings window opens. Why app-wide: no
+  CALM color well keeps alpha today (`rgb_from_ns`, `BindingKind::Color`), chrome wells
+  included, so a slider anywhere would be a control that does nothing. This replaces the
+  spec's "terminal wells only" with one switch, decided at plan time.
+- Cost: `setIgnoresAlpha` is deprecated in favor of per-well `NSColorWell.supportsAlpha`.
+  Per-well opacity returns when chrome alpha is wired (the gap is in `.ai/status.md`).
+- **Previews fade in bytes.** A preview is GPUI-drawn, so the native fade does not reach
+  it. `take_snapshot` scales the snapshot's alpha by `content_opacity` with
+  `preview::fade_pixels`, straight alpha, because gpui's sprite pipeline blends with
+  `SourceAlpha` (`gpui-pre-apple` 0.3.4 `metal_renderer.rs`). Bytes round half away from zero.

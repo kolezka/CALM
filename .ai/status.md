@@ -311,6 +311,8 @@ Open questions: `.ai/open-questions.md`.
   with the content fill gone a front snapshot with see-through background pixels shows the
   back snapshot's text. Not confirmed by eye. On this branch previews keep the content
   fill. The mask's rendered look over Ghostty's own layer is still unverified (manual pass owed).
+  A terminal's content fade (`content_opacity`) also fades its preview: `take_snapshot`
+  scales the snapshot's alpha bytes (`preview::fade_pixels`, straight alpha). Look unverified.
 
 ## Not wired yet
 
@@ -426,6 +428,10 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
     right after the FPS step printed fps=123.9. Another run failed one step earlier with
     "only 1 frames with show_stats on". So the sampler works and paint stalls. Suspected
     cause: window occlusion or the display link stopping. Not confirmed.
+- Chrome colors (accent, title bar, title) accept `#rrggbbaa` in the data model, but
+  `rgb_from_ns` (`settings_window.rs`) drops the picker's alpha, so no color well can set
+  one. Since `feat/terminal-transparency` the picker hides its opacity slider app-wide
+  (`.ai/decisions.md`, "Color wells without opacity").
 - Escape on the close confirmation does not redraw until the next event.
 - Panel bottom corners are square because the native view is square.
 - Chrome hover is tracked from GPUI mouse moves only, so buttons can stay visible over a

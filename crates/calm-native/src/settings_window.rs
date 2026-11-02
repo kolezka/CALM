@@ -187,6 +187,16 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
 }
 
+/// No CALM color well keeps alpha, so the picker's opacity slider is hidden app-wide.
+#[expect(
+    deprecated,
+    reason = "one app-wide switch; per-well supportsAlpha returns with chrome alpha"
+)]
+fn hide_color_opacity(mtm: MainThreadMarker) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| NSColor::setIgnoresAlpha(true, mtm));
+}
+
 fn label(mtm: MainThreadMarker, text: &str, frame: NSRect) -> Retained<NSTextField> {
     let field = NSTextField::labelWithString(&NSString::from_str(text), mtm);
     field.setFrame(frame);
@@ -223,6 +233,7 @@ impl SettingsWindow {
         on_change: impl FnMut(String, FieldValue) + 'static,
     ) -> Result<SettingsWindow, NativeError> {
         let mtm = MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
+        hide_color_opacity(mtm);
         let style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable

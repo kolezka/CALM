@@ -88,6 +88,19 @@ impl<T> PreviewImage<T> {
     }
 }
 
+/// Scales each 4-byte pixel's alpha by `opacity`, and its color bytes too when
+/// `premultiplied`. A tail shorter than 4 bytes is left untouched.
+pub fn fade_pixels(pixels: &mut [u8], opacity: f64, premultiplied: bool) {
+    let scale = |byte: &mut u8| *byte = (f64::from(*byte) * opacity).round() as u8;
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        if premultiplied {
+            pixel.iter_mut().for_each(scale);
+        } else {
+            scale(&mut pixel[3]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +252,27 @@ mod tests {
             ),
             PanelMode::Live
         );
+    }
+
+    #[test]
+    fn fade_pixels_scales_alpha_and_premultiplied_color() {
+        let mut premultiplied = [200, 100, 50, 255];
+        fade_pixels(&mut premultiplied, 0.5, true);
+        assert_eq!(premultiplied, [100, 50, 25, 128]);
+
+        let mut straight = [200, 100, 50, 255];
+        fade_pixels(&mut straight, 0.5, false);
+        assert_eq!(straight, [200, 100, 50, 128]);
+
+        let mut opaque = [200, 100, 50, 255];
+        fade_pixels(&mut opaque, 1.0, true);
+        assert_eq!(opaque, [200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn fade_pixels_leaves_a_partial_tail_alone() {
+        let mut pixels = [10, 20, 30, 200, 7, 8, 9];
+        fade_pixels(&mut pixels, 0.5, false);
+        assert_eq!(pixels, [10, 20, 30, 100, 7, 8, 9]);
     }
 }
