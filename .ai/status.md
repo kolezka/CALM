@@ -86,6 +86,9 @@ Pull requests:
   (`command`, `args`, `cwd`, `env`), validated strictly. Add > Terminal Profiles submenu;
   `t` and plain duplicates use `default_profile`. Running surfaces recolor live through
   `TerminalThemeState::apply`. Settings > Terminal edits defaults only (no text fields yet).
+- `fix/term-program-ghostty`: every terminal exports `TERM_PROGRAM=ghostty` (built-in env
+  layer, overridable), so slk and similar apps pick kitty graphics. The smoke `tui` step
+  checks the value inside a real surface. Kitty images on a zoomed canvas: not yet seen.
 - #25 Blur on outside click: a click on empty canvas clears panel focus and makes the GPUI
   host view the first responder; pans and zooms keep focus; Escape clears it only when no
   native view has the keyboard. Setting `canvas.click_empty_clears_focus` (default true).

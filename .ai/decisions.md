@@ -341,6 +341,13 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   alone are an error. `env` merges key by key. Other fields are taken whole.
 - **Env goes through `/usr/bin/env` in argv.** gpui-libghostty 0.3.1 has no env option.
   Values are never printed, and Settings masks them, but `ps` shows them. Documented.
+- **Terminals export `TERM_PROGRAM=ghostty` (2026-11-02).** gpui-libghostty 0.3.1 sets
+  `gpui-ghostty`, which apps that choose features by terminal name do not know: slk fell
+  back to half-block images instead of kitty graphics. The engine is Ghostty's, so the
+  name is honest. It sits under every env layer (`BUILTIN_ENV`), so `terminal.env`, a
+  profile or a manifest can set another value. `TERM` stays `xterm-256color`: the build
+  ships no `xterm-ghostty` terminfo. Cost: every terminal now starts through
+  `/usr/bin/env`, and a plain shell gets `-l` for its login profile.
 - **Live recolor uses `TerminalThemeState::apply`.** It exists in 0.3.1 and keeps the process.
   It cannot remove a theme or flip the user config, so those apply to new terminals.
 - **The panel's profile is kept beside the scene, not in `PanelKind`.** Layouts are not

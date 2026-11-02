@@ -404,6 +404,11 @@ pub enum TerminalIcon {
     AppImage(PathBuf),
 }
 
+/// Env every terminal starts with, under the defaults, profile and app layers.
+/// gpui-libghostty 0.3.1 exports `TERM_PROGRAM=gpui-ghostty`, so apps that choose features
+/// by terminal name (kitty graphics, for one) fall back. Ghostty proper exports `ghostty`.
+pub const BUILTIN_ENV: &[(&str, &str)] = &[("TERM_PROGRAM", "ghostty")];
+
 /// What a TUI app's manifest sets, laid between the profile and the panel overrides.
 /// The app fills it from the manifest; calm-core never reads manifests.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -702,7 +707,11 @@ impl TerminalSettings {
         };
         // Command and args are one unit: the layer that sets the command gives the args.
         let launch = if top.command.is_some() { top } else { base };
-        let mut env = base.env.clone().unwrap_or_default();
+        let mut env: BTreeMap<String, String> = BUILTIN_ENV
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        env.extend(base.env.clone().unwrap_or_default());
         env.extend(top.env.clone().unwrap_or_default());
         ResolvedTerminal {
             profile: chosen.map(|profile| profile.id.clone()),
@@ -1101,7 +1110,11 @@ mod tests {
         let bare = TerminalSettings::default().resolve(None, false);
         assert_eq!(bare.title_template, DEFAULT_TITLE_TEMPLATE);
         assert_eq!(bare.overrides, ChromeOverrides::default());
-        assert!(!bare.use_user_config && bare.icon.is_none() && bare.env.is_empty());
+        assert!(!bare.use_user_config && bare.icon.is_none());
+        assert_eq!(
+            bare.env.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["TERM_PROGRAM"]
+        );
     }
 
     #[test]
@@ -1145,8 +1158,48 @@ mod tests {
     }
 
     #[test]
+    fn every_terminal_identifies_as_ghostty_unless_a_layer_overrides_it() {
+        // gpui-libghostty exports TERM_PROGRAM=gpui-ghostty, which apps that pick
+        // features by terminal name (kitty graphics in slk) do not recognize.
+        let program = |resolved: &ResolvedTerminal| resolved.env.get("TERM_PROGRAM").cloned();
+        let ghostty = Some("ghostty".to_string());
+        let bare = TerminalSettings::default();
+        assert_eq!(program(&bare.resolve(None, false)), ghostty);
+        let typed = AppLayer::typed_command();
+        let panel = bare.resolve_for_panel(None, false, Some(&typed), &PanelOverrides::default());
+        assert_eq!(program(&panel), ghostty);
+        assert_eq!(
+            launch_argv(&bare.resolve(None, false), "/bin/zsh"),
+            vec!["/usr/bin/env", "TERM_PROGRAM=ghostty", "/bin/zsh", "-l"]
+        );
+
+        // Defaults, a profile and an app manifest can each replace it.
+        let settings = parse(
+            r#"{"env": {"TERM_PROGRAM": "defaults"},
+                "profiles": [{"id": "p", "name": "P", "env": {"TERM_PROGRAM": "profile"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            program(&settings.resolve(None, false)).as_deref(),
+            Some("defaults")
+        );
+        assert_eq!(
+            program(&settings.resolve(Some("p"), false)).as_deref(),
+            Some("profile")
+        );
+        let app = AppLayer {
+            env: [("TERM_PROGRAM".to_string(), "app".to_string())].into(),
+            ..AppLayer::default()
+        };
+        let resolved =
+            settings.resolve_for_panel(Some("p"), false, Some(&app), &PanelOverrides::default());
+        assert_eq!(program(&resolved).as_deref(), Some("app"));
+    }
+
+    #[test]
     fn launch_argv_wraps_env_and_keeps_the_shell_a_login_shell() {
         let mut resolved = TerminalSettings::default().resolve(None, true);
+        resolved.env.clear();
         assert_eq!(launch_argv(&resolved, "/bin/zsh"), vec!["/bin/zsh"]);
         resolved.env.insert("A".into(), "1".into());
         assert_eq!(
@@ -1365,7 +1418,8 @@ mod tests {
                 ("A", "defaults"),
                 ("B", "profile"),
                 ("C", "manifest"),
-                ("D", "manifest")
+                ("D", "manifest"),
+                ("TERM_PROGRAM", "ghostty")
             ]
         );
     }

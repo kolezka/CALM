@@ -227,6 +227,9 @@ colors per surface. They come from your Ghostty config for every terminal.
   values, and CALM never prints the values. They do reach the process's arguments through
   `/usr/bin/env`, so other programs running as you can see them in `ps`. Do not put secrets
   here that you would not put on a command line.
+  Every terminal starts with `TERM_PROGRAM=ghostty`, so apps that pick features by terminal
+  name (inline images, for one) treat it as Ghostty. Set `TERM_PROGRAM` in `env` to change
+  it.
 
 - `command_restart`: what a typed command (Add > Run Command…) does when it exits.
   `"prompt"` (default) stays exited until you press Enter or pick Restart from the panel
