@@ -313,6 +313,8 @@ Open questions: `.ai/open-questions.md`.
   fill. The mask's rendered look over Ghostty's own layer is still unverified (manual pass owed).
   A terminal's content fade (`content_opacity`) also fades its preview: `take_snapshot`
   scales the snapshot's alpha bytes (`preview::fade_pixels`, straight alpha). Look unverified.
+  Snapshots are converted from premultiplied (the shim `memcpy`s Ghostty's IOSurface,
+  which Ghostty blends premultiplied) to straight alpha for GPUI (`preview::unpremultiply_pixels`).
 
 ## Not wired yet
 
@@ -432,10 +434,6 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
   `rgb_from_ns` (`settings_window.rs`) drops the picker's alpha, so no color well can set
   one. Since `feat/terminal-transparency` every CALM well sets `supportsAlpha = false`
   (`.ai/decisions.md`, "Color wells without opacity").
-- Terminal previews: `gpui-libghostty` 0.3.1 copies Ghostty's IOSurface as is, and Ghostty
-  renders premultiplied alpha, but gpui's sprite pipeline blends it as straight alpha. Pixels
-  with alpha below 255 (a see-through background) show too dark in a preview. Opaque pixels
-  are unaffected. Fix: un-premultiply the snapshot before the `RenderImage`. Not done.
 - Escape on the close confirmation does not redraw until the next event.
 - Panel bottom corners are square because the native view is square.
 - Chrome hover is tracked from GPUI mouse moves only, so buttons can stay visible over a

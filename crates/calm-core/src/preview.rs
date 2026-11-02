@@ -101,6 +101,24 @@ pub fn fade_pixels(pixels: &mut [u8], opacity: f64, premultiplied: bool) {
     }
 }
 
+/// Converts premultiplied 4-byte pixels to straight alpha. A tail shorter than 4 bytes
+/// is left untouched.
+pub fn unpremultiply_pixels(pixels: &mut [u8]) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        let alpha = pixel[3];
+        match alpha {
+            0 => pixel[..3].fill(0),
+            255 => {}
+            _ => {
+                for byte in &mut pixel[..3] {
+                    let straight = (f64::from(*byte) * 255.0 / f64::from(alpha)).round();
+                    *byte = straight.min(255.0) as u8;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +292,30 @@ mod tests {
         let mut pixels = [10, 20, 30, 200, 7, 8, 9];
         fade_pixels(&mut pixels, 0.5, false);
         assert_eq!(pixels, [10, 20, 30, 100, 7, 8, 9]);
+    }
+
+    #[test]
+    fn unpremultiply_pixels_divides_color_by_alpha() {
+        let mut pixels = [100, 50, 25, 128];
+        unpremultiply_pixels(&mut pixels);
+        assert_eq!(pixels, [199, 100, 50, 128]);
+    }
+
+    #[test]
+    fn unpremultiply_pixels_keeps_opaque_and_clears_transparent() {
+        let mut opaque = [10, 20, 30, 255];
+        unpremultiply_pixels(&mut opaque);
+        assert_eq!(opaque, [10, 20, 30, 255]);
+
+        let mut transparent = [7, 7, 7, 0];
+        unpremultiply_pixels(&mut transparent);
+        assert_eq!(transparent, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn unpremultiply_pixels_leaves_a_partial_tail_alone() {
+        let mut pixels = [100, 50, 25, 128, 9, 9];
+        unpremultiply_pixels(&mut pixels);
+        assert_eq!(pixels, [199, 100, 50, 128, 9, 9]);
     }
 }

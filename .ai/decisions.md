@@ -770,5 +770,5 @@ These shipped with #41, next to "Restore at launch" above.
   it. `take_snapshot` scales the snapshot's alpha by `content_opacity` with
   `preview::fade_pixels`, straight alpha, because gpui's sprite pipeline blends with
   `SourceAlpha` (`gpui-pre-apple` 0.3.4 `metal_renderer.rs`). Bytes round half away from zero.
-  Ghostty's snapshot bytes are premultiplied, so gpui draws see-through pixels too dark.
-  That mismatch predates the fade and is in `.ai/status.md`.
+  Ghostty's snapshot bytes are premultiplied, so every snapshot first goes through
+  `preview::unpremultiply_pixels`, then the fade.

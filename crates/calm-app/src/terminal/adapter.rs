@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use calm_core::geometry::Point;
 use calm_core::occlusion::{PointerGate, region_contains};
-use calm_core::preview::{PanelMode, PreviewImage, fade_pixels, refresh_due};
+use calm_core::preview::{PanelMode, PreviewImage, fade_pixels, refresh_due, unpremultiply_pixels};
 use calm_core::viewport::{NativePlacement, unzoom_mouse_position};
 use calm_native::NativeChild;
 use gpui::{
@@ -214,9 +214,10 @@ impl TerminalPanel {
         self.snapshot_count += 1;
         match self.surface.snapshot_frame() {
             Ok(mut frame) => {
+                // Ghostty's surface is premultiplied; gpui blends with SourceAlpha (straight).
+                unpremultiply_pixels(frame.buffer_mut());
                 let opacity = self.content_opacity();
                 if opacity < 1.0 {
-                    // gpui's sprite pipeline blends with SourceAlpha, so its BGRA is straight alpha.
                     fade_pixels(frame.buffer_mut(), opacity, false);
                 }
                 let image = Arc::new(RenderImage::new([frame]));
