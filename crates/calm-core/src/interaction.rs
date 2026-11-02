@@ -275,13 +275,13 @@ impl InputHandler {
         }
 
         let world = scene.camera.screen_to_world(screen);
-        let hit = scene.hit_test(world);
+        let hit = scene.hit_test_screen(screen);
         if let Some(panel) = hit.and_then(|id| scene.get(id)) {
             let id = panel.id;
             if panel.minimized {
                 return vec![Effect::ToggleMinimize(id), Effect::Redraw];
             }
-            match chrome_hit(panel, world) {
+            match chrome_hit(panel, scene.camera_of(panel).screen_to_world(screen)) {
                 Some(ChromeButton::Close) => return vec![Effect::ClosePanelRequested(id)],
                 Some(ChromeButton::Minimize) => {
                     return vec![Effect::ToggleMinimize(id), Effect::Redraw];
@@ -311,12 +311,13 @@ impl InputHandler {
             };
         };
         let id = panel.id;
-        if world.y < panel.rect.origin.y + chrome_height(panel) {
+        let local = scene.camera_of(panel).screen_to_world(screen);
+        if local.y < panel.rect.origin.y + chrome_height(panel) {
             self.state = Interaction::Dragging {
                 id,
                 grab_offset_world: Point::new(
-                    world.x - panel.rect.origin.x,
-                    world.y - panel.rect.origin.y,
+                    local.x - panel.rect.origin.x,
+                    local.y - panel.rect.origin.y,
                 ),
             };
             scene.bring_to_front(id);
@@ -328,15 +329,14 @@ impl InputHandler {
 
     /// Finds the resize handle at a screen point using the current tool.
     pub fn resize_target_at(&self, screen: Point, scene: &Scene) -> Option<(PanelId, ResizeEdge)> {
-        let world = scene.camera.screen_to_world(screen);
-        self.resize_handle(scene, world, scene.hit_test(world))
+        self.resize_handle(scene, screen, scene.hit_test_screen(screen))
     }
 
     /// Starts resizing at a screen point if it hits a resize handle.
     pub fn begin_resize_at(&mut self, screen: Point, scene: &mut Scene) -> Option<Vec<Effect>> {
         let (id, edge) = self.resize_target_at(screen, scene)?;
-        let world = scene.camera.screen_to_world(screen);
         let panel = scene.get(id)?;
+        let world = scene.camera_of(panel).screen_to_world(screen);
         self.state = Interaction::Resizing {
             id,
             edge,
@@ -357,10 +357,10 @@ impl InputHandler {
         screen: Point,
         scene: &mut Scene,
     ) -> Vec<Effect> {
-        let world = scene.camera.screen_to_world(screen);
         let Some(panel) = scene.get(id) else {
             return Vec::new();
         };
+        let world = scene.camera_of(panel).screen_to_world(screen);
         self.state = Interaction::Dragging {
             id,
             grab_offset_world: Point::new(
@@ -410,6 +410,7 @@ impl InputHandler {
                 grab_offset_world,
             } => {
                 let others = neighbor_rects(scene, Some(id));
+                let world = panel_point(scene, id, screen);
                 if let Some(panel) = scene.get_mut(id) {
                     panel.rect.origin =
                         Point::new(world.x - grab_offset_world.x, world.y - grab_offset_world.y);
@@ -425,6 +426,7 @@ impl InputHandler {
                 grab_offset_world,
             } => {
                 let others = neighbor_rects(scene, Some(id));
+                let world = panel_point(scene, id, screen);
                 if let Some(panel) = scene.get_mut(id) {
                     let edge_world =
                         Point::new(world.x + grab_offset_world.x, world.y + grab_offset_world.y);
@@ -489,8 +491,7 @@ impl InputHandler {
             scene.camera.zoom_by((-dy / 300.0).exp2(), screen);
             return;
         }
-        let world = scene.camera.screen_to_world(screen);
-        if scene.hit_test(world).is_none() {
+        if scene.hit_test_screen(screen).is_none() {
             scene.camera.pan_by_screen(dx, dy);
         }
     }
@@ -621,11 +622,9 @@ impl InputHandler {
     pub fn hover_resize(&self, screen: Point, scene: &Scene) -> Option<ResizeEdge> {
         match self.state {
             Interaction::Resizing { edge, .. } => Some(edge),
-            Interaction::Idle if !self.space_held => {
-                let world = scene.camera.screen_to_world(screen);
-                self.resize_handle(scene, world, scene.hit_test(world))
-                    .map(|(_, edge)| edge)
-            }
+            Interaction::Idle if !self.space_held => self
+                .resize_handle(scene, screen, scene.hit_test_screen(screen))
+                .map(|(_, edge)| edge),
             _ => None,
         }
     }
@@ -634,13 +633,13 @@ impl InputHandler {
     fn resize_handle(
         &self,
         scene: &Scene,
-        world: Point,
+        screen: Point,
         hit: Option<PanelId>,
     ) -> Option<(PanelId, ResizeEdge)> {
         if hit.is_none() && self.tool != Tool::Select {
             return None;
         }
-        resize_target(scene, world)
+        resize_target(scene, screen)
     }
 
     /// Rect spanned by a draw from `start` to `end`, snapped unless Cmd and Shift are held.
@@ -684,17 +683,42 @@ fn beyond_slop(start: Point, end: Point) -> bool {
     (end.x - start.x).hypot(end.y - start.y) > CLICK_SLOP
 }
 
-/// Rects that snapping lines up against. Minimized panels count as their chip.
-fn neighbor_rects(scene: &Scene, except: Option<PanelId>) -> Vec<Rect> {
+/// `screen` in the camera of panel `id`, or of the canvas when there is no such panel.
+fn panel_point(scene: &Scene, id: PanelId, screen: Point) -> Point {
+    scene
+        .get(id)
+        .map_or(scene.camera, |panel| scene.camera_of(panel))
+        .screen_to_world(screen)
+}
+
+/// Rects that snapping lines up against, in the space of the panel `moving` (a new,
+/// unpinned panel when `None`). Only panels of its tier count: pinned panels snap to
+/// pinned ones, unpinned to unpinned. Minimized panels count as their chip.
+fn neighbor_rects(scene: &Scene, moving: Option<PanelId>) -> Vec<Rect> {
+    let mover = moving.and_then(|id| scene.get(id));
+    let pin = mover.and_then(|panel| panel.pin);
+    let camera = mover.map_or(scene.camera, |panel| scene.camera_of(panel));
     scene
         .panels
         .iter()
-        .filter(|panel| Some(panel.id) != except)
+        .filter(|panel| Some(panel.id) != moving && panel.is_pinned() == pin.is_some())
         .map(|panel| {
-            if panel.minimized {
+            let rect = if panel.minimized {
                 chip_rect(panel)
             } else {
                 panel.rect
+            };
+            if panel.pin == pin {
+                return rect;
+            }
+            // A pinned panel at another pin zoom: through the screen into the mover's space.
+            let screen = scene.camera_of(panel).world_rect_to_screen(rect);
+            Rect {
+                origin: camera.screen_to_world(screen.origin),
+                size: Size::new(
+                    screen.size.width / camera.zoom,
+                    screen.size.height / camera.zoom,
+                ),
             }
         })
         .collect()
@@ -703,12 +727,16 @@ fn neighbor_rects(scene: &Scene, except: Option<PanelId>) -> Vec<Rect> {
 /// Right click: canvas menu on empty canvas, panel menu on chrome or a minimized chip,
 /// nothing on content, which handles its own right clicks.
 fn context_menu(screen: Point, scene: &Scene) -> Vec<Effect> {
-    let world = scene.camera.screen_to_world(screen);
-    let Some(id) = scene.hit_test(world) else {
+    let Some(id) = scene.hit_test_screen(screen) else {
+        let world = scene.camera.screen_to_world(screen);
         return vec![Effect::ShowCanvasMenu { screen, world }];
     };
     match scene.get(id) {
-        Some(panel) if panel.minimized || world.y < panel.rect.origin.y + chrome_height(panel) => {
+        Some(panel)
+            if panel.minimized
+                || scene.camera_of(panel).screen_to_world(screen).y
+                    < panel.rect.origin.y + chrome_height(panel) =>
+        {
             vec![Effect::ShowPanelMenu { id, screen }]
         }
         _ => Vec::new(),
@@ -1479,7 +1507,7 @@ mod tests {
         let top = panel.rect.origin.y;
         let close_spot = Point::new(panel.rect.right() - 14.0, top + 14.0);
         assert!(close_spot.y < top + crate::scene::CHROME_HEIGHT);
-        assert_eq!(scene.hit_test(close_spot), Some(id));
+        assert_eq!(scene.hit_test_screen(close_spot), Some(id));
         assert_eq!(crate::chrome::chrome_hit(panel, close_spot), None);
         assert_eq!(
             crate::chrome::chrome_hit(panel, Point::new(panel.rect.right() - 38.0, top + 14.0)),
@@ -2233,5 +2261,140 @@ mod tests {
             scene.get(right).unwrap().rect,
             Rect::new(201.0, 0.0, 200.0, 100.0)
         );
+    }
+
+    fn close(a: Point, b: Point) -> bool {
+        (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9
+    }
+
+    #[test]
+    fn drag_pinned_panel_moves_in_screen_space() {
+        let mut scene = Scene::default();
+        scene.camera.zoom = 2.0;
+        let id = scene.add(terminal(), Rect::new(50.0, 50.0, 200.0, 150.0));
+        assert!(scene.set_pinned(id, true));
+        for canvas_zoom in [0.5, 2.0, 3.0] {
+            scene.camera.zoom = canvas_zoom;
+            scene.camera.offset = Point::new(37.0, -11.0);
+            let panel = scene.get(id).unwrap();
+            let before = scene.camera_of(panel).world_to_screen(panel.rect.origin);
+            // On the title bar, left of the buttons.
+            let press = Point::new(before.x + 100.0, before.y + 10.0);
+            let mut input = InputHandler::default();
+            let effects = input.mouse_down(press, Button::Left, free(), &mut scene);
+            assert_eq!(
+                effects,
+                vec![Effect::FocusPanel(id), Effect::Redraw],
+                "zoom {canvas_zoom}"
+            );
+            let release = Point::new(press.x + 40.0, press.y);
+            input.mouse_move(release, free(), &mut scene);
+            input.mouse_up(release, free(), &mut scene);
+            let panel = scene.get(id).unwrap();
+            let after = scene.camera_of(panel).world_to_screen(panel.rect.origin);
+            assert!(
+                close(after, Point::new(before.x + 40.0, before.y)),
+                "zoom {canvas_zoom}: {before:?} -> {after:?}"
+            );
+            assert_eq!(panel.rect.size, Size::new(200.0, 150.0));
+        }
+    }
+
+    #[test]
+    fn resize_pinned_panel_grab_zone_uses_pin_zoom() {
+        let mut scene = Scene::default();
+        scene.camera.zoom = 2.0;
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 150.0));
+        assert!(scene.set_pinned(id, true));
+        scene.camera.zoom = 0.25;
+        scene.camera.offset = Point::new(-90.0, 40.0);
+        let panel = scene.get(id).unwrap();
+        let screen = scene.camera_of(panel).world_rect_to_screen(panel.rect);
+        let mid_y = screen.origin.y + screen.size.height / 2.0;
+        let input = InputHandler::default();
+        let outer = crate::resize::RESIZE_OUTER_PX;
+        assert_eq!(
+            input.resize_target_at(Point::new(screen.right() + outer * 0.5, mid_y), &scene),
+            Some((id, ResizeEdge::Right))
+        );
+        // Past the outer band at the pin zoom, though inside it at the canvas zoom.
+        assert_eq!(
+            input.resize_target_at(Point::new(screen.right() + outer * 1.5, mid_y), &scene),
+            None
+        );
+        let mut input = InputHandler::default();
+        let press = Point::new(screen.right() - 2.0, mid_y);
+        assert!(input.begin_resize_at(press, &mut scene).is_some());
+        let release = Point::new(press.x + 20.0, press.y);
+        input.mouse_move(release, free(), &mut scene);
+        input.mouse_up(release, free(), &mut scene);
+        // 20 px at pin zoom 2 is 10 units.
+        assert_eq!(scene.get(id).unwrap().rect.size, Size::new(210.0, 150.0));
+    }
+
+    #[test]
+    fn pinned_panels_are_not_snap_neighbors_of_unpinned() {
+        let mut scene = Scene::default();
+        let pinned = scene.add(terminal(), Rect::new(300.0, 0.0, 200.0, 150.0));
+        assert!(scene.set_pinned(pinned, true));
+        let mover = scene.add(terminal(), Rect::new(0.0, 300.0, 120.0, 100.0));
+        let anchor = scene.add(terminal(), Rect::new(700.0, 600.0, 200.0, 150.0));
+        let mut input = InputHandler {
+            snap: SnapConfig {
+                grid: None,
+                edge_distance: 8.0,
+            },
+            ..InputHandler::default()
+        };
+        let drag = |input: &mut InputHandler, scene: &mut Scene, from: Point, to: Point| {
+            input.mouse_down(from, Button::Left, no_mods(), scene);
+            input.mouse_move(to, no_mods(), scene);
+            input.mouse_up(to, no_mods(), scene);
+        };
+        // Right edge 4 units off the pinned panel's join spot, top 3 off its top.
+        drag(
+            &mut input,
+            &mut scene,
+            Point::new(20.0, 310.0),
+            Point::new(196.0, 13.0),
+        );
+        assert_eq!(
+            scene.get(mover).unwrap().rect,
+            Rect::new(176.0, 3.0, 120.0, 100.0)
+        );
+        // Control: the same offsets against an unpinned panel do snap.
+        drag(
+            &mut input,
+            &mut scene,
+            Point::new(196.0, 13.0),
+            Point::new(595.0, 613.0),
+        );
+        assert_eq!(
+            scene.get(mover).unwrap().rect,
+            Rect::new(579.0, 600.0, 120.0, 100.0)
+        );
+        // The pinned panel ignores unpinned neighbors too.
+        drag(
+            &mut input,
+            &mut scene,
+            Point::new(320.0, 10.0),
+            Point::new(323.0, 613.0),
+        );
+        assert_eq!(
+            scene.get(pinned).unwrap().rect,
+            Rect::new(303.0, 603.0, 200.0, 150.0)
+        );
+        // Flush against each other across tiers, still no join.
+        scene.get_mut(pinned).unwrap().rect = Rect::new(901.0, 600.0, 200.0, 150.0);
+        let joins = crate::join::JoinLayout::compute(&scene.panels);
+        assert!(
+            joins
+                .joins
+                .iter()
+                .all(|join| join.first != pinned && join.second != pinned),
+            "{:?}",
+            joins.joins
+        );
+        assert!(!joins.joins.is_empty() || scene.get(anchor).is_some());
     }
 }

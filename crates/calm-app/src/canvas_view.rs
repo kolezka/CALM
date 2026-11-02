@@ -2247,7 +2247,7 @@ impl CanvasView {
         let effects = self
             .input
             .mouse_move(screen, to_mods(&event.modifiers), &mut self.scene);
-        let hover = hover_target(&self.scene, self.scene.camera.screen_to_world(screen));
+        let hover = hover_target(&self.scene, screen);
         let hover_changed = hover != self.hover;
         self.hover = hover;
         let cursor_changed = self.update_resize_cursor(screen);
@@ -2449,10 +2449,12 @@ impl CanvasView {
         let steps = |len: f64| (1..(len / 20.0) as usize).map(|i| i as f64 * 20.0);
         steps(size.height)
             .flat_map(|y| steps(size.width).map(move |x| Point::new(x, y)))
-            .map(|screen| self.scene.camera.screen_to_world(screen))
-            .find(|world| {
-                self.scene.hit_test(*world).is_none() && self.resize_cursor_at(*world).is_none()
+            .map(|screen| (screen, self.scene.camera.screen_to_world(screen)))
+            .find(|(screen, world)| {
+                self.scene.hit_test_screen(*screen).is_none()
+                    && self.resize_cursor_at(*world).is_none()
             })
+            .map(|(_, world)| world)
     }
 
     pub fn focused(&self) -> Option<PanelId> {

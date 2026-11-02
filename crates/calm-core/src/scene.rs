@@ -696,22 +696,6 @@ impl Scene {
             .map(|panel| panel.id)
     }
 
-    /// Topmost panel under `world`. A minimized panel only hits its chip.
-    pub fn hit_test(&self, world: Point) -> Option<PanelId> {
-        self.panels
-            .iter()
-            .rev()
-            .find(|panel| {
-                let hit_rect = if panel.minimized {
-                    chip_rect(panel)
-                } else {
-                    panel.rect
-                };
-                hit_rect.contains(world)
-            })
-            .map(|panel| panel.id)
-    }
-
     /// Smallest world rect covering every unpinned panel as drawn (a minimized panel is
     /// its chip). `None` when there is none.
     pub fn bounds(&self) -> Option<Rect> {
@@ -945,9 +929,9 @@ mod tests {
                 }),
             ),
             (
-                "hit_test",
+                "hit_test_screen",
                 Box::new(|s, _, _| {
-                    let _ = s.hit_test(Point::new(1.0, 1.0));
+                    let _ = s.hit_test_screen(Point::new(1.0, 1.0));
                 }),
             ),
             (
@@ -1183,9 +1167,9 @@ mod tests {
         let mut scene = Scene::default();
         let back = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 200.0));
         let front = scene.add(terminal(), Rect::new(100.0, 100.0, 200.0, 200.0));
-        assert_eq!(scene.hit_test(Point::new(150.0, 150.0)), Some(front));
-        assert_eq!(scene.hit_test(Point::new(50.0, 50.0)), Some(back));
-        assert_eq!(scene.hit_test(Point::new(1000.0, 1000.0)), None);
+        assert_eq!(scene.hit_test_screen(Point::new(150.0, 150.0)), Some(front));
+        assert_eq!(scene.hit_test_screen(Point::new(50.0, 50.0)), Some(back));
+        assert_eq!(scene.hit_test_screen(Point::new(1000.0, 1000.0)), None);
     }
 
     #[test]
@@ -1196,7 +1180,7 @@ mod tests {
         scene.bring_to_front(back);
         let order: Vec<PanelId> = scene.panels.iter().map(|panel| panel.id).collect();
         assert_eq!(order, vec![front, back]);
-        assert_eq!(scene.hit_test(Point::new(150.0, 150.0)), Some(back));
+        assert_eq!(scene.hit_test_screen(Point::new(150.0, 150.0)), Some(back));
     }
 
     #[test]
@@ -1207,7 +1191,7 @@ mod tests {
         scene.send_to_back(front);
         let order: Vec<PanelId> = scene.panels.iter().map(|panel| panel.id).collect();
         assert_eq!(order, vec![front, back]);
-        assert_eq!(scene.hit_test(Point::new(150.0, 150.0)), Some(back));
+        assert_eq!(scene.hit_test_screen(Point::new(150.0, 150.0)), Some(back));
         scene.send_to_back(PanelId(99));
         assert_eq!(scene.panels.len(), 2);
     }
@@ -1317,10 +1301,10 @@ mod tests {
         if let Some(panel) = scene.get_mut(id) {
             panel.minimized = true;
         }
-        assert_eq!(scene.hit_test(Point::new(10.0, 10.0)), Some(id));
-        assert_eq!(scene.hit_test(Point::new(199.0, 27.0)), Some(id));
-        assert_eq!(scene.hit_test(Point::new(10.0, 100.0)), None);
-        assert_eq!(scene.hit_test(Point::new(300.0, 10.0)), None);
+        assert_eq!(scene.hit_test_screen(Point::new(10.0, 10.0)), Some(id));
+        assert_eq!(scene.hit_test_screen(Point::new(199.0, 27.0)), Some(id));
+        assert_eq!(scene.hit_test_screen(Point::new(10.0, 100.0)), None);
+        assert_eq!(scene.hit_test_screen(Point::new(300.0, 10.0)), None);
         let panel = scene.get(id).unwrap();
         assert_eq!(chip_rect(panel), Rect::new(0.0, 0.0, 200.0, 28.0));
     }

@@ -109,7 +109,8 @@ fn grab_zone(panel: &Panel, zoom: f64) -> Rect {
     )
 }
 
-/// The panel whose resize handle is under `world`, and which edge.
+/// The panel whose resize handle is under `screen`, and which edge. Each panel is tested
+/// in its own camera, so a pinned panel's band uses its pin zoom.
 ///
 /// Panels are tried front to back. The first one whose rect or outer band holds the
 /// point decides: a locked panel, a minimized chip or a point away from the edges gives
@@ -117,10 +118,12 @@ fn grab_zone(panel: &Panel, zoom: f64) -> Rect {
 ///
 /// The outer band never reaches into a joined neighbor: there the inner band and the
 /// gap between the two panels resize, and the neighbor keeps its own clicks.
-pub fn resize_target(scene: &Scene, world: Point) -> Option<(PanelId, ResizeEdge)> {
-    let zoom = scene.camera.zoom;
+pub fn resize_target(scene: &Scene, screen: Point) -> Option<(PanelId, ResizeEdge)> {
     let joins = JoinLayout::compute(&scene.panels);
     for panel in scene.panels.iter().rev() {
+        let camera = scene.camera_of(panel);
+        let zoom = camera.zoom;
+        let world = camera.screen_to_world(screen);
         if panel.minimized {
             if chip_rect(panel).contains(world) {
                 return None;
@@ -167,6 +170,11 @@ fn in_joined_neighbor(scene: &Scene, joins: &JoinLayout, id: PanelId, world: Poi
 mod tests {
     use super::*;
     use crate::scene::content_rect;
+
+    /// `resize_target` at a point given in the canvas camera's world space.
+    fn target(scene: &Scene, world: Point) -> Option<(PanelId, ResizeEdge)> {
+        resize_target(scene, scene.camera.world_to_screen(world))
+    }
 
     fn terminal() -> PanelKind {
         PanelKind::Terminal {
@@ -299,7 +307,7 @@ mod tests {
                     (Point::new(400.0, 600.0 + outer * 1.5), None),
                 ];
                 for (world, want) in cases {
-                    let got = resize_target(&scene, world);
+                    let got = target(&scene, world);
                     assert_eq!(
                         got,
                         want.map(|edge| (id, edge)),
@@ -319,10 +327,7 @@ mod tests {
         let content = content_rect(scene.get(id).unwrap());
         let outside = Point::new(content.right() + 2.0, content.bottom() + 2.0);
         assert!(!content.contains(outside));
-        assert_eq!(
-            resize_target(&scene, outside),
-            Some((id, ResizeEdge::BottomRight))
-        );
+        assert_eq!(target(&scene, outside), Some((id, ResizeEdge::BottomRight)));
     }
 
     #[test]
@@ -332,10 +337,10 @@ mod tests {
         let front = scene.add(plugin(), Rect::new(0.0, 0.0, 380.0, 280.0));
         scene.set_resize_policy(front, ResizePolicy::LOCKED);
         // Inside the locked panel's own edge band: nothing.
-        assert_eq!(resize_target(&scene, Point::new(375.0, 100.0)), None);
+        assert_eq!(target(&scene, Point::new(375.0, 100.0)), None);
         // Just right of it, where a free panel's outer band would be: the panel behind.
         assert_eq!(
-            resize_target(&scene, Point::new(395.0, 100.0)),
+            target(&scene, Point::new(395.0, 100.0)),
             Some((back, ResizeEdge::Right))
         );
     }
@@ -346,13 +351,13 @@ mod tests {
         let back = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
         let front = scene.add(terminal(), Rect::new(300.0, 100.0, 400.0, 300.0));
         // The back panel's right band lies inside the front panel's interior.
-        assert_eq!(resize_target(&scene, Point::new(398.0, 200.0)), None);
+        assert_eq!(target(&scene, Point::new(398.0, 200.0)), None);
         assert_eq!(
-            resize_target(&scene, Point::new(398.0, 50.0)),
+            target(&scene, Point::new(398.0, 50.0)),
             Some((back, ResizeEdge::Right))
         );
         assert_eq!(
-            resize_target(&scene, Point::new(702.0, 200.0)),
+            target(&scene, Point::new(702.0, 200.0)),
             Some((front, ResizeEdge::Right))
         );
     }
@@ -362,8 +367,8 @@ mod tests {
         let mut scene = Scene::default();
         let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
         scene.get_mut(id).unwrap().minimized = true;
-        assert_eq!(resize_target(&scene, Point::new(195.0, 20.0)), None);
-        assert_eq!(resize_target(&scene, Point::new(398.0, 200.0)), None);
+        assert_eq!(target(&scene, Point::new(195.0, 20.0)), None);
+        assert_eq!(target(&scene, Point::new(398.0, 200.0)), None);
     }
 
     /// A on the left, B one join gap to its right. `a_front` puts A in front of B.
@@ -388,7 +393,7 @@ mod tests {
                 for x in [201.0, 203.0, 201.0 + RESIZE_OUTER_PX / zoom - 0.1] {
                     for y in [5.0, 50.0] {
                         assert_eq!(
-                            resize_target(&scene, Point::new(x, y)),
+                            target(&scene, Point::new(x, y)),
                             None,
                             "zoom {zoom} a_front {a_front} at ({x}, {y})"
                         );
@@ -404,7 +409,7 @@ mod tests {
             let (scene, a, _) = joined_pair(a_front);
             for x in [195.0, 200.0, 200.5] {
                 assert_eq!(
-                    resize_target(&scene, Point::new(x, 50.0)),
+                    target(&scene, Point::new(x, 50.0)),
                     Some((a, ResizeEdge::Right)),
                     "a_front {a_front} at x {x}"
                 );
@@ -417,15 +422,15 @@ mod tests {
         let (scene, a, b) = joined_pair(true);
         let outer = RESIZE_OUTER_PX - 1.0;
         assert_eq!(
-            resize_target(&scene, Point::new(401.0 + outer, 50.0)),
+            target(&scene, Point::new(401.0 + outer, 50.0)),
             Some((b, ResizeEdge::Right))
         );
         assert_eq!(
-            resize_target(&scene, Point::new(50.0, 100.0 + outer)),
+            target(&scene, Point::new(50.0, 100.0 + outer)),
             Some((a, ResizeEdge::Bottom))
         );
         assert_eq!(
-            resize_target(&scene, Point::new(300.0, 100.0 + outer)),
+            target(&scene, Point::new(300.0, 100.0 + outer)),
             Some((b, ResizeEdge::Bottom))
         );
     }
