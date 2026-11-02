@@ -98,6 +98,16 @@ pub fn parts_from(
     }
 }
 
+/// A click in the Settings window while recording: on the recorder it toggles there,
+/// anywhere else it cancels, so a key meant for another field is never recorded.
+pub fn recorder_click_step(on_recorder: bool) -> RecorderStep {
+    if on_recorder {
+        RecorderStep::Ignore
+    } else {
+        RecorderStep::Cancel
+    }
+}
+
 /// The recorder's title for a key: macOS symbols, or `UNBOUND_TITLE`.
 pub fn recorder_title(value: Option<&str>) -> String {
     value.map_or_else(|| UNBOUND_TITLE.to_string(), display_key)
@@ -283,7 +293,10 @@ impl FormTarget {
         // SAFETY: the block returns the event or null as the API requires; the monitor is
         // removed in `stop_recording`, which releases the block and what it captured.
         let monitor = unsafe {
-            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler)
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::KeyDown | NSEventMask::LeftMouseDown,
+                &handler,
+            )
         };
         let Some(monitor) = monitor else {
             button.setTitle(&NSString::from_str(&title));
@@ -316,12 +329,32 @@ impl FormTarget {
         });
     }
 
-    /// The monitor's view of one key-down in this window. True swallows it.
+    /// The monitor's view of one key-down or click in this window. True swallows it.
     fn handle_recorded_key(&self, event: &NSEvent) -> bool {
-        match self.ivars().recording.borrow().as_ref() {
+        let on_recorder = match self.ivars().recording.borrow().as_ref() {
             None => return false,
-            Some(recording) if recording.finishing.get() => return true,
-            Some(_) => {}
+            Some(recording) if recording.finishing.get() => {
+                return event.r#type() == NSEventType::KeyDown;
+            }
+            Some(recording) => {
+                let button = &recording.button;
+                // A button on a tab that is not shown has no window, so it was not hit.
+                button.window().is_some() && {
+                    let point = button.convertPoint_fromView(event.locationInWindow(), None);
+                    let bounds = button.bounds();
+                    point.x >= bounds.origin.x
+                        && point.y >= bounds.origin.y
+                        && point.x <= bounds.origin.x + bounds.size.width
+                        && point.y <= bounds.origin.y + bounds.size.height
+                }
+            }
+        };
+        if event.r#type() == NSEventType::LeftMouseDown {
+            // Clicks always go on: a tab or field click must still work.
+            if recorder_click_step(on_recorder) == RecorderStep::Cancel {
+                self.finish_recording(None);
+            }
+            return false;
         }
         let chars_ignoring = event
             .charactersIgnoringModifiers()
@@ -1036,6 +1069,8 @@ impl SettingsWindow {
 
     /// Selects the tab with this label. Does nothing when there is none.
     pub fn select_tab(&self, title: &str) {
+        // A recorder on a tab that goes away must not keep taking keys.
+        self.target.stop_recording();
         if let Body::Tabs(tabs) = &self.body
             && let Some(index) = self.tab_titles().iter().position(|t| t == title)
         {
@@ -1147,5 +1182,11 @@ mod tests {
     fn recorder_shows_symbols_or_none() {
         assert_eq!(recorder_title(Some("cmd-shift-backspace")), "⇧⌘⌫");
         assert_eq!(recorder_title(None), UNBOUND_TITLE);
+    }
+
+    #[test]
+    fn a_click_off_the_recorder_cancels_recording() {
+        assert_eq!(recorder_click_step(false), RecorderStep::Cancel);
+        assert_eq!(recorder_click_step(true), RecorderStep::Ignore);
     }
 }

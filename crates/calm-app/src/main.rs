@@ -2329,28 +2329,36 @@ async fn smoke_keybindings(
         .timer(Duration::from_millis(100))
         .await;
     let restored = delete_matches("cmd-shift-backspace", cx).1;
-    let stops = cx.update(|cx| -> gpui::Result<bool> {
+    let stops = cx.update(|cx| -> gpui::Result<(bool, bool)> {
         window.update(cx, |_, window, cx| {
             view.update(cx, |view, cx| view.open_settings(window, cx));
         })?;
         let view = view.read(cx);
         let Some(settings_window) = &view.settings_window else {
-            return Ok(false);
+            return Ok((false, false));
         };
+        settings_window.select_tab(calm_core::settings_form::KEYS_SECTION);
+        let started = settings_window.start_recording("keys.panel.delete");
+        settings_window.select_tab("Developer");
+        let tab_stops = started && settings_window.recording_field().is_none();
         let started = settings_window.start_recording("keys.panel.delete");
         settings_window.hide();
-        Ok(started && settings_window.recording_field().is_none())
+        Ok((
+            started && settings_window.recording_field().is_none(),
+            tab_stops,
+        ))
     });
-    let recorder_stops =
+    let (recorder_stops, tab_stops) =
         stops.unwrap_or_else(|err| smoke_fail(&format!("keybindings: settings {err:#}")));
     println!(
-        "smoke: keybindings override={overridden} old_gone={old_gone} restored={restored} recorder_stops={recorder_stops}"
+        "smoke: keybindings override={overridden} old_gone={old_gone} restored={restored} recorder_stops={recorder_stops} tab_stops={tab_stops}"
     );
     for (ok, name) in [
         (overridden, "override"),
         (old_gone, "old_gone"),
         (restored, "restored"),
         (recorder_stops, "recorder_stops"),
+        (tab_stops, "tab_stops"),
     ] {
         if !ok {
             smoke_fail(&format!("keybindings: {name} is false"));
