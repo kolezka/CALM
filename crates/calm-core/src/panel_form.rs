@@ -16,7 +16,7 @@ use crate::terminal_profile::{
 };
 
 /// What the panel shows now, inherited and set fields alike.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PanelEffective {
     pub title: String,
     pub icon: Option<String>,
