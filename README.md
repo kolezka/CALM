@@ -43,7 +43,7 @@ to paint.
 - **Make it yours.** Backgrounds, grid, snapping, terminal colors and every key binding are
   settings, changed live in a native Settings window.
 - **Picks up where you left off.** A launch restores the last session (panels, order and
-  camera, with fresh processes) and autosaves it as you work.
+  camera, with fresh processes) and autosaves it as you work. `--no-restore` starts empty.
 
 <details>
 <summary>All features</summary>
@@ -66,6 +66,10 @@ to paint.
 ### Panels
 
 - Live Ghostty terminals, optionally using your own Ghostty config.
+- Add > Run Command… opens a terminal running one command, say `htop`, and restarts it when
+  it exits according to `terminal.command_restart`.
+- `cmd`-drag on a terminal's or page's content moves the panel; a `cmd`-click still reaches
+  the content (`canvas.move_modifier`).
 - Terminal defaults and named profiles: title, icon, chrome colors, Ghostty colors, command,
   arguments, start folder and environment. Color changes recolor running terminals in place.
   Profiles show under Add > Terminal Profiles.
@@ -165,9 +169,14 @@ Every key is a default; change any of them in Settings > Keys.
 | Cancel drawing                  | `Esc`                                     |
 | Add a panel or plugin           | Right-click empty canvas                  |
 | Panel actions                   | Right-click a title bar                   |
+| Run a command in a terminal     | Right-click > Add > Run Command…          |
+| Move a panel by its content     | `cmd`-drag on a terminal or page          |
+| Panel menu from its content     | `cmd`-right-click on a terminal or page   |
 | Delete focused panel            | `cmd-shift-backspace` (confirms a live one) |
 | Focused panel Settings          | `cmd-shift-,`                             |
 | Pan                             | Space and drag, middle-drag, scroll       |
+| Pan in steps                    | Arrow keys when no panel has the keyboard, Shift for bigger steps |
+| Move the focused panel          | `cmd-option` and arrows, Shift for bigger steps |
 | Zoom                            | Pinch, or `cmd` and scroll                |
 | Zoom in, out, reset             | `cmd-=`, `cmd--`, `cmd-0`                 |
 | Center on origin                | `cmd-shift-h`                             |
