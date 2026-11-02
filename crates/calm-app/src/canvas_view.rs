@@ -2335,9 +2335,11 @@ impl CanvasView {
         if calm_native::host_view_is_first_responder(window) != Some(true) {
             return;
         }
-        self.input.arrow_pan(dir, large, &mut self.scene);
-        window.refresh();
-        cx.notify();
+        // False during a draw, drag or resize: a pan there would desync the preview.
+        if self.input.arrow_pan(dir, large, &mut self.scene) {
+            window.refresh();
+            cx.notify();
+        }
     }
 
     /// Cmd+Option+arrow moves the focused panel, without snapping.
@@ -2351,6 +2353,7 @@ impl CanvasView {
         let Some(id) = self.focused else {
             return;
         };
+        // False during a draw, drag or resize: the drag would overwrite the move.
         if self.input.arrow_move(id, dir, large, &mut self.scene) {
             window.refresh();
             cx.notify();

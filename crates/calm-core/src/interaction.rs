@@ -518,14 +518,32 @@ impl InputHandler {
         scene.camera.zoom_by(factor, anchor_screen);
     }
 
+    /// True while a pointer gesture holds world-space state tied to the camera or a panel
+    /// origin. Panning holds only a screen point, so a key pan adds to it safely.
+    fn gesture_holds_world_state(&self) -> bool {
+        matches!(
+            self.state,
+            Interaction::Drawing { .. }
+                | Interaction::Dragging { .. }
+                | Interaction::Resizing { .. }
+        )
+    }
+
     /// Pans like a scroll: Right reveals what is to the right, so content moves left.
-    pub fn arrow_pan(&mut self, dir: ArrowDir, large: bool, scene: &mut Scene) {
+    /// False, and nothing changes, during a draw, drag or resize.
+    pub fn arrow_pan(&mut self, dir: ArrowDir, large: bool, scene: &mut Scene) -> bool {
+        // Keeps the painted draft equal to the panel the release creates.
+        if self.gesture_holds_world_state() {
+            return false;
+        }
         let step = self.arrow_pan_step * if large { ARROW_LARGE_FACTOR } else { 1.0 };
         let (x, y) = dir.unit();
         scene.camera.pan_by_screen(-x * step, -y * step);
+        true
     }
 
-    /// Moves panel `id` by the world step, without snapping. False when there is no such panel.
+    /// Moves panel `id` by the world step, without snapping. False when there is no such
+    /// panel or a draw, drag or resize is in progress.
     pub fn arrow_move(
         &mut self,
         id: PanelId,
@@ -533,6 +551,10 @@ impl InputHandler {
         large: bool,
         scene: &mut Scene,
     ) -> bool {
+        // The next pointer move would overwrite the keyboard move.
+        if self.gesture_holds_world_state() {
+            return false;
+        }
         let step = self.arrow_move_step * if large { ARROW_LARGE_FACTOR } else { 1.0 };
         let (x, y) = dir.unit();
         let Some(panel) = scene.get_mut(id) else {
@@ -737,15 +759,53 @@ mod tests {
         let mut scene = Scene::default();
         scene.camera.zoom = 2.0;
         let start = scene.camera.offset;
-        input.arrow_pan(ArrowDir::Right, false, &mut scene);
+        assert!(input.arrow_pan(ArrowDir::Right, false, &mut scene));
         // Content moves left, so the view origin moves right by 40 px / zoom 2.
         assert_eq!(scene.camera.offset.x - start.x, 20.0);
         assert_eq!(scene.camera.offset.y, start.y);
-        input.arrow_pan(ArrowDir::Down, true, &mut scene);
-        assert_eq!(scene.camera.offset.y - start.y, 20.0 * ARROW_LARGE_FACTOR);
-        input.arrow_pan(ArrowDir::Left, false, &mut scene);
-        input.arrow_pan(ArrowDir::Up, true, &mut scene);
+        assert!(input.arrow_pan(ArrowDir::Down, true, &mut scene));
+        // Shift is five times the plain step.
+        assert_eq!(scene.camera.offset.y - start.y, 100.0);
+        assert!(input.arrow_pan(ArrowDir::Left, false, &mut scene));
+        assert!(input.arrow_pan(ArrowDir::Up, true, &mut scene));
         assert_eq!(scene.camera.offset, start);
+    }
+
+    #[test]
+    fn arrow_pan_is_ignored_while_drawing() {
+        let mut scene = Scene::default();
+        let mut input = InputHandler {
+            tool: Tool::DrawTerminal,
+            ..InputHandler::default()
+        };
+        input.mouse_down(
+            Point::new(100.0, 100.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
+        input.mouse_move(Point::new(400.0, 350.0), free(), &mut scene);
+        let Interaction::Drawing { draft, .. } = input.state else {
+            panic!("expected a draw, got {:?}", input.state);
+        };
+        let offset = scene.camera.offset;
+        assert!(!input.arrow_pan(ArrowDir::Right, true, &mut scene));
+        assert_eq!(scene.camera.offset, offset);
+        input.mouse_up(Point::new(400.0, 350.0), free(), &mut scene);
+        assert_eq!(scene.panels.len(), 1);
+        assert_eq!(scene.panels[0].rect, draft);
+    }
+
+    #[test]
+    fn arrow_move_is_ignored_while_dragging() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mut input = InputHandler::default();
+        input.mouse_down(Point::new(100.0, 10.0), Button::Left, no_mods(), &mut scene);
+        assert!(matches!(input.state, Interaction::Dragging { id: drag, .. } if drag == id));
+        let origin = scene.get(id).unwrap().rect.origin;
+        assert!(!input.arrow_move(id, ArrowDir::Right, true, &mut scene));
+        assert_eq!(scene.get(id).unwrap().rect.origin, origin);
     }
 
     #[test]
