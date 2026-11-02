@@ -581,6 +581,95 @@ pub fn confirm_prompt(overrides: &KeyOverrides) -> String {
     }
 }
 
+/// What AppKit gives for one key-down. The `chars_*` fields are the characters of the
+/// event's key code with no modifier, Shift, Cmd and Cmd+Shift (GPUI's
+/// `chars_for_modified_key`, events.rs:512).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyParts {
+    pub cmd: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub function: bool,
+    /// `charactersIgnoringModifiers`; picks the named key.
+    pub chars_ignoring_modifiers: String,
+    pub chars_plain: String,
+    pub chars_shift: String,
+    pub chars_cmd: String,
+    pub chars_cmd_shift: String,
+    /// GPUI's `always_use_command_layout()` (events.rs:499-505).
+    pub always_use_cmd_layout: bool,
+}
+
+/// GPUI's named keys by AppKit character (events.rs:359-420).
+fn named_key(c: char) -> Option<String> {
+    let name = match c as u32 {
+        0x20 => "space",
+        0x09 | 0x19 => "tab",
+        0x0d | 0x03 => "enter",
+        0x7f => "backspace",
+        0x1b => "escape",
+        0xF700 => "up",
+        0xF701 => "down",
+        0xF702 => "left",
+        0xF703 => "right",
+        0xF72C => "pageup",
+        0xF72D => "pagedown",
+        0xF729 => "home",
+        0xF72B => "end",
+        0xF728 => "delete",
+        // GPUI maps Insert from NSHelpFunctionKey, as observed on hardware.
+        0xF746 => "insert",
+        n @ 0xF704..=0xF726 => return Some(format!("f{}", n - 0xF704 + 1)),
+        _ => return None,
+    };
+    Some(name.to_string())
+}
+
+/// The keystroke GPUI reports for one AppKit key-down, as a canonical key string.
+/// Mirrors `gpui-pre-macos 0.3.4` events.rs:350-480; keep the two in step on upgrade.
+pub fn keystroke_from_parts(parts: &KeyParts) -> Option<String> {
+    let first = parts.chars_ignoring_modifiers.chars().next()?;
+    let function = parts.function && !('\u{f700}'..='\u{f747}').contains(&first);
+    let mut shift = parts.shift;
+    let key = match named_key(first) {
+        Some(name) => name,
+        None => {
+            let mut plain = parts.chars_plain.clone();
+            let mut shifted = parts.chars_shift.clone();
+            if parts.cmd || parts.always_use_cmd_layout {
+                if parts.chars_cmd_shift != parts.chars_cmd {
+                    shifted = parts.chars_cmd_shift.clone();
+                } else if parts.chars_cmd.to_ascii_uppercase() != parts.chars_cmd {
+                    // macOS reports cmd-s for cmd-shift-s on some layouts (Ukrainian).
+                    shifted = parts.chars_cmd.to_ascii_uppercase();
+                }
+                plain = parts.chars_cmd.clone();
+            }
+            if shift && plain.chars().all(|c| c.is_ascii_lowercase()) {
+                plain
+            } else if shift {
+                shift = false;
+                shifted
+            } else {
+                plain
+            }
+        }
+    };
+    if key.is_empty() {
+        return None;
+    }
+    let spec = KeySpec {
+        cmd: parts.cmd,
+        ctrl: parts.ctrl,
+        alt: parts.alt,
+        shift,
+        function,
+        key,
+    };
+    Some(spec.canonical())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,5 +903,120 @@ mod tests {
         assert_eq!(confirm_prompt(&overrides), "Close? y");
         overrides.insert("canvas.confirm".into(), None);
         assert_eq!(confirm_prompt(&overrides), "Close?");
+    }
+
+    fn parts(cmd: bool, shift: bool, chars: [&str; 4], cmd_layout: bool) -> KeyParts {
+        KeyParts {
+            cmd,
+            shift,
+            chars_ignoring_modifiers: chars[0].into(),
+            chars_plain: chars[0].into(),
+            chars_shift: chars[1].into(),
+            chars_cmd: chars[2].into(),
+            chars_cmd_shift: chars[3].into(),
+            always_use_cmd_layout: cmd_layout,
+            ..KeyParts::default()
+        }
+    }
+
+    #[test]
+    fn us_layout_matches_gpui() {
+        assert_eq!(
+            keystroke_from_parts(&parts(true, true, ["0", ")", "0", ")"], false)).as_deref(),
+            Some("cmd-)")
+        );
+        assert_eq!(
+            keystroke_from_parts(&parts(true, true, [",", "<", ",", "<"], false)).as_deref(),
+            Some("cmd-<")
+        );
+        assert_eq!(
+            keystroke_from_parts(&parts(true, true, ["s", "S", "s", "S"], false)).as_deref(),
+            Some("cmd-shift-s")
+        );
+        let mut backspace = parts(true, true, ["\u{7f}"; 4], false);
+        backspace.chars_ignoring_modifiers = "\u{7f}".into();
+        assert_eq!(
+            keystroke_from_parts(&backspace).as_deref(),
+            Some("cmd-shift-backspace")
+        );
+        assert_eq!(
+            keystroke_from_parts(&parts(false, false, ["\u{1b}"; 4], false)).as_deref(),
+            Some("escape")
+        );
+    }
+
+    // The table in events.rs:422-430.
+    #[test]
+    fn gpui_comment_table_layouts() {
+        // Armenian: non-ASCII layout, so the cmd layout is used.
+        assert_eq!(
+            keystroke_from_parts(&parts(true, false, ["ս", "Ս", "s", "S"], true)).as_deref(),
+            Some("cmd-s")
+        );
+        assert_eq!(
+            keystroke_from_parts(&parts(true, true, ["ս", "Ս", "s", "S"], true)).as_deref(),
+            Some("cmd-shift-s")
+        );
+        // Dvorak+QWERTY: layout switches on cmd.
+        assert_eq!(
+            keystroke_from_parts(&parts(false, false, ["o", "O", "s", "S"], false)).as_deref(),
+            Some("o")
+        );
+        assert_eq!(
+            keystroke_from_parts(&parts(true, true, ["o", "O", "s", "S"], false)).as_deref(),
+            Some("cmd-shift-s")
+        );
+        // Ukrainian+QWERTY: macOS reports cmd-s for cmd-shift-s.
+        assert_eq!(
+            keystroke_from_parts(&parts(true, true, ["с", "С", "s", "s"], false)).as_deref(),
+            Some("cmd-shift-s")
+        );
+        // Czech: shifted numbers.
+        assert_eq!(
+            keystroke_from_parts(&parts(true, false, ["ý", "7", "ý", "7"], false)).as_deref(),
+            Some("cmd-ý")
+        );
+        assert_eq!(
+            keystroke_from_parts(&parts(true, true, ["ý", "7", "ý", "7"], false)).as_deref(),
+            Some("cmd-7")
+        );
+        // Norwegian: cmd-shift-7 is cmd-/.
+        assert_eq!(
+            keystroke_from_parts(&parts(true, true, ["7", "/", "7", "7"], false)).as_deref(),
+            Some("cmd-/")
+        );
+        // Russian: cmd layout wins.
+        assert_eq!(
+            keystroke_from_parts(&parts(true, true, ["7", ".", "7", "&"], true)).as_deref(),
+            Some("cmd-&")
+        );
+        // German: the shift special case is a-z only.
+        assert_eq!(
+            keystroke_from_parts(&parts(true, true, ["ö", "Ö", "ö", "Ö"], false)).as_deref(),
+            Some("cmd-Ö")
+        );
+    }
+
+    #[test]
+    fn fn_is_dropped_on_function_keys_only() {
+        let mut up = parts(false, false, ["\u{f700}"; 4], false);
+        up.function = true;
+        assert_eq!(keystroke_from_parts(&up).as_deref(), Some("up"));
+        let mut a = parts(false, false, ["a", "A", "a", "A"], false);
+        a.function = true;
+        assert_eq!(keystroke_from_parts(&a).as_deref(), Some("fn-a"));
+    }
+
+    #[test]
+    fn every_recorded_key_parses() {
+        // What the recorder produces must pass the grammar of Task 1.
+        for p in [
+            parts(true, true, ["0", ")", "0", ")"], false),
+            parts(true, true, ["ö", "Ö", "ö", "Ö"], false),
+        ] {
+            let key = keystroke_from_parts(&p).unwrap();
+            assert!(parse_key(&key).is_ok(), "{key}");
+        }
+        assert_eq!(keystroke_from_parts(&KeyParts::default()), None);
     }
 }
