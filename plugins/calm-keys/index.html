@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Key Bindings</title>
+    <style>
+      :root {
+        --bg: #1e1e1e;
+        --fg: #e8e8e8;
+        --muted: rgba(232, 232, 232, 0.6);
+        --chip: rgba(255, 255, 255, 0.1);
+        --line: rgba(255, 255, 255, 0.08);
+        --error: #ff7b72;
+      }
+      html, body { margin: 0; }
+      body {
+        font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        padding: 12px 14px 16px;
+      }
+      h2 {
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin: 14px 0 4px;
+      }
+      h2:first-child { margin-top: 0; }
+      ul { list-style: none; margin: 0; padding: 0; }
+      li {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 4px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .key {
+        font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: var(--chip);
+        border-radius: 4px;
+        padding: 1px 6px;
+        white-space: nowrap;
+      }
+      details { margin-top: 14px; }
+      summary { cursor: default; color: var(--muted); }
+      .hint { color: var(--muted); margin: 6px 0; }
+      .error { color: var(--error); white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <div id="keys"><p class="hint">Loading key bindings…</p></div>
+    <h2>Gestures</h2>
+    <ul>
+      <li><span>Pan</span><span class="key">Space+drag, middle-drag</span></li>
+      <li><span>Zoom</span><span class="key">Pinch, Cmd+scroll</span></li>
+      <li><span>Move a panel (snaps)</span><span class="key">Cmd+drag</span></li>
+      <li><span>Move without snapping</span><span class="key">Cmd+Shift+drag</span></li>
+      <li><span>Open the menu</span><span class="key">Right-click</span></li>
+      <li><span>Draw a terminal</span><span class="key">t, then drag</span></li>
+      <li><span>Draw a browser</span><span class="key">b, then drag</span></li>
+    </ul>
+    <script>
+      var root = document.getElementById("keys");
+
+      function el(tag, className, text) {
+        var node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      function showError(message) {
+        root.replaceChildren(el("p", "error", "Could not load key bindings: " + message));
+      }
+
+      function row(label, key) {
+        var item = el("li");
+        item.appendChild(el("span", "", label));
+        if (key) item.appendChild(el("span", "key", key));
+        return item;
+      }
+
+      // Bound rows by group in the order the host sends them, unbound ones collapsed at the end.
+      function render(keys) {
+        var groups = [];
+        var byName = {};
+        var unbound = [];
+        keys.forEach(function (entry) {
+          if (entry.key === null || entry.key === undefined) {
+            unbound.push(entry);
+            return;
+          }
+          if (!byName[entry.group]) {
+            byName[entry.group] = el("ul");
+            groups.push({ name: entry.group, list: byName[entry.group] });
+          }
+          byName[entry.group].appendChild(row(entry.label, entry.key));
+        });
+        var out = document.createDocumentFragment();
+        groups.forEach(function (group) {
+          out.appendChild(el("h2", "", group.name));
+          out.appendChild(group.list);
+        });
+        if (unbound.length) {
+          var details = el("details");
+          details.appendChild(el("summary", "", "Not bound (" + unbound.length + ")"));
+          details.appendChild(el("p", "hint", "Bind keys in Settings > Keys"));
+          var list = el("ul");
+          unbound.forEach(function (entry) { list.appendChild(row(entry.label, null)); });
+          details.appendChild(list);
+          out.appendChild(details);
+        }
+        root.replaceChildren(out);
+      }
+
+      function refresh() {
+        if (!window.calm || !window.calm.keys) {
+          showError("this CALM has no calm.keys.list()");
+          return;
+        }
+        calm.keys.list().then(function (result) {
+          if (!result || !Array.isArray(result.keys)) throw new Error("unexpected answer");
+          render(result.keys);
+        }).catch(function (err) {
+          showError(err && err.message ? err.message : String(err));
+        });
+      }
+
+      // Light text on a dark base, dark text on a light one.
+      function applyTheme(background) {
+        var match = /^#([0-9a-f]{6})$/i.exec(background || "");
+        if (!match) return;
+        var n = parseInt(match[1], 16);
+        var luma = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+        var dark = luma < 0.5;
+        var style = document.documentElement.style;
+        style.setProperty("--bg", background);
+        style.setProperty("--fg", dark ? "#e8e8e8" : "#1e1e1e");
+        style.setProperty("--muted", dark ? "rgba(232,232,232,0.6)" : "rgba(30,30,30,0.6)");
+        style.setProperty("--chip", dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.07)");
+        style.setProperty("--line", dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.08)");
+        style.setProperty("--error", dark ? "#ff7b72" : "#b42318");
+      }
+
+      if (window.calm && window.calm.theme) {
+        calm.theme.get().then(function (theme) { applyTheme(theme && theme.background); })
+          .catch(function () { /* keep the dark fallback */ });
+      }
+      refresh();
+      window.addEventListener("focus", refresh);
+    </script>
+  </body>
+</html>

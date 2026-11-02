@@ -1713,6 +1713,7 @@ impl CanvasView {
             viewport: self.viewport.size,
             background,
             default_terminal_size,
+            keybindings: &self.settings.settings.keybindings,
             plugins: &self.installed_plugins,
         };
         let Some(route) = plugin_host::route(&mut host, &request) else {

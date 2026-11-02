@@ -4,6 +4,7 @@
 use crate::plugin_services::ServiceCall;
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::Effect;
+use calm_core::keymap::KeyOverrides;
 use calm_core::preview::PanelMode;
 use calm_core::resize::ResizePolicy;
 use calm_core::scene::{PanelId, PanelKind, Scene};
@@ -305,6 +306,7 @@ pub fn served_methods() -> &'static [&'static str] {
         "openExternal",
         "process.exec",
         "theme.get",
+        "keys.list",
     ]
 }
 
@@ -321,6 +323,8 @@ pub struct HostContext<'a> {
     pub background: String,
     /// `panels.default_terminal_width/height` from settings.
     pub default_terminal_size: Size,
+    /// The live `keybindings` overrides, so `keys.list` shows a rebind on the next call.
+    pub keybindings: &'a KeyOverrides,
     pub plugins: &'a [InstalledPlugin],
 }
 
@@ -434,6 +438,9 @@ pub fn dispatch(host: &mut HostContext, request: &BridgeRequest) -> Route {
         "canvas.focusPanel" => apply(focus_panel(host.scene, params)),
         "canvas.createPanel" => apply(create_panel(host, params)),
         "theme.get" => reply(Ok(serde_json::json!({ "background": host.background }))),
+        "keys.list" => reply(Ok(serde_json::json!({
+            "keys": calm_core::keymap::key_help(host.keybindings),
+        }))),
         "settings.get" => reply(match &panel.kind {
             PanelKind::Plugin { settings, .. } => Ok(settings.clone()),
             _ => Err(ApiError::wrong_kind(caller, "plugin")),
@@ -764,6 +771,7 @@ pub fn service_reply(id: u64, result: Result<Value, ApiError>) -> BridgeResponse
 mod tests {
     use super::*;
     use calm_core::interaction::InputHandler;
+    use calm_core::keymap::display_key;
     use serde_json::json;
 
     fn plugin_panel() -> (Scene, PanelId) {
@@ -814,9 +822,12 @@ mod tests {
             viewport: Size::new(1000.0, 800.0),
             background: "#102030".to_string(),
             default_terminal_size: Size::new(640.0, 400.0),
+            keybindings: &NO_OVERRIDES,
             plugins,
         }
     }
+
+    static NO_OVERRIDES: KeyOverrides = KeyOverrides::new();
 
     fn call(id: u64, method: &str, params: Value) -> BridgeRequest {
         BridgeRequest {
@@ -1076,6 +1087,62 @@ mod tests {
                 &call(2, "theme.get", json!({ "junk": true }))
             ),
             None
+        );
+    }
+
+    #[test]
+    fn keys_list_answers_with_current_overrides() {
+        let (mut scene, id) = plugin_panel();
+        let plugins = plugins();
+        let key_of = |route: Option<Route>, action: &str| -> Value {
+            let Some(Route::Reply(Some(BridgeResponse::Ok(_, value)))) = route else {
+                panic!("keys.list did not answer: {route:?}");
+            };
+            let keys = value["keys"].as_array().expect("keys array");
+            let row = keys
+                .iter()
+                .find(|row| row["id"] == action)
+                .unwrap_or_else(|| panic!("no row {action}: {value}"));
+            assert_eq!(row["group"], "Developer", "{row}");
+            assert_eq!(row["label"], "Show stats", "{row}");
+            row["key"].clone()
+        };
+        let request = call(1, "keys.list", Value::Null);
+        let defaults = key_of(
+            route(&mut host(&mut scene, id, &plugins), &request),
+            "developer.toggle_stats",
+        );
+        assert_eq!(defaults, json!(display_key("cmd-shift-f")));
+
+        let mut overrides = KeyOverrides::new();
+        overrides.insert("developer.toggle_stats".into(), Some("cmd-shift-s".into()));
+        let mut live = host(&mut scene, id, &plugins);
+        live.keybindings = &overrides;
+        assert_eq!(
+            key_of(route(&mut live, &request), "developer.toggle_stats"),
+            json!(display_key("cmd-shift-s"))
+        );
+        overrides.insert("developer.toggle_stats".into(), None);
+        let mut live = host(&mut scene, id, &plugins);
+        live.keybindings = &overrides;
+        assert_eq!(
+            key_of(route(&mut live, &request), "developer.toggle_stats"),
+            Value::Null
+        );
+
+        // Junk params are treated as theme.get treats them.
+        let junk = json!({ "junk": true });
+        let theme_junk = run(&mut scene, id, &call(2, "theme.get", junk.clone()));
+        assert!(
+            matches!(theme_junk, Some(Route::Reply(Some(BridgeResponse::Ok(..))))),
+            "{theme_junk:?}"
+        );
+        assert_eq!(
+            key_of(
+                run(&mut scene, id, &call(3, "keys.list", junk)),
+                "developer.toggle_stats"
+            ),
+            defaults
         );
     }
 

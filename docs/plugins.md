@@ -443,7 +443,7 @@ if (calm.has("canvas.createPanel")) {
 }
 ```
 
-The app serves all 17 methods. An older CALM may not, so check `calm.has` before you rely
+The app serves all 18 methods. An older CALM may not, so check `calm.has` before you rely
 on one.
 
 ### Settings
@@ -548,6 +548,7 @@ trusted code (see [Trust](#trust)).
 | `calm.github.api(path)`  | Runs `gh api <path>` on the host, resolves with parsed JSON. |
 | `calm.openExternal(url)` | Opens an `http` or `https` URL in the default browser (`open`). Other schemes reject. |
 | `calm.theme.get()`       | `{ background }`, a `"#rrggbb"` string: the flat color that stands for the canvas background, also for a gradient or an image. |
+| `calm.keys.list()`       | `{ keys }`: every action in Keys tab order, then CALM's fixed keys (group `"Fixed"`). Each row is `{ id, label, group, key }`; `key` is written as macOS shows it (`"⇧⌘F"`) with the user's `keybindings` applied, or `null` when unbound. Each call reads the current settings. |
 | `calm.log(message)`      | Writes `message` to CALM's stderr, tagged with the plugin. Fire and forget: returns nothing, never waits for the host. |
 
 ### Events
@@ -596,6 +597,7 @@ stalls the canvas. An unknown method rejects with code `unknown_method`.
 | `github.api`         | Served: `gh api <path>` on the host       |
 | `openExternal`       | Served: `http` and `https` only           |
 | `theme.get`          | Served: the background's base color       |
+| `keys.list`          | Served: effective key bindings            |
 | `log`                | Served: printed to stderr, no answer       |
 
 ### Errors
@@ -667,6 +669,7 @@ the prelude and `calm.d.ts` in sync.
 | `github.api`         | `{ "path": string }`                                                 |
 | `openExternal`       | `{ "url": string }`                                                  |
 | `theme.get`          | `null`                                                               |
+| `keys.list`          | `null`                                                               |
 | `log`                | `{ "message": string }`                                              |
 
 The host answers by evaluating `window.__calm.resolve(id, ok, value)` in the page. With `ok`

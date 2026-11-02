@@ -37,6 +37,7 @@ pub const BRIDGE_METHODS: &[&str] = &[
     "github.api",
     "openExternal",
     "theme.get",
+    "keys.list",
     "log",
 ];
 
@@ -248,6 +249,9 @@ pub const CALM_PRELUDE_JS: &str = r#"(function () {
     theme: Object.freeze({
       get: function () { return call({ method: "theme.get", params: null }); }
     }),
+    keys: Object.freeze({
+      list: function () { return call({ method: "keys.list", params: null }); }
+    }),
     events: Object.freeze({
       on: function (event, handler) {
         if (EVENTS.indexOf(event) < 0) throw new TypeError("unknown calm event: " + event);
@@ -340,6 +344,7 @@ mod tests {
         "github.api",
         "openExternal",
         "theme.get",
+        "keys.list",
         "log",
     ];
 

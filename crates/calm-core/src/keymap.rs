@@ -601,6 +601,54 @@ pub fn bound_keys(overrides: &KeyOverrides) -> Vec<(&'static ActionSpec, String)
         .collect()
 }
 
+/// `KeyHelpRow` ids for `BROWSER_KEYS`, by position. Ids are `&'static str`, so they are listed.
+const BROWSER_IDS: [&str; 10] = [
+    "fixed.browser.0",
+    "fixed.browser.1",
+    "fixed.browser.2",
+    "fixed.browser.3",
+    "fixed.browser.4",
+    "fixed.browser.5",
+    "fixed.browser.6",
+    "fixed.browser.7",
+    "fixed.browser.8",
+    "fixed.browser.9",
+];
+const _: () = assert!(BROWSER_IDS.len() == BROWSER_KEYS.len());
+
+/// One row of the key help a plugin shows: an action or a fixed key, with its key as macOS writes it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct KeyHelpRow {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub group: &'static str,
+    /// `None` when the action is unbound.
+    pub key: Option<String>,
+}
+
+/// Every action in `ACTIONS` order with its effective key, then the fixed browser keys and the
+/// restart key under "Fixed".
+pub fn key_help(overrides: &KeyOverrides) -> Vec<KeyHelpRow> {
+    let actions = ACTIONS.iter().map(|action| KeyHelpRow {
+        id: action.id,
+        label: action.label,
+        group: action.group.title(),
+        key: effective_key(overrides, action).map(|key| display_key(&key)),
+    });
+    let fixed = BROWSER_IDS
+        .iter()
+        .zip(BROWSER_KEYS)
+        .map(|(id, (key, label))| (*id, *key, *label))
+        .chain([("fixed.restart", RESTART_KEY.0, RESTART_KEY.1)])
+        .map(|(id, key, label)| KeyHelpRow {
+            id,
+            label,
+            group: "Fixed",
+            key: Some(display_key(key)),
+        });
+    actions.chain(fixed).collect()
+}
+
 /// Whether `action` may take `key`, given every other action's current key.
 pub fn check_rebind(
     overrides: &KeyOverrides,
@@ -1232,5 +1280,51 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn key_help_follows_overrides() {
+        let row_for = |rows: &[KeyHelpRow], id: &str| {
+            rows.iter()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("no row {id}"))
+                .clone()
+        };
+        let mut overrides = KeyOverrides::new();
+        let rows = key_help(&overrides);
+        assert_eq!(rows.len(), ACTIONS.len() + BROWSER_KEYS.len() + 1);
+        let ids: Vec<&str> = rows.iter().take(ACTIONS.len()).map(|r| r.id).collect();
+        let table: Vec<&str> = ACTIONS.iter().map(|a| a.id).collect();
+        assert_eq!(ids, table, "actions come first, in table order");
+
+        let welcome = row_for(&rows, "developer.show_welcome");
+        assert_eq!(welcome.key, None);
+        assert_eq!(welcome.label, "Show welcome screen");
+        assert_eq!(welcome.group, "Developer");
+        let stats = row_for(&rows, "developer.toggle_stats");
+        assert_eq!(stats.key, Some(display_key("cmd-shift-f")));
+        assert_eq!(stats.group, Group::Developer.title());
+
+        overrides.insert("developer.toggle_stats".into(), Some("cmd-shift-s".into()));
+        let stats = row_for(&key_help(&overrides), "developer.toggle_stats");
+        assert_eq!(stats.key, Some(display_key("cmd-shift-s")));
+        overrides.insert("developer.toggle_stats".into(), None);
+        assert_eq!(
+            row_for(&key_help(&overrides), "developer.toggle_stats").key,
+            None
+        );
+
+        let fixed = &rows[ACTIONS.len()..];
+        for (n, ((key, label), row)) in BROWSER_KEYS.iter().zip(fixed).enumerate() {
+            assert_eq!(row.id, format!("fixed.browser.{n}"));
+            assert_eq!(row.label, *label);
+            assert_eq!(row.group, "Fixed");
+            assert_eq!(row.key, Some(display_key(key)));
+        }
+        let restart = rows.last().unwrap();
+        assert_eq!(restart.id, "fixed.restart");
+        assert_eq!(restart.label, RESTART_KEY.1);
+        assert_eq!(restart.group, "Fixed");
+        assert_eq!(restart.key, Some(display_key(RESTART_KEY.0)));
     }
 }
