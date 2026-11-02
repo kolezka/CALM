@@ -532,7 +532,11 @@ mod tests {
             text: "# Note".into(),
         };
         // As the app builds it: live panels whose kind shows through.
-        let live = |id: PanelId| scene.get(id).is_some_and(|panel| shows_through(&panel.kind));
+        let live = |id: PanelId| {
+            scene
+                .get(id)
+                .is_some_and(|panel| shows_through(&panel.kind))
+        };
         let paint = native_paint_region(&scene, &[], back, container, ORIGIN, &live);
         assert_disjoint_inside(&paint, container);
         assert!(

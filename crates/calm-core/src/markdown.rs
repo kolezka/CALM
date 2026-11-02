@@ -182,7 +182,9 @@ pub fn panel_style_from_value(
         Value::Null => return None,
         Value::Object(fields) => fields,
         other => {
-            warn(format!("\"{PATH}\" is {other}, expected an object; ignored"));
+            warn(format!(
+                "\"{PATH}\" is {other}, expected an object; ignored"
+            ));
             return None;
         }
     };
@@ -213,9 +215,8 @@ pub fn panel_style_from_value(
             "padding" => number(&path, value, PADDING_RANGE).map(|v| style.padding = v),
             "font_family" => match value {
                 Value::Null => Ok(()),
-                Value::String(family) => {
-                    check_font_family(&path, family).map(|()| style.font_family = Some(family.clone()))
-                }
+                Value::String(family) => check_font_family(&path, family)
+                    .map(|()| style.font_family = Some(family.clone())),
                 other => Err(format!("\"{path}\" is {other}, expected a string")),
             },
             // Unknown keys are ignored, as in the other overrides.
@@ -463,7 +464,10 @@ mod tests {
             html.contains("&lt;div&gt;Important note&lt;/div&gt;"),
             "{html}"
         );
-        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "{html}");
+        assert!(
+            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "{html}"
+        );
         assert!(html.contains("&lt;b&gt;bold&lt;/b&gt;"), "{html}");
     }
 
@@ -616,7 +620,10 @@ mod tests {
             );
         }
         warnings.clear();
-        assert_eq!(panel_style_from_value(&serde_json::json!(5), &mut |w| warnings.push(w)), None);
+        assert_eq!(
+            panel_style_from_value(&serde_json::json!(5), &mut |w| warnings.push(w)),
+            None
+        );
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         warnings.clear();
         assert_eq!(
@@ -669,7 +676,12 @@ mod tests {
             Navigation::Allow
         );
         assert_eq!(
-            request("about:blank#fnref-1", LinkActivated, true, Some("about:blank#fn-1")),
+            request(
+                "about:blank#fnref-1",
+                LinkActivated,
+                true,
+                Some("about:blank#fn-1")
+            ),
             Navigation::Allow
         );
         // A clicked about: link would replace the page.
@@ -681,14 +693,23 @@ mod tests {
             request("about:srcdoc", LinkActivated, true, page),
             Navigation::Block
         );
-        assert_eq!(request("about:srcdoc", Other, true, page), Navigation::Block);
-        assert_eq!(request("about:blank", Other, false, page), Navigation::Block);
+        assert_eq!(
+            request("about:srcdoc", Other, true, page),
+            Navigation::Block
+        );
+        assert_eq!(
+            request("about:blank", Other, false, page),
+            Navigation::Block
+        );
         assert_eq!(
             request("about:blank#x", LinkActivated, false, page),
             Navigation::Block,
             "a subframe never loads"
         );
-        assert_eq!(request("about:blank", Reload, true, page), Navigation::Block);
+        assert_eq!(
+            request("about:blank", Reload, true, page),
+            Navigation::Block
+        );
         assert_eq!(
             request("about:blank", FormSubmitted, true, page),
             Navigation::Block

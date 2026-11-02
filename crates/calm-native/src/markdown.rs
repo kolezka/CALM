@@ -65,7 +65,9 @@ define_class!(
                 (
                     url_text(action.request().URL()).unwrap_or_default(),
                     kind,
-                    action.targetFrame().is_some_and(|frame| frame.isMainFrame()),
+                    action
+                        .targetFrame()
+                        .is_some_and(|frame| frame.isMainFrame()),
                 )
             };
             // SAFETY: a plain property read on the main thread; nil before the first load.

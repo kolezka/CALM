@@ -668,7 +668,10 @@ mod tests {
                     ..Default::default()
                 }),
             ),
-            (r##"{"text_color":"#nothex","padding":4}"##, Some(padding.clone())),
+            (
+                r##"{"text_color":"#nothex","padding":4}"##,
+                Some(padding.clone()),
+            ),
             (r#"{"link_color":5,"padding":4}"#, Some(padding.clone())),
             (
                 r##"{"padding":"bad","text_color":"#123456"}"##,
@@ -678,8 +681,14 @@ mod tests {
                 }),
             ),
             (r#"{"font_size":99,"padding":4}"#, Some(padding.clone())),
-            (r#"{"background_opacity":2,"padding":4}"#, Some(padding.clone())),
-            (r#"{"font_family":"x}</style>","padding":4}"#, Some(padding.clone())),
+            (
+                r#"{"background_opacity":2,"padding":4}"#,
+                Some(padding.clone()),
+            ),
+            (
+                r#"{"font_family":"x}</style>","padding":4}"#,
+                Some(padding.clone()),
+            ),
             (r#"{"font_family":7,"padding":4}"#, Some(padding.clone())),
             (r#"{"font_size":99}"#, None),
             (r#"{}"#, None),
