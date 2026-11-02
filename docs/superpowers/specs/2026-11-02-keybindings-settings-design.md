@@ -94,7 +94,7 @@ New module `calm-core/src/keymap.rs`, pure, no GPUI. One entry per action:
   builder verifies this with the same test style PR #60 uses, and if confirmed the default
   becomes what GPUI reports for Cmd+Shift+0 on a US layout (`cmd-)`), so the shortcut works
   out of the box. Recorded in decisions.md as a fix found by this work.
-- Labels in the UI show keys with macOS symbols (`⌘⇧⌫`), produced from the stored string
+- Labels in the UI show keys with macOS symbols in Apple's modifier order (`⇧⌘⌫`), produced from the stored string
   by one pure function in calm-core. Shifted punctuation shows as pressed: `cmd-<` shows as
   `⌘<`.
 
