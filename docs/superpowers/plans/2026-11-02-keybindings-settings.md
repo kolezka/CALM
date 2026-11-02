@@ -821,9 +821,9 @@ Add in `canvas_view.rs` tests:
 #[test]
 fn confirm_title_names_the_bound_keys() {
     let mut settings = Settings::default();
-    assert_eq!(calm_core::keymap::confirm_prompt(&settings.keybindings), "Close? ↩ / ⎋");
+    assert_eq!(calm_core::keymap::confirm_prompt(&settings.keybindings), "Close? enter / esc");
     settings.keybindings.insert("canvas.confirm".into(), Some("y".into()));
-    assert_eq!(calm_core::keymap::confirm_prompt(&settings.keybindings), "Close? Y / ⎋");
+    assert_eq!(calm_core::keymap::confirm_prompt(&settings.keybindings), "Close? y / esc");
 }
 ```
 
