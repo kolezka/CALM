@@ -701,6 +701,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         })
         .await;
         smoke_step(&mut run, "resize", smoke_resize(&view, window, cx)).await;
+        smoke_step(&mut run, "pin", smoke_pin(&view, window, cx)).await;
         smoke_step(&mut run, "blur", async { smoke_blur(&view, window, cx) }).await;
         smoke_step(
             &mut run,
@@ -1425,6 +1426,187 @@ async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &m
     if let Err(err) = fixtures.close() {
         eprintln!("smoke: could not remove the resize temp dir: {err}");
     }
+}
+
+/// The (pinned, control) terminals' native frames, read after a paint.
+type PinFrames = (Option<Rect>, Option<Rect>);
+type CameraChange = fn(&mut calm_core::camera::Camera);
+
+/// Changes the camera, then waits until the unpinned control terminal's native frame
+/// moves (proof a paint placed natives) and returns both frames.
+async fn smoke_pin_camera(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+    ids: (PanelId, PanelId),
+    label: &str,
+    change: impl FnOnce(&mut calm_core::camera::Camera),
+) -> PinFrames {
+    let control_before = cx.update(|cx| view.read(cx).terminal_native_frame(ids.1, cx));
+    let changed = cx.update_window(window, |_, _, cx| {
+        view.update(cx, |view, cx| {
+            change(&mut view.scene.camera);
+            cx.notify();
+        })
+    });
+    if let Err(err) = changed {
+        smoke_fail(&format!("pin: {label}: {err:#}"));
+    }
+    let started = Instant::now();
+    loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let frames = cx.update(|cx| {
+            let view = view.read(cx);
+            (
+                view.terminal_native_frame(ids.0, cx),
+                view.terminal_native_frame(ids.1, cx),
+            )
+        });
+        if frames.1 != control_before {
+            return frames;
+        }
+        if started.elapsed() > SMOKE_FRAME_TIMEOUT {
+            let visible = cx.update(|cx| window_visible(window, cx));
+            smoke_fail(&format!(
+                "pin: {label}: control terminal never re-placed, frame={control_before:?} window_visible={visible:?}"
+            ));
+        }
+    }
+}
+
+/// Pins a terminal, then pans and zooms: its native container must stay put on screen
+/// and stay on top of every other native panel. Unpin must keep its screen origin.
+async fn smoke_pin(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
+    const TOLERANCE: f64 = 0.5;
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.scene.camera = calm_core::camera::Camera::default();
+            let terminal = || PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile: None,
+                app: None,
+            };
+            let control = view
+                .scene
+                .add(terminal(), Rect::new(420.0, 40.0, 300.0, 160.0));
+            view.open_terminal(control, None, None, None, None, window, cx)?;
+            let pinned = view
+                .scene
+                .add(terminal(), Rect::new(40.0, 40.0, 320.0, 200.0));
+            view.open_terminal(pinned, None, None, None, None, window, cx)?;
+            if !view.toggle_pin(pinned, cx) {
+                return Err("toggle_pin did not pin".to_string());
+            }
+            cx.notify();
+            Ok::<_, String>((pinned, control))
+        })
+    });
+    let ids = match opened {
+        Ok(Ok(ids)) => ids,
+        Ok(Err(err)) => smoke_fail(&format!("pin: {err}")),
+        Err(err) => smoke_fail(&format!("pin: {err:#}")),
+    };
+    let started = Instant::now();
+    let pinned_rect = loop {
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+        let frames = cx.update(|cx| {
+            let view = view.read(cx);
+            (
+                view.terminal_native_frame(ids.0, cx),
+                view.terminal_native_frame(ids.1, cx),
+            )
+        });
+        if let (Some(rect), Some(_)) = frames {
+            break rect;
+        }
+        if started.elapsed() > SMOKE_FRAME_TIMEOUT {
+            let visible = cx.update(|cx| window_visible(window, cx));
+            smoke_fail(&format!(
+                "pin: terminals never placed: {frames:?} window_visible={visible:?}"
+            ));
+        }
+    };
+    let steps: [(&str, CameraChange); 3] = [
+        ("pan", |camera| camera.pan_by_screen(200.0, 120.0)),
+        ("zoom 0.5", |camera| camera.zoom = 0.5),
+        ("zoom 3", |camera| camera.zoom = 3.0),
+    ];
+    for (label, change) in steps {
+        let (pinned, _) = smoke_pin_camera(view, window, cx, ids, label, change).await;
+        let Some(rect) = pinned else {
+            smoke_fail(&format!("pin: {label}: pinned terminal hidden"));
+        };
+        let moved = (rect.origin.x - pinned_rect.origin.x)
+            .abs()
+            .max((rect.origin.y - pinned_rect.origin.y).abs())
+            .max((rect.size.width - pinned_rect.size.width).abs())
+            .max((rect.size.height - pinned_rect.size.height).abs());
+        if moved > TOLERANCE {
+            smoke_fail(&format!(
+                "pin: {label}: pinned container moved to {rect:?} from {pinned_rect:?}"
+            ));
+        }
+    }
+    let (scene_order, native_order) = cx.update(|cx| view.read(cx).native_zorder(cx));
+    if scene_order.last() != Some(&ids.0.0) || native_order.last() != Some(&ids.0.0) {
+        smoke_fail(&format!(
+            "pin: pinned id {} not last: scene={scene_order:?} native={native_order:?}",
+            ids.0.0
+        ));
+    }
+    let unpinned = cx.update_window(window, |_, _, cx| {
+        view.update(cx, |view, cx| {
+            let screen = |view: &CanvasView| {
+                view.scene.get(ids.0).map(|panel| {
+                    view.scene
+                        .camera_of(panel)
+                        .world_to_screen(panel.rect.origin)
+                })
+            };
+            let before = screen(view);
+            let toggled = view.toggle_pin(ids.0, cx);
+            let after = screen(view);
+            let still_pinned = view.scene.get(ids.0).is_some_and(|panel| panel.is_pinned());
+            let effects = vec![Effect::ClosePanel(ids.0), Effect::ClosePanel(ids.1)];
+            (before, after, toggled, still_pinned, effects)
+        })
+    });
+    let (before, after, toggled, still_pinned, effects) = match unpinned {
+        Ok(got) => got,
+        Err(err) => smoke_fail(&format!("pin: unpin: {err:#}")),
+    };
+    let closed = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.apply_effects(effects, window, cx);
+            view.scene.camera = calm_core::camera::Camera::default();
+            cx.notify();
+        })
+    });
+    if let Err(err) = closed {
+        smoke_fail(&format!("pin: close: {err:#}"));
+    }
+    let (Some(before), Some(after)) = (before, after) else {
+        smoke_fail("pin: pinned panel left the scene");
+    };
+    if !toggled || still_pinned {
+        smoke_fail(&format!(
+            "pin: unpin toggled={toggled} still_pinned={still_pinned}"
+        ));
+    }
+    if (before.x - after.x).abs() > TOLERANCE || (before.y - after.y).abs() > TOLERANCE {
+        smoke_fail(&format!(
+            "pin: unpin moved the screen origin {before:?} -> {after:?}"
+        ));
+    }
+    println!(
+        "smoke: pin ok rect={}x{}@{},{} zorder={native_order:?}",
+        pinned_rect.size.width, pinned_rect.size.height, pinned_rect.origin.x, pinned_rect.origin.y
+    );
 }
 
 /// Whether AppKit has the window on screen. GPUI stops painting an occluded window, so a

@@ -49,6 +49,7 @@ pub const STEPS: &[StepSpec] = &[
     step("background", &[], &[]),
     step("browser", &[], &[]),
     step("resize", &[], &[]),
+    step("pin", &[], &[]),
     step("blur", &[], &[]),
     step("settings_dispatch", &[], &[]),
     step("keybindings", &[], &[]),

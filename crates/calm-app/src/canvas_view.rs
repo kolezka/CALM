@@ -4,7 +4,7 @@ use calm_core::autosave::{
     APP_AUTOSAVE_ACTIVE, AutosaveChange, AutosaveClock, OrderedWriter, SaveQueue, WriteOutcome,
     autosave_active, autosave_allowed_after_read, autosave_change, save_error_text,
 };
-use calm_core::camera::FIT_MARGIN;
+use calm_core::camera::{Camera, FIT_MARGIN};
 use calm_core::chrome::{
     BUILTIN_ICON_PREFIX, CORNER_RADIUS, ChromeButton, ChromeOverrides, ChromePalette, ChromeState,
     PanelIcon, TITLE_BAR_HEIGHT, button_dot, button_strokes, chrome_colors, details_visible,
@@ -553,6 +553,11 @@ impl CanvasView {
         }
         // Last, so placement runs once with the saved zoom.
         self.scene.camera = layout.camera;
+        // A window smaller than at save time would leave pinned panels off screen. Before
+        // the first paint the size is unknown; `set_viewport` clamps then.
+        if has_area(self.viewport.size) {
+            self.scene.clamp_pinned(self.viewport.size);
+        }
         // Restack once all panels exist, without waiting for paint.
         self.sync_native_order(cx);
         notices
@@ -1015,6 +1020,10 @@ impl CanvasView {
             }
             (Some(MenuCommand::SendToBack), MenuTarget::Panel(id)) => {
                 self.scene.send_to_back(id);
+                vec![Effect::Redraw]
+            }
+            (Some(MenuCommand::TogglePin), MenuTarget::Panel(id)) => {
+                self.toggle_pin(id, cx);
                 vec![Effect::Redraw]
             }
             (Some(MenuCommand::ZoomToFit), MenuTarget::Panel(id)) => {
@@ -1947,6 +1956,36 @@ impl CanvasView {
             .collect()
     }
 
+    /// A terminal's native container frame read back from AppKit, `None` while hidden.
+    pub fn terminal_native_frame(&self, id: PanelId, cx: &App) -> Option<Rect> {
+        self.terminals
+            .iter()
+            .find(|(terminal_id, _)| *terminal_id == id)
+            .and_then(|(_, terminal)| terminal.read(cx).native_frame())
+    }
+
+    /// Records the canvas area. A size change clamps pinned panels back on screen.
+    fn set_viewport(&mut self, viewport: Rect, cx: &mut Context<Self>) {
+        let resized = viewport.size != self.viewport.size;
+        self.viewport = viewport;
+        if resized && has_area(viewport.size) && self.scene.clamp_pinned(viewport.size) {
+            cx.notify();
+        }
+    }
+
+    /// Pins or unpins a panel, keeping its screen origin. Returns true if it changed.
+    pub fn toggle_pin(&mut self, id: PanelId, cx: &mut Context<Self>) -> bool {
+        let Some(pinned) = self.scene.get(id).map(Panel::is_pinned) else {
+            return false;
+        };
+        let changed = self.scene.set_pinned(id, !pinned);
+        if changed {
+            self.sync_native_order(cx);
+            cx.notify();
+        }
+        changed
+    }
+
     /// (mode, has a snapshot) per terminal, in creation order.
     pub fn terminal_previews(&self, cx: &App) -> Vec<(PanelMode, bool)> {
         self.terminals
@@ -2680,9 +2719,10 @@ fn terminal_mode(
     preview_below_zoom: f64,
 ) -> PanelMode {
     let local = Rect::new(0.0, 0.0, viewport.size.width, viewport.size.height);
-    let screen = scene.camera.world_rect_to_screen(content_rect(panel));
+    let camera = scene.camera_of(panel);
+    let screen = camera.world_rect_to_screen(content_rect(panel));
     decide_mode(
-        scene.camera.zoom,
+        camera.zoom,
         preview_below_zoom,
         screen,
         local,
@@ -2725,7 +2765,7 @@ fn terminal_placement(
         return None;
     }
     let local = Rect::new(0.0, 0.0, viewport.size.width, viewport.size.height);
-    let mut placement = place_native(content_rect(panel), &scene.camera, local)?;
+    let mut placement = place_native(content_rect(panel), &scene.camera_of(panel), local)?;
     placement.container.origin.x += viewport.origin.x;
     placement.container.origin.y += viewport.origin.y;
     placement.visible =
@@ -2957,8 +2997,9 @@ impl PaintSnapshot {
 
     /// Drop shadow outside the panel's outline, square where a neighbor joins.
     fn paint_shadow(&self, panel: &Panel, origin: gpui::Point<f64>, window: &mut Window) {
-        let zoom = self.scene.camera.zoom;
-        let body = self.scene.camera.world_rect_to_screen(body_rect(panel));
+        let camera = self.scene.camera_of(panel);
+        let zoom = camera.zoom;
+        let body = camera.world_rect_to_screen(body_rect(panel));
         let shadow_color = if self.focused == Some(panel.id) {
             theme::SHADOW_FOCUSED
         } else {
@@ -2980,13 +3021,13 @@ impl PaintSnapshot {
     /// Ring pieces along the parts of joined sides that no neighbor covers.
     fn paint_open_ring(
         &self,
+        camera: Camera,
         body: Rect,
         edges: &JoinedEdges,
         color: gpui::Rgba,
         origin: gpui::Point<f64>,
         window: &mut Window,
     ) {
-        let camera = self.scene.camera;
         let zoom = camera.zoom;
         for side in [Side::Left, Side::Top, Side::Right, Side::Bottom] {
             // Thick enough to cover the ring's reach into the gap.
@@ -3045,7 +3086,14 @@ impl PaintSnapshot {
         origin: gpui::Point<f64>,
         window: &mut Window,
     ) {
-        let camera = self.scene.camera;
+        // Joins only link panels with the same pin, so either member's camera fits.
+        let Some(camera) = self
+            .scene
+            .get(join.first)
+            .map(|panel| self.scene.camera_of(panel))
+        else {
+            return;
+        };
         let zoom = camera.zoom;
         let color = rgba(divider_color(
             [join.first, join.second].map(|id| {
@@ -3088,7 +3136,7 @@ impl PaintSnapshot {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let camera = self.scene.camera;
+        let camera = self.scene.camera_of(panel);
         let zoom = camera.zoom;
         let focused = self.focused == Some(panel.id);
         let confirming = self.confirming == Some(panel.id);
@@ -3151,7 +3199,7 @@ impl PaintSnapshot {
             BorderStyle::Solid,
         ));
         if let Some(edges) = edges {
-            self.paint_open_ring(body, edges, rgba(colors.border), origin, window);
+            self.paint_open_ring(camera, body, edges, rgba(colors.border), origin, window);
         }
 
         if !panel.minimized {
@@ -3417,6 +3465,10 @@ fn confirm_prompt(panel: &Panel, confirming: bool) -> Option<ConfirmPrompt> {
     )))
 }
 
+fn has_area(size: Size) -> bool {
+    size.width > 0.0 && size.height > 0.0
+}
+
 /// What a panel's chrome outlines: the chip when minimized, else the whole panel.
 fn body_rect(panel: &Panel) -> Rect {
     if panel.minimized {
@@ -3676,6 +3728,11 @@ impl Render for CanvasView {
                     view.apply_effects(vec![Effect::ClosePanelRequested(id)], window, cx);
                 }
             }))
+            .on_action(cx.listener(|view, _: &TogglePinPanel, _, cx| {
+                if let Some(id) = view.focused {
+                    view.toggle_pin(id, cx);
+                }
+            }))
             .on_action(cx.listener(|view, _: &OpenPanelSettings, window, cx| {
                 if let Some(id) = view.focused {
                     view.open_panel_settings(id, window, cx);
@@ -3764,7 +3821,9 @@ impl Render for CanvasView {
                                     f64::from(f32::from(bounds.size.width)),
                                     f64::from(f32::from(bounds.size.height)),
                                 );
-                                entity.update(cx, |view, _| view.viewport = viewport).ok();
+                                entity
+                                    .update(cx, |view, cx| view.set_viewport(viewport, cx))
+                                    .ok();
                             },
                             move |bounds, (), window, cx| {
                                 snapshot.paint_canvas(bounds, paint_entity, window, cx);

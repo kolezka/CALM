@@ -321,6 +321,20 @@ impl NativeChild {
         parent.addSubview_positioned_relativeTo(&self.clip, NSWindowOrderingMode::Above, None);
     }
 
+    /// The clip view's frame read back from AppKit, or `None` while it is hidden.
+    pub fn shown_frame(&self) -> Option<Rect> {
+        if self.clip.isHidden() {
+            return None;
+        }
+        let frame = self.clip.frame();
+        Some(Rect::new(
+            frame.origin.x,
+            frame.origin.y,
+            frame.size.width,
+            frame.size.height,
+        ))
+    }
+
     /// Position of the clip view among its superview's subviews, back to front.
     pub fn stack_index(&self) -> Option<usize> {
         // SAFETY: as in `bring_to_front`.

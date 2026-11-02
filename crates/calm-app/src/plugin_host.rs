@@ -422,7 +422,7 @@ pub fn dispatch(host: &mut HostContext, request: &BridgeRequest) -> Route {
         "panel.getBounds" => reply(Ok(serde_json::json!({
             "width": panel.rect.size.width,
             "height": panel.rect.size.height,
-            "zoom": host.scene.camera.zoom,
+            "zoom": host.scene.camera_of(panel).zoom,
         }))),
         "panel.minimize" => {
             if !panel.minimized
@@ -1047,6 +1047,13 @@ mod tests {
                 &call(2, "panel.getBounds", Value::Null)
             ),
             None
+        );
+        // A pinned panel reports its own zoom, not the canvas zoom.
+        scene.set_pinned(id, true);
+        scene.camera.zoom = 0.5;
+        assert_eq!(
+            run(&mut scene, id, &call(3, "panel.getBounds", Value::Null)),
+            ok(3, json!({ "width": 320.0, "height": 200.0, "zoom": 1.5 }))
         );
     }
 
