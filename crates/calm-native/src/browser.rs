@@ -516,4 +516,14 @@ mod tests {
         assert_eq!(browser_key("=", false), None);
         assert_eq!(browser_key("r", true), None);
     }
+
+    #[test]
+    fn reserved_browser_keys_match_the_monitor() {
+        for (key, _) in calm_core::keymap::BROWSER_KEYS {
+            let spec = calm_core::keymap::parse_key(key).unwrap();
+            assert!(spec.cmd && !spec.ctrl && !spec.alt, "{key}");
+            assert!(browser_key(&spec.key, spec.shift).is_some(), "{key}");
+        }
+        assert_eq!(calm_core::keymap::BROWSER_KEYS.len(), 10);
+    }
 }

@@ -2365,13 +2365,18 @@ fn smoke_settings(view: &mut CanvasView, window: &mut Window, cx: &mut Context<C
     if count != 1 || first.is_none() || first != second {
         smoke_fail("opening Settings twice did not reuse one window");
     }
-    // One binding per non-note control, plus a Reset button per field with its own value.
+    // One binding per non-note control (a key row has two: recorder and Clear), plus a
+    // Reset button per field with its own value.
     let expected = settings_form(&view.settings.settings, &view.form_context())
         .iter()
         .flat_map(|section| &section.fields)
         .map(|field| {
-            usize::from(!matches!(field.control, Control::Note(_)))
-                + usize::from(field.state == FieldState::Set)
+            let controls = match field.control {
+                Control::Note(_) => 0,
+                Control::Key { .. } => 2,
+                _ => 1,
+            };
+            controls + usize::from(field.state == FieldState::Set)
         })
         .sum::<usize>();
     let Some(settings_window) = &view.settings_window else {

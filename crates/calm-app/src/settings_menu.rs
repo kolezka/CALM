@@ -1,6 +1,7 @@
 //! The Settings menu bar menu and the Settings window glue.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use calm_core::settings::{Settings, save_settings_to};
 use calm_core::settings_form::{
@@ -19,6 +20,9 @@ actions!(
     calm,
     [OpenSettings, ToggleGrid, OpenConfigFolder, ResetSettings]
 );
+
+/// How long a refused key's reason stays on its row.
+const KEY_MESSAGE_SECS: u64 = 3;
 
 /// Settings plus the file they persist to. The smoke points `path` at a temp dir.
 pub struct SettingsState {
@@ -233,9 +237,23 @@ impl CanvasView {
             Ok(FormOutcome::Command(command @ FormCommand::ChoosePanelIcon(_))) => {
                 eprintln!("calm: settings window: unexpected {command:?}");
             }
-            // Shown on the row once the recorder lands; logged until then.
-            Ok(FormOutcome::KeyRefused { reason, .. }) => {
-                eprintln!("calm: settings window: {}", reason.message());
+            // The row says why for a moment, then shows its key again.
+            Ok(FormOutcome::KeyRefused { action, reason }) => {
+                let field = format!("keys.{action}");
+                if let Some(settings_window) = &self.settings_window {
+                    settings_window.show_field_message(&field, &reason.message());
+                }
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(KEY_MESSAGE_SECS))
+                        .await;
+                    let _ = this.update(cx, |view, _| {
+                        if let Some(settings_window) = &view.settings_window {
+                            settings_window.clear_field_message(&field);
+                        }
+                    });
+                })
+                .detach();
             }
             // The form and `apply_field` disagree: a bug, so say so instead of guessing.
             Err(err) => eprintln!("calm: settings window: {err}"),

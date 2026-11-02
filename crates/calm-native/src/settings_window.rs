@@ -8,22 +8,29 @@
 //! Every control targets one helper object. Its tag indexes the bindings list, which says
 //! which field id it edits and how to read its value.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::ptr::NonNull;
 
+use block2::RcBlock;
 use calm_core::background::Rgb;
+use calm_core::keymap::{KeyParts, display_key, keystroke_from_parts};
 use calm_core::settings_form::{Control, Field, FieldState, FieldValue, Section};
-use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObject};
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor, NSColorSpace,
-    NSColorWell, NSControl, NSFont, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSScrollView,
-    NSSlider, NSTabView, NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowOrderingMode,
-    NSWindowStyleMask,
+    NSColorWell, NSControl, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSFont,
+    NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSScrollView, NSSlider, NSTabView,
+    NSTabViewItem, NSTextField, NSView, NSWindow, NSWindowDidResignKeyNotification,
+    NSWindowOrderingMode, NSWindowStyleMask,
 };
-use objc2_foundation::{NSInteger, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSInteger, NSNotification, NSNotificationCenter, NSOperationQueue, NSPoint, NSRect, NSSize,
+    NSString,
+};
 use raw_window_handle::HasWindowHandle;
 
 use crate::NativeError;
@@ -42,6 +49,86 @@ const STATE_X: f64 = VALUE_X + VALUE_WIDTH;
 const STATE_WIDTH: f64 = 76.0;
 const INHERITED_LABEL: &str = "inherited";
 const RESET_TITLE: &str = "Reset";
+/// The recorder's title while it waits for a key.
+pub const RECORDING_TITLE: &str = "Press a shortcut…";
+pub const CLEAR_TITLE: &str = "Clear";
+/// The recorder's title for an unbound action.
+pub const UNBOUND_TITLE: &str = "None";
+
+/// What the recorder does with one key-down.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecorderStep {
+    Cancel,
+    Ignore,
+    Report(String),
+}
+
+/// Escape with no modifier cancels; no key ignores; anything else reports.
+pub fn recorder_step(parts: &KeyParts) -> RecorderStep {
+    let bare = !(parts.cmd || parts.ctrl || parts.alt || parts.shift || parts.function);
+    if bare && parts.chars_ignoring_modifiers == "\u{1b}" {
+        return RecorderStep::Cancel;
+    }
+    match keystroke_from_parts(parts) {
+        Some(key) => RecorderStep::Report(key),
+        None => RecorderStep::Ignore,
+    }
+}
+
+/// The parts of one key-down, given its flags, `charactersIgnoringModifiers` and a lookup
+/// of the key code's characters under given flags.
+pub fn parts_from(
+    flags: NSEventModifierFlags,
+    chars_ignoring: &str,
+    chars_with: impl Fn(NSEventModifierFlags) -> String,
+    always_use_cmd_layout: bool,
+) -> KeyParts {
+    KeyParts {
+        cmd: flags.contains(NSEventModifierFlags::Command),
+        ctrl: flags.contains(NSEventModifierFlags::Control),
+        alt: flags.contains(NSEventModifierFlags::Option),
+        shift: flags.contains(NSEventModifierFlags::Shift),
+        function: flags.contains(NSEventModifierFlags::Function),
+        chars_ignoring_modifiers: chars_ignoring.to_string(),
+        chars_plain: chars_with(NSEventModifierFlags::empty()),
+        chars_shift: chars_with(NSEventModifierFlags::Shift),
+        chars_cmd: chars_with(NSEventModifierFlags::Command),
+        chars_cmd_shift: chars_with(NSEventModifierFlags::Command | NSEventModifierFlags::Shift),
+        always_use_cmd_layout,
+    }
+}
+
+/// The recorder's title for a key: macOS symbols, or `UNBOUND_TITLE`.
+pub fn recorder_title(value: Option<&str>) -> String {
+    value.map_or_else(|| UNBOUND_TITLE.to_string(), display_key)
+}
+
+/// GPUI's `always_use_command_layout` (events.rs:499-505): a non-ASCII layout whose Cmd
+/// layer is ASCII. Read from a key-code-0 event that is built but never posted.
+fn always_use_cmd_layout() -> bool {
+    let chars = |flags: NSEventModifierFlags| -> Option<String> {
+        let empty = NSString::from_str("");
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::new(0.0, 0.0),
+            NSEventModifierFlags::empty(),
+            0.0,
+            0,
+            None,
+            &empty,
+            &empty,
+            false,
+            0,
+        )?;
+        Some(event.charactersByApplyingModifiers(flags)?.to_string())
+    };
+    match chars(NSEventModifierFlags::empty()) {
+        Some(plain) if !plain.is_ascii() => {
+            chars(NSEventModifierFlags::Command).is_some_and(|cmd| cmd.is_ascii())
+        }
+        _ => false,
+    }
+}
 
 /// How a settings window arranges its sections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +152,23 @@ enum BindingKind {
     Button,
     Text,
     Reset,
+    /// Click starts recording. Keeps the button so a message can replace its title.
+    KeyRecorder {
+        value: Option<String>,
+        button: Retained<NSButton>,
+    },
+    KeyClear,
+}
+
+/// A recorder waiting for a key. Dropping it does not stop it; `stop_recording` does.
+struct Recording {
+    id: String,
+    button: Retained<NSButton>,
+    title: String,
+    monitor: Retained<AnyObject>,
+    observer: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+    /// Set once a key or a focus loss decided the outcome, while the stop is queued.
+    finishing: Cell<bool>,
 }
 
 struct Binding {
@@ -77,6 +181,8 @@ struct TargetIvars {
     callback: RefCell<Option<ChangeCallback>>,
     pending: RefCell<VecDeque<(String, FieldValue)>>,
     bindings: RefCell<Vec<Binding>>,
+    recording: RefCell<Option<Recording>>,
+    window: RefCell<Option<Weak<NSWindow>>>,
 }
 
 define_class!(
@@ -90,25 +196,216 @@ define_class!(
     impl FormTarget {
         #[unsafe(method(calmChanged:))]
         fn changed(&self, sender: &NSControl) {
+            if let Ok(index) = usize::try_from(sender.tag())
+                && self.is_recorder(index)
+            {
+                self.toggle_recording(index);
+                return;
+            }
             let Some((id, value)) = self.read(sender) else {
                 return;
             };
             self.ivars().pending.borrow_mut().push_back((id, value));
-            // Take the callback out while it runs, so it may rebuild the form.
-            let taken = self.ivars().callback.borrow_mut().take();
-            if let Some(mut callback) = taken {
-                loop {
-                    let change = self.ivars().pending.borrow_mut().pop_front();
-                    let Some((id, value)) = change else {
-                        break;
-                    };
-                    callback(id, value);
-                }
-                *self.ivars().callback.borrow_mut() = Some(callback);
-            }
+            self.flush();
         }
     }
 );
+
+impl FormTarget {
+    /// Hands every queued change to the callback.
+    fn flush(&self) {
+        // Take the callback out while it runs, so it may rebuild the form.
+        let taken = self.ivars().callback.borrow_mut().take();
+        if let Some(mut callback) = taken {
+            loop {
+                let change = self.ivars().pending.borrow_mut().pop_front();
+                let Some((id, value)) = change else {
+                    break;
+                };
+                callback(id, value);
+            }
+            *self.ivars().callback.borrow_mut() = Some(callback);
+        }
+    }
+
+    fn is_recorder(&self, index: usize) -> bool {
+        matches!(
+            self.ivars().bindings.borrow().get(index).map(|b| &b.kind),
+            Some(BindingKind::KeyRecorder { .. })
+        )
+    }
+
+    /// A click on a recorder: stops it when it is the one recording, else starts it.
+    fn toggle_recording(&self, index: usize) {
+        let (id, button, title) = {
+            let bindings = self.ivars().bindings.borrow();
+            let Some(Binding {
+                id,
+                kind: BindingKind::KeyRecorder { value, button },
+            }) = bindings.get(index)
+            else {
+                return;
+            };
+            (id.clone(), button.clone(), recorder_title(value.as_deref()))
+        };
+        let same = self
+            .ivars()
+            .recording
+            .borrow()
+            .as_ref()
+            .map(|r| r.id.clone())
+            == Some(id.clone());
+        self.stop_recording();
+        if same {
+            return;
+        }
+        let Some(window) = self.ivars().window.borrow().as_ref().and_then(Weak::load) else {
+            return;
+        };
+        button.setTitle(&NSString::from_str(RECORDING_TITLE));
+        let number = window.windowNumber();
+        let target = Weak::new(self);
+        let handler = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit passes a live event for the duration of the handler.
+            let event_ref = unsafe { event.as_ref() };
+            let Some(target) = target.load() else {
+                return event.as_ptr();
+            };
+            if event_ref.windowNumber() != number {
+                return event.as_ptr();
+            }
+            if target.handle_recorded_key(event_ref) {
+                std::ptr::null_mut()
+            } else {
+                event.as_ptr()
+            }
+        });
+        // SAFETY: the block returns the event or null as the API requires; the monitor is
+        // removed in `stop_recording`, which releases the block and what it captured.
+        let monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler)
+        };
+        let Some(monitor) = monitor else {
+            button.setTitle(&NSString::from_str(&title));
+            return;
+        };
+        let target = Weak::new(self);
+        let on_resign = RcBlock::new(move |_: NonNull<NSNotification>| {
+            if let Some(target) = target.load() {
+                target.finish_recording(None);
+            }
+        });
+        // SAFETY: a nil queue runs the block on the posting thread; AppKit posts window
+        // notifications on the main thread, which this class is bound to. The observer is
+        // removed in `stop_recording`.
+        let observer = unsafe {
+            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(NSWindowDidResignKeyNotification),
+                Some(window.as_ref() as &AnyObject),
+                None,
+                &on_resign,
+            )
+        };
+        *self.ivars().recording.borrow_mut() = Some(Recording {
+            id,
+            button,
+            title,
+            monitor,
+            observer,
+            finishing: Cell::new(false),
+        });
+    }
+
+    /// The monitor's view of one key-down in this window. True swallows it.
+    fn handle_recorded_key(&self, event: &NSEvent) -> bool {
+        match self.ivars().recording.borrow().as_ref() {
+            None => return false,
+            Some(recording) if recording.finishing.get() => return true,
+            Some(_) => {}
+        }
+        let chars_ignoring = event
+            .charactersIgnoringModifiers()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let parts = parts_from(
+            event.modifierFlags(),
+            &chars_ignoring,
+            |flags| {
+                event
+                    .charactersByApplyingModifiers(flags)
+                    .map(|s| s.to_string())
+                    .unwrap_or_default()
+            },
+            always_use_cmd_layout(),
+        );
+        match recorder_step(&parts) {
+            RecorderStep::Ignore => {}
+            RecorderStep::Cancel => self.finish_recording(None),
+            RecorderStep::Report(key) => self.finish_recording(Some(key)),
+        }
+        true
+    }
+
+    /// Ends recording after the current event: removing a monitor or observer from inside
+    /// its own block would free the block while it runs.
+    fn finish_recording(&self, key: Option<String>) {
+        let id = match self.ivars().recording.borrow().as_ref() {
+            Some(recording) if !recording.finishing.get() => {
+                recording.finishing.set(true);
+                recording.id.clone()
+            }
+            _ => return,
+        };
+        let target = Weak::new(self);
+        let done = RcBlock::new(move || {
+            let Some(target) = target.load() else {
+                return;
+            };
+            target.stop_recording();
+            if let Some(key) = &key {
+                target
+                    .ivars()
+                    .pending
+                    .borrow_mut()
+                    .push_back((id.clone(), FieldValue::Key(Some(key.clone()))));
+                target.flush();
+            }
+        });
+        // SAFETY: the main queue runs the block on the main thread after this event.
+        unsafe { NSOperationQueue::mainQueue().addOperationWithBlock(&done) };
+    }
+
+    /// Removes the monitor and observer and gives the recorder its title back.
+    fn stop_recording(&self) {
+        let Some(recording) = self.ivars().recording.borrow_mut().take() else {
+            return;
+        };
+        // SAFETY: the monitor came from addLocalMonitorForEventsMatchingMask:handler:.
+        unsafe { NSEvent::removeMonitor(&recording.monitor) };
+        // SAFETY: the observer came from addObserverForName:object:queue:usingBlock: on
+        // the default center.
+        unsafe {
+            NSNotificationCenter::defaultCenter()
+                .removeObserver(recording.observer.as_ref() as &AnyObject)
+        };
+        recording
+            .button
+            .setTitle(&NSString::from_str(&recording.title));
+    }
+
+    fn recorder(&self, id: &str) -> Option<(Retained<NSButton>, Option<String>)> {
+        self.ivars()
+            .bindings
+            .borrow()
+            .iter()
+            .find_map(|b| match &b.kind {
+                BindingKind::KeyRecorder { value, button } if b.id == id => {
+                    Some((button.clone(), value.clone()))
+                }
+                _ => None,
+            })
+    }
+}
 
 define_class!(
     // SAFETY: NSView has no subclassing requirements; this only flips the coordinates so
@@ -160,6 +457,9 @@ impl FormTarget {
             BindingKind::Button => FieldValue::Pressed,
             BindingKind::Text => FieldValue::Text(sender.stringValue().to_string()),
             BindingKind::Reset => FieldValue::Reset,
+            // A click on a recorder starts recording in `changed`; it reports no value.
+            BindingKind::KeyRecorder { .. } => return None,
+            BindingKind::KeyClear => FieldValue::Key(None),
         };
         Some((binding.id.clone(), value))
     }
@@ -263,6 +563,7 @@ impl SettingsWindow {
 
         let target = FormTarget::new(mtm);
         *target.ivars().callback.borrow_mut() = Some(Box::new(on_change));
+        *target.ivars().window.borrow_mut() = Some(Weak::from_retained(&window));
         Ok(SettingsWindow {
             mtm,
             window,
@@ -274,6 +575,7 @@ impl SettingsWindow {
     /// Replaces every control with a fresh build of `sections`. In tabs mode the selected
     /// tab stays selected by title, else the first tab is selected.
     pub fn set_form(&self, sections: &[Section]) {
+        self.target.stop_recording();
         // Commit an edit in progress while the old bindings still match its tag.
         self.window.makeFirstResponder(None);
         for document in self.documents() {
@@ -376,7 +678,9 @@ impl SettingsWindow {
             let name = label(mtm, &field.label, rect(MARGIN, y + 5.0, LABEL_WIDTH, 18.0));
             document.addSubview(&name);
         }
-        if let Some((control, kind)) = self.build_control(&field.control, y, document) {
+        if let Control::Key { value, .. } = &field.control {
+            self.build_key_row(&field.id, value.as_deref(), y, document, bindings);
+        } else if let Some((control, kind)) = self.build_control(&field.control, y, document) {
             self.bind(&control, &field.id, kind, document, bindings);
         }
         match field.state {
@@ -408,6 +712,47 @@ impl SettingsWindow {
                 self.bind(&control, &field.id, BindingKind::Reset, document, bindings);
             }
         }
+    }
+
+    /// A recorder showing the key, and Clear, which unbinds it.
+    fn build_key_row(
+        &self,
+        id: &str,
+        value: Option<&str>,
+        y: f64,
+        document: &NSView,
+        bindings: &mut Vec<Binding>,
+    ) {
+        let mtm = self.mtm;
+        // SAFETY: nil target and action are set right after by `bind`.
+        let recorder = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(&recorder_title(value)),
+                None,
+                None,
+                mtm,
+            )
+        };
+        recorder.setFrame(rect(CONTROL_X, y + 2.0, CONTROL_WIDTH, 24.0));
+        let kind = BindingKind::KeyRecorder {
+            value: value.map(str::to_string),
+            button: recorder.clone(),
+        };
+        let control: Retained<NSControl> = Retained::into_super(recorder);
+        self.bind(&control, id, kind, document, bindings);
+        // SAFETY: nil target and action are set right after by `bind`.
+        let clear = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(CLEAR_TITLE),
+                None,
+                None,
+                mtm,
+            )
+        };
+        clear.setFrame(rect(VALUE_X, y + 2.0, VALUE_WIDTH, 24.0));
+        clear.setEnabled(value.is_some());
+        let control: Retained<NSControl> = Retained::into_super(clear);
+        self.bind(&control, id, BindingKind::KeyClear, document, bindings);
     }
 
     fn bind(
@@ -535,17 +880,8 @@ impl SettingsWindow {
                 document.addSubview(&note);
                 return None;
             }
-            // Read-only until the recorder lands; the key is shown, nothing is bound.
-            Control::Key { value, .. } => {
-                let text = value
-                    .as_deref()
-                    .map(calm_core::keymap::display_key)
-                    .unwrap_or_default();
-                let label = NSTextField::labelWithString(&NSString::from_str(&text), mtm);
-                label.setFrame(rect(CONTROL_X, y + 5.0, CONTROL_WIDTH, 20.0));
-                document.addSubview(&label);
-                return None;
-            }
+            // Built by `build_key_row`, which binds two controls.
+            Control::Key { .. } => return None,
         })
     }
 
@@ -600,15 +936,62 @@ impl SettingsWindow {
     }
 
     pub fn hide(&self) {
+        self.target.stop_recording();
         self.detach_from_parent();
         self.window.orderOut(None);
     }
 
     /// Closes the window for good, for a window whose subject is gone.
     pub fn close(&self) {
+        self.target.stop_recording();
         self.window.makeFirstResponder(None);
         self.detach_from_parent();
         self.window.close();
+    }
+
+    /// Starts recording for the key row `id`, as a click on its recorder does.
+    pub fn start_recording(&self, id: &str) -> bool {
+        let index = self
+            .target
+            .ivars()
+            .bindings
+            .borrow()
+            .iter()
+            .position(|b| b.id == id && matches!(b.kind, BindingKind::KeyRecorder { .. }));
+        let Some(index) = index else {
+            return false;
+        };
+        if self.recording_field().as_deref() != Some(id) {
+            self.target.toggle_recording(index);
+        }
+        self.recording_field().as_deref() == Some(id)
+    }
+
+    /// The key row now recording, if any.
+    pub fn recording_field(&self) -> Option<String> {
+        self.target
+            .ivars()
+            .recording
+            .borrow()
+            .as_ref()
+            .map(|r| r.id.clone())
+    }
+
+    /// Shows `text` on the key row's recorder in place of its key.
+    pub fn show_field_message(&self, id: &str, text: &str) {
+        if let Some((button, _)) = self.target.recorder(id) {
+            button.setTitle(&NSString::from_str(text));
+        }
+    }
+
+    /// Puts the key back on the recorder after `show_field_message`.
+    pub fn clear_field_message(&self, id: &str) {
+        if self.recording_field().as_deref() == Some(id) {
+            return;
+        }
+        if let Some((button, value)) = self.target.recorder(id) {
+            button.setTitle(&NSString::from_str(&recorder_title(value.as_deref())));
+        }
     }
 
     pub fn set_title(&self, title: &str) {
@@ -661,6 +1044,13 @@ impl SettingsWindow {
     }
 }
 
+impl Drop for SettingsWindow {
+    fn drop(&mut self) {
+        // The monitor and observer must not outlive the window they watch.
+        self.target.stop_recording();
+    }
+}
+
 /// How many app windows carry `title`, for the smoke's one-window check.
 pub fn settings_window_count(title: &str) -> Result<usize, NativeError> {
     let mtm = MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
@@ -698,5 +1088,64 @@ mod tests {
         assert_eq!(format_value(0.456, 2), "0.46");
         assert_eq!(format_value(64.4, 0), "64");
         assert_eq!(format_value(1.0, 1), "1.0");
+    }
+
+    use calm_core::keymap::{KeyParts, keystroke_from_parts};
+
+    #[test]
+    fn escape_alone_cancels_and_escape_with_cmd_records() {
+        let escape = KeyParts {
+            chars_ignoring_modifiers: "\u{1b}".into(),
+            ..KeyParts::default()
+        };
+        assert_eq!(recorder_step(&escape), RecorderStep::Cancel);
+        let cmd_escape = KeyParts {
+            cmd: true,
+            ..escape.clone()
+        };
+        assert_eq!(
+            recorder_step(&cmd_escape),
+            RecorderStep::Report("cmd-escape".into())
+        );
+        assert_eq!(recorder_step(&KeyParts::default()), RecorderStep::Ignore);
+    }
+
+    #[test]
+    fn parts_from_reads_each_flag_and_each_layer() {
+        use objc2_app_kit::NSEventModifierFlags as F;
+        let chars = |f: F| {
+            match (f.contains(F::Command), f.contains(F::Shift)) {
+                (false, false) => "0",
+                (false, true) => ")",
+                (true, false) => "0",
+                (true, true) => ")",
+            }
+            .to_string()
+        };
+        let p = parts_from(F::Command | F::Shift, "0", chars, false);
+        assert!(p.cmd && p.shift && !p.ctrl && !p.alt && !p.function);
+        assert_eq!(
+            (
+                p.chars_plain.as_str(),
+                p.chars_shift.as_str(),
+                p.chars_cmd.as_str(),
+                p.chars_cmd_shift.as_str()
+            ),
+            ("0", ")", "0", ")")
+        );
+        assert_eq!(keystroke_from_parts(&p).as_deref(), Some("cmd-)"));
+        let p = parts_from(
+            F::Control | F::Option | F::Function,
+            "a",
+            |_| "a".into(),
+            false,
+        );
+        assert!(p.ctrl && p.alt && p.function && !p.cmd);
+    }
+
+    #[test]
+    fn recorder_shows_symbols_or_none() {
+        assert_eq!(recorder_title(Some("cmd-shift-backspace")), "⇧⌘⌫");
+        assert_eq!(recorder_title(None), UNBOUND_TITLE);
     }
 }
