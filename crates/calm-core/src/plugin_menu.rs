@@ -72,6 +72,7 @@ pub struct MenuWhen {
     /// Plugin ids. A panel matches when it is a plugin or TUI panel of one of them.
     pub plugins: Vec<String>,
     pub minimized: Option<bool>,
+    pub pinned: Option<bool>,
 }
 
 impl MenuWhen {
@@ -81,7 +82,8 @@ impl MenuWhen {
         let plugin_ok = self.plugins.is_empty()
             || plugin_of(&panel.kind).is_some_and(|id| self.plugins.iter().any(|p| p == id));
         let minimized_ok = self.minimized.is_none_or(|m| m == panel.minimized);
-        kind_ok && plugin_ok && minimized_ok
+        let pinned_ok = self.pinned.is_none_or(|p| p == panel.is_pinned());
+        kind_ok && plugin_ok && minimized_ok && pinned_ok
     }
 }
 
@@ -246,6 +248,7 @@ pub fn panel_info(panel: &Panel) -> Value {
             "height": panel.rect.size.height,
         },
         "minimized": panel.minimized,
+        "pinned": panel.is_pinned(),
     })
 }
 
@@ -438,6 +441,31 @@ mod tests {
     }
 
     #[test]
+    fn when_pinned_filters_items() {
+        let mut on_pinned = item("pinned", MenuLocation::Panel);
+        on_pinned.when.pinned = Some(true);
+        let mut on_world = item("world", MenuLocation::Panel);
+        on_world.when.pinned = Some(false);
+        let plugins = [plugin("a", vec![on_pinned, on_world])];
+        let ids = |p: &Panel| -> Vec<MenuItem> {
+            plugin_section(&plugins, MenuLocation::Panel, Some(p), &settings())
+        };
+        let mut pinned = panel(terminal(), false);
+        pinned.pin = Some(1.0);
+        assert_eq!(ids(&pinned), [action("a", "pinned")]);
+        assert_eq!(ids(&panel(terminal(), false)), [action("a", "world")]);
+    }
+
+    #[test]
+    fn command_payload_reports_pinned() {
+        let mut p = panel(terminal(), false);
+        assert_eq!(panel_info(&p)["pinned"], json!(false));
+        p.pin = Some(2.0);
+        let payload = command_payload("x", MenuLocation::Panel, Some(&p), None);
+        assert_eq!(payload["panel"]["pinned"], json!(true));
+    }
+
+    #[test]
     fn hidden_setting_hides_a_plugin_or_one_item() {
         let plugins = [
             plugin(
@@ -559,6 +587,7 @@ mod tests {
                     "id": 7, "kind": "plugin", "pluginId": "a", "title": "T",
                     "rect": { "x": 10.0, "y": 20.0, "width": 400.0, "height": 300.0 },
                     "minimized": false,
+                    "pinned": false,
                 },
                 "world": null,
             })

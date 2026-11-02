@@ -498,6 +498,7 @@ pub fn list_panels(scene: &Scene, focused: Option<PanelId>) -> Value {
             "title": panel.title,
             "rect": rect_json(panel.rect),
             "minimized": panel.minimized,
+            "pinned": panel.is_pinned(),
             "z": z,
             "focused": focused == Some(panel.id),
             "resize": {
@@ -1161,6 +1162,7 @@ mod tests {
             Rect::new(0.0, 400.0, 640.0, 400.0),
         );
         scene.get_mut(tui).unwrap().minimized = true;
+        scene.get_mut(tui).unwrap().pin = Some(1.0);
         let plugins = plugins();
         let mut context = host(&mut scene, plugin, &plugins);
         context.focused = Some(browser);
@@ -1174,7 +1176,7 @@ mod tests {
             json!({
                 "id": plugin.0, "kind": "plugin", "title": "hello-world",
                 "rect": { "x": 0.0, "y": 0.0, "width": 320.0, "height": 200.0 },
-                "minimized": false, "z": 0, "focused": false, "pluginId": "hello-world",
+                "minimized": false, "pinned": false, "z": 0, "focused": false, "pluginId": "hello-world",
                 "resize": { "resizable": true, "minSize": { "width": 120.0, "height": 80.0 }, "maxSize": null },
             })
         );
@@ -1183,6 +1185,7 @@ mod tests {
         assert_eq!(list[1]["z"], json!(1));
         assert_eq!(list[2]["kind"], json!("tui"));
         assert_eq!(list[2]["minimized"], json!(true));
+        assert_eq!(list[2]["pinned"], json!(true));
         assert_eq!(list.as_array().unwrap().len(), 3);
         // A bad param: the caller is gone.
         assert_eq!(

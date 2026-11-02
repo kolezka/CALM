@@ -107,7 +107,8 @@ actions!(
         MovePanelUpFar,
         MovePanelDownFar,
         MovePanelLeftFar,
-        MovePanelRightFar
+        MovePanelRightFar,
+        TogglePinPanel
     ]
 );
 
