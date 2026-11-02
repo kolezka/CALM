@@ -27,7 +27,7 @@ pan, zoom or minimize it. Only an explicit, confirmed close ends it.
 
 - Pan and zoom without limits: pinch, `cmd` and scroll, or the keyboard.
 - Zooming scales the view, never the terminal. Rows and columns stay the same.
-- Center on the world origin (`cmd-shift-h`) or fit every panel on screen (`cmd-shift-0`),
+- Center on the world origin (`cmd-shift-h`) or fit every panel on screen (Cmd+Shift+0),
   both also in the View menu.
 - Distant panels turn into still previews that refresh every 2 seconds.
 - A translucent status pill at the bottom shows zoom, plugin errors and warnings, and on
@@ -107,6 +107,8 @@ launch right-click it and pick Open. See [docs/release.md](docs/release.md).
 
 ## Usage
 
+Every key below is a default; change any of them in Settings > Keys.
+
 | Action                          | How                                       |
 | ------------------------------- | ----------------------------------------- |
 | Draw a terminal                 | `t`, then drag on the canvas              |
@@ -120,7 +122,7 @@ launch right-click it and pick Open. See [docs/release.md](docs/release.md).
 | Zoom                            | Pinch, or `cmd` and scroll                |
 | Zoom in, out, reset             | `cmd-=`, `cmd--`, `cmd-0`                 |
 | Center on origin                | `cmd-shift-h`                             |
-| Fit all panels                  | `cmd-shift-0`                             |
+| Fit all panels                  | Cmd+Shift+0 (stored as `cmd-)`)           |
 | Move or resize without snapping | Hold `cmd-shift` while dragging                 |
 | Settings                        | `cmd-,`                                   |
 | Fullscreen                      | `cmd-ctrl-f`                              |

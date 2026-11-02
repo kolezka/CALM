@@ -709,12 +709,41 @@ These shipped with #41, next to "Restore at launch" above.
   with the session. An unknown profile id opens with the defaults and one notice; the saved
   kind keeps the id, so it comes back if the profile does.
 - **Panel shortcuts: Cmd+Shift+Backspace deletes, Cmd+Shift+, opens Settings.** Both
-  are hard-coded like the other canvas bindings until key bindings become settings. Plain
+  are defaults of the key binding settings below. Plain
   `cmd-backspace` stays with shell and web fields, where Ghostty and WKWebView use it to
   delete to the start of the line. The Settings key is written `cmd-<` in code because GPUI
   reports the Cmd+Shift+, press that way (with Cmd held it drops Shift for punctuation and
   keeps the shifted character); a `cmd-shift-,` binding would never match. On layouts where
   `<` is on another key, the shortcut moves with it.
+
+## Key bindings are settings (2026-11-02, PR #62)
+
+Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One table in
+`calm-core/src/keymap.rs` owns every action, its default and scope; `keybindings` in
+`settings.json` stores overrides only (`null` unbinds); the Keys tab edits them.
+
+- **Keys are recorded, not typed.** A typed `cmd-shift-,` would be accepted and never fire,
+  because GPUI reports that press as `cmd-<`. The recorder turns one AppKit key-down into
+  the string GPUI will report, through a pure copy of GPUI's rule
+  (`keystroke_from_parts`, mirroring `gpui-pre-macos 0.3.4` `events.rs`). Keep the two in
+  step on a GPUI upgrade.
+- **A key already in use is refused, not swapped.** The row shows "Used by <label>" for
+  3 s. Swapping would silently move a shortcut the user did not touch.
+- **`NoAction` in terminals is derived.** Any binding without Cmd or Ctrl also binds
+  `NoAction` in the `Terminal` context, so a focused terminal keeps typing keys, whatever
+  the user binds.
+- **Reserved:** CALM's ten browser keys (`calm-native/src/browser.rs`) and Space without
+  Cmd, Ctrl or Alt (hold-to-pan, which ignores Shift). They are listed read-only in the tab,
+  with Enter-to-restart.
+- **Keys that never fire are errors:** Shift with a printable non-letter (GPUI reports the
+  shifted character), and `fn` with arrow, page, home, end, delete, insert and F keys (GPUI
+  clears `fn` on them). Named keys keep Shift, so `cmd-shift-backspace` is valid.
+- **Fit All default is `cmd-)`.** The old `cmd-shift-0` binding never matched: a test on the
+  pre-change code showed a `cmd-shift-0` binding does not match the `cmd-)` keystroke GPUI
+  reports for Cmd+Shift+0 on a US layout, and no binding matched `cmd-)`
+  (`fit_all_matches_the_press_gpui_reports_for_cmd_shift_0`).
+- **Symbols use Apple's modifier order** `⌃⌥⇧⌘`, so Cmd+Shift+Backspace shows as `⇧⌘⌫`.
+  The close prompt names its keys in words (`Close? enter / esc`), as the user chose.
 
 ## TUI apps are terminals (2026-11-02, `feat/tui-extends-terminal`)
 

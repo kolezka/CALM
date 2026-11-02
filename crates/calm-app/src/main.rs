@@ -691,6 +691,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             smoke_settings_dispatch(&view, window, cx),
         )
         .await;
+        smoke_step(&mut run, "keybindings", smoke_keybindings(&view, window, cx)).await;
         smoke_step(&mut run, "github_api", smoke_github_api(&view, window, cx)).await;
         smoke_step(&mut run, "plugin_menus", smoke_plugin_menus(&view, window, cx)).await;
         smoke_step(&mut run, "panel_overrides", async {
@@ -2265,6 +2266,96 @@ async fn smoke_settings_dispatch(
     });
     activated.unwrap_or_else(|err| smoke_fail(&format!("settings dispatch: {err:#}")));
     smoke_settings_from_canvas_menu(view, window, cx).await;
+}
+
+/// A key binding from a settings file reaches GPUI's keymap, a reset brings the default
+/// back, and hiding Settings stops a recorder. No key events are sent.
+async fn smoke_keybindings(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    use calm_core::keymap::KeyOverrides;
+    let dir = SMOKE_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|dir| dir.path().to_path_buf());
+    let Some(dir) = dir else {
+        smoke_fail("keybindings: no smoke dir");
+    };
+    let path = dir.join("keys.json");
+    std::fs::write(
+        &path,
+        r#"{"version": 2, "keybindings": {"panel.delete": "cmd-d"}}"#,
+    )
+    .unwrap_or_else(|err| smoke_fail(&format!("keybindings: write {err}")));
+    let loaded = calm_core::settings::read_settings_from(&path)
+        .unwrap_or_else(|err| smoke_fail(&format!("keybindings: read {err}")));
+    let set_keys = |keys: KeyOverrides, cx: &mut gpui::AsyncApp| {
+        cx.update(|cx| {
+            window.update(cx, |_, window, cx| {
+                view.update(cx, |view, cx| {
+                    view.update_settings(|s| s.keybindings = keys, window, cx);
+                })
+            })
+        })
+        .unwrap_or_else(|err| smoke_fail(&format!("keybindings: update {err:#}")));
+    };
+    let delete_matches = |key: &str, cx: &mut gpui::AsyncApp| -> (usize, bool) {
+        let typed = gpui::Keystroke::parse(key).unwrap_or_else(|_| smoke_fail("keybindings: key"));
+        cx.update(|cx| {
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
+            let bindings: Vec<_> = keymap
+                .bindings_for_action(&canvas_view::DeletePanel)
+                .collect();
+            let hit = bindings
+                .iter()
+                .any(|b| b.match_keystrokes(std::slice::from_ref(&typed)) == Some(false));
+            (bindings.len(), hit)
+        })
+    };
+    set_keys(loaded.keybindings, cx);
+    // `update_settings` rebuilds the keymap in a deferred update.
+    cx.background_executor()
+        .timer(Duration::from_millis(100))
+        .await;
+    let (count, new_key) = delete_matches("cmd-d", cx);
+    let overridden = count == 1 && new_key;
+    let old_gone = !delete_matches("cmd-shift-backspace", cx).1;
+    set_keys(KeyOverrides::new(), cx);
+    cx.background_executor()
+        .timer(Duration::from_millis(100))
+        .await;
+    let restored = delete_matches("cmd-shift-backspace", cx).1;
+    let stops = cx.update(|cx| -> gpui::Result<bool> {
+        window.update(cx, |_, window, cx| {
+            view.update(cx, |view, cx| view.open_settings(window, cx));
+        })?;
+        let view = view.read(cx);
+        let Some(settings_window) = &view.settings_window else {
+            return Ok(false);
+        };
+        let started = settings_window.start_recording("keys.panel.delete");
+        settings_window.hide();
+        Ok(started && settings_window.recording_field().is_none())
+    });
+    let recorder_stops =
+        stops.unwrap_or_else(|err| smoke_fail(&format!("keybindings: settings {err:#}")));
+    println!(
+        "smoke: keybindings override={overridden} old_gone={old_gone} restored={restored} recorder_stops={recorder_stops}"
+    );
+    for (ok, name) in [
+        (overridden, "override"),
+        (old_gone, "old_gone"),
+        (restored, "restored"),
+        (recorder_stops, "recorder_stops"),
+    ] {
+        if !ok {
+            smoke_fail(&format!("keybindings: {name} is false"));
+        }
+    }
 }
 
 /// Picks "Settings…" in the canvas context menu the way a click does and waits for the

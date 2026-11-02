@@ -78,7 +78,9 @@ Right-click opens Add, Settings and panel actions, plus plugin menu items; Setti
 panel menu opens that panel's own Settings window. Cmd+drag on a terminal's or page's content moves the panel, a Cmd+click still
 reaches it, and Cmd+right-click there opens the panel menu (`canvas.move_modifier`). Space+drag or
 middle-drag pans. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom. `cmd-shift-h`
-centers the world origin, `cmd-shift-0` fits all panels (both also in the View menu).
+centers the world origin, Cmd+Shift+0 (stored as `cmd-)`, which GPUI reports for it) fits all panels (both also in the View menu).
+Every key binding is a setting: `keybindings` in `settings.json` holds overrides, the Keys
+tab of Settings records a key per action; CALM's browser keys and Enter-to-restart are fixed.
 `cmd-shift-backspace` deletes the focused panel (a live one confirms first, as with the menu's Delete).
 Cmd+Shift+, opens the focused panel's Settings window (written `cmd-<` in code, which is how GPUI reports that press).
 `cmd-ctrl-f` fullscreen, `cmd-shift-f` stats (FPS, CPU, memory; items in `developer.stats`). A click on empty canvas clears panel focus
