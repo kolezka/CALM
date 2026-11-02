@@ -106,8 +106,9 @@ Not tested: what the 2 s previews of distant terminals look like with transparen
 - **Color wells.** `rgb_from_ns` (`settings_window.rs`, `BindingKind::Color`) keeps RGB
   only. Terminal colors are `#rrggbb` by design ("Ghostty colors have no alpha",
   `terminal_profile.rs`). Terminal color wells should not show the opacity slider.
-  `NSColorPanel` is shared by the app, so this has to be set when a terminal color well
-  becomes active, not once.
+  The same `rgb_from_ns` serves every CALM color well, chrome included, so no well honors
+  alpha today. Plan-time call: hide the opacity slider app-wide
+  (`NSColor::setIgnoresAlpha`), and bring it back per well when chrome alpha is wired.
 
 ## Decided by the user
 
@@ -152,8 +153,8 @@ in `.ai/status.md` as a known gap.
   terminal if smoke can read it back from the clip view (`alphaValue`).
 - By eye, by the user (agents do not drive the GUI): canvas through a terminal with
   Ghostty `background-opacity = 0.5`; a back terminal through a front one; the fade at
-  20%, 70% and 100%; title bar solid; preview of a faded terminal; color wells for terminal
-  colors without an opacity slider, chrome color wells unchanged.
+  20%, 70% and 100%; title bar solid; preview of a faded terminal; no CALM color well shows
+  an opacity slider.
 
 ## Left to the builder
 
