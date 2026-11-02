@@ -35,6 +35,7 @@ objc2-foundation = { workspace = true, default-features = false, features = [
 objc2-app-kit = { workspace = true, default-features = false, features = [
     "std",
     "NSActionCell",
+    "NSAlert",
     "block2",
     "NSApplication",
     "NSButton",

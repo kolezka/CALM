@@ -7,6 +7,9 @@ pub const DEFAULT_TERMINAL_SIZE: Size = Size::new(640.0, 400.0);
 pub const DEFAULT_BROWSER_SIZE: Size = Size::new(800.0, 600.0);
 
 pub const ADD_TERMINAL: &str = "add.terminal";
+/// Asks for a command, then opens a terminal running it.
+pub const RUN_COMMAND: &str = "add.run_command";
+pub const RUN_COMMAND_LABEL: &str = "Run Command\u{2026}";
 pub const ADD_BROWSER: &str = "add.browser";
 pub const ADD_PLUGIN_PREFIX: &str = "add.plugin.";
 pub const ADD_TUI_PREFIX: &str = "add.tui.";
@@ -54,7 +57,10 @@ pub enum MenuItem {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum MenuCommand {
-    AddPanel { kind: PanelKind, rect: Rect },
+    AddPanel {
+        kind: PanelKind,
+        rect: Rect,
+    },
     Minimize,
     ZoomToFit,
     BringToFront,
@@ -64,6 +70,10 @@ pub enum MenuCommand {
     Restart,
     OpenSettings,
     PanelSettings,
+    /// Ask for a command, then open a terminal running it in `rect`.
+    RunCommand {
+        rect: Rect,
+    },
 }
 
 fn action(id: &str, label: &str) -> MenuItem {
@@ -93,6 +103,7 @@ pub fn canvas_menu(
             label: NATIVE_SECTION_LABEL.to_string(),
         },
         action(ADD_TERMINAL, "Terminal"),
+        action(RUN_COMMAND, RUN_COMMAND_LABEL),
         action(ADD_BROWSER, "Browser"),
         MenuItem::Separator,
         MenuItem::Header {
@@ -217,6 +228,12 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
             menu_action(ADD_TERMINAL, world, plugin_sizes)
         }
         ADD_TERMINAL => add(PanelKind::terminal(), DEFAULT_TERMINAL_SIZE),
+        RUN_COMMAND => Some(MenuCommand::RunCommand {
+            rect: Rect {
+                origin: world,
+                size: DEFAULT_TERMINAL_SIZE,
+            },
+        }),
         ADD_BROWSER => add(
             PanelKind::Browser {
                 url: "about:blank".to_string(),
@@ -322,6 +339,7 @@ mod tests {
                         label: "Native".to_string(),
                     },
                     action("add.terminal", "Terminal"),
+                    action("add.run_command", "Run Command\u{2026}"),
                     action("add.browser", "Browser"),
                     MenuItem::Separator,
                     MenuItem::Header {
@@ -346,6 +364,7 @@ mod tests {
                         label: "Native".to_string(),
                     },
                     action("add.terminal", "Terminal"),
+                    action("add.run_command", "Run Command\u{2026}"),
                     action("add.browser", "Browser"),
                     MenuItem::Separator,
                     MenuItem::Header {
@@ -367,6 +386,51 @@ mod tests {
             Some(&MenuItem::Submenu {
                 label: "Searched Folders".to_string(),
                 items: vec![disabled("(no folders)")],
+            })
+        );
+    }
+
+    fn add_items(menu: Vec<MenuItem>) -> Vec<MenuItem> {
+        match menu.into_iter().next() {
+            Some(MenuItem::Submenu { items, .. }) => items,
+            other => panic!("no Add submenu: {other:?}"),
+        }
+    }
+
+    fn position_of(items: &[MenuItem], wanted: &str) -> Option<usize> {
+        items
+            .iter()
+            .position(|item| matches!(item, MenuItem::Action { id, .. } if id == wanted))
+    }
+
+    #[test]
+    fn run_command_sits_right_after_terminal_in_add() {
+        let items = add_items(canvas_menu(&[], &[], &[]));
+        let terminal = position_of(&items, "add.terminal").unwrap();
+        assert_eq!(
+            items.get(terminal + 1),
+            Some(&action("add.run_command", "Run Command\u{2026}"))
+        );
+        // Profiles stay next to Terminal; Run Command follows them.
+        let profiles = [("neon".to_string(), "Neon".to_string())];
+        let items = add_items(with_terminal_profiles(
+            canvas_menu(&[], &[], &[]),
+            &profiles,
+        ));
+        assert!(matches!(
+            &items[terminal + 1],
+            MenuItem::Submenu { label, .. } if label == "Terminal Profiles"
+        ));
+        assert_eq!(position_of(&items, "add.run_command"), Some(terminal + 2));
+    }
+
+    #[test]
+    fn run_command_asks_for_a_command_at_the_click() {
+        let world = Point::new(5.0, 6.0);
+        assert_eq!(
+            menu_action("add.run_command", world, &[]),
+            Some(MenuCommand::RunCommand {
+                rect: Rect::new(5.0, 6.0, 640.0, 400.0)
             })
         );
     }
@@ -543,7 +607,7 @@ mod tests {
         };
         // One "Plugins" section: TUI apps, then web plugins, no divider between them.
         assert_eq!(
-            &items[3..],
+            &items[4..],
             &[
                 MenuItem::Separator,
                 MenuItem::Header {

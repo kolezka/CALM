@@ -70,6 +70,11 @@ use crate::tui_host::{self, CommandRun};
 
 mod plugin_menus;
 
+const RUN_COMMAND_TITLE: &str = "Run Command";
+const RUN_COMMAND_NOTE: &str =
+    "The command is saved in the session file. Do not put secrets in it.";
+const RUN_COMMAND_PLACEHOLDER: &str = "htop";
+
 actions!(
     calm,
     [
@@ -903,6 +908,10 @@ impl CanvasView {
                 let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
                 vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)]
             }
+            (Some(MenuCommand::RunCommand { rect }), MenuTarget::Canvas { .. }) => {
+                self.prompt_run_command(rect, window, cx);
+                return;
+            }
             // The same action as `cmd-,` and the menu bar, so one handler opens Settings.
             (Some(MenuCommand::OpenSettings), MenuTarget::Canvas { .. }) => {
                 window.dispatch_action(Box::new(crate::settings_menu::OpenSettings), cx);
@@ -962,6 +971,53 @@ impl CanvasView {
             _ => return,
         };
         self.apply_effects(effects, window, cx);
+    }
+
+    /// Asks for a command in a native prompt, then opens a terminal running it in `rect`.
+    /// The prompt is modal, so it runs in a task outside this update, like the menus.
+    fn prompt_run_command(&mut self, rect: Rect, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            let answer = calm_native::prompt_text(
+                RUN_COMMAND_TITLE,
+                "",
+                RUN_COMMAND_NOTE,
+                RUN_COMMAND_PLACEHOLDER,
+            );
+            let command = match answer {
+                Ok(Some(command)) => command,
+                Ok(None) => return,
+                Err(err) => {
+                    eprintln!("calm: run command prompt unavailable: {err}");
+                    return;
+                }
+            };
+            this.update_in(cx, |view, window, cx| {
+                view.add_command_terminal(command, rect, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Adds a terminal running `command` where Add puts new terminals, and starts it. The
+    /// Run Command prompt ends here; the smoke calls it directly.
+    pub fn add_command_terminal(
+        &mut self,
+        command: String,
+        mut rect: Rect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<PanelId> {
+        let command = calm_native::prompt_value(&command)?;
+        rect.size = self.settings.settings.panels.default_terminal_size();
+        let (id, kind) = self.add_new_panel(PanelKind::command_terminal(command), rect);
+        let rect = self.scene.get(id).map_or(rect, |panel| panel.rect);
+        self.apply_effects(
+            vec![Effect::CreatePanel { kind, rect }, Effect::FocusPanel(id)],
+            window,
+            cx,
+        );
+        Some(id)
     }
 
     fn panel_created(
