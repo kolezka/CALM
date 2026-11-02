@@ -266,6 +266,11 @@ Open questions: `.ai/open-questions.md`.
   profile. Policy is unit tested (`calm_core::gesture`, `calm-app` `content_move`); the
   AppKit monitor is tested on its state machine only.
 - No PR yet: a Linux port plan.
+- `feat/arrow-keys`, no PR yet: arrows pan the canvas while it has the keyboard, Shift+arrow
+  pans 5x (`canvas.arrow_pan_step`, screen points, default 48); Cmd+Option+arrow moves the
+  focused panel without snapping, Shift for 5x (`canvas.arrow_move_step`, world units,
+  default 8). A focused terminal keeps plain and Shift arrows; panel moves still apply.
+  Core logic and bindings are unit tested; key delivery by hand is unverified.
 - `feat/tui-extends-terminal`, PR #63, not merged: a TUI app is a terminal with an app
   attached (`PanelKind::app_terminal`, `.app()`), still saved as `type=tui`. One spawn,
   refresh, recolor and exit path for shells, typed commands and apps. App panels get the
@@ -339,6 +344,9 @@ Open questions: `.ai/open-questions.md`.
 - Panel menu: each action by hand.
 - Chrome: the look, hover buttons over a live native view.
 - Camera jumps: key delivery with a terminal focused, the View menu shortcuts.
+- Arrow keys (`feat/arrow-keys`): pan with no panel focused, Cmd+Option+arrow with a
+  terminal, a browser and a plugin page focused, and that plain arrows reach a focused
+  browser page instead of panning.
 - Status pill: blur over terminals, corners, light and dark mode, window drag from the top strip.
 - Browser panels: typing in the bar at zoom 0.5 and 2, links, `target=_blank`, shortcuts,
   scroll and pinch over a page.
