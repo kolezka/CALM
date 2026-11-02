@@ -15,7 +15,8 @@ Teammates stay in Claude Code's default in-process mode. Real per-teammate termi
 `it2` stand-in are an optional last phase with its own plan, decided after phase D is in use.
 
 **Tech Stack:** Rust 2024 (`calm-core`, `calm-app`, new `calm-mcp`), std `UnixListener`, serde
-JSON, Claude Code plugin with a TypeScript mod, Preact TSX web plugin built with bun.
+JSON, Claude Code plugin with a TypeScript mod, a plain HTML first-party page (like
+`plugins/calm-keys`) tested under bun.
 
 **Spec:** `docs/superpowers/specs/2026-10-31-claude-code-mods-integration.md` (research, PoC,
 security section) and `.ai/decisions.md` entries "External control socket approved" and
@@ -25,7 +26,9 @@ security section) and `.ai/decisions.md` entries "External control socket approv
 **Branches:** one per phase, each from `origin/main` in `.worktrees/<branch>`:
 `feat/control-socket` (A), `feat/calm-mcp` (B), `feat/claude-code-plugin` (C),
 `feat/agent-board` (D), `feat/claude-code-tui` (E). Each phase is one PR with a cross-family
-review before merge. Phase A depends on PR #69 (env scrub) being merged.
+review before merge. Written against `origin/main` at `3a6546a`; PR #69 (env scrub) is merged
+as `18f72b6`, so phase A has no open dependency. Line numbers below are for `3a6546a`; find
+code by name if they moved.
 
 ## Global Constraints
 
@@ -49,7 +52,7 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
     code), `process.exec`, and any terminal input. Never allow one without the others.
   - **Plugin-only** (refused externally): every other `BRIDGE_METHODS` entry, including
     `github.api`, `storage.*`, `settings.*`, `openExternal`, `panel.setTitle`,
-    `panel.minimize`, `panel.close`, `log`.
+    `panel.minimize`, `panel.close`, `keys.list`, `log`.
 - Wire format of `POST /v1/call`: request `{ "id": u64, "method": string, "params": any }`;
   answer `{ "id": u64, "ok": true, "result": any }` or
   `{ "id": u64, "ok": false, "error": { "code": string, "message": string } }` (the existing
@@ -104,8 +107,10 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 **Files:**
 - Create: `crates/calm-core/src/control.rs` (register in `lib.rs`)
 - Modify: `crates/calm-core/src/settings.rs` (new `control: ControlSettings` and
-  `agents: AgentSettings` sections, serde default for files without them)
-- Modify: `crates/calm-core/src/settings_form.rs` (rows in a new "Integrations" tab)
+  `agents: AgentSettings` fields on `Settings`, next to `keybindings`, serde default for files
+  without them)
+- Modify: `crates/calm-core/src/settings_form.rs` (a new `section("Integrations", ...)` pushed
+  in `settings_form()`, like the existing "Background" and "Keys" sections)
 
 **Interfaces:**
 - Produces:
@@ -128,7 +133,7 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 
 - [ ] **Step 1: Write failing tests** in `control.rs`:
   `socket_path_rejects_104_bytes` (a home making the path exactly 104 bytes gives `TooLong`,
-  103 gives `Ok`), `access_matrix` (table test: each of the 17 `BRIDGE_METHODS` plus
+  103 gives `Ok`), `access_matrix` (table test: each of the 18 `BRIDGE_METHODS` on `3a6546a` (including `keys.list`) plus
   `panel.setStatus`, `events.poll`, `events.publish`, and `canvas.createPanel` with kinds
   `browser`, `terminal`, `terminal`+`command`, `tui`, `plugin`, each against the four
   combinations of `allow_open`/`allow_exec`; expected values are the Global Constraints
@@ -187,13 +192,13 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 
 **Files:**
 - Modify: `crates/calm-app/src/canvas_view.rs` (drain `ControlCall`s near the plugin call site
-  at `plugin_host::route`, about line 1644 on `main` at `18f72b6`). The access check from A1
+  at `plugin_host::route`, about line 1730 on `3a6546a`). The access check from A1
   runs before `route`, because `route` sends storage calls to background services first.
 - Modify: `crates/calm-app/src/plugin_host.rs` (`Origin` on `HostContext`)
 
 **Interfaces:**
 - Produces: `pub enum Origin { Plugin, External }` and field `pub origin: Origin` on
-  `HostContext`. `dispatch` answers `settings.*` and `storage.*` with `wrong_kind` for
+  `HostContext`, next to the `keybindings` field added by #62. `dispatch` answers `settings.*` and `storage.*` with `wrong_kind` for
   `External`. The external caller is the panel from `X-Calm-Panel`; any panel kind may call.
 
 - [ ] **Step 1: Failing tests** in `plugin_host.rs`: `external_list_panels_from_terminal`,
@@ -221,7 +226,9 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
   `restored_terminal_gets_its_new_panel_id`.
 - [ ] **Steps 2 to 4:** Implement; `cargo test -p calm-app` passes.
 - [ ] **Step 5:** Smoke step `control_socket`, proving the env reaches real children:
-  open a typed-command terminal running `/bin/sh -c 'env > "$1"' sh <smoke dir>/env-cmd.txt`,
+  open a typed-command terminal running `/bin/sh -c 'env > "$1"' sh <smoke dir>/env-cmd.txt`
+  (a quick command; since #76 the status wrapper keeps it past Ghostty's 250 ms
+  abnormal-exit check),
   and an app from a smoke-only TUI manifest in the smoke plugin dir with the same command
   writing `env-app.txt`. Wait for both files, decode them, and require in each
   `CALM_PANEL_ID` equal to that panel's id, `CALM_SOCKET` and `CALM_TOKEN_FILE` present, and
@@ -286,7 +293,9 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 - [ ] **Steps 2 to 4:** Implement; a held poll is a stored waiter answered from the UI thread
   when an event is pushed, or by a background-executor timer at `timeoutMs`. The UI thread
   never sleeps.
-- [ ] **Step 5:** Update `.ai/status.md` (socket, env, status, events now wired) and
+- [ ] **Step 5:** Update `.ai/status.md` (socket, env, status, events now wired), the
+  "Not wired yet" line in `CLAUDE.md` (it says "all 18 bridge methods" and "plugin events
+  other than `command`"; give the new count and drop the events claim), and
   `docs/plugins.md` (new methods, allowlist, settings). Commit `feat: event log over the socket`.
 
 ---
@@ -317,7 +326,8 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 - Create: `crates/calm-mcp/` (`Cargo.toml`, `src/main.rs`, `src/protocol.rs`,
   `src/client.rs`, `src/tools.rs`); add to the workspace. No dependency on other CALM crates:
   it parses the wire format from Global Constraints with `serde_json`.
-- Modify: `scripts/bundle-macos.sh`: build with `cargo build --release -p calm-app -p calm-mcp`
+- Modify: `scripts/bundle-macos.sh`: its line `(cd "$repo_root" && cargo build --release -p calm-app)`
+  becomes `cargo build --release -p calm-app -p calm-mcp`
   and copy `calm-mcp` to `Contents/MacOS/calm-mcp`. In dev, `cargo build -p calm-mcp` puts it
   in `target/debug` next to `calm-app`, where A4 finds it; `docs/dev-setup.md` says so.
 - Outside CALM the plugin's fallback is `calm-mcp` on `PATH`. If it is not installed, Claude
@@ -409,7 +419,12 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
 ### Task D1: `agent-board` web plugin
 
 **Files:**
-- Create: `plugins/agent-board/` (manifest, Preact TSX, bun build like `github-prs`)
+- Create: `plugins/agent-board/calm-plugin.json` (web plugin, `"addMenu": false` so it is
+  only opened by CALM, see D2) and `plugins/agent-board/index.html`: a plain HTML page with
+  inline script, no build step, following `plugins/calm-keys`.
+- Create: `crates/calm-plugins/tests/agent_board_page.js` and a test in
+  `crates/calm-plugins/tests/first_party_pages.rs` that runs it with `run_page_test`, as
+  `calm_keys_page.js` does.
 
 **Interfaces:**
 - Consumes: `calm.events.on("external")` filtered to `topic === "agent"`,
@@ -420,10 +435,11 @@ review before merge. Phase A depends on PR #69 (env scrub) being merged.
   `agent.message { lead, session, to, text }`. Cards of an older `session` for the same lead
   are dropped when a newer one appears. Clicking a card focuses the lead panel.
 
-- [ ] Tests (bun): `cards_group_by_lead`, `waiting_sorts_first`, `escapes_names`
+- [ ] Tests (in `agent_board_page.js`, run under bun): `cards_group_by_lead`, `waiting_sorts_first`, `escapes_names`
   (name `<img onerror>` renders as text), `late_open_shows_existing_agents` (replay returns two
   agents, no live event: two cards), `new_session_replaces_old_cards`,
-  `message_carries_lead_and_session`. `gmake plugins-check` passes. Commit
+  `message_carries_lead_and_session`. `cargo test -p calm-plugins --test first_party_pages`
+  passes. Commit
   `feat: agent board plugin`.
 
 ### Task D2: open the board beside the lead
