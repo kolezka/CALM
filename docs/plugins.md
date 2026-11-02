@@ -499,7 +499,10 @@ does not parse makes every call reject and is left as it is, never replaced by `
   manifest `defaultSize` for a plugin or TUI app.
 - The size is held within the panel's resize limits, as a drag is. A plugin with
   `"resizable": false` rejects a `rect` of any other size with `invalid_params`.
-- `command` is a shell line, as in a terminal profile. `cwd` must be an absolute path to a
+- `command` is a shell line, as in a terminal profile. It runs like Add > Run Command…:
+  in your login shell, with an exit line such as `[calm] htop exited with code 0`, a restart
+  that follows `terminal.command_restart`, and `{name}` as the default title. It is saved in
+  the session file, so do not put secrets in it. `cwd` must be an absolute path to a
   directory. `url` goes through the address bar rules, so `example.com` opens
   `https://example.com`.
 - `focus` defaults to `true`, as for a panel from the Add menu.
