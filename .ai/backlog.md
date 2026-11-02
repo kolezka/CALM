@@ -1,33 +1,11 @@
 # Backlog
 
 Agreed follow-ups with remaining unassigned work. Checked against `origin/main` at
-`188d7a5` (PRs #1 to #41 merged) on 2026-11-01. Items from open PRs say so. Move an item
+`d9e4edb` (PRs #1 to #76 merged) on 2026-11-02. Items from open PRs say so. Item numbers
+stay fixed; a closed item moves to "Done". Move an item
 to `status.md` under "In progress" once all of its remaining work has an owner or branch.
 
 ## Open items
-
-### 1. MIT license
-
-CALM has no license file, so the code is not formally open. Add a `LICENSE` file (MIT),
-`license = "MIT"` in every `Cargo.toml` and `package.json`, and a README section.
-
-- State: not started. No `LICENSE` file on `main`, no `license` field in any `Cargo.toml`,
-  no license section in `README.md`. One agent failed to start; a second attempt was declined.
-- Blocker: none known. Keep the MIT notice at the top of
-  `crates/calm-app/src/terminal/adapter.rs`, which is adapted from gpui-libghostty 0.3.1.
-- Origin: user request in the prototype session.
-
-### 2. Per-panel overrides (rename, icon, accent)
-
-Let the user rename a panel, change its icon and set its accent color from the panel
-right-click menu, stored on the panel. Today only settings and manifests choose these.
-
-- State: storage done in PR #31 (layout v2 `overrides`: `title`, `icon`, `accent_color`).
-  Not applied in the chrome and no menu items (`status.md`, "Not wired yet").
-- Blocker: needs a native text input (an `NSAlert` with a text field) and agreed ownership
-  with the plugin API v2 lane, whose spec has `panels.setAppearance` and `panels.setTitle`.
-- Origin: Task 12 of `docs/superpowers/plans/2026-10-31-canvas-persistence.md`. Deferred by
-  PR #21 (TUI customization) and PR #24 (terminal profiles).
 
 ### 3. Text field control in the Settings window
 
@@ -36,7 +14,8 @@ The native Settings window has checkboxes, sliders, colors, choices, buttons and
 So terminal profiles (add, duplicate, rename, delete), title templates, icons and launch
 commands can only be edited in `settings.json`.
 
-- State: not built. `settings_window.rs` uses `NSTextField` only for labels and notes.
+- State: half built. `Control::Text` exists since #57 and the panel Settings form uses it
+  (title); the global form has no text field yet.
 - Blocker: none known. The same control would serve `plugins.builtin` and the session
   settings.
 - Origin: PR #24 follow-up.
@@ -94,7 +73,7 @@ Seen several times on 2026-10-31:
 - Fix direction for the rest: make their checks independent of window visibility, or bring
   the window to the front before checking paint-dependent state. Until then treat them as
   known flakes (`.ai/conventions.md`, "Smoke flakes").
-- The `tui-exit` flake is fixed on `feat/tui-extends-terminal`: a terminal's tick loop
+- The `tui-exit` flake is fixed by #63: a terminal's tick loop
   starts at spawn, not first paint. The unconfirmed "second exit not reported after restart"
   likely had the same cause.
 - Origin: smoke runs during the prototype merges (`status.md`, "Known small issues").
@@ -109,8 +88,7 @@ manual test bed. Ideas: Scratchpad (storage, settings, menus), Repo Pulse (`gith
   `feat/example-plugins`, holds one unmerged commit (`4985f5f`, adds the TUI panel kind and
   a null storage miss to `calm.d.ts` and `docs/plugins.md`). No plugin code. That commit
   is worth landing on its own, as a small types fix.
-- Former blocker, cleared on `feat/plugin-bridge-control`: all 17 bridge methods are
-  served there. Events still have no senders except `command`.
+- Former blocker, cleared by #44: all 17 bridge methods are served. Events still have no senders except `command`.
 - Origin: example plugins brief in the prototype session.
 
 ### 8. Show plugin capabilities to the user
@@ -137,9 +115,8 @@ that removes only the call site and fails the test was never captured.
 
 Done: phase 1 (PR #35) and the pure phase 6 `Coalescer` (PR #34, not wired). Partly done
 outside the phase plan: storage, `github.api` and `openExternal` from phase 7 (PR #23),
-`contributes.menus` from phase 8 (PR #28). Open: 2 (request parsing), 3 (read-only host),
-4 (control), 5 (close), 6 wiring (subscribe, host timer), the rest of 7 (bus,
-`process.exec`), the rest of 8 (commands, key bindings, `calm.menus.register`), 9 (SDK,
+`contributes.menus` from phase 8 (PR #28), `process.exec` from phase 7 (PR #44). Open: 2 (request parsing), 3 (read-only host),
+4 (control), 5 (close), 6 wiring (subscribe, host timer), the rest of 7 (bus), the rest of 8 (commands, key bindings, `calm.menus.register`), 9 (SDK,
 docs, examples), 10 (Ghostty shim patch), 11 (external control channel), 12 (native
 browser API), 13 (plugin RPC), 14 (plugin backend), 15 (background pages), 16 (layouts
 and session, waits on the persistence plan).
@@ -196,15 +173,6 @@ Since PR #41, `ask` restores like `on` and says so in the status pill and on std
 - Blocker: persistence plan Task 7.
 - Origin: PR #41.
 
-### 16. Docs drift after #41
-
-`README.md` and `CLAUDE.md` were fixed by #41. `.ai/system.md` (Product section) and
-`docs/architecture.md` (end) still say a launch starts an empty canvas and that autosave
-and restore are not active.
-
-- State: not started.
-- Origin: lead handoff, 2026-11-01.
-
 ### 17. A covered terminal can take focus from a click
 
 A press on the part of a terminal that a panel in front covers is ignored by the terminal
@@ -239,6 +207,13 @@ move with no button held, but cannot send the missing release.
 - Smoke diagnostics for the stats flake (item 6): PR #37 splits sampler failure from the
   pill stall. The flake itself stays open.
 - Per-panel override storage (item 2): PR #31.
+- Per-panel overrides (item 2): PR #57 applies title, icon, accent and more in the chrome,
+  set from Settings… in the panel menu (a per-panel Settings window with a text field).
+- License (item 1): PR #71 chose a proprietary `LICENSE` instead of MIT, with the plugin SDK
+  and `templates/` under MIT and `THIRD_PARTY_NOTICES` (#71, #72). The MIT notice in
+  `crates/calm-app/src/terminal/adapter.rs` is kept (verified on `d9e4edb`).
+- Docs drift after #41 (item 16): fixed in `.ai/system.md` and `docs/architecture.md` by the
+  2026-11-02 `.ai` refresh.
 
 ## Waiting on a dependency
 

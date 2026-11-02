@@ -9,9 +9,9 @@ native children.
 
 - Many terminals at once (5, 10, 20), each any size, all alive while panned or zoomed.
 - Performance matters. Distant or tiny panels become previews instead of live views.
-- Processes do not need to survive app quit. Today a launch starts an empty canvas; the
-  persistence plan restores the arrangement with fresh processes. Its storage primitives
-  are merged (#36); autosave and restore are not active.
+- Processes do not need to survive app quit. Since #41 a launch restores the last session
+  with fresh processes and autosaves it. `--no-restore` and `session.restore_on_launch`
+  `off` start empty; `ask` has no dialog yet and restores with a notice.
 - Plugins are explicitly installed, trusted code. No sandbox.
 - Customization first: look and behavior come from settings and manifest fields.
 
@@ -38,6 +38,10 @@ calm-plugins   manifest discovery, TUI manifests, menu contributions, API v2 err
 calm-app       GPUI binary: CanvasView, hosts per panel kind, plugin services, menus,
                smoke gate
 ```
+
+Outside the crates, `web/` is the product site: a static Astro site (`index` and `plugins`
+pages), built by `web/Dockerfile` and hosted on Coolify at https://calm.raqz.link, per
+`web/README.md`.
 
 ### calm-core
 

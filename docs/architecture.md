@@ -129,12 +129,13 @@ process still asks first. An unknown method rejects with `unknown_method`. Every
 
 Settings live in one `settings.json`, written privately through a temp file and rename.
 `calm-core::layout` holds the layout v2 format and the session storage primitives (durable
-writes, backup rotation, url scrubbing). The app does not call them yet: there is no
-autosave and no restore, and a launch starts an empty canvas.
+writes, backup rotation, url scrubbing). Since #41 a launch restores the last session from
+`session.json` and autosaves it. `--no-restore` and `session.restore_on_launch` `off` start
+empty; `ask` has no dialog yet and restores with a notice.
 
 ## Not built
 
-Session autosave and restore, layout save and load, `--layout`, `--bench`, most of the
+Layout save (`--layout NAME` only opens), the `ask` restore dialog, `--bench`, most of the
 plugin API v2 surface (phase 1 and the coalescer core are built) and the Ghostty shim
 patch. See `.ai/status.md`.
 
