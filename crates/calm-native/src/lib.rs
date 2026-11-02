@@ -10,6 +10,7 @@ pub mod child;
 pub mod content_gesture;
 pub mod cursor_guard;
 pub mod host_env;
+pub mod markdown;
 pub mod menu;
 pub mod process_stats;
 pub mod prompt;
@@ -25,6 +26,7 @@ pub use child::{
 pub use content_gesture::{
     ContentDecision, ContentEvent, ContentGestureMonitor, GestureMods, held_mods,
 };
+pub use markdown::MarkdownView;
 pub use menu::{ContextMenu, HostView, show_context_menu};
 pub use process_stats::{ProcessSample, ProcessSampler};
 pub use prompt::{TextPrompt, alert, choose, confirm, prompt_text, prompt_value};

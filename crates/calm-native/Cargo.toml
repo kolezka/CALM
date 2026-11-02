@@ -79,6 +79,8 @@ objc2-app-kit = { workspace = true, default-features = false, features = [
     "NSView",
     "NSVisualEffectView",
     "NSWindow",
+    # Markdown links open in the default browser or mail app.
+    "NSWorkspace",
     "objc2-core-foundation",
     "objc2-quartz-core",
 ] }
