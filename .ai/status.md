@@ -413,9 +413,10 @@ Open questions: `.ai/open-questions.md`.
   `session.settings_save_ms` of quiet (default 400) and on window close or quit, and the
   keymap and menus rebuild only when key bindings or `grid.show` change. Per change 10 ms
   to 0.07 ms (`docs/benchmarks.md`). Opt-in smoke step `settings_perf`
-  (`CALM_SMOKE_ONLY=settings_perf`). Open: GPUI caps requested frames of the inactive
-  canvas at 33 ms, so the FPS readout reads about 25 fps while Settings is key; plain pan
-  frames are not capped. Real trackpad input with Settings open is not measured.
+  (`CALM_SMOKE_ONLY=settings_perf`). GPUI's 33 ms frame cap for an inactive window is
+  now a setting, `canvas.limit_inactive_fps`, default off (applies after restart); its
+  effect with Settings open is not yet checked in the GUI. Real trackpad input with
+  Settings open is not measured.
 - No PR yet: a Linux port plan.
 
 ## Not wired yet

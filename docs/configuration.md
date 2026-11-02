@@ -28,6 +28,11 @@ mid-save leaves the old file whole.
   panel focus, and the keyboard goes back to the canvas. Escape does the same when no
   terminal, page or address field holds the keyboard. Pans and zooms never drop focus.
   In the Settings window under Canvas and Snapping.
+- `limit_inactive_fps` (default `false`): while another window is active (the Settings
+  window, another app), the canvas window draws at most about 30 fps, except while input
+  arrives quickly. Off keeps the full frame rate there, at a small energy cost when CALM
+  sits in the background. Read when the canvas window opens, so a change applies after
+  restart. In the Settings window under Canvas and Snapping.
 
 ## Developer stats
 

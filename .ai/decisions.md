@@ -917,3 +917,8 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   about 4 µs and 2 µs per change, so a "what changed" filter would add stale-state risk
   for no gain. The keymap and menu rebuild (about 1.2 ms) is skipped unless key bindings or
   `grid.show` changed.
+- **The inactive-window frame cap is off by default (`canvas.limit_inactive_fps`).** GPUI
+  caps a non-active window at about 30 fps, which held the canvas near 25 fps while Settings
+  was key. Off keeps the canvas at full rate with Settings open; the cost is a little more
+  energy while CALM is in the background. GPUI reads it at window creation, so it applies
+  after restart.

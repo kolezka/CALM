@@ -2878,6 +2878,12 @@ fn main() {
                 appears_transparent: true,
                 traffic_light_position: None,
             }),
+            // GPUI's own default when on; None keeps full frame rate in the background.
+            inactive_frame_interval: settings
+                .settings
+                .canvas
+                .limit_inactive_fps
+                .then_some(Duration::from_micros(33_333)),
             ..Default::default()
         };
         let smoke = args.smoke;

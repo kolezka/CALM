@@ -412,6 +412,16 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                 ARROW_MOVE_STEP_RANGE,
                 0,
             ),
+            checkbox(
+                "canvas.limit_inactive_fps",
+                "Limit frame rate while another window is active",
+                settings.canvas.limit_inactive_fps,
+            ),
+            note(
+                "canvas.limit_inactive_fps_note",
+                "",
+                "About 30 fps. Applies after restart.".to_string(),
+            ),
             checkbox("snap.enabled", "Snap panels", snap.enabled),
             choice("snap.grid", "Snap grid", steps, selected),
             slider(
@@ -854,6 +864,10 @@ pub fn apply_field(
             settings.canvas.click_empty_clears_focus = on;
             changed
         }
+        ("canvas.limit_inactive_fps", FieldValue::Bool(on)) => {
+            settings.canvas.limit_inactive_fps = on;
+            changed
+        }
         ("canvas.arrow_pan_step", FieldValue::Number(_)) => {
             settings.canvas.arrow_pan_step =
                 number(ARROW_PAN_STEP_RANGE, 0).unwrap_or(DEFAULT_ARROW_PAN_STEP);
@@ -991,6 +1005,7 @@ pub fn apply_field(
             | "canvas.move_modifier"
             | "canvas.arrow_pan_step"
             | "canvas.arrow_move_step"
+            | "canvas.limit_inactive_fps"
             | "snap.enabled"
             | "snap.grid"
             | "snap.edge"
@@ -1709,6 +1724,32 @@ mod tests {
         assert!(apply_field(&mut settings, id, FieldValue::Index(6)).is_err());
         assert!(apply_field(&mut settings, id, FieldValue::Bool(true)).is_err());
         assert_eq!(settings.canvas.move_modifier, MoveModifier::CtrlAlt);
+    }
+
+    #[test]
+    fn inactive_fps_limit_checkbox_round_trips() {
+        let mut settings = Settings::default();
+        let form = settings_form(&settings, &FormContext::default());
+        let canvas = form
+            .iter()
+            .find(|s| s.title == "Canvas and Snapping")
+            .unwrap();
+        let id = "canvas.limit_inactive_fps";
+        let field = canvas.fields.iter().find(|f| f.id == id).unwrap();
+        assert_eq!(field.control, Control::Checkbox(false));
+        assert!(
+            canvas
+                .fields
+                .iter()
+                .any(|f| f.id == "canvas.limit_inactive_fps_note")
+        );
+        apply_field(&mut settings, id, FieldValue::Bool(true)).unwrap();
+        assert!(settings.canvas.limit_inactive_fps);
+        let form = settings_form(&settings, &FormContext::default());
+        let field = form.iter().flat_map(|s| &s.fields).find(|f| f.id == id);
+        assert_eq!(field.unwrap().control, Control::Checkbox(true));
+        assert!(apply_field(&mut settings, id, FieldValue::Index(0)).is_err());
+        assert!(settings.canvas.limit_inactive_fps);
     }
 
     #[test]

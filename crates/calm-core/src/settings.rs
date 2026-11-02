@@ -242,6 +242,8 @@ pub struct CanvasSettings {
     pub arrow_pan_step: f64,
     /// World units Cmd+Option+arrow moves the focused panel.
     pub arrow_move_step: f64,
+    /// Cap the canvas at about 30 fps while another window is active. Read at launch.
+    pub limit_inactive_fps: bool,
 }
 
 impl Default for CanvasSettings {
@@ -251,6 +253,7 @@ impl Default for CanvasSettings {
             move_modifier: MoveModifier::Cmd,
             arrow_pan_step: DEFAULT_ARROW_PAN_STEP,
             arrow_move_step: DEFAULT_ARROW_MOVE_STEP,
+            limit_inactive_fps: false,
         }
     }
 }
@@ -786,6 +789,7 @@ mod tests {
     fn custom_settings() -> Settings {
         let mut settings = Settings::default();
         settings.canvas.click_empty_clears_focus = false;
+        settings.canvas.limit_inactive_fps = true;
         settings.background.kind = BackgroundKind::Gradient;
         settings.background.gradient.kind = GradientKind::Radial;
         settings.background.gradient.stops.push(GradientStop {
@@ -933,6 +937,20 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Settings>(json).is_err(), "{json}");
         }
+    }
+
+    #[test]
+    fn inactive_fps_limit_defaults_off_and_loads() {
+        assert!(!Settings::default().canvas.limit_inactive_fps);
+        let old: Settings = serde_json::from_str(
+            r#"{ "version": 2, "canvas": { "click_empty_clears_focus": false } }"#,
+        )
+        .unwrap();
+        assert!(!old.canvas.limit_inactive_fps);
+        let set: Settings =
+            serde_json::from_str(r#"{ "version": 2, "canvas": { "limit_inactive_fps": true } }"#)
+                .unwrap();
+        assert!(set.canvas.limit_inactive_fps);
     }
 
     #[test]
@@ -1166,6 +1184,10 @@ mod tests {
             (
                 "click clears focus type",
                 r#"{"version": 2, "canvas": {"click_empty_clears_focus": "yes"}}"#,
+            ),
+            (
+                "inactive fps limit type",
+                r#"{"version": 2, "canvas": {"limit_inactive_fps": "yes"}}"#,
             ),
             (
                 "click clears focus number",
