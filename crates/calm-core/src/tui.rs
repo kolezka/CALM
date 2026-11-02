@@ -103,21 +103,27 @@ pub fn typed_command_spec(
     }
 }
 
-/// `command_name` for a command that is only env assignments.
+/// `command_name` when the command word is missing or not a plain name.
 pub const FALLBACK_COMMAND_NAME: &str = "command";
 
 /// What `{name}` and the exit line call a command: its first word without the folder.
-/// Leading `NAME=value` words are skipped, so a typed secret never shows.
+/// Leading words with `=` are skipped, and only a plain word is shown, so no part of
+/// a typed env value can leak.
 pub fn command_name(command: &str) -> String {
     if command.trim().is_empty() {
         return String::new();
     }
-    match shell_words(command)
+    let word = shell_words(command)
         .into_iter()
-        .find(|word| !is_assignment(word))
-    {
-        Some(first) => first.rsplit('/').next().unwrap_or(&first).to_string(),
-        None => FALLBACK_COMMAND_NAME.to_string(),
+        .find(|word| !word.contains('='))
+        .unwrap_or_default();
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '/');
+    if word.is_empty() || !word.chars().all(plain) {
+        return FALLBACK_COMMAND_NAME.to_string();
+    }
+    match word.rsplit('/').next() {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => FALLBACK_COMMAND_NAME.to_string(),
     }
 }
 
@@ -152,18 +158,6 @@ fn shell_words(command: &str) -> Vec<String> {
         words.push(word);
     }
     words
-}
-
-/// A shell assignment word: `NAME=value` with NAME like `[A-Za-z_][A-Za-z0-9_]*`.
-fn is_assignment(word: &str) -> bool {
-    let Some((name, _)) = word.split_once('=') else {
-        return false;
-    };
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// One POSIX shell word that stands for exactly `word`.
@@ -500,6 +494,19 @@ mod tests {
             "{stdout}"
         );
         assert!(!stdout.contains("calm-secret-value"), "{stdout}");
+
+        let mut leaks = Vec::new();
+        for command in [
+            "API_TOKEN+=SECRETVAL calm-no-such-command-xyz",
+            "API_TOKEN=$(printf SECRETVAL) calm-no-such-command-xyz",
+        ] {
+            let stdout = run(command);
+            assert_eq!(std::fs::read_to_string(status).unwrap(), "127\n");
+            if stdout.contains("SECRETVAL") {
+                leaks.push((command, stdout));
+            }
+        }
+        assert!(leaks.is_empty(), "{leaks:?}");
     }
 
     #[test]
@@ -516,9 +523,36 @@ mod tests {
         assert_eq!(command_name("A=1 B=2 /usr/bin/top"), "top");
         assert_eq!(command_name("A='x y' _b=\"1 2\" top"), "top");
         assert_eq!(command_name("FOO=bar"), "command");
-        // Not assignments: a bad name, or `=` only after the first word.
-        assert_eq!(command_name("1A=x htop"), "1A=x");
+        // Any leading word with `=` is skipped; `=` after the command is fine.
+        assert_eq!(command_name("1A=x htop"), "htop");
         assert_eq!(command_name("ls a=b"), "ls");
+    }
+
+    #[test]
+    fn command_name_never_shows_any_part_of_an_env_value() {
+        let leaks: Vec<_> = [
+            "API_TOKEN+=SECRET missing",
+            "\u{17b}ETON=SECRET missing",
+            "API_TOKEN=$(printf SECRET) missing",
+            "$(API_TOKEN=SECRET printf missing)",
+            "A=1 B=SECRET top",
+            "A='x SECRET' top",
+            "A=\"$(printf SECRET)\" top",
+            "A=`printf SECRET` top",
+            "A=SECRET;top",
+            "A=SECRET&&top",
+            "A[0]=SECRET top",
+            "typeset A=SECRET; top",
+        ]
+        .into_iter()
+        .map(|command| (command, command_name(command)))
+        .filter(|(_, name)| name.contains("SECRET"))
+        .collect();
+        assert!(leaks.is_empty(), "{leaks:?}");
+        assert_eq!(command_name("/usr/bin/top -d 5"), "top");
+        assert_eq!(command_name("htop"), "htop");
+        assert_eq!(command_name("A=1 htop"), "htop");
+        assert_eq!(command_name("python3.12 x"), "python3.12");
     }
 
     #[test]

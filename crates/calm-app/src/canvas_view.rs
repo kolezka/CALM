@@ -1438,15 +1438,7 @@ impl CanvasView {
         let action = run.supervisor.exited(code, run.started_at.elapsed());
         let launches = run.launches;
         if run.supervisor.state == calm_core::tui::TuiState::NotFound {
-            match run.plugin() {
-                Some(plugin) => eprintln!(
-                    "calm: tui {}: command not found: {} (plugin dir {})",
-                    plugin.manifest.id,
-                    run.command(),
-                    plugin.dir.display()
-                ),
-                None => eprintln!("calm: command not found: {}", run.name()),
-            }
+            eprintln!("{}", run.not_found_log(id));
         }
         let resolved = self.resolve_terminal(id);
         self.refresh_terminal_chrome(id, &resolved);

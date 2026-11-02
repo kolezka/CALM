@@ -109,6 +109,20 @@ impl CommandRun {
         }
     }
 
+    /// The stderr line for panel `id` when its command was not found. A typed command
+    /// is named by its panel only, since its text may hold env values.
+    pub fn not_found_log(&self, id: PanelId) -> String {
+        match self.plugin() {
+            Some(plugin) => format!(
+                "calm: tui {}: command not found: {} (plugin dir {})",
+                plugin.manifest.id,
+                self.command(),
+                plugin.dir.display()
+            ),
+            None => format!("calm: panel {}: typed command not found", id.0),
+        }
+    }
+
     /// The chrome title for a terminal whose own title is `base`.
     pub fn title(&self, base: &str) -> String {
         self.supervisor.title(base, &self.command())
@@ -257,5 +271,17 @@ mod tests {
             title, "Run: command not found: calm-no-such-command-xyz",
             "{title}"
         );
+    }
+
+    #[test]
+    fn a_typed_not_found_log_names_the_panel_and_no_command_text() {
+        let run = CommandRun::typed(
+            "API_TOKEN=SECRETVAL calm-no-such-command-xyz".to_string(),
+            CommandRestart::Never,
+        );
+        let line = run.not_found_log(PanelId(42));
+        assert!(line.contains("panel 42"), "{line}");
+        assert!(!line.contains("calm-no-such-command-xyz"), "{line}");
+        assert!(!line.contains("SECRETVAL"), "{line}");
     }
 }
