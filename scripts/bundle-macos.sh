@@ -43,6 +43,12 @@ for manifest in "$repo_root"/plugins/*/calm-plugin.json; do
         "$plugin_dir/" "$app/Contents/Resources/plugins/$name/"
 done
 
+mkdir -p "$app/Contents/Resources/presets"
+for preset in "$repo_root"/presets/*.json; do
+    [[ -f "$preset" ]] || continue
+    cp "$preset" "$app/Contents/Resources/presets/"
+done
+
 sed "s/@VERSION@/$version/g" "$repo_root/scripts/Info.plist.template" >"$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 

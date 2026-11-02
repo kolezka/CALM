@@ -591,6 +591,16 @@ pub fn workspace_plugins_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins")
 }
 
+/// Built-in preset directories for this process, independent of plugin settings.
+pub fn builtin_preset_dirs() -> Vec<PathBuf> {
+    builtin_dirs_from(
+        cfg!(debug_assertions),
+        std::env::current_exe().ok().as_deref(),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../presets"),
+        "presets",
+    )
+}
+
 /// The search for this process. `builtin_setting` is the `plugins.builtin` setting.
 pub fn plugin_search(builtin_setting: bool) -> PluginSearch {
     let user = plugin_dirs_from(
@@ -612,6 +622,7 @@ pub fn plugin_search(builtin_setting: bool) -> PluginSearch {
             cfg!(debug_assertions),
             std::env::current_exe().ok().as_deref(),
             &workspace_plugins_dir(),
+            "plugins",
         ),
     };
     PluginSearch {
@@ -627,27 +638,27 @@ pub fn plugin_dirs() -> Vec<PathBuf> {
     search.user.into_iter().chain(search.builtin).collect()
 }
 
-/// Built-in dirs that exist: the workspace `plugins/` in a dev build (debug, or a binary
-/// inside a cargo `target` dir), and `Contents/Resources/plugins` next to a bundled binary.
+/// Existing workspace and bundle resource dirs for a dev build or bundled binary.
 fn builtin_dirs_from(
     debug_build: bool,
     exe: Option<&Path>,
-    workspace_plugins: &Path,
+    workspace_dir: &Path,
+    resource: &str,
 ) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     let in_target_dir = exe.is_some_and(|exe| {
         exe.ancestors()
             .any(|a| a.file_name().is_some_and(|name| name == "target"))
     });
-    if (debug_build || in_target_dir) && workspace_plugins.is_dir() {
-        dirs.push(fs::canonicalize(workspace_plugins).unwrap_or(workspace_plugins.to_path_buf()));
+    if (debug_build || in_target_dir) && workspace_dir.is_dir() {
+        dirs.push(fs::canonicalize(workspace_dir).unwrap_or(workspace_dir.to_path_buf()));
     }
     let macos_dir = exe.and_then(Path::parent);
     if let Some(contents) = macos_dir
         .filter(|dir| dir.file_name().is_some_and(|name| name == "MacOS"))
         .and_then(Path::parent)
     {
-        let bundled = contents.join("Resources/plugins");
+        let bundled = contents.join("Resources").join(resource);
         if bundled.is_dir() {
             dirs.push(bundled);
         }
@@ -1518,25 +1529,61 @@ mod tests {
         let other_exe = root.path().join("bin/calm-app");
 
         assert_eq!(
-            builtin_dirs_from(true, Some(&other_exe), &workspace),
+            builtin_dirs_from(true, Some(&other_exe), &workspace, "plugins"),
             vec![workspace.clone()]
         );
         assert_eq!(
-            builtin_dirs_from(false, Some(&cargo_exe), &workspace),
+            builtin_dirs_from(false, Some(&cargo_exe), &workspace, "plugins"),
             vec![workspace.clone()]
         );
         assert_eq!(
-            builtin_dirs_from(false, Some(&bundled_exe), &workspace),
+            builtin_dirs_from(false, Some(&bundled_exe), &workspace, "plugins"),
             vec![app.join("Resources/plugins")]
         );
         assert_eq!(
-            builtin_dirs_from(false, Some(&other_exe), &workspace),
+            builtin_dirs_from(false, Some(&other_exe), &workspace, "plugins"),
             Vec::<PathBuf>::new()
         );
         // Dirs that do not exist at runtime are left out, not reported.
         let missing = root.path().join("gone/plugins");
         assert_eq!(
-            builtin_dirs_from(true, Some(&other_exe), &missing),
+            builtin_dirs_from(true, Some(&other_exe), &missing, "plugins"),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn builtin_preset_dirs_cover_dev_build_and_bundle() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("ws/presets");
+        fs::create_dir_all(&workspace).unwrap();
+        let workspace = fs::canonicalize(&workspace).unwrap();
+        let app = root.path().join("CALM.app/Contents");
+        fs::create_dir_all(app.join("MacOS")).unwrap();
+        fs::create_dir_all(app.join("Resources/presets")).unwrap();
+        let bundled_exe = app.join("MacOS/calm-app");
+        let cargo_exe = root.path().join("ws/target/release/calm-app");
+        let other_exe = root.path().join("bin/calm-app");
+
+        assert_eq!(
+            builtin_dirs_from(true, Some(&other_exe), &workspace, "presets"),
+            vec![workspace.clone()]
+        );
+        assert_eq!(
+            builtin_dirs_from(false, Some(&cargo_exe), &workspace, "presets"),
+            vec![workspace.clone()]
+        );
+        assert_eq!(
+            builtin_dirs_from(false, Some(&bundled_exe), &workspace, "presets"),
+            vec![app.join("Resources/presets")]
+        );
+        assert_eq!(
+            builtin_dirs_from(false, Some(&other_exe), &workspace, "presets"),
+            Vec::<PathBuf>::new()
+        );
+        let missing = root.path().join("gone/presets");
+        assert_eq!(
+            builtin_dirs_from(true, Some(&other_exe), &missing, "presets"),
             Vec::<PathBuf>::new()
         );
     }
