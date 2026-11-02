@@ -349,11 +349,12 @@ mod tests {
     fn dangerous_link_schemes_are_dropped() {
         let html = render_body(
             "[a](javascript:alert(1)) [b](vbscript:x) [c](data:text/html,<b>x</b>) \
-             [d](https://ok.example)\n",
+             [d](https://ok.example) [e](file:///etc/passwd)\n",
         );
         assert!(!html.contains("javascript:"), "{html}");
         assert!(!html.contains("vbscript:"), "{html}");
         assert!(!html.contains("data:text/html"), "{html}");
+        assert!(!html.contains("file:"), "{html}");
         assert!(html.contains("href=\"https://ok.example\""), "{html}");
     }
 
