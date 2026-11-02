@@ -101,14 +101,24 @@ Unknown keys and out-of-range values in `session` are errors.
 
 ## Terminals
 
-The `terminal` section sets how plain terminals look and start: the ones from the `t` tool and
-from Add > Terminal. TUI app panels are configured in their manifest instead; see
-[Customizing TUI apps](plugins.md#customizing-tui-apps). Both use the same color rules and
-the same chrome.
+The `terminal` section sets how terminals look and start: the ones from the `t` tool, Add >
+Terminal, Add > Run Command… and TUI app panels. A TUI app's manifest adds its own look and
+env on top; see [Customizing TUI apps](plugins.md#customizing-tui-apps).
 
 Fields at the top of `terminal` are the defaults. `profiles` holds named presets with the
 same fields. For each field, a terminal takes the profile's value, else the default's, else
 the theme's (chrome) or the built-in behavior (launch).
+
+The look is stacked in four layers, the later one winning for each field:
+
+1. the defaults at the top of `terminal`,
+2. the terminal's profile,
+3. a TUI app's manifest (title, icon, `accentColor`, `titleBarColor`, `titleColor`,
+   `terminalColors`),
+4. the panel's own Settings window.
+
+Resetting a color in the panel's Settings window falls back to the layer below it. `env`
+stacks key by key in the same order, without the panel layer.
 
 ### Full example
 
@@ -167,10 +177,17 @@ with the neon chrome and palette. Image icons live in the settings folder, so th
 
 ### Look
 
-- `title_template`: the title bar text. Default `"Terminal"`. Two placeholders:
-  - `{n}`: the terminal's number, counting plain terminals opened since CALM started, from 1.
+- `title_template`: the title bar text. Default `"Terminal"`. Three placeholders:
+  - `{n}`: the terminal's number, counting every terminal opened since CALM started (TUI
+    apps and typed commands too), from 1.
   - `{cwd}`: the folder the terminal started in, with your home folder shown as `~`. It does
     not follow later `cd` commands yet; that needs the libghostty shim patch.
+  - `{name}`: what runs in it. For a TUI app the manifest `name`, for a typed command its
+    first word without the folder (`/usr/bin/top -o cpu` gives `top`), else the first word
+    of the profile's `command` or your login shell.
+
+  A typed command is titled `{name}` unless its panel has its own title. A TUI app uses its
+  manifest `title`.
 
   Any other `{` or `}` is an error. It may not be blank or hold control characters, and is at
   most 120 characters.
@@ -211,6 +228,25 @@ colors per surface. They come from your Ghostty config for every terminal.
   `/usr/bin/env`, so other programs running as you can see them in `ps`. Do not put secrets
   here that you would not put on a command line.
 
+- `command_restart`: what a typed command (Add > Run Command…) does when it exits.
+  `"prompt"` (default) stays exited until you press Enter or pick Restart from the panel
+  menu, `"on_exit"` starts it again with the same back-off as a TUI app's `"on-exit"`,
+  `"never"` leaves it exited with no Restart. Any other
+  value is an error. A change applies at the command's next exit; it never restarts or stops
+  a running one. TUI apps use the manifest `restart` instead. Settings > Terminal shows it
+  as "Restart typed commands" with "Never", "When it exits" and "On Enter".
+
+### Run Command
+
+Add > Run Command… comes right after Terminal (after Terminal Profiles when you have
+profiles). It asks for a command, such as `htop`, and opens a terminal that runs it in your
+login shell with the defaults and profile `env`. When the command ends, the terminal shows a
+line such as `[calm] htop exited with code 0`, or `[calm] command not found: htop`, and then
+follows `command_restart`. Blank input or Cancel opens nothing.
+
+The command is saved in the session file, and a restored session runs it again. Do not put
+secrets in it.
+
 ### Profiles
 
 - `id`: 1 to 64 of `a-z`, `0-9`, `-` and `_`, starting with a letter or digit, unique.
@@ -234,12 +270,12 @@ profile. Duplicate keeps the source terminal's profile.
 
 Settings > Terminal edits the defaults: a switch for custom title bar colors with three color
 wells, a switch for custom terminal colors with background, foreground and 16 palette wells,
-Load buttons for three built-in palettes (CALM Neon, Solarized Dark, Ghostty Default), and the
-default profile. The environment shows keys with masked values.
+Load buttons for three built-in palettes (CALM Neon, Solarized Dark, Ghostty Default), the
+default profile and "Restart typed commands". The environment shows keys with masked values.
 
 Not in the window yet: title template, icon, launch fields, and adding, duplicating,
 renaming or deleting profiles. These need text input the window does not have. Edit
 `settings.json` for them.
 
-Per-terminal edits after a terminal is open (rename, change icon, pick an accent from the
-right-click menu) are not built yet.
+Each open terminal, TUI apps included, also has its own Settings window: Settings… in its
+right-click menu. What it sets wins over the defaults, the profile and the manifest.
