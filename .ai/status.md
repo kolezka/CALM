@@ -330,8 +330,9 @@ Open questions: `.ai/open-questions.md`.
   (`modal_open`, for example the right-click Add menu) or below `preview_below_zoom` both
   terminals are GPUI-drawn snapshots in scene order with no native view and no mask, and
   with the content fill gone a front snapshot with see-through background pixels shows the
-  back snapshot's text. Not confirmed by eye. On this branch previews keep the content
-  fill. The mask's rendered look over Ghostty's own layer is still unverified (manual pass owed).
+  back snapshot's text. Not confirmed by eye. On this branch a terminal preview with a
+  snapshot drops CALM's fill too, so it looks like the live panel (`paints_content_underfill`);
+  a preview with no snapshot yet keeps the opaque fill and the title. The mask's rendered look over Ghostty's own layer is still unverified (manual pass owed).
   A terminal's content fade (`content_opacity`) also fades its preview: `take_snapshot`
   scales the snapshot's alpha bytes (`preview::fade_pixels`, straight alpha). Look unverified.
   Snapshots are converted from premultiplied (the shim `memcpy`s Ghostty's IOSurface,
@@ -439,7 +440,8 @@ Open questions: `.ai/open-questions.md`.
   through the front one? Then open the right-click Add menu, or zoom out until previews, and
   see whether the view changes. This tells whether the spike's back text came from preview
   mode. Change a terminal's Opacity while it is a preview: the next preview refresh and the
-  return to live both show the new fade.
+  return to live both show the new fade. Over a contrasting canvas (a bright color or an
+  image), a terminal switching from live to preview and back keeps the same look.
 - Performance with 20 terminals.
 - A real Release run on the runner and the hosted macOS CI steps.
 

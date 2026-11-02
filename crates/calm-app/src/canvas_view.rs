@@ -2558,6 +2558,40 @@ enum TerminalContent {
     Preview(PreviewImage<Arc<RenderImage>>),
 }
 
+/// What a panel's content area holds, for the underfill decision.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ContentKind {
+    LiveTerminal,
+    TerminalPreviewImage,
+    TerminalPreviewEmpty,
+    Other,
+}
+
+impl ContentKind {
+    fn of(panel: &Panel, content: Option<&TerminalContent>) -> Self {
+        if !matches!(panel.kind, PanelKind::Terminal { .. }) {
+            return Self::Other;
+        }
+        match content {
+            Some(TerminalContent::Live) => Self::LiveTerminal,
+            Some(TerminalContent::Preview(PreviewImage::Fresh(_) | PreviewImage::Stale(_))) => {
+                Self::TerminalPreviewImage
+            }
+            Some(TerminalContent::Preview(PreviewImage::None)) => Self::TerminalPreviewEmpty,
+            None => Self::Other,
+        }
+    }
+}
+
+/// Whether CALM paints its own fill under the content. A terminal and its snapshot get
+/// none, so see-through pixels show the canvas and the panel below.
+fn paints_content_underfill(kind: ContentKind) -> bool {
+    !matches!(
+        kind,
+        ContentKind::LiveTerminal | ContentKind::TerminalPreviewImage
+    )
+}
+
 /// The mode a terminal panel gets this frame. Render and paint both use it, so input
 /// targets match what paint applies. `viewport` is the canvas area; only its size counts.
 fn terminal_mode(
@@ -3018,11 +3052,8 @@ impl PaintSnapshot {
             body_screen.size.width + outward(Side::Left) + outward(Side::Right),
             body_screen.size.height + outward(Side::Top) + outward(Side::Bottom),
         );
-        // A live terminal paints no fill under its content, so the canvas and the panel
-        // below show through wherever the terminal is see-through.
-        let see_through = !panel.minimized
-            && matches!(panel.kind, PanelKind::Terminal { .. })
-            && matches!(content, Some(TerminalContent::Live));
+        let see_through =
+            !panel.minimized && !paints_content_underfill(ContentKind::of(panel, content));
         let ring_fill = if see_through {
             rgba(0)
         } else {
@@ -3713,6 +3744,14 @@ fn installed_version(plugins: &[InstalledPlugin], plugin_id: &str) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_terminals_with_content_skip_the_underfill() {
+        assert!(!paints_content_underfill(ContentKind::LiveTerminal));
+        assert!(!paints_content_underfill(ContentKind::TerminalPreviewImage));
+        assert!(paints_content_underfill(ContentKind::TerminalPreviewEmpty));
+        assert!(paints_content_underfill(ContentKind::Other));
+    }
 
     #[test]
     fn confirm_title_names_the_bound_keys() {
