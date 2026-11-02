@@ -85,7 +85,8 @@ be built on Linux, so you build it on a Mac and attach it with `scripts/release-
 
 The bundle ships `LICENSE` and `THIRD_PARTY_NOTICES` in `Contents/Resources`. After any change
 to `Cargo.lock`, run `gmake notices` (needs `cargo install --locked cargo-about --features cli`)
-and commit the regenerated file before cutting the release.
+and commit the regenerated file before cutting the release. After a gpui-libghostty, Zig or plugin
+dependency upgrade, also refresh `third_party/notices` as described in `third_party/README.md`.
 
 The workflow refuses to run from any branch other than `main`. Only one release runs at a time
 (concurrency group `release`). Both jobs check out the commit the run was dispatched on
