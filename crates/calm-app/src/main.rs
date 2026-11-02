@@ -1927,6 +1927,30 @@ async fn smoke_plugin_menus(
     cx: &mut gpui::AsyncApp,
 ) {
     use calm_core::plugin_menu::item_menu_id;
+    // The preset-only built-ins are installed but never offered in Add.
+    let add_check = view.update(cx, |view, _| {
+        let add: Vec<String> = menu_ids(view.canvas_menu())
+            .into_iter()
+            .filter_map(|id| {
+                id.strip_prefix(calm_core::menu::ADD_PLUGIN_PREFIX)
+                    .map(str::to_string)
+            })
+            .collect();
+        for hidden in ["calm-welcome", "calm-keys"] {
+            if !view.plugin_sizes.iter().any(|(id, _)| id == hidden) {
+                return Err(format!("built-in {hidden} not installed"));
+            }
+            if add.contains(&hidden.to_string()) {
+                return Err(format!("{hidden} listed in Add: {add:?}"));
+            }
+        }
+        Ok(add)
+    });
+    let mut add = match add_check {
+        Ok(add) => add,
+        Err(err) => smoke_fail(&format!("plugin menus: {err}")),
+    };
+    add.sort();
     let fixtures = match tempfile::Builder::new()
         .prefix("calm-smoke-menus-")
         .tempdir()
@@ -2032,7 +2056,10 @@ async fn smoke_plugin_menus(
         cx,
     )
     .await;
-    println!("smoke: plugin menus items={items} invoked=ok");
+    println!(
+        "smoke: plugin menus items={items} invoked=ok add={}",
+        add.join(",")
+    );
     if let Err(err) = fixtures.close() {
         eprintln!("smoke: could not remove the plugin menus temp dir: {err}");
     }
@@ -3636,5 +3663,50 @@ mod tests {
         assert_eq!(plan.layout.map(|layout| layout.panels.len()), Some(1));
         assert_eq!(plan.layout_name.as_deref(), Some("welcome"));
         assert!(!plan.save_at_start);
+    }
+
+    #[test]
+    fn builtin_welcome_preset_is_valid() {
+        let empty = tempfile::tempdir().unwrap();
+        let presets = calm_plugins::builtin_preset_dirs();
+        let (layout, origin) = find_preset("welcome", empty.path(), &presets)
+            .unwrap_or_else(|err| panic!("welcome preset in {presets:?}: {err}"));
+        assert_eq!(origin, calm_core::preset::PresetOrigin::Builtin);
+        assert_eq!(layout.panels.len(), 3);
+        let plugin_id = |kind: &PanelKind| match kind {
+            PanelKind::Plugin { plugin_id, .. } => Some(plugin_id.clone()),
+            _ => None,
+        };
+        let ids: Vec<String> = layout
+            .panels
+            .iter()
+            .filter_map(|p| plugin_id(&p.kind))
+            .collect();
+        assert_eq!(
+            layout
+                .panels
+                .last()
+                .and_then(|p| plugin_id(&p.kind))
+                .as_deref(),
+            Some("calm-welcome"),
+            "the welcome panel is in front"
+        );
+        assert!(ids.iter().any(|id| id == "calm-keys"), "{ids:?}");
+        assert!(
+            layout.panels.iter().any(|p| matches!(
+                &p.kind,
+                PanelKind::Browser { url, .. } if url == "https://calm.raqz.link"
+            )),
+            "browser on https://calm.raqz.link"
+        );
+        let discovery = calm_plugins::discover(&[calm_plugins::workspace_plugins_dir()]);
+        for id in &ids {
+            let plugin = discovery
+                .plugins
+                .iter()
+                .find(|plugin| &plugin.manifest.id == id)
+                .unwrap_or_else(|| panic!("built-in plugin {id} not discovered"));
+            assert!(!plugin.manifest.add_menu, "{id} must stay out of Add");
+        }
     }
 }

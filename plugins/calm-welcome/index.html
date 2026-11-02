@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Welcome</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <img class="logo" src="logo.svg" alt="" />
+    <canvas id="title" role="img" aria-label="CALM"></canvas>
+    <p id="instruction">Press t and drag to draw a terminal. Right-click for more.</p>
+    <div class="scroller"><span id="closing">Open Source for life - Long Live Tech</span></div>
+    <script>
+      var texts = {
+        title: "CALM",
+        instruction: "Press t and drag to draw a terminal. Right-click for more.",
+        closing: "Open Source for life - Long Live Tech",
+      };
+
+      // Draws the text at 9 px with smoothing off, then CSS scales it up by whole pixels.
+      function drawTitle(text) {
+        var canvas = document.getElementById("title");
+        var ctx = canvas.getContext("2d");
+        var font = "bold 9px ui-monospace, Menlo, monospace";
+        ctx.font = font;
+        var width = Math.ceil(ctx.measureText(text).width) + 2;
+        canvas.width = width;
+        canvas.height = 11;
+        ctx.font = font;
+        ctx.imageSmoothingEnabled = false;
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--glow").trim();
+        ctx.textBaseline = "top";
+        ctx.fillText(text, 1, 1);
+        // Threshold the antialiased edges so every pixel is on or off.
+        var image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        for (var i = 3; i < image.data.length; i += 4) image.data[i] = image.data[i] > 110 ? 255 : 0;
+        ctx.putImageData(image, 0, 0);
+        var scale = Math.max(1, Math.min(8, Math.floor(400 / width)));
+        canvas.style.width = width * scale + "px";
+        canvas.style.height = canvas.height * scale + "px";
+        canvas.setAttribute("aria-label", text);
+      }
+
+      function render() {
+        drawTitle(texts.title);
+        document.getElementById("instruction").textContent = texts.instruction;
+        document.getElementById("closing").textContent = texts.closing;
+      }
+
+      // Panel settings `title`, `instruction` and `closing` replace the defaults when non-empty.
+      function apply(settings) {
+        ["title", "instruction", "closing"].forEach(function (key) {
+          var value = settings && settings[key];
+          if (typeof value === "string" && value.trim() !== "") texts[key] = value;
+        });
+        render();
+      }
+
+      render();
+      if (window.calm && window.calm.settings) {
+        calm.settings.get().then(apply).catch(function (err) {
+          if (calm.log) calm.log("welcome settings: " + (err && err.message ? err.message : err));
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "saved_at_unix": null,
+  "camera": { "offset": { "x": -640, "y": -400 }, "zoom": 1 },
+  "panels": [
+    {
+      "kind": { "type": "browser", "url": "https://calm.raqz.link" },
+      "rect": { "origin": { "x": -620, "y": -380 }, "size": { "width": 560, "height": 420 } },
+      "title": "calm.raqz.link",
+      "minimized": false
+    },
+    {
+      "kind": { "type": "plugin", "plugin_id": "calm-keys", "plugin_version": "0.1.0", "settings": {} },
+      "rect": { "origin": { "x": 380, "y": -380 }, "size": { "width": 360, "height": 420 } },
+      "title": "Key Bindings",
+      "minimized": false
+    },
+    {
+      "kind": { "type": "plugin", "plugin_id": "calm-welcome", "plugin_version": "0.1.0", "settings": {} },
+      "rect": { "origin": { "x": -40, "y": -60 }, "size": { "width": 560, "height": 420 } },
+      "title": "Welcome",
+      "minimized": false
+    }
+  ]
+}
