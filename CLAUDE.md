@@ -89,7 +89,7 @@ Arrows pan the canvas when no live panel has the keyboard, Cmd+Option+arrows mov
 `cmd-shift-backspace` deletes the focused panel (a live one confirms first, as with the menu's Delete).
 Cmd+Shift+, opens the focused panel's Settings window (written `cmd-<` in code, which is how GPUI reports that press).
 `cmd-shift-p` (action `panel.pin`, also Pin/Unpin in the panel menu) pins the focused panel to the screen: pan, zoom,
-fit-all, `cmd-shift-h` and arrow pan leave its screen position and size alone, it is never a preview, and pinned panels
+fit-all, `cmd-shift-h` and arrow pan leave its screen position and size alone, zoom never makes it a preview, and pinned panels
 stay above unpinned ones. Inside a terminal the key wins over Ghostty's command palette.
 `cmd-ctrl-f` fullscreen, `cmd-shift-f` stats (FPS, CPU, memory; items in `developer.stats`). A click on empty canvas clears panel focus
 (`canvas.click_empty_clears_focus`). Cmd+drag snaps, Cmd+Shift+drag does not; a drag that starts on a resize edge always resizes (default
