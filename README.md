@@ -114,6 +114,7 @@ launch right-click it and pick Open. See [docs/release.md](docs/release.md).
 | Cancel drawing                  | `Esc`                                     |
 | Add a panel or plugin           | Right-click empty canvas                  |
 | Panel actions                   | Right-click a title bar                   |
+| Delete focused panel            | `cmd-shift-backspace` (confirms a live one) |
 | Pan                             | Space and drag, middle-drag, scroll       |
 | Zoom                            | Pinch, or `cmd` and scroll                |
 | Zoom in, out, reset             | `cmd-=`, `cmd--`, `cmd-0`                 |

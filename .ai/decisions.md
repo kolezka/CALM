@@ -706,3 +706,6 @@ These shipped with #41, next to "Restore at launch" above.
 - **A restored terminal opens its saved profile.** `PanelKind::Terminal.profile` is saved
   with the session. An unknown profile id opens with the defaults and one notice; the saved
   kind keeps the id, so it comes back if the profile does.
+- **Delete uses `cmd-shift-backspace`.** The key is hard-coded like the other canvas
+  bindings until v2 `keybindings`. Plain `cmd-backspace` stays with shell and web fields,
+  where Ghostty and WKWebView use it to delete to the start of the line.

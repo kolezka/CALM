@@ -78,6 +78,7 @@ actions!(
         FitAll,
         DrawTerminal,
         DrawBrowser,
+        DeletePanel,
         Cancel,
         ConfirmEnter,
         ToggleFullscreen
@@ -108,6 +109,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("cmd-0", ZoomReset, ctx),
         KeyBinding::new("cmd-shift-h", CenterOnOrigin, ctx),
         KeyBinding::new("cmd-shift-0", FitAll, ctx),
+        KeyBinding::new("cmd-shift-backspace", DeletePanel, ctx),
         KeyBinding::new("t", DrawTerminal, ctx),
         KeyBinding::new("b", DrawBrowser, ctx),
         KeyBinding::new("escape", Cancel, ctx),
@@ -3247,6 +3249,11 @@ impl Render for CanvasView {
             .on_action(cx.listener(|view, _: &DrawBrowser, window, cx| {
                 view.set_tool(Tool::DrawBrowser, window, cx)
             }))
+            .on_action(cx.listener(|view, _: &DeletePanel, window, cx| {
+                if let Some(id) = view.focused {
+                    view.apply_effects(vec![Effect::ClosePanelRequested(id)], window, cx);
+                }
+            }))
             .on_action(cx.listener(|view, _: &Cancel, window, cx| view.cancel(window, cx)))
             .on_action(
                 cx.listener(|view, _: &ConfirmEnter, window, cx| view.confirm_enter(window, cx)),
@@ -3340,6 +3347,32 @@ fn installed_version(plugins: &[InstalledPlugin], plugin_id: &str) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delete_panel_shortcut_is_available_with_terminal_focus() {
+        let keystroke = gpui::Keystroke::parse("cmd-shift-backspace").unwrap();
+        let bindings = key_bindings();
+        assert!(
+            !bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&NoAction)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == terminal::KEY_CONTEXT)
+            }),
+            "terminal context must not block the delete shortcut"
+        );
+        assert!(
+            bindings.iter().any(|binding| {
+                binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                    && binding.action().partial_eq(&DeletePanel)
+                    && binding
+                        .predicate()
+                        .is_some_and(|p| p.to_string() == KEY_CONTEXT)
+            }),
+            "canvas must bind cmd-shift-backspace to DeletePanel"
+        );
+    }
 
     #[test]
     fn a_builtin_override_draws_the_builtin_icon_not_its_text() {
