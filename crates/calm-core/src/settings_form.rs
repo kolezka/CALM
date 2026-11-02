@@ -1086,8 +1086,7 @@ fn terminal_fields(settings: &Settings) -> Vec<Field> {
     fields.push(note(
         "terminal.background_opacity_note",
         "",
-        "Background opacity comes from background-opacity in your Ghostty config, and only \
-         with the Ghostty user config on."
+        "Background opacity: set background-opacity in your Ghostty config (Ghostty user config on)."
             .to_string(),
     ));
     if !terminal.profiles.is_empty() {
@@ -1577,8 +1576,7 @@ mod tests {
         assert_eq!(
             note.map(|f| &f.control),
             Some(&Control::Note(
-                "Background opacity comes from background-opacity in your Ghostty config, and \
-                 only with the Ghostty user config on."
+                "Background opacity: set background-opacity in your Ghostty config (Ghostty user config on)."
                     .to_string()
             ))
         );
