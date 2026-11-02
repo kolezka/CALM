@@ -417,6 +417,16 @@ pub struct AppLayer {
     pub env: BTreeMap<String, String>,
 }
 
+impl AppLayer {
+    /// A typed command's layer: it sets only the title.
+    pub fn typed_command() -> Self {
+        AppLayer {
+            title_template: Some(PLACEHOLDER_NAME.to_string()),
+            ..AppLayer::default()
+        }
+    }
+}
+
 /// Everything one terminal is opened and drawn with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTerminal {
@@ -1411,5 +1421,38 @@ mod tests {
             "{error}"
         );
         assert!(crate::settings::load_settings_from(&path).is_err());
+    }
+
+    #[test]
+    fn a_typed_command_is_titled_by_its_name_unless_the_panel_overrides_it() {
+        let settings = parse(
+            r#"{"title_template": "{n} shell",
+                "profiles": [{"id": "p", "name": "P", "title_template": "P {n}"}]}"#,
+        )
+        .unwrap();
+        let typed = AppLayer::typed_command();
+        let none = PanelOverrides::default();
+        for profile in [None, Some("p")] {
+            let resolved = settings.resolve_for_panel(profile, false, Some(&typed), &none);
+            assert_eq!(resolved.title_template, "{name}", "{profile:?}");
+            assert_eq!(
+                render_title(&resolved.title_template, 3, "~", "htop"),
+                "htop"
+            );
+        }
+        let overrides = PanelOverrides {
+            title: Some("Mine".into()),
+            ..PanelOverrides::default()
+        };
+        let resolved = settings.resolve_for_panel(Some("p"), false, Some(&typed), &overrides);
+        assert_eq!(resolved.title_template, "Mine");
+        assert!(resolved.title_is_literal);
+        // Only the title: the look and env still come from the profile and defaults.
+        assert_eq!(
+            settings
+                .resolve_for_panel(Some("p"), false, Some(&typed), &none)
+                .env,
+            settings.resolve(Some("p"), false).env
+        );
     }
 }

@@ -111,10 +111,11 @@ impl CommandRun {
         self.supervisor.title(base, self.command())
     }
 
-    /// An app's manifest look and env, laid between the profile and the overrides.
+    /// The layer between the profile and the overrides: an app's manifest look and env,
+    /// or a typed command's `{name}` title.
     pub fn app_layer(&self) -> Option<AppLayer> {
         let RunSource::App { plugin, .. } = &self.source else {
-            return None;
+            return Some(AppLayer::typed_command());
         };
         let spec = plugin.manifest.tui()?;
         Some(AppLayer {

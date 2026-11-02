@@ -1132,7 +1132,7 @@ async fn smoke_run_command(
                             && *state == TuiState::Exited(Some(0))
                             && *restart
                             && *n == launches
-                            && title.ends_with(": exited, code 0")
+                            && title == "printf: exited, code 0"
                     });
                 if exited && lines == launches as usize {
                     return;
