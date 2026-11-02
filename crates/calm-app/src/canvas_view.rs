@@ -217,6 +217,9 @@ pub struct CanvasView {
     pub settings_window: Option<calm_native::SettingsWindow>,
     /// Writes a held Settings window change when the app quits.
     _settings_quit: gpui::Subscription,
+    /// Writes a held Settings change and the session when the view is dropped. Closing the
+    /// window drops the view before the quit runs, which drops `_settings_quit` too.
+    _release: gpui::Subscription,
     /// At most one Settings window per panel, closed with the panel.
     pub panel_settings_windows: HashMap<PanelId, calm_native::SettingsWindow>,
     /// Closed panels a late Settings change was already logged for.
@@ -330,6 +333,10 @@ impl CanvasView {
             _settings_quit: cx.on_app_quit(|view, _| {
                 view.flush_settings_save();
                 async {}
+            }),
+            _release: cx.on_release(|view, _| {
+                view.flush_settings_save();
+                view.save_on_quit();
             }),
             panel_settings_windows: HashMap::new(),
             gone_panel_changes: HashSet::new(),

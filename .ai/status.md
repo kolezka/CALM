@@ -416,7 +416,9 @@ Open questions: `.ai/open-questions.md`.
   (`CALM_SMOKE_ONLY=settings_perf`). GPUI's 33 ms frame cap for an inactive window is
   now a setting, `canvas.limit_inactive_fps`, default off (applies after restart); its
   effect with Settings open is not yet checked in the GUI. Real trackpad input with
-  Settings open is not measured.
+  Settings open is not measured. Closing the canvas window drops the view before quit runs,
+  so a held settings save and the last session write now also run when the view is
+  released (`_release` in `canvas_view.rs`); source traced, not checked in the GUI.
 - No PR yet: a Linux port plan.
 
 ## Not wired yet
