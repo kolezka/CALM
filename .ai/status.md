@@ -1,8 +1,8 @@
 # Status
 
-Last updated: 2026-11-01, against `origin/main` at `188d7a5` (PRs #1 to #41 merged; #11
-merged into a branch, see #20). This file describes `main`, not branches. Facts are
-verified against the code unless marked otherwise.
+Last updated: 2026-11-02, against `origin/main` at `23278d3` (PRs #1 to #77 merged; #11
+merged into a branch, see #20; #61 closed unmerged; #64, #70 and #75 open). This file
+describes `main`, not branches. Facts are verified against the code unless marked otherwise.
 
 ## Done and merged to `main`
 
@@ -86,9 +86,6 @@ Pull requests:
   (`command`, `args`, `cwd`, `env`), validated strictly. Add > Terminal Profiles submenu;
   `t` and plain duplicates use `default_profile`. Running surfaces recolor live through
   `TerminalThemeState::apply`. Settings > Terminal edits defaults only (no text fields yet).
-- `fix/term-program-ghostty`: every terminal exports `TERM_PROGRAM=ghostty` (built-in env
-  layer, overridable), so slk and similar apps pick kitty graphics. The smoke `tui` step
-  checks the value inside a real surface. Kitty images on a zoomed canvas: not yet seen.
 - #25 Blur on outside click: a click on empty canvas clears panel focus and makes the GPUI
   host view the first responder; pans and zooms keep focus; Escape clears it only when no
   native view has the keyboard. Setting `canvas.click_empty_clears_focus` (default true).
@@ -99,11 +96,6 @@ Pull requests:
   plugins get a `command` event in an open panel or a new one; TUI items open a new panel
   with `run` args appended. Not built: `calm.menus.register`, `shortcut`,
   `contributes.commands`.
-- Canvas menu: Add, then "Settings…" (dispatches `OpenSettings`, same as `cmd-,`; smoke
-  step `settings_dispatch` picks it). In Add, Terminal and Browser sit under a "Native"
-  header; TUI apps and web plugins share one section under a "Plugins" header
-  (`MenuItem::Header`, `NSMenuItem.sectionHeaderWithTitle`, macOS 14+). The shipped examples
-  no longer contribute canvas items (`new-panel`, `slow-refresh`): they duplicated Add.
 - #23 Plugin services: `github.api`, `storage.get/set/remove` and `openExternal` (http and
   https only) are served by `plugin_services` on the background executor. `GhClient` kills
   `gh` after 30 s and refuses output over 8 MiB. `calm_plugins::gh_token` takes
@@ -215,12 +207,139 @@ Pull requests:
   these methods: `near`/`side`/`size`/`gap` placement, `title`, `args`, `env`,
   `appearance`, `PanelInfo.mode`, `joined`, `appearance`, `createdBy`, `tui`, `panels.*`
   names, `panels.close(id)` with a pending reply and `busy`.
-- Arrow keys (PR #68, merged as `8fee5b2`): arrows pan the canvas while it has the keyboard,
+- #42 Folded the lead session's knowledge from 2026-10-31 and 2026-11-01 into `CLAUDE.md`,
+  `.ai` and docs. No code.
+- #45 Product page: one static Astro page in `web/` (`web/README.md`), styled from
+  `assets/brand` (palette and the 5x7 glyph table, copied into `web/src/lib/glyphs.js`). The
+  hero canvas is a CSS illustration, not a screenshot.
+- #46 Animated wordmark: `assets/brand/animate.py` writes `logo-animated.svg` and
+  `logo-animated-transparent.svg` (CSS keyframes, no JS, stops under `prefers-reduced-motion`).
+- #47 Social preview card: `assets/brand/social_preview.py` renders
+  `assets/brand/social-preview.png` (1280x640). The upload in the GitHub repo settings is
+  manual; whether it was done is unverified.
+- #48 The web hero uses the animated banner, with a visually hidden `h1`.
+- #49 The README banner is `assets/brand/banner-animated.gif` (12 s loop), because GitHub does
+  not play SVG animation in a README.
+- #50 The README GIF no longer freezes: each frame had been rendered in a fresh headless
+  Chrome, so frame phases did not match the requested times.
+- #51 `web/Dockerfile` and `web/.dockerignore` for Coolify: the build stage runs bun on
+  `node:26-alpine`, `nginx:1.27-alpine` serves the static files.
+- #52 README callout: early prototype, first alpha release candidate planned for the first
+  week of November 2026.
+- #53 Canvas menu: Add, then "Settings…" (dispatches `OpenSettings`, same as `cmd-,`; smoke
+  step `settings_dispatch` picks it). In Add, Terminal and Browser sit under a "Native"
+  header; TUI apps and web plugins share one section under a "Plugins" header
+  (`MenuItem::Header`, `NSMenuItem.sectionHeaderWithTitle`, macOS 14+). The shipped examples
+  no longer contribute canvas items (`new-panel`, `slow-refresh`): they duplicated Add.
+- #54 A back panel's native view (Ghostty, WKWebView, the
+  browser's address bar, a plugin page) no longer covers the title bar and ring of a panel
+  in front of it. `calm_core::occlusion` computes the visible part of each native container
+  (the container minus every panel above it, ring included, chip when minimized, and the
+  divider of every join painted above it);
+  `terminal_placement` fills `NativePlacement::visible`, and `NativeChild::apply` masks the
+  clip view's layer to it and makes `hitTest:` return nil outside it. A fully covered view
+  is hidden; its process keeps running. Terminal presses and scrolls outside the visible
+  part go on to the canvas; motion there and releases reach the terminal only during a
+  press it took (`PointerGate`). Rounded corners of a front panel leave a small square
+  notch of the rear view (known limitation). A restack without a paint keeps the old mask until the next
+  paint. `native_smoke` checks the mask piece, hit testing and full cover in AppKit; the
+  look over real Ghostty and WKWebView content is unverified (manual pass owed).
+- #55 CI runs once per PR commit: `push` triggers only on `main`, PR commits run through
+  `pull_request`, and `workflow_dispatch` covers a branch without a PR
+  (`gh workflow run ci --ref <branch>`).
+- #56 Backlog items 17 and 18, found in the review of #54.
+- #57 Per-panel settings. Settings… in every panel menu opens
+  one native Settings window per panel (tabs, each field inherited or set with Reset to
+  global), saved as the panel's `overrides`: title, icon (built-in or an image copied to
+  `panel-icons/`), accent, title bar and title colors, terminal colors, borderless.
+  Cmd+drag on a terminal's or page's content moves the panel (`canvas.move_modifier`,
+  default `cmd`); a Cmd+click inside the slop is replayed to the native view;
+  Cmd+right-click opens the panel menu. Terminals save their profile in the session and a
+  restore reopens it (an unknown id gives one notice). Duplicate copies overrides and
+  profile. Policy is unit tested (`calm_core::gesture`, `calm-app` `content_move`); the
+  AppKit monitor is tested on its state machine only.
+- #58 Web: the page no longer lists "a Linux or Windows build" under the wrong tool.
+- #59 Global and panel Settings windows stay above the
+  canvas as its child windows. Smoke asserts it; not checked by eye in fullscreen yet.
+- #60 `cmd-shift-backspace` deletes the focused panel through the normal close path (a live
+  one confirms). Cmd+Shift+, (bound as `cmd-<`, as GPUI reports it) opens the focused
+  panel's Settings window. Cmd+drag snaps, Cmd+Shift+drag does not; Option no longer
+  affects snapping. A drag that starts on a resize edge always resizes.
+- #62 Every key binding is a setting with a Keys tab in
+  Settings, recorded by pressing the key, applied live. Smoke step `keybindings` prints
+  `smoke: keybindings override=true old_gone=true restored=true recorder_stops=true tab_stops=true`. By eye,
+  owed by the user: record a key in the Keys tab and use it; see the menu shortcut change;
+  record a used key and see "Used by"; Escape and clicking away cancel recording; a non-US
+  layout records the key GPUI fires.
+- #63 A TUI app is a terminal with an app
+  attached (`PanelKind::app_terminal`, `.app()`), still saved as `type=tui`. One spawn,
+  refresh, recolor and exit path for shells, typed commands and apps. App panels get the
+  Settings sections "Title bar colors" and "Terminal colors" with presets, and inherit
+  defaults and profile env. Looks stack defaults, profile, manifest, panel overrides. Add >
+  Run Command… (after Terminal and Terminal Profiles) asks for a command in an NSAlert and
+  opens a terminal running it in the login shell, supervised, titled `{name}`, saved in the
+  session and run again on restore. `terminal.command_restart` (`never`, `on_exit`,
+  `prompt`, default `prompt`) sets what a typed command does on exit. A terminal's tick loop
+  starts at spawn, which removes the `tui-exit` smoke flake. Core rules are unit tested. The
+  app-side spawn, exit and restart of typed commands and app recolor are checked by the smoke
+  only; the NSAlert prompt is never driven by agents (manual pass owed).
+- #65 The web domain is `calm.raqz.link` (`site` in `web/astro.config.mjs`,
+  `web/README.md`). The Coolify domain and DNS are unverified.
+- #66 Web: the self-hosted Umami tracker and session recorder in
+  `web/src/layouts/Page.astro`. Events in the Umami dashboard are unverified.
+- #67 Every terminal exports `TERM_PROGRAM=ghostty` (built-in env
+  layer, overridable), so slk and similar apps pick kitty graphics. The smoke `tui` step
+  checks the value inside a real surface. Kitty images on a zoomed canvas: not yet seen.
+- #68 Arrow keys (merged as `8fee5b2`): arrows pan the canvas while it has the keyboard,
   Shift+arrow pans 5x (`canvas.arrow_pan_step`, screen points, default 48); Cmd+Option+arrow
   moves the focused panel without snapping, Shift for 5x (`canvas.arrow_move_step`, world
   units, default 8). A focused terminal keeps plain and Shift arrows; panel moves still
   apply. Both are ignored during a draw, drag or resize. Core logic and bindings are unit
   tested; key delivery by hand is unverified.
+- #69 CALM unsets the launching terminal's identity (`ITERM_*`,
+  `TERM_PROGRAM*`, `LC_TERMINAL*`, `TMUX`, `TMUX_PANE`, ...) at startup, so Claude Code agent teams no
+  longer split the iTerm2 tab CALM runs in. Smoke `terminal_env` checks a `std::process`
+  child; that a Ghostty surface child sees the scrubbed env is inferred, not yet observed.
+- #71 License: a proprietary `LICENSE` (all rights reserved). Root `Cargo.toml` has
+  `license-file = "LICENSE"`, every crate `license-file.workspace = true`.
+  `packages/calm-plugin-sdk` and `templates/` are MIT (their own `LICENSE`);
+  `plugins/github-prs` and `web` are `UNLICENSED`. `gmake notices` (cargo-about) writes
+  `THIRD_PARTY_NOTICES`; the bundle script copies it and `LICENSE` to `Contents/Resources`.
+- #72 Notices for code `cargo about` misses, one file each in `third_party/notices/`
+  (Ghostty and its static native libraries, Zig packages, embedded fonts, Preact), appended
+  by `gmake notices`.
+- #73 Status marks arrow keys merged.
+- #74 CALM paints no fill under a live
+  terminal's content (the ring quad is transparent, the title bar gets its own fill), and
+  `NativePlacement::paint` (`occlusion::native_paint_region`) masks a back native view only
+  under a live front terminal's title bar and ring, so it shows through the front terminal.
+  `visible` stays the input region: a press in the overlap still goes to the front panel.
+  A preview, minimized or hidden front panel still cuts the back view out.
+  Why the throwaway spike (fills removed, Ghostty `background-opacity = 0.5`) showed a back
+  terminal's text through a front one although the back was masked there: not reproduced,
+  since agents do not drive the GUI. No stale mask was found. `native_visible_region` cuts
+  the front panel's whole outline out of the back container (unit tests
+  `panel_above_occludes_with_its_ring`, `input_region_is_unchanged_by_live_front_panels`),
+  and every paint recomputes every placement and reapplies the mask (`apply_terminal_modes`,
+  `apply_browser_modes`, `plugin_modes`; the dedupe key is the clip-local pieces, so a new
+  panel on top changes the key even when the back placement does not move). The likely
+  cause is the preview path: modes are global (`decide_mode`), so while a menu is open
+  (`modal_open`, for example the right-click Add menu) or below `preview_below_zoom` both
+  terminals are GPUI-drawn snapshots in scene order with no native view and no mask, and
+  with the content fill gone a front snapshot with see-through background pixels shows the
+  back snapshot's text. Not confirmed by eye. A terminal preview with a
+  snapshot drops CALM's fill too, so it looks like the live panel (`paints_content_underfill`);
+  a preview with no snapshot yet keeps the opaque fill and the title. The mask's rendered look over Ghostty's own layer is still unverified (manual pass owed).
+  A terminal's content fade (`content_opacity`) also fades its preview: `take_snapshot`
+  scales the snapshot's alpha bytes (`preview::fade_pixels`, straight alpha). Look unverified.
+  Snapshots are converted from premultiplied (the shim `memcpy`s Ghostty's IOSurface,
+  which Ghostty blends premultiplied) to straight alpha for GPUI (`preview::unpremultiply_pixels`).
+- #76 A typed command or TUI app that exits in under
+  250 ms (say `echo hello`) no longer gets Ghostty's "failed to launch" screen. The status
+  wrapper stays alive at least 0.4 s. Unit tested on the real wrapper; not yet seen in the app.
+- #77 README leads with the product: pitch, link to https://calm.raqz.link, a screenshot
+  (`assets/screenshots/canvas.png`), highlights, then get started. The full feature list
+  and key table sit in `<details>` blocks.
 
 ## Persistence plan progress
 
@@ -239,7 +358,7 @@ Pull requests:
 | 9 Terminal cwd from Ghostty PWD | Waits on API v2 phase 10 |
 | 10 Browser page zoom saved | Waits on API v2 phase 12 |
 | 11 TUI app panels in the session | Not started |
-| 12 User overrides in chrome | Not started; needs a native text input |
+| 12 User overrides in chrome | Done outside the plan by #57 (panel Settings window) |
 
 ## Plugin API v2 progress
 
@@ -254,7 +373,7 @@ Spec: `docs/superpowers/specs/2026-10-31-plugin-api-v2-design.md`. Worker briefs
 | 4 Control | Waits on open question 2 (`setAppearance` on every kind) |
 | 5 Close | After 4 |
 | 6 Events | Core `Coalescer` done, #34; wiring not started |
-| 7 Storage, bus, process, github, openExternal | Storage, `github.api`, `openExternal` done outside the plan, #23; bus and `process.exec` open |
+| 7 Storage, bus, process, github, openExternal | Storage, `github.api`, `openExternal` done outside the plan, #23; `process.exec` #44; bus open |
 | 8 Contributions | `contributes.menus` done outside the plan, #28; the rest open |
 | 9 to 16 | Not started. 10 needs the user's go for the Ghostty fork; 11 may move earlier (open question 4); 16 is persistence Task 8 |
 
@@ -262,84 +381,9 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
-- `fix/terminal-env-scrub`: CALM unsets the launching terminal's identity (`ITERM_*`,
-  `TERM_PROGRAM*`, `LC_TERMINAL*`, `TMUX`, `TMUX_PANE`, ...) at startup, so Claude Code agent teams no
-  longer split the iTerm2 tab CALM runs in. Smoke `terminal_env` checks a `std::process`
-  child; that a Ghostty surface child sees the scrubbed env is inferred, not yet observed.
-
-- PR #62 (`docs/keybindings-spec`): every key binding is a setting with a Keys tab in
-  Settings, recorded by pressing the key, applied live. Smoke step `keybindings` prints
-  `smoke: keybindings override=true old_gone=true restored=true recorder_stops=true tab_stops=true`. By eye,
-  owed by the user: record a key in the Keys tab and use it; see the menu shortcut change;
-  record a used key and see "Used by"; Escape and clicking away cancel recording; a non-US
-  layout records the key GPUI fires.
-
-- `fix/settings-above-canvas`, no PR yet: global and panel Settings windows stay above the
-  canvas as its child windows. Smoke asserts it; not checked by eye in fullscreen yet.
-- `feat/panel-settings`, no PR yet: per-panel settings. Settings… in every panel menu opens
-  one native Settings window per panel (tabs, each field inherited or set with Reset to
-  global), saved as the panel's `overrides`: title, icon (built-in or an image copied to
-  `panel-icons/`), accent, title bar and title colors, terminal colors, borderless.
-  Cmd+drag on a terminal's or page's content moves the panel (`canvas.move_modifier`,
-  default `cmd`); a Cmd+click inside the slop is replayed to the native view;
-  Cmd+right-click opens the panel menu. Terminals save their profile in the session and a
-  restore reopens it (an unknown id gives one notice). Duplicate copies overrides and
-  profile. Policy is unit tested (`calm_core::gesture`, `calm-app` `content_move`); the
-  AppKit monitor is tested on its state machine only.
+- Open PRs: #64 (design and plan presets and the first-launch welcome screen), #70 (plan
+  the Claude Code integration), #75 (presets and the first-launch welcome screen).
 - No PR yet: a Linux port plan.
-- `fix/tui-quick-exit-banner`, not merged: a typed command or TUI app that exits in under
-  250 ms (say `echo hello`) no longer gets Ghostty's "failed to launch" screen. The status
-  wrapper stays alive at least 0.4 s. Unit tested on the real wrapper; not yet seen in the app.
-- `feat/tui-extends-terminal`, PR #63, not merged: a TUI app is a terminal with an app
-  attached (`PanelKind::app_terminal`, `.app()`), still saved as `type=tui`. One spawn,
-  refresh, recolor and exit path for shells, typed commands and apps. App panels get the
-  Settings sections "Title bar colors" and "Terminal colors" with presets, and inherit
-  defaults and profile env. Looks stack defaults, profile, manifest, panel overrides. Add >
-  Run Command… (after Terminal and Terminal Profiles) asks for a command in an NSAlert and
-  opens a terminal running it in the login shell, supervised, titled `{name}`, saved in the
-  session and run again on restore. `terminal.command_restart` (`never`, `on_exit`,
-  `prompt`, default `prompt`) sets what a typed command does on exit. A terminal's tick loop
-  starts at spawn, which removes the `tui-exit` smoke flake. Core rules are unit tested. The
-  app-side spawn, exit and restart of typed commands and app recolor are checked by the smoke
-  only; the NSAlert prompt is never driven by agents (manual pass owed).
-- `fix/native-occlusion`, PR #54: a back panel's native view (Ghostty, WKWebView, the
-  browser's address bar, a plugin page) no longer covers the title bar and ring of a panel
-  in front of it. `calm_core::occlusion` computes the visible part of each native container
-  (the container minus every panel above it, ring included, chip when minimized, and the
-  divider of every join painted above it);
-  `terminal_placement` fills `NativePlacement::visible`, and `NativeChild::apply` masks the
-  clip view's layer to it and makes `hitTest:` return nil outside it. A fully covered view
-  is hidden; its process keeps running. Terminal presses and scrolls outside the visible
-  part go on to the canvas; motion there and releases reach the terminal only during a
-  press it took (`PointerGate`). Rounded corners of a front panel leave a small square
-  notch of the rear view (known limitation). A restack without a paint keeps the old mask until the next
-  paint. `native_smoke` checks the mask piece, hit testing and full cover in AppKit; the
-  look over real Ghostty and WKWebView content is unverified (manual pass owed).
-- `feat/terminal-transparency` (branch, not merged): CALM paints no fill under a live
-  terminal's content (the ring quad is transparent, the title bar gets its own fill), and
-  `NativePlacement::paint` (`occlusion::native_paint_region`) masks a back native view only
-  under a live front terminal's title bar and ring, so it shows through the front terminal.
-  `visible` stays the input region: a press in the overlap still goes to the front panel.
-  A preview, minimized or hidden front panel still cuts the back view out.
-  Why the throwaway spike (fills removed, Ghostty `background-opacity = 0.5`) showed a back
-  terminal's text through a front one although the back was masked there: not reproduced,
-  since agents do not drive the GUI. No stale mask was found. `native_visible_region` cuts
-  the front panel's whole outline out of the back container (unit tests
-  `panel_above_occludes_with_its_ring`, `input_region_is_unchanged_by_live_front_panels`),
-  and every paint recomputes every placement and reapplies the mask (`apply_terminal_modes`,
-  `apply_browser_modes`, `plugin_modes`; the dedupe key is the clip-local pieces, so a new
-  panel on top changes the key even when the back placement does not move). The likely
-  cause is the preview path: modes are global (`decide_mode`), so while a menu is open
-  (`modal_open`, for example the right-click Add menu) or below `preview_below_zoom` both
-  terminals are GPUI-drawn snapshots in scene order with no native view and no mask, and
-  with the content fill gone a front snapshot with see-through background pixels shows the
-  back snapshot's text. Not confirmed by eye. On this branch a terminal preview with a
-  snapshot drops CALM's fill too, so it looks like the live panel (`paints_content_underfill`);
-  a preview with no snapshot yet keeps the opaque fill and the title. The mask's rendered look over Ghostty's own layer is still unverified (manual pass owed).
-  A terminal's content fade (`content_opacity`) also fades its preview: `take_snapshot`
-  scales the snapshot's alpha bytes (`preview::fade_pixels`, straight alpha). Look unverified.
-  Snapshots are converted from premultiplied (the shim `memcpy`s Ghostty's IOSurface,
-  which Ghostty blends premultiplied) to straight alpha for GPUI (`preview::unpremultiply_pixels`).
 
 ## Not wired yet
 
@@ -353,8 +397,7 @@ Open questions: `.ai/open-questions.md`.
 - Layouts and session: restore at launch and autosave are active (#41). Not built: layout
   save (`--layout NAME` only opens), the File menu, the `ask` restore dialog (persistence
   plan Task 7) and the later persistence tasks.
-- Layout v2 limits: the resize policy is not saved, overrides are stored but not applied
-  in the chrome, `page_zoom` is stored but not applied, an unsupported panel draws chrome
+- Layout v2 limits: the resize policy is not saved, `page_zoom` is stored but not applied, an unsupported panel draws chrome
   only, and the terminal cwd is the spawn cwd. Lowering `backup_count` leaves older backups
   above the new count in place.
 - Autosave details (persistence plan Task 4, #39; active since #41). `calm_core::autosave` holds `AutosaveClock` (quiet `session.debounce_ms`, max
@@ -402,7 +445,7 @@ Open questions: `.ai/open-questions.md`.
   web views.
 - TUI apps: a real `slk`, fish as login shell, the glyph and image icon at all zooms, the
   accent ring and terminal colors.
-- Run Command (`feat/tui-extends-terminal`): Add > Run Command…, type `htop`, Run; quit
+- Run Command (#63): Add > Run Command…, type `htop`, Run; quit
   htop with `q`, check the "[calm] htop exited with code 0" line, press Enter and see it
   start again. Cancel and blank input open nothing. Open a Top panel's Settings… and change
   its title bar, accent and terminal colors; the panel recolors live. Reset on the accent
@@ -418,7 +461,7 @@ Open questions: `.ai/open-questions.md`.
   child process walk with real shells running.
 - Plugin API v2 phase 1 (#35): in the github-prs page's Web Inspector,
   `calm.has("panel.setTitle")` is `true`; the gh logged-out message still shows.
-- Bridge control (`feat/plugin-bridge-control`), from a plugin page's Web Inspector:
+- Bridge control (#44), from a plugin page's Web Inspector:
   `calm.canvas.createPanel({ kind: "terminal" })` opens a focused shell at the view center,
   `calm.canvas.focusPanel(id)` on a minimized panel restores and raises it,
   `calm.canvas.focusPanel(id)` on another plugin panel moves the keyboard into that page,
@@ -429,12 +472,12 @@ Open questions: `.ai/open-questions.md`.
 - Session restore (#41): a manual quit and relaunch, and the `about:blank` fallback for a bad
   saved url in a live view (unit tested only).
 - Brand: the logo and app icon by eye (the 16 px mark reads as a C without a prompt).
-- Per-panel settings (`feat/panel-settings`), by eye: Cmd+drag over a live terminal and
+- Per-panel settings (#57), by eye: Cmd+drag over a live terminal and
   over a page, Cmd+click on a link in a terminal and in a page (the click must land),
   Cmd+right-click menu on both, the panel Settings window and its tabs, Reset to global,
   the borderless look. The panel form does not yet explain that untouched terminal colors come
   from Ghostty Default when no palette is set.
-- See-through terminals (`feat/terminal-transparency`), by eye. With Ghostty
+- See-through terminals (#74), by eye. With Ghostty
   `background-opacity = 0.5`: the canvas shows through a terminal; a back terminal shows
   through a front one, and a click in the overlap reaches the front one; the shadow under a
   see-through terminal. The fade (Panel Settings > Opacity) at 20%, 70% and 100%, with the
@@ -471,7 +514,7 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
     cause: window occlusion or the display link stopping. Not confirmed.
 - Chrome colors (accent, title bar, title) accept `#rrggbbaa` in the data model, but
   `rgb_from_ns` (`settings_window.rs`) drops the picker's alpha, so no color well can set
-  one. Since `feat/terminal-transparency` every CALM well sets `supportsAlpha = false`
+  one. Since #74 every CALM well sets `supportsAlpha = false`
   (`.ai/decisions.md`, "Color wells without opacity").
 - Escape on the close confirmation does not redraw until the next event.
 - Panel bottom corners are square because the native view is square.

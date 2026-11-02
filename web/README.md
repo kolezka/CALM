@@ -1,6 +1,7 @@
 # CALM web
 
-The product page for CALM. One static Astro page, no subpages.
+The product site for CALM. A static Astro site with two pages: the landing page
+(`src/pages/index.astro`) and the plugins page (`src/pages/plugins.astro`).
 
 ## Style source
 

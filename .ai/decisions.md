@@ -24,6 +24,15 @@ one means a new entry, not an edit.
   CALM shaped to their own workflow, not to the author's taste. Cost: more settings to
   validate, test and document, and more states to support. If it proves wrong, fold rarely
   used settings back into fixed defaults.
+- **CALM is proprietary, the plugin SDK and templates are MIT (2026-11-02, #71, #72).**
+  `LICENSE` says all rights reserved; crates point at it with `license-file` and are
+  `publish = false`. `packages/calm-plugin-sdk/` and `templates/` carry an MIT `LICENSE`, so
+  plugins built from them can use any license. Third-party notices for shipped code live in
+  `THIRD_PARTY_NOTICES`, written by `gmake notices` (cargo-about plus
+  `third_party/notices/`). Reason (#71): CALM can be sold or relicensed later, and plugin
+  authors can copy the types and starters into their own code. Cost not recorded; the
+  `LICENSE` text publishes the repo for viewing only. This replaces the earlier MIT plan in
+  the backlog.
 
 ## Architecture
 
@@ -596,7 +605,7 @@ These shipped with #41, next to "Restore at launch" above.
   Reason: the panel keeps its place and the bad url never loads. Cost: the user sees a
   blank page and has to type the address again.
 
-## Bridge control (2026-11-01, `feat/plugin-bridge-control`)
+## Bridge control (2026-11-01, PR #44)
 
 - **Window work leaves `dispatch` as `HostEffect`s.** `dispatch` stays pure over a
   `HostContext` and the canvas applies `Open`, `Focus` and `Close` with the window. The
@@ -643,7 +652,7 @@ These shipped with #41, next to "Restore at launch" above.
   is wanted, add one `menus.labels` settings block for all built-in menu labels rather than
   one setting per label.
 
-## Native occlusion (2026-11-01, `fix/native-occlusion`)
+## Native occlusion (2026-11-01, PR #54)
 
 - **Native views are masked by the panels above them.** Native views are subviews of the
   GPUI host, so they draw over all GPUI paint, and a back panel's content covered a front
@@ -671,7 +680,7 @@ These shipped with #41, next to "Restore at launch" above.
   press (`calm_core::occlusion::PointerGate`). A move event with no button held drops any
   remembered press, since GPUI only sends a release to hovered views.
 
-## Per-panel settings (2026-11-01, `feat/panel-settings`)
+## Per-panel settings (2026-11-01, PR #57)
 
 - **Each field is inherited or set.** The panel Settings window shows every field with its
   inherited value until the user sets it. Clearing a field puts it back to inherited, and
@@ -771,7 +780,7 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
 - **Symbols use Apple's modifier order** `⌃⌥⇧⌘`, so Cmd+Shift+Backspace shows as `⇧⌘⌫`.
   The close prompt names its keys in words (`Close? enter / esc`), as the user chose.
 
-## TUI apps are terminals (2026-11-02, `feat/tui-extends-terminal`)
+## TUI apps are terminals (2026-11-02, PR #63)
 
 - **A TUI app is `PanelKind::Terminal` with `app: Some(TerminalApp { plugin_id,
   plugin_version })`.** Built by `PanelKind::app_terminal`, read with `.app()`.
@@ -811,7 +820,7 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
   and follows `terminal.command_restart`. Plugin API kind `tui` and `PanelInfo.kind` "tui"
   are unchanged.
 
-## Color wells without opacity (2026-11-02, `feat/terminal-transparency`)
+## Color wells without opacity (2026-11-02, PR #74)
 
 - **Every CALM color well sets `supportsAlpha = false`.** The `Control::Color` builder in
   `settings_window.rs` (the only `NSColorWell` CALM creates) turns it off, so the picker
@@ -828,7 +837,7 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
   Ghostty's snapshot bytes are premultiplied, so every snapshot first goes through
   `preview::unpremultiply_pixels`, then the fade.
 
-## Launching terminal's env is scrubbed (2026-11-02, `fix/terminal-env-scrub`)
+## Launching terminal's env is scrubbed (2026-11-02, PR #69)
 
 - **`main` unsets the launching terminal's identity before CALM starts any thread.** The
   function is `unsafe` and its caller owns that guarantee. GPUI's pre-main constructors only
