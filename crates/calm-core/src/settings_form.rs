@@ -11,6 +11,10 @@ use crate::browser_url::BrowserQueryMode;
 use crate::chrome::parse_hex_color;
 use crate::grid::GridKind;
 use crate::interaction::MoveModifier;
+use crate::keymap::{
+    ACTIONS, BROWSER_KEYS, Group, KeyError, RESTART_KEY, action, check_rebind, display_key,
+    effective_key, parse_key, shows_in_menu,
+};
 use crate::process_stats::{INTERVAL_MS_RANGE, MemoryUnit, clamp_interval_ms};
 use crate::scene::PanelId;
 use crate::settings::{
@@ -44,6 +48,11 @@ pub enum Control {
     Text {
         value: String,
         placeholder: String,
+    },
+    /// A recorded key binding. `None` is unbound; `default` is what Reset gives back.
+    Key {
+        value: Option<String>,
+        default: Option<String>,
     },
 }
 
@@ -80,6 +89,8 @@ pub enum FieldValue {
     Index(usize),
     Pressed,
     Text(String),
+    /// A recorded key, or `None` to unbind.
+    Key(Option<String>),
     /// Back to the inherited value.
     Reset,
 }
@@ -112,6 +123,11 @@ pub enum FormOutcome {
         rebuild: bool,
     },
     Command(FormCommand),
+    /// A recorded key was not taken; the row says why for a moment.
+    KeyRefused {
+        action: &'static str,
+        reason: KeyError,
+    },
 }
 
 pub(crate) fn checkbox(id: &str, label: &str, value: bool) -> Field {
@@ -161,6 +177,121 @@ pub(crate) fn section(title: &str, fields: Vec<Field>) -> Section {
         title: title.to_string(),
         fields,
     }
+}
+
+/// The stats checkbox names its key, whatever it is bound to.
+fn stats_label(settings: &Settings) -> String {
+    match action("developer.toggle_stats").and_then(|a| effective_key(&settings.keybindings, a)) {
+        Some(key) => format!("Show stats ({})", display_key(&key)),
+        None => "Show stats".to_string(),
+    }
+}
+
+/// Title of the last section, the Keys tab.
+pub const KEYS_SECTION: &str = "Keys";
+
+const GROUPS: [Group; 5] = [
+    Group::Canvas,
+    Group::Panels,
+    Group::View,
+    Group::Developer,
+    Group::App,
+];
+
+/// One row per action, grouped, then CALM's fixed keys.
+fn keys_fields(settings: &Settings) -> Vec<Field> {
+    let overrides = &settings.keybindings;
+    let mut fields = Vec::new();
+    for group in GROUPS {
+        let title = group.title();
+        fields.push(note(
+            &format!("keys.group.{}", title.to_lowercase()),
+            title,
+            String::new(),
+        ));
+        for spec in ACTIONS.iter().filter(|a| a.group == group) {
+            let value = effective_key(overrides, spec);
+            let hidden = spec.in_menu
+                && value
+                    .as_deref()
+                    .and_then(|key| parse_key(key).ok())
+                    .is_some_and(|key| !shows_in_menu(&key));
+            let label = if hidden {
+                format!("{} (not shown in the menu)", spec.label)
+            } else {
+                spec.label.to_string()
+            };
+            let mut row = field(
+                &format!("keys.{}", spec.id),
+                &label,
+                Control::Key {
+                    value,
+                    default: spec.default.map(str::to_string),
+                },
+            );
+            if overrides.contains_key(spec.id) {
+                row.state = FieldState::Set;
+            }
+            fields.push(row);
+        }
+    }
+    fields.push(note("keys.group.browser", "Browser (fixed)", String::new()));
+    for (index, (key, label)) in BROWSER_KEYS.iter().enumerate() {
+        fields.push(note(
+            &format!("keys.browser.{index}"),
+            label,
+            display_key(key),
+        ));
+    }
+    fields.push(note(
+        "keys.terminal.restart",
+        RESTART_KEY.1,
+        display_key(RESTART_KEY.0),
+    ));
+    fields
+}
+
+/// Records, clears or resets one action's key. A refused key changes nothing.
+fn apply_key_field(
+    settings: &mut Settings,
+    id: &str,
+    value: FieldValue,
+) -> Result<FormOutcome, String> {
+    let spec = action(id).ok_or_else(|| format!("unknown settings field \"keys.{id}\""))?;
+    let overrides = &mut settings.keybindings;
+    match value {
+        FieldValue::Key(Some(key)) => match check_rebind(overrides, spec, &key) {
+            Err(reason) => {
+                return Ok(FormOutcome::KeyRefused {
+                    action: spec.id,
+                    reason,
+                });
+            }
+            Ok(parsed) => {
+                let is_default = spec
+                    .default
+                    .and_then(|d| parse_key(d).ok())
+                    .is_some_and(|d| d == parsed);
+                if is_default {
+                    overrides.remove(spec.id);
+                } else {
+                    overrides.insert(spec.id.to_string(), Some(key));
+                }
+            }
+        },
+        FieldValue::Key(None) => {
+            if spec.default.is_some() {
+                overrides.insert(spec.id.to_string(), None);
+            } else {
+                overrides.remove(spec.id);
+            }
+        }
+        FieldValue::Reset => {
+            overrides.remove(spec.id);
+        }
+        other => return Err(format!("settings field \"keys.{id}\" got {other:?}")),
+    }
+    Ok(FormOutcome::Changed { rebuild: true })
 }
 
 const GRADIENT_KINDS: [GradientKind; 2] = [GradientKind::Linear, GradientKind::Radial];
@@ -353,7 +484,7 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
         vec![
             checkbox(
                 "developer.show_stats",
-                "Show stats (cmd-shift-f)",
+                &stats_label(settings),
                 context.show_stats,
             ),
             checkbox("developer.stats.show_fps", "FPS", stats.show_fps),
@@ -392,6 +523,7 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
             button("developer.reset", "", "Reset to Defaults"),
         ],
     ));
+    sections.push(section(KEYS_SECTION, keys_fields(settings)));
     sections
 }
 
@@ -532,6 +664,9 @@ pub fn apply_field(
     };
     if let Some(rest) = id.strip_prefix("terminal.") {
         return apply_terminal_field(settings, rest, value);
+    }
+    if let Some(rest) = id.strip_prefix("keys.") {
+        return apply_key_field(settings, rest, value);
     }
     let background = &mut settings.background;
 
@@ -1185,6 +1320,7 @@ mod tests {
             Control::Choice { options, .. } => Some(FieldValue::Index(options.len() - 1)),
             Control::Button(_) => Some(FieldValue::Pressed),
             Control::Note(_) | Control::Text { .. } => None,
+            Control::Key { .. } => Some(FieldValue::Key(None)),
         }
     }
 
@@ -1515,5 +1651,169 @@ mod tests {
             apply_field(&mut settings, "gradient.stop.0.remove", FieldValue::Pressed).unwrap();
         }
         assert!(apply_field(&mut settings, "gradient.stop.0.remove", FieldValue::Pressed).is_err());
+    }
+
+    fn key_field<'a>(form: &'a [Section], id: &str) -> &'a Field {
+        form.iter()
+            .flat_map(|s| &s.fields)
+            .find(|f| f.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn keys_tab_lists_every_action_with_its_key() {
+        let form = settings_form(&Settings::default(), &FormContext::default());
+        let keys = form.iter().find(|s| s.title == KEYS_SECTION).unwrap();
+        assert_eq!(form.last().unwrap().title, KEYS_SECTION);
+        for a in crate::keymap::ACTIONS {
+            let field = key_field(&form, &format!("keys.{}", a.id));
+            assert_eq!(
+                field.control,
+                Control::Key {
+                    value: a.default.map(String::from),
+                    default: a.default.map(String::from)
+                }
+            );
+            assert_eq!(field.state, FieldState::Plain);
+        }
+        let browser: Vec<&Field> = keys
+            .fields
+            .iter()
+            .filter(|f| f.id.starts_with("keys.browser."))
+            .collect();
+        assert_eq!(browser.len(), 10);
+        assert!(
+            browser
+                .iter()
+                .all(|f| matches!(f.control, Control::Note(_)))
+        );
+        assert!(keys.fields.iter().any(|f| f.label == "Browser (fixed)"));
+        assert_eq!(
+            key_field(&form, "keys.terminal.restart").control,
+            Control::Note("↩".into())
+        );
+    }
+
+    #[test]
+    fn recording_a_used_key_is_refused_and_changes_nothing() {
+        let mut settings = Settings::default();
+        let outcome = apply_field(
+            &mut settings,
+            "keys.panel.delete",
+            FieldValue::Key(Some("cmd-=".into())),
+        );
+        assert_eq!(
+            outcome,
+            Ok(FormOutcome::KeyRefused {
+                action: "panel.delete",
+                reason: KeyError::UsedBy("Zoom in")
+            })
+        );
+        assert_eq!(KeyError::UsedBy("Zoom in").message(), "Used by Zoom in");
+        assert_eq!(settings, Settings::default());
+        let outcome = apply_field(
+            &mut settings,
+            "keys.panel.delete",
+            FieldValue::Key(Some("cmd-r".into())),
+        );
+        assert!(matches!(
+            outcome,
+            Ok(FormOutcome::KeyRefused {
+                reason: KeyError::Reserved("Reload"),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn recording_the_same_or_default_key_is_not_a_conflict() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            apply_field(
+                &mut settings,
+                "keys.panel.delete",
+                FieldValue::Key(Some("cmd-shift-backspace".into()))
+            ),
+            Ok(FormOutcome::Changed { rebuild: true })
+        );
+        assert!(settings.keybindings.is_empty());
+        apply_field(
+            &mut settings,
+            "keys.panel.delete",
+            FieldValue::Key(Some("cmd-d".into())),
+        )
+        .unwrap();
+        assert_eq!(
+            apply_field(
+                &mut settings,
+                "keys.panel.delete",
+                FieldValue::Key(Some("cmd-d".into()))
+            ),
+            Ok(FormOutcome::Changed { rebuild: true })
+        );
+        assert_eq!(
+            settings.keybindings.get("panel.delete"),
+            Some(&Some("cmd-d".into()))
+        );
+    }
+
+    #[test]
+    fn clear_and_reset_a_key() {
+        let mut settings = Settings::default();
+        apply_field(&mut settings, "keys.panel.delete", FieldValue::Key(None)).unwrap();
+        assert_eq!(settings.keybindings.get("panel.delete"), Some(&None));
+        let form = settings_form(&settings, &FormContext::default());
+        assert_eq!(key_field(&form, "keys.panel.delete").state, FieldState::Set);
+        apply_field(&mut settings, "keys.panel.delete", FieldValue::Reset).unwrap();
+        assert!(settings.keybindings.is_empty());
+        apply_field(&mut settings, "keys.app.about", FieldValue::Key(None)).unwrap();
+        assert!(
+            settings.keybindings.is_empty(),
+            "clearing an unbound default stores nothing"
+        );
+        assert!(apply_field(&mut settings, "keys.nope", FieldValue::Key(None)).is_err());
+        assert!(apply_field(&mut settings, "keys.panel.delete", FieldValue::Bool(true)).is_err());
+    }
+
+    #[test]
+    fn show_stats_label_follows_the_binding() {
+        let mut settings = Settings::default();
+        let label = |s: &Settings| {
+            key_field(
+                &settings_form(s, &FormContext::default()),
+                "developer.show_stats",
+            )
+            .label
+            .clone()
+        };
+        assert_eq!(label(&settings), "Show stats (⇧⌘F)");
+        settings
+            .keybindings
+            .insert("developer.toggle_stats".into(), Some("cmd-k".into()));
+        assert_eq!(label(&settings), "Show stats (⌘K)");
+        settings
+            .keybindings
+            .insert("developer.toggle_stats".into(), None);
+        assert_eq!(label(&settings), "Show stats");
+    }
+
+    #[test]
+    fn rows_note_keys_the_menu_cannot_show() {
+        let mut settings = Settings::default();
+        settings
+            .keybindings
+            .insert("canvas.fit_all".into(), Some("cmd-enter".into()));
+        settings
+            .keybindings
+            .insert("canvas.draw_terminal".into(), Some("tab".into()));
+        let form = settings_form(&settings, &FormContext::default());
+        assert_eq!(
+            key_field(&form, "keys.canvas.fit_all").label,
+            "Fit all panels (not shown in the menu)"
+        );
+        assert_eq!(
+            key_field(&form, "keys.canvas.draw_terminal").label,
+            "Draw a terminal"
+        );
     }
 }

@@ -17,6 +17,7 @@ use crate::browser_url::BrowserQueryMode;
 use crate::geometry::Size;
 use crate::grid::GridKind;
 use crate::interaction::MoveModifier;
+use crate::keymap::KeyOverrides;
 use crate::layout::{move_aside, write_durable};
 use crate::menu::DEFAULT_TERMINAL_SIZE;
 use crate::preview::PREVIEW_ZOOM_THRESHOLD;
@@ -84,6 +85,9 @@ pub struct Settings {
     pub developer: DeveloperSettings,
     /// Session restore and autosave. A file without the section gets the defaults.
     pub session: SessionSettings,
+    /// Changed key bindings by action id; `null` unbinds. Missing ids keep their default.
+    #[serde(deserialize_with = "keybindings_field")]
+    pub keybindings: KeyOverrides,
 }
 
 pub const SESSION_DEBOUNCE_MS_RANGE: RangeInclusive<u64> = 250..=10_000;
@@ -216,6 +220,13 @@ impl Default for CanvasSettings {
 }
 
 /// Strict like the derive, but the error names the field.
+fn keybindings_field<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<KeyOverrides, D::Error> {
+    KeyOverrides::deserialize(deserializer)
+        .map_err(|error| serde::de::Error::custom(format!("\"keybindings\": {error}")))
+}
+
 fn move_modifier_field<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<MoveModifier, D::Error> {
@@ -310,6 +321,7 @@ impl Default for Settings {
             canvas: CanvasSettings::default(),
             developer: DeveloperSettings::default(),
             session: SessionSettings::default(),
+            keybindings: KeyOverrides::new(),
         }
     }
 }
@@ -548,7 +560,8 @@ impl Settings {
             ));
         }
         self.session.validate()?;
-        self.plugins.menus.validate()
+        self.plugins.menus.validate()?;
+        crate::keymap::validate_overrides(&self.keybindings)
     }
 }
 
@@ -1301,5 +1314,101 @@ mod tests {
         assert!(grid_line_offsets(0.0, 64.0, 0.1, 1280.0).is_empty());
         assert!(grid_line_offsets(f64::NAN, 64.0, 1.0, 1280.0).is_empty());
         assert!(grid_line_offsets(0.0, 64.0, 1.0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn keybindings_load_overrides_and_null_unbinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"version": 2, "keybindings": {"panel.delete": "cmd-d", "canvas.draw_browser": null}}"#).unwrap();
+        let loaded = read_settings_from(&path).unwrap();
+        assert_eq!(
+            loaded.keybindings.get("panel.delete"),
+            Some(&Some("cmd-d".to_string()))
+        );
+        assert_eq!(loaded.keybindings.get("canvas.draw_browser"), Some(&None));
+        assert_eq!(loaded.keybindings.len(), 2);
+        let json = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(
+            json["keybindings"],
+            serde_json::json!({"canvas.draw_browser": null, "panel.delete": "cmd-d"})
+        );
+        std::fs::write(&path, r#"{"version": 2}"#).unwrap();
+        assert!(read_settings_from(&path).unwrap().keybindings.is_empty());
+    }
+
+    #[test]
+    fn each_bad_keybinding_is_its_own_settings_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        for (entry, field, says) in [
+            (
+                r#""canvas.nope": "cmd-k""#,
+                "keybindings.canvas.nope",
+                "unknown action",
+            ),
+            (
+                r#""panel.delete": "Cmd-x""#,
+                "keybindings.panel.delete",
+                "not a key",
+            ),
+            (
+                r#""panel.delete": "cmd""#,
+                "keybindings.panel.delete",
+                "only modifiers",
+            ),
+            (
+                r#""panel.delete": "cmd-shift-,""#,
+                "keybindings.panel.delete",
+                "never fires",
+            ),
+            (
+                r#""panel.delete": "cmd-r""#,
+                "keybindings.panel.delete",
+                "browser key (Reload)",
+            ),
+            (
+                r#""canvas.draw_terminal": "space""#,
+                "keybindings.canvas.draw_terminal",
+                "hold-to-pan",
+            ),
+            (
+                r#""panel.delete": "cmd-=""#,
+                "keybindings.panel.delete",
+                "Used by Zoom in",
+            ),
+        ] {
+            std::fs::write(
+                &path,
+                format!(r#"{{"version": 2, "keybindings": {{{entry}}}}}"#),
+            )
+            .unwrap();
+            let error = read_settings_from(&path).unwrap_err();
+            assert!(
+                matches!(&error, SettingsError::Malformed { .. }),
+                "{entry}: {error:?}"
+            );
+            let text = error.to_string();
+            assert!(
+                text.contains(field) && text.contains(says),
+                "{entry}: {text}"
+            );
+            assert!(load_settings_from(&path).is_err(), "{entry}");
+        }
+    }
+
+    #[test]
+    fn keybindings_with_wrong_types_are_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        for text in [
+            r#"{"version": 2, "keybindings": 1}"#,
+            r#"{"version": 2, "keybindings": null}"#,
+            r#"{"version": 2, "keybindings": {"panel.delete": 1}}"#,
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let error = read_settings_from(&path).unwrap_err();
+            assert!(error.to_string().contains("keybindings"), "{text}: {error}");
+        }
     }
 }

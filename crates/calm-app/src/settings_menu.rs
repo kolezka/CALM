@@ -241,6 +241,10 @@ impl CanvasView {
             Ok(FormOutcome::Command(command @ FormCommand::ChoosePanelIcon(_))) => {
                 eprintln!("calm: settings window: unexpected {command:?}");
             }
+            // Shown on the row once the recorder lands; logged until then.
+            Ok(FormOutcome::KeyRefused { reason, .. }) => {
+                eprintln!("calm: settings window: {}", reason.message());
+            }
             // The form and `apply_field` disagree: a bug, so say so instead of guessing.
             Err(err) => eprintln!("calm: settings window: {err}"),
         }

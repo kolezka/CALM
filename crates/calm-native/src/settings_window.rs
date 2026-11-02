@@ -535,6 +535,17 @@ impl SettingsWindow {
                 document.addSubview(&note);
                 return None;
             }
+            // Read-only until the recorder lands; the key is shown, nothing is bound.
+            Control::Key { value, .. } => {
+                let text = value
+                    .as_deref()
+                    .map(calm_core::keymap::display_key)
+                    .unwrap_or_default();
+                let label = NSTextField::labelWithString(&NSString::from_str(&text), mtm);
+                label.setFrame(rect(CONTROL_X, y + 5.0, CONTROL_WIDTH, 20.0));
+                document.addSubview(&label);
+                return None;
+            }
         })
     }
 
