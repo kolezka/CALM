@@ -28,6 +28,12 @@ mid-save leaves the old file whole.
   panel focus, and the keyboard goes back to the canvas. Escape does the same when no
   terminal, page or address field holds the keyboard. Pans and zooms never drop focus.
   In the Settings window under Canvas and Snapping.
+- `skip_repeated_cursor_sets` (default `true`): CALM skips a pointer update that would set
+  the cursor already showing. With a custom pointer (Accessibility > Display > Pointer:
+  colors or a larger size) macOS renders a new pointer image on every update, about 4 ms
+  each, and AppKit repeats the update on every frame while panels move, so pans, zooms
+  and mouse moves over panels slowed down. Turn it off if the pointer ever shows the wrong
+  shape; a restart is not needed. In the Settings window under Canvas and Snapping.
 
 ## Developer stats
 

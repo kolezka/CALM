@@ -228,6 +228,9 @@ pub struct CanvasSettings {
     pub arrow_pan_step: f64,
     /// World units Cmd+Option+arrow moves the focused panel.
     pub arrow_move_step: f64,
+    /// Skips a cursor set that repeats the cursor already showing. A customized system
+    /// pointer makes each set render a new image, see `cursor_guard`.
+    pub skip_repeated_cursor_sets: bool,
 }
 
 impl Default for CanvasSettings {
@@ -237,6 +240,7 @@ impl Default for CanvasSettings {
             move_modifier: MoveModifier::Cmd,
             arrow_pan_step: DEFAULT_ARROW_PAN_STEP,
             arrow_move_step: DEFAULT_ARROW_MOVE_STEP,
+            skip_repeated_cursor_sets: true,
         }
     }
 }
@@ -772,6 +776,7 @@ mod tests {
     fn custom_settings() -> Settings {
         let mut settings = Settings::default();
         settings.canvas.click_empty_clears_focus = false;
+        settings.canvas.skip_repeated_cursor_sets = false;
         settings.background.kind = BackgroundKind::Gradient;
         settings.background.gradient.kind = GradientKind::Radial;
         settings.background.gradient.stops.push(GradientStop {
@@ -1146,6 +1151,10 @@ mod tests {
             (
                 "click clears focus type",
                 r#"{"version": 2, "canvas": {"click_empty_clears_focus": "yes"}}"#,
+            ),
+            (
+                "skip cursor sets type",
+                r#"{"version": 2, "canvas": {"skip_repeated_cursor_sets": "on"}}"#,
             ),
             (
                 "click clears focus number",

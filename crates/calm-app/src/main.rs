@@ -2132,6 +2132,12 @@ async fn smoke_zoom_bench(
         "",
     )
     .unwrap_or_else(|err| smoke_fail(&format!("bench plugin: {err}")));
+    // The guard is installed either way so its counters see every set; off measures the
+    // old behavior in the same binary.
+    calm_native::cursor_guard::install_here();
+    if std::env::var("CALM_ZOOM_BENCH_SKIP_CURSOR").as_deref() == Ok("off") {
+        calm_native::cursor_guard::set_enabled(false);
+    }
     for variant in variants.split(',') {
         let spec = match variant {
             "mixed" => None,
@@ -2248,6 +2254,7 @@ async fn smoke_camera_phases(
         println!(
             "smoke: zoom_bench variant={variant} phase={phase} start_unix_ms={unix_ms} key_and_pointer_inside={pointer:?}"
         );
+        let cursor_before = calm_native::cursor_guard::counts();
         cx.update(|cx| {
             paint_profile::start();
             view.update(cx, |view, cx| {
@@ -2285,6 +2292,17 @@ async fn smoke_camera_phases(
         for line in paint_profile::report(phase, &frames, refresh_hz) {
             println!("smoke: zoom_bench variant={variant} {line}");
         }
+        let cursor = calm_native::cursor_guard::counts();
+        let calls = cursor.calls - cursor_before.calls;
+        let skipped = cursor.skipped - cursor_before.skipped;
+        let sets = calls - skipped;
+        let set_ms = (cursor.set_nanos - cursor_before.set_nanos) as f64 / 1e6;
+        let secs = started.elapsed().as_secs_f64();
+        println!(
+            "smoke: zoom_bench variant={variant} phase={phase} cursor calls={calls} skipped={skipped} sets={sets} sets_per_s={:.1} set_ms_total={set_ms:.1} ms_per_set={:.2}",
+            sets as f64 / secs,
+            if sets > 0 { set_ms / sets as f64 } else { 0.0 }
+        );
     }
     cx.update(|cx| {
         view.update(cx, |view, cx| {

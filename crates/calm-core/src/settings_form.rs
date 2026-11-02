@@ -383,6 +383,11 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                 "Click on empty canvas clears focus",
                 settings.canvas.click_empty_clears_focus,
             ),
+            checkbox(
+                "canvas.skip_repeated_cursor_sets",
+                "Skip repeated pointer updates (faster with a custom pointer)",
+                settings.canvas.skip_repeated_cursor_sets,
+            ),
             choice(
                 "canvas.move_modifier",
                 "Move panel by dragging content with",
@@ -844,6 +849,10 @@ pub fn apply_field(
             settings.canvas.click_empty_clears_focus = on;
             changed
         }
+        ("canvas.skip_repeated_cursor_sets", FieldValue::Bool(on)) => {
+            settings.canvas.skip_repeated_cursor_sets = on;
+            changed
+        }
         ("canvas.arrow_pan_step", FieldValue::Number(_)) => {
             settings.canvas.arrow_pan_step =
                 number(ARROW_PAN_STEP_RANGE, 0).unwrap_or(DEFAULT_ARROW_PAN_STEP);
@@ -973,6 +982,7 @@ pub fn apply_field(
             | "grid.major_every"
             | "grid.major_opacity"
             | "canvas.click_empty_clears_focus"
+            | "canvas.skip_repeated_cursor_sets"
             | "canvas.move_modifier"
             | "canvas.arrow_pan_step"
             | "canvas.arrow_move_step"

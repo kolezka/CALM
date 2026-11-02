@@ -432,8 +432,13 @@ Open questions: `.ai/open-questions.md`.
   Cursor work: the status pill now changes native views only when its text or placement
   changed, which ended one cursor set per paint (about 4 ms each with a custom pointer).
   The bench prints `key_and_pointer_inside`. Moving panels still cost one cursor set per
-  frame; a GPUI patch (A) or a process-local guard (B) fixes that in local experiments and
-  waits for the user's choice. Unverified by hand: cursor shapes, real mouse moves.
+  frame; the user picked the process-local guard (B): `calm-native::cursor_guard` skips a
+  `-[NSCursor set]` that repeats the current cursor, setting
+  `canvas.skip_repeated_cursor_sets` (default on). With the pointer moving over a browser,
+  pan p50 went 13.86 to 8.40 ms and zoom 16.64 to 9.52 ms (one run each). The GPUI patch (A)
+  replaces it once upstream lands (zed-industries/zed#66403). Unverified by hand: cursor
+  shapes over terminals, pages, links, chrome and resize edges; leaving and re-entering
+  the window; menus and the Settings window.
 
 ## Not wired yet
 

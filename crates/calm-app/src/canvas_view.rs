@@ -799,6 +799,9 @@ impl CanvasView {
         self.input.click_empty_clears_focus =
             self.settings.settings.canvas.click_empty_clears_focus;
         self.input.move_modifier = self.settings.settings.canvas.move_modifier;
+        calm_native::cursor_guard::set_enabled(
+            self.settings.settings.canvas.skip_repeated_cursor_sets,
+        );
         self.confirm_title = calm_core::keymap::confirm_prompt(&self.settings.settings.keybindings);
         self.input.arrow_pan_step = self.settings.settings.canvas.arrow_pan_step;
         self.input.arrow_move_step = self.settings.settings.canvas.arrow_move_step;

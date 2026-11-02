@@ -5,6 +5,7 @@ pub mod background;
 pub mod browser_url;
 pub mod camera;
 pub mod chrome;
+pub mod cursor_guard;
 pub mod frame_stats;
 pub mod geometry;
 pub mod gesture;

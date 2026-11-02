@@ -193,3 +193,23 @@ neither shipped, cut that too (browser-8, two runs each, pill fix in all):
 Real mouse moves were not measured (agents send no OS input). The user reports lag when the
 pointer moves with no panels; a mouse move repaints, and every paint updated the pill, so
 this fix should cover that case. That is inferred, not measured.
+
+## Cursor guard with real pointer motion, 2026-11-02
+
+Same hardware, release build, customized system pointer. `zoom_bench`, variant browser-8,
+while the user moved the pointer in circles over a browser address bar, so AppKit had real
+cursor updates to make. One run each, controlled: same binary, the guard installed in both
+runs so it counts every set; `CALM_ZOOM_BENCH_SKIP_CURSOR=off` turns skipping off. Both runs
+print `key_and_pointer_inside=Some((true, true))` for each phase.
+
+| Build | Phase | Interval p50 ms | Cursor calls | Skipped | Real sets | ms per set |
+| --- | --- | --- | --- | --- | --- | --- |
+| pill fix only (guard off) | Pan | 13.86 | 520 | 0 | 520 | 4.24 |
+| pill fix and guard | Pan | 8.40 | 519 | 394 | 125 | 3.16 |
+| pill fix only (guard off) | Zoom | 16.64 | 419 | 0 | 419 | 3.42 |
+| pill fix and guard | Zoom | 9.52 | 376 | 301 | 75 | 3.43 |
+
+Main-thread CPU outside paint, p50: pan 6.19 to 1.13 ms, zoom 9.36 to 4.49 ms. The guard
+ships as `canvas.skip_repeated_cursor_sets` (default on). The long-term fix is the GPUI
+patch (A above) once upstream takes it (zed-industries/zed#66403); see `.ai/decisions.md`.
+Cursor shapes and real trackpad feel are checked by hand, not by this bench.

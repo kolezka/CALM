@@ -928,9 +928,38 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   cursor again on the next display cycle. A custom pointer (Accessibility colors or size,
   common) makes each set render a new image, about 4 ms. With no panels this took 241 sets
   per bench phase down to 0 to 3. Numbers: `docs/benchmarks.md`.
-- **Moving panels still cause one cursor set per frame.** Two fixes were measured and left
-  for the user to pick: patching GPUI's `GPUIView` to set its cursor only when
-  `+[NSCursor currentCursor]` differs (upstreamable; Zed did this before switching to cursor
-  rects), or a process-local `-[NSCursor set]` guard behind a setting. Rejected: pausing
-  cursor rects while the camera moves (AppKit then sets the arrow itself every cycle) and
-  a no-op `cursorUpdate:` tracking area (AppKit ignores it).
+- **Moving panels still caused one cursor set per frame.** Two fixes were measured; the
+  user picked the process-local guard below (B) for now. See the next section.
+
+## Skip repeated cursor sets (2026-11-02, branch `perf/zoom-native`)
+
+- **`calm-native::cursor_guard` swaps `-[NSCursor set]` in this process and skips a set that
+  repeats AppKit's current cursor.** Custom pointers (Accessibility pointer colors or size,
+  common) make each set render a new pointer image: 3.5 to 4.2 ms per set measured on an
+  M4 Pro. AppKit's `displayCycleUpdateStructuralRegions` re-sets the cursor of the rect
+  under the pointer on every display cycle that touches tracking regions, about 110 to 155
+  sets per second during bench motion, even with no native panels. The receiver is GPUI's
+  own cursor rect on `GPUIView`; GPUI already dedupes its style changes, so the repeat comes
+  from AppKit. Ghostty's shim never sets the cursor.
+- **Why a method swap and not a CALM view override.** Three CALM-owned fixes were measured
+  and failed: pausing cursor rects while the camera moves (AppKit then sets the arrow
+  directly every cycle), a no-op `cursorUpdate:` sink area (ignored), and the sink with rects
+  on (GPUI's rect wins). Patching GPUI would not cover WebKit or AppKit's own arrow sets.
+- **Staleness rules.** A set is skipped only when the guard trusts the last real set: it
+  was made with the pointer over one of CALM's windows, and since then no mouse event went
+  to another app (global monitor) and no AppKit-defined event (activation, hide) arrived.
+  `currentCursor` covers in-process changes (menus, the Settings window, push and pop). The
+  first set after re-entering a window always goes through.
+- **Setting `canvas.skip_repeated_cursor_sets`, default on.** A user-facing escape hatch, not
+  a developer flag, because it fixes a slowdown many users hit. Off passes every call
+  through at once; the swap stays installed until quit.
+- **`CGSCurrentCursorSeed` was rejected** as the staleness signal: it stayed the same across
+  sets of a different cursor in a test process (an inactive app, so the change may not have
+  shown), so it never passed a positive control.
+- **B now, GPUI patch A after upstream.** Patch A (`GPUIView` sets its cursor only when
+  `+[NSCursor currentCursor]` differs) fixes the repeat at its source and needs no method
+  swap, but it means vendoring GPUI until upstream takes it (zed-industries/zed#66403).
+  B ships today from CALM's own crate. Measured with the user moving the pointer in circles
+  over a browser address bar (browser-8): pan p50 13.86 to 8.40 ms, zoom p50 16.64 to
+  9.52 ms, cursor sets 520 to 125 for pan and 419 to 75 for zoom. When upstream GPUI has
+  the fix, measure again and drop B if the sets are gone.
