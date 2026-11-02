@@ -78,6 +78,7 @@ window. Cmd+drag on a terminal's or page's content moves the panel, a Cmd+click 
 reaches it, and Cmd+right-click there opens the panel menu (`canvas.move_modifier`). Space+drag or
 middle-drag pans. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom. `cmd-shift-h`
 centers the world origin, `cmd-shift-0` fits all panels (both also in the View menu).
+`cmd-shift-backspace` deletes the focused panel (a live one confirms first, as with the menu's Delete).
 `cmd-ctrl-f` fullscreen, `cmd-shift-f` stats (FPS, CPU, memory; items in `developer.stats`). A click on empty canvas clears panel focus
 (`canvas.click_empty_clears_focus`). `alt` while dragging disables snapping (default
 grid 8 world units, edge snap within 8). `cmd-,` opens the native Settings window

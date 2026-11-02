@@ -1,15 +1,8 @@
 # Status
 
 Last updated: 2026-11-01, against `origin/main` at `188d7a5` (PRs #1 to #41 merged; #11
-merged into a branch, see #20). Except for the branch note below, this file describes `main`.
-Facts are verified against the code unless marked otherwise.
-
-## On branch `feat/delete-panel-shortcut`
-
-- `cmd-shift-backspace` requests deletion of the focused panel through the existing close
-  confirmation path. GUI delivery with a browser focused is unverified.
-- A standalone smoke run failed on FPS, stats, preview and browser resize after the CI smoke
-  passed. The cause is unverified; CI also failed plugin type checks with missing Preact modules.
+merged into a branch, see #20). This file describes `main`, not branches. Facts are
+verified against the code unless marked otherwise.
 
 ## Done and merged to `main`
 
