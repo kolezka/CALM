@@ -726,9 +726,16 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
 const SMOKE_TUI_TIMEOUT: Duration = Duration::from_secs(10);
 /// A panel background no manifest or preset uses, so the recolor is ours.
 const SMOKE_APP_BACKGROUND: u32 = 0x1a2b3c;
-/// Prints a marker, proves it ran by writing `$1`, exits 0.
-const SMOKE_TUI_SCRIPT: &str =
-    "#!/bin/sh\nprintf 'calm-smoke-tui-marker\\n'\nprintf ran > \"$1\"\nexit 0\n";
+/// Prints a marker, proves it ran by writing `$1` with its `TERM_PROGRAM`, exits 0.
+const SMOKE_TUI_SCRIPT: &str = concat!(
+    "#!/bin/sh\n",
+    "printf 'calm-smoke-tui-marker\\n'\n",
+    "printf 'ran %s' \"$TERM_PROGRAM\" > \"$1\"\n",
+    "exit 0\n",
+);
+
+/// What the smoke script writes when it ran inside a terminal that identifies as Ghostty.
+const SMOKE_TUI_MARKER: &str = "ran ghostty";
 
 /// Two TUI fixtures: a script that runs and exits 0 (restart "prompt", run directly), and
 /// a missing command through the login shell (restart "on-exit", which must not loop).
@@ -977,7 +984,8 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
                     .timer(Duration::from_millis(100))
                     .await;
                 let status = cx.update(|cx| view.read(cx).tui_status());
-                let ran = std::fs::read_to_string(&marker).is_ok_and(|text| text == "ran");
+                let written = std::fs::read_to_string(&marker).ok();
+                let ran = written.as_deref() == Some(SMOKE_TUI_MARKER);
                 let done = match status.as_slice() {
                     [
                         (ok_title, TuiState::Exited(Some(0)), true, ok_launches),
@@ -994,7 +1002,7 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
                     return;
                 }
                 if started.elapsed() > SMOKE_TUI_TIMEOUT {
-                    smoke_fail(&format!("tui: ran={ran} status={status:?}"));
+                    smoke_fail(&format!("tui: marker={written:?} status={status:?}"));
                 }
             }
         }
@@ -1049,7 +1057,9 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
             "exited tui panels did not close without asking: {other:?}"
         )),
     }
-    println!("smoke: tui ran=ok exit=0 missing=reported restarted=ok closed=ok");
+    println!(
+        "smoke: tui ran=ok term_program=ghostty exit=0 missing=reported restarted=ok closed=ok"
+    );
     smoke_tui_chrome(view, window, cx);
     smoke_terminal_profile(view, window, cx);
     if let Err(err) = fixtures.close() {
