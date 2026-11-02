@@ -288,6 +288,7 @@ pub enum KeyError {
     Reserved(&'static str),
     Space,
     UsedBy(&'static str),
+    NotInMenu,
 }
 
 impl KeyError {
@@ -301,6 +302,7 @@ impl KeyError {
             KeyError::Reserved(label) => format!("a fixed browser key ({label})"),
             KeyError::Space => "space alone is the hold-to-pan key".into(),
             KeyError::UsedBy(label) => format!("Used by {label}"),
+            KeyError::NotInMenu => "a menu command cannot use fn, enter or tab; the menu would show a different key".into(),
         }
     }
 }
@@ -454,6 +456,7 @@ pub fn check_rebind(
     key: &str,
 ) -> Result<KeySpec, KeyError> {
     let spec = check_key(key)?;
+    check_menu(action, &spec)?;
     for (other, other_key) in bound_keys(overrides) {
         if other.id != action.id
             && other.scope.overlaps(action.scope)
@@ -465,6 +468,16 @@ pub fn check_rebind(
     Ok(spec)
 }
 
+/// GPUI's menu builder drops fn and passes enter and tab through unconverted, so a menu
+/// item would get a different key than the binding. Menu commands refuse those keys.
+fn check_menu(action: &ActionSpec, key: &KeySpec) -> Result<(), KeyError> {
+    if action.in_menu && !shows_in_menu(key) {
+        Err(KeyError::NotInMenu)
+    } else {
+        Ok(())
+    }
+}
+
 /// The first problem in a `keybindings` section, naming the field.
 pub fn validate_overrides(overrides: &KeyOverrides) -> Result<(), String> {
     let mut seen: Vec<(&ActionSpec, KeySpec)> = Vec::new();
@@ -473,13 +486,15 @@ pub fn validate_overrides(overrides: &KeyOverrides) -> Result<(), String> {
         let Some(key) = effective_key(overrides, action) else {
             continue;
         };
-        let spec = check_key(&key).map_err(|e| {
-            format!(
-                "\"keybindings.{}\" is \"{key}\": {}",
-                action.id,
-                e.message()
-            )
-        })?;
+        let spec = check_key(&key)
+            .and_then(|spec| check_menu(action, &spec).map(|()| spec))
+            .map_err(|e| {
+                format!(
+                    "\"keybindings.{}\" is \"{key}\": {}",
+                    action.id,
+                    e.message()
+                )
+            })?;
         if let Some((earlier, _)) = seen
             .iter()
             .find(|(o, s)| *s == spec && o.scope.overlaps(action.scope))
@@ -1018,5 +1033,33 @@ mod tests {
             assert!(parse_key(&key).is_ok(), "{key}");
         }
         assert_eq!(keystroke_from_parts(&KeyParts::default()), None);
+    }
+
+    #[test]
+    fn menu_commands_refuse_keys_the_menu_would_change() {
+        let quit = action("app.quit").unwrap();
+        for key in ["fn-cmd-k", "cmd-enter", "cmd-tab"] {
+            assert_eq!(
+                check_rebind(&KeyOverrides::new(), quit, key),
+                Err(KeyError::NotInMenu),
+                "{key}"
+            );
+            let mut overrides = KeyOverrides::new();
+            overrides.insert("app.quit".into(), Some(key.into()));
+            let error = validate_overrides(&overrides).unwrap_err();
+            assert!(
+                error.contains("keybindings.app.quit") && error.contains("menu"),
+                "{error}"
+            );
+        }
+        // A canvas action is not in a menu, so the same keys are fine there.
+        assert!(
+            check_rebind(
+                &KeyOverrides::new(),
+                action("canvas.zoom_in").unwrap(),
+                "fn-cmd-k"
+            )
+            .is_ok()
+        );
     }
 }

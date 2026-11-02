@@ -13,7 +13,7 @@ use crate::grid::GridKind;
 use crate::interaction::MoveModifier;
 use crate::keymap::{
     ACTIONS, BROWSER_KEYS, Group, KeyError, RESTART_KEY, action, check_rebind, display_key,
-    effective_key, parse_key, shows_in_menu,
+    effective_key, parse_key,
 };
 use crate::process_stats::{INTERVAL_MS_RANGE, MemoryUnit, clamp_interval_ms};
 use crate::scene::PanelId;
@@ -211,19 +211,9 @@ fn keys_fields(settings: &Settings) -> Vec<Field> {
         ));
         for spec in ACTIONS.iter().filter(|a| a.group == group) {
             let value = effective_key(overrides, spec);
-            let hidden = spec.in_menu
-                && value
-                    .as_deref()
-                    .and_then(|key| parse_key(key).ok())
-                    .is_some_and(|key| !shows_in_menu(&key));
-            let label = if hidden {
-                format!("{} (not shown in the menu)", spec.label)
-            } else {
-                spec.label.to_string()
-            };
             let mut row = field(
                 &format!("keys.{}", spec.id),
-                &label,
+                spec.label,
                 Control::Key {
                     value,
                     default: spec.default.map(str::to_string),
@@ -1804,26 +1794,6 @@ mod tests {
             .keybindings
             .insert("developer.toggle_stats".into(), None);
         assert_eq!(label(&settings), "Show stats");
-    }
-
-    #[test]
-    fn rows_note_keys_the_menu_cannot_show() {
-        let mut settings = Settings::default();
-        settings
-            .keybindings
-            .insert("canvas.fit_all".into(), Some("cmd-enter".into()));
-        settings
-            .keybindings
-            .insert("canvas.draw_terminal".into(), Some("tab".into()));
-        let form = settings_form(&settings, &FormContext::default());
-        assert_eq!(
-            key_field(&form, "keys.canvas.fit_all").label,
-            "Fit all panels (not shown in the menu)"
-        );
-        assert_eq!(
-            key_field(&form, "keys.canvas.draw_terminal").label,
-            "Draw a terminal"
-        );
     }
 
     #[test]
