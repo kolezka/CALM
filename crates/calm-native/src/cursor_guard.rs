@@ -6,7 +6,7 @@
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
 
 use block2::RcBlock;
@@ -18,7 +18,6 @@ use objc2_app_kit::{NSApplication, NSCursor, NSEvent, NSEventMask, NSEventType, 
 
 type SetFn = unsafe extern "C-unwind" fn(*mut AnyObject, Sel);
 
-static ENABLED: AtomicBool = AtomicBool::new(false);
 static ORIGINAL: OnceLock<SetFn> = OnceLock::new();
 static CALLS: AtomicU64 = AtomicU64::new(0);
 static SKIPPED: AtomicU64 = AtomicU64::new(0);
@@ -60,6 +59,7 @@ pub fn monitors_status() -> &'static str {
 
 /// Turns skipping on or off. The first call with `true` installs the guard; once installed
 /// it stays and only passes calls through while off, so turning it off needs no restart.
+/// Repeating the current state changes nothing.
 pub fn set_enabled(enabled: bool) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -67,8 +67,11 @@ pub fn set_enabled(enabled: bool) {
     if enabled {
         install(mtm);
     }
-    ENABLED.store(enabled, Ordering::Relaxed);
-    invalidate();
+    GUARD.with(|guard| {
+        let mut state = guard.get();
+        state.set_enabled(enabled);
+        guard.set(state);
+    });
 }
 
 /// Installs the guard without enabling it, so the zoom bench can count calls either way.
@@ -144,8 +147,7 @@ unsafe extern "C-unwind" fn guarded_set(this: *mut AnyObject, cmd: Sel) {
     if let Some(inside) = inside {
         let current = NSCursor::currentCursor();
         let is_current = std::ptr::eq(Retained::as_ptr(&current).cast::<AnyObject>(), this);
-        let enabled = ENABLED.load(Ordering::Relaxed);
-        if GUARD.with(|guard| guard.get().should_skip(enabled, is_current, inside)) {
+        if GUARD.with(|guard| guard.get().should_skip(is_current, inside)) {
             SKIPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }

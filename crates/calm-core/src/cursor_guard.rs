@@ -16,14 +16,24 @@ pub struct CursorSetGuard {
     trusted: bool,
     /// The event monitors that call `invalidate` are registered.
     monitors_active: bool,
+    /// The setting that turns skipping on.
+    enabled: bool,
 }
 
 impl CursorSetGuard {
-    /// True when a set can be skipped. `enabled` is the setting, `is_current` says the cursor
-    /// being set is AppKit's current cursor, `pointer_inside` that the pointer is over one of
-    /// this app's windows.
-    pub fn should_skip(&self, enabled: bool, is_current: bool, pointer_inside: bool) -> bool {
-        enabled && is_current && pointer_inside && self.trusted && self.monitors_active
+    /// True when a set can be skipped. `is_current` says the cursor being set is AppKit's
+    /// current cursor, `pointer_inside` that the pointer is over one of this app's windows.
+    pub fn should_skip(&self, is_current: bool, pointer_inside: bool) -> bool {
+        self.enabled && is_current && pointer_inside && self.trusted && self.monitors_active
+    }
+
+    /// Applies the setting. Settings are applied again on every change, so an unchanged value
+    /// keeps trust; turning skipping on starts untrusted.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            self.trusted = false;
+        }
     }
 
     /// Records whether the event monitors are registered. Until they are, nothing is skipped.
@@ -51,6 +61,7 @@ mod tests {
     fn trusted() -> CursorSetGuard {
         let mut guard = CursorSetGuard::default();
         guard.set_monitors_active(true);
+        guard.set_enabled(true);
         guard.did_set(true);
         guard
     }
@@ -58,58 +69,79 @@ mod tests {
     #[test]
     fn repeating_the_current_cursor_after_a_real_set_is_skipped() {
         let guard = trusted();
-        assert!(guard.should_skip(true, true, true));
-        assert!(guard.should_skip(true, true, true));
+        assert!(guard.should_skip(true, true));
+        assert!(guard.should_skip(true, true));
     }
 
     #[test]
     fn a_different_cursor_always_goes_through() {
-        assert!(!trusted().should_skip(true, false, true));
+        assert!(!trusted().should_skip(false, true));
     }
 
     #[test]
     fn the_first_set_goes_through() {
-        assert!(!CursorSetGuard::default().should_skip(true, true, true));
+        assert!(!CursorSetGuard::default().should_skip(true, true));
     }
 
     #[test]
     fn after_invalidate_one_set_goes_through_then_repeats_skip() {
         let mut guard = trusted();
         guard.invalidate();
-        assert!(!guard.should_skip(true, true, true));
+        assert!(!guard.should_skip(true, true));
         guard.did_set(true);
-        assert!(guard.should_skip(true, true, true));
+        assert!(guard.should_skip(true, true));
     }
 
     #[test]
     fn leaving_the_window_and_coming_back_sets_the_cursor_again() {
         let mut guard = trusted();
         // Outside the window nothing is skipped, and a set made there is not trusted.
-        assert!(!guard.should_skip(true, true, false));
+        assert!(!guard.should_skip(true, false));
         guard.did_set(false);
         // Back inside, the first set goes through even if AppKit thinks it is current.
-        assert!(!guard.should_skip(true, true, true));
+        assert!(!guard.should_skip(true, true));
         guard.did_set(true);
-        assert!(guard.should_skip(true, true, true));
+        assert!(guard.should_skip(true, true));
     }
 
     #[test]
     fn without_the_monitors_nothing_is_skipped() {
         // Without them nothing reports another app changing the cursor, so trust never ends.
         let mut guard = CursorSetGuard::default();
+        guard.set_enabled(true);
         guard.did_set(true);
         assert!(
-            !guard.should_skip(true, true, true),
+            !guard.should_skip(true, true),
             "a guard whose monitors are not active must never skip"
         );
         let mut guard = trusted();
         guard.set_monitors_active(false);
         guard.did_set(true);
-        assert!(!guard.should_skip(true, true, true));
+        assert!(!guard.should_skip(true, true));
     }
 
     #[test]
     fn disabled_never_skips() {
-        assert!(!trusted().should_skip(false, true, true));
+        let mut guard = trusted();
+        guard.set_enabled(false);
+        guard.did_set(true);
+        assert!(!guard.should_skip(true, true));
+    }
+
+    #[test]
+    fn applying_an_unchanged_setting_keeps_trust() {
+        // Every slider tick in Settings applies the settings again.
+        let mut guard = trusted();
+        guard.set_enabled(true);
+        assert!(
+            guard.should_skip(true, true),
+            "re-applying the same enabled state must not force a real set"
+        );
+        guard.set_enabled(false);
+        guard.set_enabled(true);
+        assert!(
+            !guard.should_skip(true, true),
+            "turning it back on starts untrusted"
+        );
     }
 }
