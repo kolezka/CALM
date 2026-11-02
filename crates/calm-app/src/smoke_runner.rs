@@ -35,6 +35,7 @@ pub const STEPS: &[StepSpec] = &[
     step("native_reorder", &[], &[]),
     step("plugins", &[], &[]),
     step("tui", &[], &[]),
+    step("run_command", &[], &[]),
     step("show_stats", &[], &[]),
     step("fps", &["show_stats"], &[]),
     step("stats", &["show_stats"], &[]),

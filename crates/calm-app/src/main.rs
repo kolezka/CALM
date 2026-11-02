@@ -471,6 +471,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
         .await;
         smoke_step(&mut run, "plugins", smoke_plugins(&view, window, cx)).await;
         smoke_step(&mut run, "tui", smoke_tui(&view, window, cx)).await;
+        smoke_step(&mut run, "run_command", smoke_run_command(&view, window, cx)).await;
         smoke_step(&mut run, "show_stats", async {
             let toggled = cx.update_window(window, |_, window, cx| {
                 view.update(cx, |view, cx| view.set_show_stats(true, window, cx))
@@ -723,6 +724,8 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
 }
 
 const SMOKE_TUI_TIMEOUT: Duration = Duration::from_secs(10);
+/// A panel background no manifest or preset uses, so the recolor is ours.
+const SMOKE_APP_BACKGROUND: u32 = 0x1a2b3c;
 /// Prints a marker, proves it ran by writing `$1`, exits 0.
 const SMOKE_TUI_SCRIPT: &str =
     "#!/bin/sh\nprintf 'calm-smoke-tui-marker\\n'\nprintf ran > \"$1\"\nexit 0\n";
@@ -763,6 +766,29 @@ fn smoke_tui_chrome(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut
             .border;
             let image = matches!(look.icon, Some(crate::canvas_view::IconLook::Image(_)));
             let title = view.scene.get(id).map(|panel| panel.title.clone());
+            // An app panel is a terminal: its Settings form has the terminal sections, and
+            // a panel color recolors the running surface.
+            let (_, form) = view.panel_settings_form(id).ok_or("no app settings form")?;
+            let sections: Vec<&str> = form.iter().map(|s| s.title.as_str()).collect();
+            if !sections.contains(&"Title bar colors") || !sections.contains(&"Terminal colors") {
+                return Err(format!("app settings sections: {sections:?}"));
+            }
+            view.panel_settings_changed(
+                id,
+                "panel.colors.background",
+                calm_core::settings_form::FieldValue::Color(calm_core::background::Rgb(
+                    SMOKE_APP_BACKGROUND,
+                )),
+                window,
+                cx,
+            );
+            let recolored = view
+                .terminal_meta(id)
+                .and_then(|meta| meta.applied_colors)
+                .map(|colors| colors.background);
+            if recolored != Some(SMOKE_APP_BACKGROUND) {
+                return Err(format!("app panel recolor: applied {recolored:?}"));
+            }
             // `top` is still running: close as if the user confirmed.
             view.apply_effects(
                 vec![calm_core::interaction::Effect::ClosePanel(id)],
@@ -774,7 +800,7 @@ fn smoke_tui_chrome(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut
     });
     match checked {
         Ok(Ok((ring, true, Some(title), 0))) if ring == expected => println!(
-            "smoke: tui chrome top-example accent=#{expected:08x} ring=#{ring:08x} icon=image title={title:?} closed=ok"
+            "smoke: tui chrome top-example accent=#{expected:08x} ring=#{ring:08x} icon=image title={title:?} settings=terminal recolor=ok closed=ok"
         ),
         other => smoke_fail(&format!(
             "top-example chrome: expected ring #{expected:08x} and an image icon, got {other:?}"
@@ -1028,6 +1054,147 @@ async fn smoke_tui(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut 
     smoke_terminal_profile(view, window, cx);
     if let Err(err) = fixtures.close() {
         eprintln!("smoke: could not remove the tui temp dir: {err}");
+    }
+}
+
+/// Run Command without the prompt: the item's creation path with a typed command that
+/// appends to a marker file. It runs, exits with Restart offered, is saved with its command,
+/// and a Restart reruns it under the same panel id, z-order and Settings window.
+async fn smoke_run_command(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let fixtures = match tempfile::Builder::new().prefix("calm-smoke-run-").tempdir() {
+        Ok(dir) => dir,
+        Err(err) => smoke_fail(&format!("run_command temp dir: {err}")),
+    };
+    let marker = fixtures.path().join("ran marker.txt");
+    let command = format!(
+        "printf 'ran\\n' >> {}",
+        calm_core::tui::shell_quote(&marker.to_string_lossy())
+    );
+    let opened = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.settings.settings.terminal.command_restart =
+                calm_core::terminal_profile::CommandRestart::Prompt;
+            let rect = Rect::new(720.0, 60.0, 300.0, 160.0);
+            let id = view
+                .add_command_terminal(command.clone(), rect, window, cx)
+                .ok_or("no panel for the command")?;
+            let kind = view.scene.get(id).map(|panel| panel.kind.clone());
+            if kind != Some(PanelKind::command_terminal(command.clone())) {
+                return Err(format!("run_command kind: {kind:?}"));
+            }
+            let saved = view
+                .scene
+                .to_layout()
+                .panels
+                .into_iter()
+                .find(|panel| panel.kind == PanelKind::command_terminal(command.clone()))
+                .map(|panel| serde_json::to_value(&panel.kind));
+            match saved {
+                Some(Ok(json))
+                    if json["type"] == "terminal"
+                        && json["command"] == command.as_str()
+                        && json.get("plugin_id").is_none() => {}
+                other => return Err(format!("run_command saved as {other:?}")),
+            }
+            Ok::<_, String>(id)
+        })
+    });
+    let id = match opened {
+        Ok(Ok(id)) => id,
+        Ok(Err(err)) => smoke_fail(&err),
+        Err(err) => smoke_fail(&format!("run_command: {err:#}")),
+    };
+    let wait_for = |launches: u64| {
+        let view = view.clone();
+        let marker = marker.clone();
+        async move |cx: &mut gpui::AsyncApp| {
+            let started = Instant::now();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let status = cx.update(|cx| view.read(cx).run_status());
+                let lines = std::fs::read_to_string(&marker)
+                    .map_or(0, |text| text.lines().filter(|line| *line == "ran").count());
+                let exited = status
+                    .iter()
+                    .any(|(panel, is_app, title, state, restart, n)| {
+                        *panel == id
+                            && !is_app
+                            && *state == TuiState::Exited(Some(0))
+                            && *restart
+                            && *n == launches
+                            && title.ends_with(": exited, code 0")
+                    });
+                if exited && lines == launches as usize {
+                    return;
+                }
+                if started.elapsed() > SMOKE_TUI_TIMEOUT {
+                    smoke_fail(&format!(
+                        "run_command: lines={lines} want={launches} status={status:?}"
+                    ));
+                }
+            }
+        }
+    };
+    wait_for(1)(cx).await;
+
+    let restarted = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.open_panel_settings(id, window, cx);
+            let windows_before = view.panel_settings_windows.len();
+            view.apply_menu_choice(
+                calm_core::menu::PANEL_SEND_TO_BACK,
+                canvas_view::MenuTarget::Panel(id),
+                window,
+                cx,
+            );
+            let before = view.native_zorder(cx);
+            view.restart_terminal(id, true, window, cx);
+            let after = view.native_zorder(cx);
+            let kept = view.panel_settings_windows.contains_key(&id)
+                && view.panel_settings_windows.len() == windows_before
+                && view.scene.get(id).is_some();
+            (before, after, kept)
+        })
+    });
+    let (before, after, kept) = match restarted {
+        Ok(result) => result,
+        Err(err) => smoke_fail(&format!("run_command restart: {err:#}")),
+    };
+    if before.0 != before.1 || after.0 != after.1 || !kept {
+        smoke_fail(&format!(
+            "run_command restart: before={before:?} after={after:?} settings_window_kept={kept}"
+        ));
+    }
+    wait_for(2)(cx).await;
+
+    let closed = cx.update_window(window, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.apply_effects(
+                vec![calm_core::interaction::Effect::ClosePanelRequested(id)],
+                window,
+                cx,
+            );
+            (
+                view.scene.get(id).is_none(),
+                view.panel_settings_windows.contains_key(&id),
+            )
+        })
+    });
+    match closed {
+        Ok((true, false)) => {}
+        other => smoke_fail(&format!("run_command close: {other:?}")),
+    }
+    println!(
+        "smoke: run_command ran=ok saved=command exit=0 restarted=ok zorder=ok settings_window=kept closed=ok"
+    );
+    if let Err(err) = fixtures.close() {
+        eprintln!("smoke: could not remove the run_command temp dir: {err}");
     }
 }
 
@@ -2591,6 +2758,8 @@ async fn smoke_autosave(
 /// A data page with no script, so its url stays put between save and compare.
 const SMOKE_SESSION_PAGE: &str = "data:text/html,%3Cp%3Esession%3C%2Fp%3E";
 const SMOKE_MISSING_PLUGIN: &str = "calm-smoke-not-installed";
+/// A typed command in the restore fixture. It exits at once; only its launch is checked.
+const SMOKE_RESTORED_COMMAND: &str = "true";
 
 /// Closes every panel through the confirmed close path.
 fn smoke_close_all(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &mut gpui::AsyncApp) {
@@ -2641,6 +2810,7 @@ fn smoke_session_edges(
             settings: serde_json::Value::Null,
         },
         PanelKind::app_terminal("top-example", None),
+        PanelKind::command_terminal(SMOKE_RESTORED_COMMAND),
     ];
     let mut layout = calm_core::scene::Scene::default().to_layout();
     for (n, kind) in fixture.into_iter().enumerate() {
@@ -2679,6 +2849,23 @@ fn smoke_session_edges(
             if cwd.as_deref() != Some(home.as_path()) {
                 problems.push(format!("cwd: want {}, got {cwd:?}", home.display()));
             }
+            // A restored typed command runs again, and saves its command again.
+            let typed = view.scene.panels.get(3).map(|panel| panel.id);
+            let rerun = view
+                .run_status()
+                .into_iter()
+                .any(|(id, is_app, _, _, _, n)| Some(id) == typed && !is_app && n == 1);
+            let saved = view
+                .scene
+                .to_layout()
+                .panels
+                .get(3)
+                .map(|panel| panel.kind.clone());
+            if !rerun || saved != Some(PanelKind::command_terminal(SMOKE_RESTORED_COMMAND)) {
+                problems.push(format!(
+                    "typed command restore: rerun={rerun} saved={saved:?}"
+                ));
+            }
             let note = terminal.and_then(|id| view.title_note(id));
             let saved_titles = view.scene.to_layout().panels;
             if note.is_none() || saved_titles.iter().any(|p| p.title.contains("cwd missing")) {
@@ -2698,7 +2885,7 @@ fn smoke_session_edges(
     if !problems.is_empty() {
         smoke_fail(&format!("session edges: {}", problems.join("; ")));
     }
-    println!("smoke: session edges titles=saved cwd=home");
+    println!("smoke: session edges titles=saved cwd=home command=rerun");
 }
 
 /// Runs the launch restore path on `session` with restore on.

@@ -3,7 +3,7 @@
 use calm_core::panel_form::{apply_panel_field, panel_effective, panel_form};
 use calm_core::panel_icons::import_icon;
 use calm_core::scene::{PanelId, PanelKind};
-use calm_core::settings_form::{FieldValue, FormCommand, FormOutcome};
+use calm_core::settings_form::{FieldValue, FormCommand, FormOutcome, Section};
 use calm_native::{SettingsWindow, WindowLayout, choose_image_file};
 use gpui::{AppContext as _, Context, Window};
 
@@ -74,20 +74,30 @@ impl CanvasView {
         }
     }
 
-    /// Rebuilds panel `id`'s window from the current state, title included.
-    pub fn refresh_panel_settings(&self, id: PanelId) {
-        let (Some(settings_window), Some(panel)) =
-            (self.panel_settings_windows.get(&id), self.scene.get(id))
-        else {
-            return;
-        };
+    /// Panel `id`'s Settings window title and form as they are now. Read by the smoke.
+    pub fn panel_settings_form(&self, id: PanelId) -> Option<(String, Vec<Section>)> {
+        let panel = self.scene.get(id)?;
         let mut effective =
             panel_effective(panel, &self.settings.settings, self.app_layer(id).as_ref());
         effective.live_theme = self
             .terminal_meta(id)
             .is_some_and(|meta| meta.applied_colors.is_some());
-        settings_window.set_title(&window_title(&effective.title, &panel.kind));
-        settings_window.set_form(&panel_form(panel, &effective));
+        Some((
+            window_title(&effective.title, &panel.kind),
+            panel_form(panel, &effective),
+        ))
+    }
+
+    /// Rebuilds panel `id`'s window from the current state, title included.
+    pub fn refresh_panel_settings(&self, id: PanelId) {
+        let (Some(settings_window), Some((title, form))) = (
+            self.panel_settings_windows.get(&id),
+            self.panel_settings_form(id),
+        ) else {
+            return;
+        };
+        settings_window.set_title(&title);
+        settings_window.set_form(&form);
     }
 
     /// After a global settings change, so inherited values in every open window follow.
