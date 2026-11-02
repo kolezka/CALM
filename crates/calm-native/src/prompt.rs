@@ -4,7 +4,7 @@
 
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSPopUpButton, NSTextField};
+use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSMenuItem, NSPopUpButton, NSTextField};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
 use crate::NativeError;
@@ -69,24 +69,41 @@ pub fn choose(
     }
     let mtm = MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
     let alert = new_alert(mtm, title, message, &[OK, CANCEL]);
-    let frame = NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(FIELD_WIDTH, POPUP_HEIGHT),
-    );
-    let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), frame, false);
-    for option in options {
-        popup.addItemWithTitle(&NSString::from_str(option));
-    }
-    popup.selectItemAtIndex(0);
+    let popup = choice_popup(mtm, options);
     alert.setAccessoryView(Some(&popup));
     alert.layout();
     alert.window().setInitialFirstResponder(Some(&popup));
     if alert.runModal() != NSAlertFirstButtonReturn {
         return Ok(None);
     }
-    Ok(usize::try_from(popup.indexOfSelectedItem())
+    Ok(selected_choice(&popup, options.len()))
+}
+
+/// The pop-up `choose` shows: one item for each option, in order, the first selected.
+pub fn choice_popup(mtm: MainThreadMarker, options: &[String]) -> Retained<NSPopUpButton> {
+    let frame = NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(FIELD_WIDTH, POPUP_HEIGHT),
+    );
+    let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), frame, false);
+    // Items go straight into the menu: addItemWithTitle drops a title already present,
+    // which would shift the index of every option after it.
+    if let Some(menu) = popup.menu() {
+        for option in options {
+            let item = NSMenuItem::new(mtm);
+            item.setTitle(&NSString::from_str(option));
+            menu.addItem(&item);
+        }
+    }
+    popup.selectItemAtIndex(0);
+    popup
+}
+
+/// The option index the pop-up has selected, if it is one of `option_count`.
+pub fn selected_choice(popup: &NSPopUpButton, option_count: usize) -> Option<usize> {
+    usize::try_from(popup.indexOfSelectedItem())
         .ok()
-        .filter(|index| *index < options.len()))
+        .filter(|index| *index < option_count)
 }
 
 /// Tells the user something, with one OK button.
