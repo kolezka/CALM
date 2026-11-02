@@ -709,4 +709,6 @@ These shipped with #41, next to "Restore at launch" above.
 - **Panel shortcuts use `cmd-shift-backspace` to delete and `cmd-shift-,` for Settings.**
   These keys are hard-coded like the other canvas bindings until v2 `keybindings`. Plain
   `cmd-backspace` stays with shell and web fields, where Ghostty and WKWebView use it to
-  delete to the start of the line.
+  delete to the start of the line. Settings is bound as `cmd-<`: with cmd held, GPUI's macOS
+  event code drops shift for punctuation and reports the shifted character, so `cmd-shift-,`
+  would never match. On other layouts the physical key differs.
