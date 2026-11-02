@@ -9,7 +9,10 @@ use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredic
 
 use crate::canvas_view::{
     self, Cancel, CenterOnOrigin, ConfirmEnter, DeletePanel, DrawBrowser, DrawTerminal, FitAll,
-    OpenPanelSettings, ToggleFullscreen, ZoomIn, ZoomOut, ZoomReset,
+    MovePanelDown, MovePanelDownFar, MovePanelLeft, MovePanelLeftFar, MovePanelRight,
+    MovePanelRightFar, MovePanelUp, MovePanelUpFar, OpenPanelSettings, PanDown, PanDownFar,
+    PanLeft, PanLeftFar, PanRight, PanRightFar, PanUp, PanUpFar, ToggleFullscreen, ZoomIn, ZoomOut,
+    ZoomReset,
 };
 use crate::dev_menu::{About, Quit, ResetFps, ToggleFps};
 use crate::settings_menu::{self, OpenConfigFolder, OpenSettings, ResetSettings, ToggleGrid};
@@ -28,6 +31,22 @@ pub fn gpui_action(id: &str) -> Option<Box<dyn Action>> {
         "canvas.cancel" => Box::new(Cancel),
         "canvas.confirm" => Box::new(ConfirmEnter),
         "view.fullscreen" => Box::new(ToggleFullscreen),
+        "canvas.pan_up" => Box::new(PanUp),
+        "canvas.pan_down" => Box::new(PanDown),
+        "canvas.pan_left" => Box::new(PanLeft),
+        "canvas.pan_right" => Box::new(PanRight),
+        "canvas.pan_up_far" => Box::new(PanUpFar),
+        "canvas.pan_down_far" => Box::new(PanDownFar),
+        "canvas.pan_left_far" => Box::new(PanLeftFar),
+        "canvas.pan_right_far" => Box::new(PanRightFar),
+        "panel.move_up" => Box::new(MovePanelUp),
+        "panel.move_down" => Box::new(MovePanelDown),
+        "panel.move_left" => Box::new(MovePanelLeft),
+        "panel.move_right" => Box::new(MovePanelRight),
+        "panel.move_up_far" => Box::new(MovePanelUpFar),
+        "panel.move_down_far" => Box::new(MovePanelDownFar),
+        "panel.move_left_far" => Box::new(MovePanelLeftFar),
+        "panel.move_right_far" => Box::new(MovePanelRightFar),
         "panel.delete" => Box::new(DeletePanel),
         "panel.settings" => Box::new(OpenPanelSettings),
         "developer.toggle_stats" => Box::new(ToggleFps),
@@ -96,7 +115,12 @@ mod tests {
     use gpui::{KeyBinding, Keystroke, NoAction};
 
     use super::*;
-    use crate::canvas_view::{self, DeletePanel, DrawBrowser, FitAll, OpenPanelSettings};
+    use crate::canvas_view::{
+        self, DeletePanel, DrawBrowser, FitAll, MovePanelDown, MovePanelDownFar, MovePanelLeft,
+        MovePanelLeftFar, MovePanelRight, MovePanelRightFar, MovePanelUp, MovePanelUpFar,
+        OpenPanelSettings, PanDown, PanDownFar, PanLeft, PanLeftFar, PanRight, PanRightFar, PanUp,
+        PanUpFar,
+    };
     use crate::settings_menu::OpenSettings;
     use crate::terminal;
 
@@ -124,7 +148,7 @@ mod tests {
                 data.name
             );
         }
-        assert_eq!(ours.len(), 20);
+        assert_eq!(ours.len(), 36);
     }
 
     #[test]
@@ -186,17 +210,45 @@ mod tests {
             .filter(|b| b.action().partial_eq(&NoAction))
             .inspect(|b| assert_eq!(ctx(b).as_deref(), Some(terminal::KEY_CONTEXT)))
             .map(|b| {
-                ["t", "b", "escape", "enter", "f5"]
-                    .into_iter()
-                    .find(|k| matches(b, k))
-                    .expect("unexpected NoAction")
-                    .to_string()
+                [
+                    "t",
+                    "b",
+                    "escape",
+                    "enter",
+                    "f5",
+                    "up",
+                    "down",
+                    "left",
+                    "right",
+                    "shift-up",
+                    "shift-down",
+                    "shift-left",
+                    "shift-right",
+                ]
+                .into_iter()
+                .find(|k| matches(b, k))
+                .expect("unexpected NoAction")
+                .to_string()
             })
             .collect();
-        assert_eq!(
-            blocked,
-            ["b", "enter", "escape", "f5", "t"].map(String::from).into()
-        );
+        let want: BTreeSet<String> = [
+            "b",
+            "enter",
+            "escape",
+            "f5",
+            "t",
+            "up",
+            "down",
+            "left",
+            "right",
+            "shift-up",
+            "shift-down",
+            "shift-left",
+            "shift-right",
+        ]
+        .map(String::from)
+        .into();
+        assert_eq!(blocked, want);
     }
 
     #[test]
@@ -273,5 +325,64 @@ mod tests {
             }),
             "canvas must bind cmd-shift-backspace to DeletePanel"
         );
+    }
+
+    fn binds(keys: &str, action: &dyn gpui::Action, context: &str) -> bool {
+        let keystroke = gpui::Keystroke::parse(keys).unwrap();
+        key_bindings(&Settings::default()).iter().any(|binding| {
+            binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                && binding.action().partial_eq(action)
+                && binding
+                    .predicate()
+                    .is_some_and(|p| p.to_string() == context)
+        })
+    }
+
+    #[test]
+    fn plain_arrows_pan_the_canvas_but_reach_a_focused_terminal() {
+        let cases: [(&str, &dyn gpui::Action); 8] = [
+            ("up", &PanUp),
+            ("down", &PanDown),
+            ("left", &PanLeft),
+            ("right", &PanRight),
+            ("shift-up", &PanUpFar),
+            ("shift-down", &PanDownFar),
+            ("shift-left", &PanLeftFar),
+            ("shift-right", &PanRightFar),
+        ];
+        for (keys, action) in cases {
+            assert!(
+                binds(keys, action, canvas_view::KEY_CONTEXT),
+                "canvas must bind {keys}"
+            );
+            assert!(
+                binds(keys, &NoAction, terminal::KEY_CONTEXT),
+                "terminal context must keep {keys}"
+            );
+        }
+    }
+
+    #[test]
+    fn panel_move_arrows_are_available_with_terminal_focus() {
+        let cases: [(&str, &dyn gpui::Action); 8] = [
+            ("cmd-alt-up", &MovePanelUp),
+            ("cmd-alt-down", &MovePanelDown),
+            ("cmd-alt-left", &MovePanelLeft),
+            ("cmd-alt-right", &MovePanelRight),
+            ("cmd-alt-shift-up", &MovePanelUpFar),
+            ("cmd-alt-shift-down", &MovePanelDownFar),
+            ("cmd-alt-shift-left", &MovePanelLeftFar),
+            ("cmd-alt-shift-right", &MovePanelRightFar),
+        ];
+        for (keys, action) in cases {
+            assert!(
+                binds(keys, action, canvas_view::KEY_CONTEXT),
+                "canvas must bind {keys}"
+            );
+            assert!(
+                !binds(keys, &NoAction, terminal::KEY_CONTEXT),
+                "terminal context must not block {keys}"
+            );
+        }
     }
 }

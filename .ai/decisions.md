@@ -341,6 +341,15 @@ The user approved each entry below on 2026-10-31 (canvas persistence plan, Task 
   alone are an error. `env` merges key by key. Other fields are taken whole.
 - **Env goes through `/usr/bin/env` in argv.** gpui-libghostty 0.3.1 has no env option.
   Values are never printed, and Settings masks them, but `ps` shows them. Documented.
+- **Terminals export `TERM_PROGRAM=ghostty` (2026-11-02).** gpui-libghostty 0.3.1 sets
+  `gpui-ghostty`, which apps that choose features by terminal name do not know: slk fell
+  back to half-block images instead of kitty graphics. The engine is Ghostty's, so the
+  name is honest. It sits under every env layer (`BUILTIN_ENV`), so `terminal.env`, a
+  profile or a manifest can set another value. `TERM` stays `xterm-256color`: the build
+  ships no `xterm-ghostty` terminfo. Cost: every terminal now starts through
+  `/usr/bin/env`, then `/bin/bash -c 'exec -l "$@"'`, which puts back the login mark
+  Ghostty's `exec -l` gave the command: a profile `command` such as `/bin/zsh` still reads
+  its login profile (review finding on PR #67; before, any profile with `env` lost it).
 - **Live recolor uses `TerminalThemeState::apply`.** It exists in 0.3.1 and keeps the process.
   It cannot remove a theme or flip the user config, so those apply to new terminals.
 - **The panel's profile is kept beside the scene, not in `PanelKind`.** Layouts are not
@@ -742,6 +751,9 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
   pre-change code showed a `cmd-shift-0` binding does not match the `cmd-)` keystroke GPUI
   reports for Cmd+Shift+0 on a US layout, and no binding matched `cmd-)`
   (`fit_all_matches_the_press_gpui_reports_for_cmd_shift_0`).
+- **The arrow keys from #68 are rows too**: eight pan rows (View) and eight move rows
+  (Panels) with #68's keys as defaults, so the table has 36 actions. Their terminal
+  `NoAction` entries now come from the derived rule instead of a hand list.
 - **Menu commands refuse `fn`, `enter` and `tab`.** GPUI's menu builder drops `fn` and
   passes `enter` and `tab` through unconverted, so the menu item would get a different key
   than the binding (`fn-cmd-k` would show and fire as Cmd+K). Canvas actions may use them.

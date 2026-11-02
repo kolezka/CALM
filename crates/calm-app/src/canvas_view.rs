@@ -13,7 +13,8 @@ use calm_core::chrome::{
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
-    Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool, ZoomStep,
+    ArrowDir, Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool,
+    ZoomStep,
 };
 use calm_core::join::{Axis, Join, JoinLayout, JoinedEdges, Side};
 use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
@@ -89,7 +90,23 @@ actions!(
         OpenPanelSettings,
         Cancel,
         ConfirmEnter,
-        ToggleFullscreen
+        ToggleFullscreen,
+        PanUp,
+        PanDown,
+        PanLeft,
+        PanRight,
+        PanUpFar,
+        PanDownFar,
+        PanLeftFar,
+        PanRightFar,
+        MovePanelUp,
+        MovePanelDown,
+        MovePanelLeft,
+        MovePanelRight,
+        MovePanelUpFar,
+        MovePanelDownFar,
+        MovePanelLeftFar,
+        MovePanelRightFar
     ]
 );
 
@@ -703,6 +720,8 @@ impl CanvasView {
             self.settings.settings.canvas.click_empty_clears_focus;
         self.input.move_modifier = self.settings.settings.canvas.move_modifier;
         self.confirm_title = calm_core::keymap::confirm_prompt(&self.settings.settings.keybindings);
+        self.input.arrow_pan_step = self.settings.settings.canvas.arrow_pan_step;
+        self.input.arrow_move_step = self.settings.settings.canvas.arrow_move_step;
     }
 
     pub fn set_show_stats(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -2259,6 +2278,42 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// Arrow keys pan only while the canvas itself has the keyboard, as Escape does.
+    fn arrow_pan(
+        &mut self,
+        dir: ArrowDir,
+        large: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if calm_native::host_view_is_first_responder(window) != Some(true) {
+            return;
+        }
+        // False during a draw, drag or resize: a pan there would desync the preview.
+        if self.input.arrow_pan(dir, large, &mut self.scene) {
+            window.refresh();
+            cx.notify();
+        }
+    }
+
+    /// Cmd+Option+arrow moves the focused panel, without snapping.
+    fn arrow_move(
+        &mut self,
+        dir: ArrowDir,
+        large: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.focused else {
+            return;
+        };
+        // False during a draw, drag or resize: the drag would overwrite the move.
+        if self.input.arrow_move(id, dir, large, &mut self.scene) {
+            window.refresh();
+            cx.notify();
+        }
+    }
+
     /// Jumps the camera: `CenterOnOrigin` keeps the zoom, `FitAll` frames every panel.
     fn frame_view(&mut self, fit_all: bool, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = self.viewport.size;
@@ -3413,6 +3468,54 @@ impl Render for CanvasView {
                 cx.listener(|view, _: &ConfirmEnter, window, cx| view.confirm_enter(window, cx)),
             )
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
+            .on_action(cx.listener(|view, _: &PanUp, window, cx| {
+                view.arrow_pan(ArrowDir::Up, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelUp, window, cx| {
+                view.arrow_move(ArrowDir::Up, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanUpFar, window, cx| {
+                view.arrow_pan(ArrowDir::Up, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelUpFar, window, cx| {
+                view.arrow_move(ArrowDir::Up, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanDown, window, cx| {
+                view.arrow_pan(ArrowDir::Down, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelDown, window, cx| {
+                view.arrow_move(ArrowDir::Down, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanDownFar, window, cx| {
+                view.arrow_pan(ArrowDir::Down, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelDownFar, window, cx| {
+                view.arrow_move(ArrowDir::Down, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanLeft, window, cx| {
+                view.arrow_pan(ArrowDir::Left, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelLeft, window, cx| {
+                view.arrow_move(ArrowDir::Left, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanLeftFar, window, cx| {
+                view.arrow_pan(ArrowDir::Left, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelLeftFar, window, cx| {
+                view.arrow_move(ArrowDir::Left, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanRight, window, cx| {
+                view.arrow_pan(ArrowDir::Right, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelRight, window, cx| {
+                view.arrow_move(ArrowDir::Right, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanRightFar, window, cx| {
+                view.arrow_pan(ArrowDir::Right, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelRightFar, window, cx| {
+                view.arrow_move(ArrowDir::Right, true, window, cx)
+            }))
             .on_action(cx.listener(|view, _: &ToggleFps, window, cx| {
                 view.set_show_stats(!view.show_stats, window, cx)
             }))

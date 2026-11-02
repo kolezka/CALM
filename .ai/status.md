@@ -86,6 +86,9 @@ Pull requests:
   (`command`, `args`, `cwd`, `env`), validated strictly. Add > Terminal Profiles submenu;
   `t` and plain duplicates use `default_profile`. Running surfaces recolor live through
   `TerminalThemeState::apply`. Settings > Terminal edits defaults only (no text fields yet).
+- `fix/term-program-ghostty`: every terminal exports `TERM_PROGRAM=ghostty` (built-in env
+  layer, overridable), so slk and similar apps pick kitty graphics. The smoke `tui` step
+  checks the value inside a real surface. Kitty images on a zoomed canvas: not yet seen.
 - #25 Blur on outside click: a click on empty canvas clears panel focus and makes the GPUI
   host view the first responder; pans and zooms keep focus; Escape clears it only when no
   native view has the keyboard. Setting `canvas.click_empty_clears_focus` (default true).
@@ -273,6 +276,11 @@ Open questions: `.ai/open-questions.md`.
   profile. Policy is unit tested (`calm_core::gesture`, `calm-app` `content_move`); the
   AppKit monitor is tested on its state machine only.
 - No PR yet: a Linux port plan.
+- `feat/arrow-keys`, no PR yet: arrows pan the canvas while it has the keyboard, Shift+arrow
+  pans 5x (`canvas.arrow_pan_step`, screen points, default 48); Cmd+Option+arrow moves the
+  focused panel without snapping, Shift for 5x (`canvas.arrow_move_step`, world units,
+  default 8). A focused terminal keeps plain and Shift arrows; panel moves still apply.
+  Core logic and bindings are unit tested; key delivery by hand is unverified.
 - `feat/tui-extends-terminal`, PR #63, not merged: a TUI app is a terminal with an app
   attached (`PanelKind::app_terminal`, `.app()`), still saved as `type=tui`. One spawn,
   refresh, recolor and exit path for shells, typed commands and apps. App panels get the
@@ -346,6 +354,9 @@ Open questions: `.ai/open-questions.md`.
 - Panel menu: each action by hand.
 - Chrome: the look, hover buttons over a live native view.
 - Camera jumps: key delivery with a terminal focused, the View menu shortcuts.
+- Arrow keys (`feat/arrow-keys`): pan with no panel focused, Cmd+Option+arrow with a
+  terminal, a browser and a plugin page focused, and that plain arrows reach a focused
+  browser page instead of panning.
 - Status pill: blur over terminals, corners, light and dark mode, window drag from the top strip.
 - Browser panels: typing in the bar at zoom 0.5 and 2, links, `target=_blank`, shortcuts,
   scroll and pinch over a page.
