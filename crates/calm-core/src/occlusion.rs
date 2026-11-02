@@ -6,7 +6,7 @@ use crate::camera::Camera;
 use crate::chrome::RING_PX;
 use crate::geometry::{Point, Rect};
 use crate::join::Join;
-use crate::scene::{PanelId, Scene, chip_rect, content_rect};
+use crate::scene::{PanelId, PanelKind, Scene, chip_rect, content_rect};
 
 /// The screen rect a panel covers: its body (or chip when minimized) plus the ring around
 /// it. Shadows are ignored. Same space as `camera.world_rect_to_screen`.
@@ -142,6 +142,13 @@ pub fn native_paint_region(
     visible_region(container, occluders)
 }
 
+/// Whether a live panel of `kind` lets the panels behind it paint under its content. Its
+/// own native view draws above them and may be see-through: a terminal with content
+/// opacity, or a markdown page with a faded background.
+pub fn shows_through(kind: &PanelKind) -> bool {
+    kind.is_terminal() || matches!(kind, PanelKind::Markdown { .. })
+}
+
 /// Whether `point` is inside any of `pieces` (half-open, as `Rect::contains`).
 pub fn region_contains(pieces: &[Rect], point: Point) -> bool {
     pieces.iter().any(|piece| piece.contains(point))
@@ -190,7 +197,7 @@ impl PointerGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::{MINIMIZED_CHIP, PanelKind};
+    use crate::scene::MINIMIZED_CHIP;
 
     const CONTAINER: Rect = Rect::new(0.0, 0.0, 100.0, 100.0);
 
@@ -516,6 +523,36 @@ mod tests {
             native_paint_region(&scene, &[], back, container, ORIGIN, &live),
             native_visible_region(&scene, &[], back, container, ORIGIN)
         );
+    }
+
+    #[test]
+    fn a_live_markdown_panel_in_front_lets_the_terminal_behind_paint_but_not_take_clicks() {
+        let (mut scene, back, front, container) = overlapping_pair();
+        scene.get_mut(front).unwrap().kind = PanelKind::Markdown {
+            text: "# Note".into(),
+        };
+        // As the app builds it: live panels whose kind shows through.
+        let live = |id: PanelId| scene.get(id).is_some_and(|panel| shows_through(&panel.kind));
+        let paint = native_paint_region(&scene, &[], back, container, ORIGIN, &live);
+        assert_disjoint_inside(&paint, container);
+        assert!(
+            region_contains(&paint, IN_FRONT_CONTENT),
+            "the terminal shows through the markdown page"
+        );
+        assert!(!region_contains(&paint, IN_FRONT_BAR), "title bar exposed");
+        assert!(!region_contains(&paint, IN_FRONT_RING), "ring exposed");
+        let input = native_visible_region(&scene, &[], back, container, ORIGIN);
+        assert!(
+            !region_contains(&input, IN_FRONT_CONTENT),
+            "clicks on the markdown page go to it"
+        );
+        // Pages that paint their own opaque content still cut.
+        let browser = PanelKind::Browser {
+            url: "https://example.com".into(),
+            page_zoom: None,
+        };
+        assert!(!shows_through(&browser));
+        assert!(shows_through(&terminal()));
     }
 
     #[test]

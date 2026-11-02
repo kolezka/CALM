@@ -2284,7 +2284,10 @@ impl CanvasView {
         let joins = JoinLayout::compute(&self.scene.panels).joins;
         let preview_below_zoom = self.settings.settings.panels.preview_below_zoom;
         let live = live_terminals(
-            self.terminals.iter().map(|(id, _)| *id),
+            self.terminals
+                .iter()
+                .map(|(id, _)| *id)
+                .chain(self.markdown_panels.iter().map(|(id, _)| *id)),
             &self.scene,
             viewport,
             modal_open,
@@ -2800,7 +2803,9 @@ fn terminal_mode(
     )
 }
 
-/// Terminals that are placed live this frame, by the same rule as `terminal_mode`.
+/// Of the hosted native panels `ids`, those placed live this frame (the rule of
+/// `terminal_mode`) whose content lets the panels behind show through: terminals and
+/// markdown pages (`occlusion::shows_through`). Paint keeps what is under their content.
 fn live_terminals(
     ids: impl IntoIterator<Item = PanelId>,
     scene: &Scene,
@@ -2811,8 +2816,9 @@ fn live_terminals(
     ids.into_iter()
         .filter(|id| {
             scene.get(*id).is_some_and(|panel| {
-                terminal_mode(panel, scene, viewport, modal_open, preview_below_zoom)
-                    == PanelMode::Live
+                calm_core::occlusion::shows_through(&panel.kind)
+                    && terminal_mode(panel, scene, viewport, modal_open, preview_below_zoom)
+                        == PanelMode::Live
             })
         })
         .collect()
@@ -3004,8 +3010,12 @@ impl PaintSnapshot {
     }
 
     fn live_terminals(&self, viewport: Rect) -> HashSet<PanelId> {
+        // `plugin_ids` holds the markdown pages too; plugins never show through.
         live_terminals(
-            self.terminals.iter().map(|(id, _)| *id),
+            self.terminals
+                .iter()
+                .map(|(id, _)| *id)
+                .chain(self.plugin_ids.iter().copied()),
             &self.scene,
             viewport,
             self.modal_open,
@@ -3723,7 +3733,10 @@ impl Render for CanvasView {
         // The mode comes from the current scene, not last paint, so a target never
         // outlives the switch to `Preview`.
         let live = live_terminals(
-            self.terminals.iter().map(|(id, _)| *id),
+            self.terminals
+                .iter()
+                .map(|(id, _)| *id)
+                .chain(self.markdown_panels.iter().map(|(id, _)| *id)),
             &self.scene,
             viewport,
             snapshot.modal_open,
