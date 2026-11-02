@@ -44,7 +44,7 @@ impl KindName {
         ("tui", KindName::Tui),
     ];
 
-    /// `None` for an unsupported kind, which no `when.kind` filter can name.
+    /// `None` for an unsupported or markdown kind, which no `when.kind` filter can name.
     pub fn of(kind: &PanelKind) -> Option<KindName> {
         match kind {
             // An app panel is a terminal underneath but keeps its own name in filters.
@@ -52,7 +52,7 @@ impl KindName {
             PanelKind::Terminal { .. } => Some(KindName::Terminal),
             PanelKind::Browser { .. } => Some(KindName::Browser),
             PanelKind::Plugin { .. } => Some(KindName::Plugin),
-            PanelKind::Unsupported { .. } => None,
+            PanelKind::Markdown { .. } | PanelKind::Unsupported { .. } => None,
         }
     }
 

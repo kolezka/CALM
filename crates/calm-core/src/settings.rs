@@ -17,6 +17,7 @@ use crate::browser_url::BrowserQueryMode;
 use crate::geometry::Size;
 use crate::grid::GridKind;
 use crate::interaction::MoveModifier;
+use crate::markdown::MarkdownSettings;
 use crate::keymap::KeyOverrides;
 use crate::layout::{move_aside, write_durable};
 use crate::menu::DEFAULT_TERMINAL_SIZE;
@@ -94,6 +95,8 @@ pub struct Settings {
     /// Changed key bindings by action id; `null` unbinds. Missing ids keep their default.
     #[serde(deserialize_with = "keybindings_field")]
     pub keybindings: KeyOverrides,
+    /// The look of markdown panels that do not set their own.
+    pub markdown: MarkdownSettings,
 }
 
 pub const SESSION_DEBOUNCE_MS_RANGE: RangeInclusive<u64> = 250..=10_000;
@@ -365,6 +368,7 @@ impl Default for Settings {
             developer: DeveloperSettings::default(),
             session: SessionSettings::default(),
             keybindings: KeyOverrides::new(),
+            markdown: MarkdownSettings::default(),
         }
     }
 }
@@ -613,6 +617,7 @@ impl Settings {
             ));
         }
         self.session.validate()?;
+        self.markdown.validate()?;
         self.plugins.menus.validate()?;
         crate::keymap::validate_overrides(&self.keybindings)
     }

@@ -97,6 +97,14 @@ pub const ACTIONS: &[ActionSpec] = &[
         false,
     ),
     row(
+        "canvas.draw_markdown",
+        "Draw a markdown panel",
+        Group::Canvas,
+        Scope::Canvas,
+        Some("m"),
+        false,
+    ),
+    row(
         "canvas.cancel",
         "Cancel / answer No",
         Group::Canvas,
@@ -897,6 +905,7 @@ mod tests {
             [
                 "canvas.draw_terminal",
                 "canvas.draw_browser",
+                "canvas.draw_markdown",
                 "canvas.cancel",
                 "canvas.confirm",
                 "panel.delete",
@@ -951,7 +960,8 @@ mod tests {
         assert!(defaults.contains(&("canvas.fit_all", Some("cmd-)"))));
         assert!(defaults.contains(&("panel.settings", Some("cmd-<"))));
         assert!(defaults.contains(&("app.about", None)));
-        assert_eq!(defaults.iter().filter(|(_, d)| d.is_some()).count(), 31);
+        assert_eq!(defaults.iter().filter(|(_, d)| d.is_some()).count(), 32);
+        assert!(defaults.contains(&("canvas.draw_markdown", Some("m"))));
     }
 
     #[test]

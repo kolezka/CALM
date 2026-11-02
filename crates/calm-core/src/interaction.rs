@@ -41,6 +41,7 @@ pub enum Tool {
     Select,
     DrawTerminal,
     DrawBrowser,
+    DrawMarkdown,
     DrawPlugin(String),
 }
 
@@ -671,6 +672,7 @@ impl InputHandler {
                 url: "about:blank".to_string(),
                 page_zoom: None,
             }),
+            Tool::DrawMarkdown => Some(PanelKind::markdown()),
             Tool::DrawPlugin(plugin_id) => Some(PanelKind::Plugin {
                 plugin_id: plugin_id.clone(),
                 plugin_version: None,

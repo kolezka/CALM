@@ -581,6 +581,65 @@ mod tests {
         assert_eq!(content_rect(after), content_rect(before));
     }
 
+    #[test]
+    fn markdown_text_and_style_survive_a_session_round_trip() {
+        use crate::background::Rgb;
+        use crate::markdown::PanelMarkdownStyle;
+        let mut scene = Scene::default();
+        let id = scene.add(
+            PanelKind::Markdown {
+                text: "# Notes\n\n| a |\n|---|\n| 1 |\n".into(),
+            },
+            Rect::new(10.0, 20.0, 400.0, 300.0),
+        );
+        let style = PanelMarkdownStyle {
+            background_opacity: Some(0.0),
+            link_color: Some(Rgb(0x00ff00)),
+            font_family: Some("Menlo".into()),
+            ..Default::default()
+        };
+        {
+            let panel = scene.get_mut(id).unwrap();
+            panel.overrides.markdown = Some(style.clone());
+            panel.overrides.borderless = Some(true);
+        }
+        let text = serde_json::to_string(&scene.to_layout()).unwrap();
+        assert!(text.contains("\"type\":\"markdown\""), "{text}");
+        let parsed: LayoutFile = serde_json::from_str(&text).unwrap();
+        validate_layout(&parsed).unwrap();
+        let restored = Scene::from_layout(parsed);
+        let panel = &restored.panels[0];
+        assert_eq!(panel.kind, scene.get(id).unwrap().kind);
+        assert_eq!(panel.overrides.markdown, Some(style));
+        assert_eq!(panel.overrides.borderless, Some(true));
+        assert_eq!(panel.rect, scene.get(id).unwrap().rect);
+    }
+
+    #[test]
+    fn markdown_without_text_loads_empty_and_unknown_kinds_still_load() {
+        let text = r#"{"version":2,"camera":{"offset":{"x":0,"y":0},"zoom":1},"panels":[
+            {"kind":{"type":"markdown"},"rect":{"origin":{"x":0,"y":0},"size":{"width":200,"height":100}},"title":"","minimized":false},
+            {"kind":{"type":"sticky_note","color":"y"},"rect":{"origin":{"x":0,"y":0},"size":{"width":200,"height":100}},"title":"","minimized":false}
+        ]}"#;
+        let parsed: LayoutFile = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed.panels[0].kind, PanelKind::Markdown { text: String::new() });
+        assert!(matches!(&parsed.panels[1].kind, PanelKind::Unsupported { raw } if raw.type_name() == "sticky_note"));
+    }
+
+    #[test]
+    fn duplicate_copies_markdown_text_and_style() {
+        let mut scene = Scene::default();
+        let id = scene.add(PanelKind::Markdown { text: "hi".into() }, Rect::new(0.0, 0.0, 300.0, 200.0));
+        scene.get_mut(id).unwrap().overrides.markdown = Some(crate::markdown::PanelMarkdownStyle {
+            padding: Some(2.0),
+            ..Default::default()
+        });
+        let copy = scene.duplicate(id, |_| None).unwrap();
+        let (a, b) = (scene.get(id).unwrap(), scene.get(copy).unwrap());
+        assert_eq!(a.kind, b.kind);
+        assert_eq!(a.overrides, b.overrides);
+    }
+
     fn sample_scene() -> Scene {
         let mut scene = Scene::default();
         scene.camera = Camera {
@@ -1871,6 +1930,7 @@ mod tests {
             )),
             content_opacity: None,
             borderless: Some(true),
+            markdown: None,
         };
         scene.get_mut(id).unwrap().overrides = overrides.clone();
         save_layout_in(
