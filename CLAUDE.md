@@ -104,8 +104,8 @@ turns restore off (`ask` has no dialog yet and restores with a notice). A first 
 empty for an empty canvas) and, with autosave on, saves the session at once. A preset is
 a layout file: File > Save Preset… writes `layouts/NAME.json`, File > Load Preset… lists user
 and built-in presets (a user preset hides a built-in one of the same name) and replaces the
-current panels, with one confirmation when a running terminal or app, or a browser, would
-close. Developer > Show Welcome Screen loads the first launch preset (`welcome` when that is
+current panels, with one confirmation when a running terminal or app, a browser, or a
+markdown panel with text would close. Developer > Show Welcome Screen loads the first launch preset (`welcome` when that is
 empty). Distant panels become previews refreshed every 2 s.
 
 ## Rules that are easy to break

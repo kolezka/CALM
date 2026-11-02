@@ -992,23 +992,39 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   gives zoom view scaling, z-order and placement the same as plugin pages. Assets are
   vendored and inlined so the page needs no network except for linked images. Cost: about
   150 KB of CSS and JS per page load.
-- **Raw HTML stays off** (`render.unsafe = false`, comrak escapes it and drops `javascript:`,
+- **Raw HTML shows as text** (`render.escape = true`, `render.unsafe = false`: a `<div>` in
+  the source reads as `<div>` on the page, never omitted and never parsed; comrak drops `javascript:`,
   `vbscript:`, `file:` and non-image `data:` links). The page also carries a CSP whose script
   nonce is a hash of the rendered body, so only CALM's two script tags run.
-- **Links go to the system browser.** The navigation delegate allows only `about:` (the page
-  and jumps inside it), opens a clicked http, https or mailto link with `NSWorkspace`, and
-  cancels the rest. The page never navigates away. No `calm` bridge.
+- **Links go to the system browser.** The navigation delegate allows only CALM's own load
+  (`about:blank`, navigation type Other, main frame) and jumps to a fragment of the page
+  already shown (footnotes). It opens a clicked http, https or mailto link with
+  `NSWorkspace` and cancels the rest, including a clicked `about:` link, `about:srcdoc` and
+  any subframe load. The page never navigates away. No `calm` bridge. The host reloads the
+  page with the same Other load after each edit, so that load cannot be limited to the first.
 - **The whole rect takes clicks.** The web view gets every click like a browser page; Cmd+drag
   moves the panel through the usual content gesture.
 - **Transparency is the page's job.** The web view's `drawsBackground` is off (KVC) and its
   under-page color is clear; the page paints `rgba(background, opacity)`. CALM paints no
   content fill under a live markdown panel (`ContentKind::LiveMarkdown`). Opacity 0 plus
   Borderless is fully see-through. Text never fades.
-- **Bad style fields fall back, they do not fail the load.** Loading a layout does not check
-  `overrides.markdown`; `resolve` uses only fields that pass the checks, so a hand-edited
-  file cannot put arbitrary text into the page CSS. Writers (the forms) validate strictly.
+- **Bad style fields are dropped at load, they do not fail the load.** `overrides.markdown`
+  is read field by field: a wrong type, a bad color, a value out of range or a bad font
+  family becomes unset with a `calm:` warning on stderr, the other fields and panels load,
+  and a value that is not an object is no override. A markdown style on another kind is
+  dropped too. So the scene only holds valid values and a loaded bad field cannot veto a
+  later edit. `resolve` still checks each field, so a hand-edited file cannot put arbitrary
+  text into the page CSS. Writers (the forms) validate strictly.
   Font family is limited to letters, digits, spaces, commas, quotes, dots, hyphens and
   underscores.
-- **Markdown panels do not count in the Load confirmation and never confirm a close.**
-  Nothing is lost: the text is saved with the layout.
+- **A markdown panel with text confirms like a browser.** Delete asks first and it counts
+  in the Load Preset and Show Welcome Screen confirmation ("1 markdown panel"): a preset
+  load replaces the session, so the notes would be gone. Empty or whitespace-only text
+  never asks. (Reversed 2026-11-02 after review; the first cut never confirmed.)
+- **A live markdown page shows through like a live terminal.** It counts in the paint
+  "see-through" set (`occlusion::shows_through`), so a native panel behind keeps painting
+  under its content; the input region still excludes its whole rect, so clicks go to the
+  page in front. Same split as terminals in #74. Plugin pages still cut.
+- **Global Settings changes re-render notes only when `markdown` changed.** Each refresh
+  renders every page.
 

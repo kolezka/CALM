@@ -31,11 +31,12 @@ page explains how the parts work together.
 | Markdown | text from the panel's Settings, rendered by comrak to a page in a WKWebView, no bridge | `markdown_panel.rs` |
 
 Every kind has the same chrome, menu actions, joins, resize, preview and close
-confirmation. A markdown panel never confirms a close: its text is saved with the layout.
+confirmation. A markdown panel confirms a close, and counts in the Load Preset
+confirmation, only when it has text.
 Its page paints its own background at `markdown.background_opacity`, the web view draws
 none and CALM paints no content fill under a live one, so opacity 0 plus Borderless shows
 the canvas through it. A clicked http, https or mailto link opens in the default app;
-the page itself never navigates. Only explicit confirmed close ends a panel's process.
+the page itself never navigates, apart from CALM's own load and jumps to its footnotes. Only explicit confirmed close ends a panel's process.
 
 ## Native hosting
 

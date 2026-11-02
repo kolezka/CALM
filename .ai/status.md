@@ -414,11 +414,13 @@ Open questions: `.ai/open-questions.md`.
   the change applies when editing ends). Style: `markdown` settings section and Markdown
   tab, per-panel `overrides.markdown`, field by field (background color and opacity, text
   and link color, font family, size, padding). comrak 0.59 with GFM tables, task lists,
-  strikethrough, autolinks, footnotes and alerts; raw HTML escaped. Vendored
+  strikethrough, autolinks, footnotes and alerts; raw HTML escaped and shown as text. Vendored
   github-markdown-css 5.8.1 (dark) and highlight.js 11.11.1 (common build) inlined, under
   `crates/calm-core/assets/markdown` with their licenses. Links: clicked http, https and
-  mailto open in the default app, the page never navigates. Duplicate copies text and
-  style. Smoke step `markdown` probes the page (h1, table, task boxes, highlighted code),
+  mailto open in the default app, the page never navigates (only CALM's own load and
+  fragment jumps stay). Duplicate copies text and style. A note with text confirms on
+  Delete and counts in the Load Preset confirmation. A bad `overrides.markdown` field is
+  dropped at load with a warning. A live page lets a native panel behind it paint. Smoke step `markdown` probes the page (h1, table, task boxes, highlighted code),
   sets opacity 0 and new text through the panel Settings path, checks `drawsBackground`
   false and the re-render.
   Limits: a markdown panel in preview shows the flat title placeholder (opaque), not a
