@@ -30,6 +30,9 @@ pub enum PanelKind {
         cwd: Option<PathBuf>,
         /// Settings profile id the terminal was opened with. `None` means the defaults.
         profile: Option<String>,
+        /// The TUI app running in it. An app takes its command from the manifest, so
+        /// `command` and `cwd` stay `None` and are never saved for it.
+        app: Option<TerminalApp>,
     },
     Browser {
         url: String,
@@ -42,14 +45,16 @@ pub enum PanelKind {
         plugin_version: Option<String>,
         settings: serde_json::Value,
     },
-    /// A terminal running a TUI plugin's command. Only the id is stored, so layouts never
-    /// hold the command, its args or its env.
-    Tui {
-        plugin_id: String,
-        plugin_version: Option<String>,
-    },
     /// Drawn as a placeholder and saved back unchanged.
     Unsupported { raw: RawKind },
+}
+
+/// A TUI plugin attached to a terminal. Saved as `type=tui` with only the id and version,
+/// so layouts never hold the command, its args or its env.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalApp {
+    pub plugin_id: String,
+    pub plugin_version: Option<String>,
 }
 
 /// The exact JSON bytes of a panel kind with an unknown `type`.
@@ -103,6 +108,8 @@ enum KnownKind {
         plugin_id: String,
         #[serde(default)]
         plugin_version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
     },
 }
 
@@ -116,9 +123,19 @@ impl Serialize for PanelKind {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let known = match self.clone() {
             PanelKind::Terminal {
+                profile,
+                app: Some(app),
+                ..
+            } => KnownKind::Tui {
+                plugin_id: app.plugin_id,
+                plugin_version: app.plugin_version,
+                profile,
+            },
+            PanelKind::Terminal {
                 command,
                 cwd,
                 profile,
+                app: None,
             } => KnownKind::Terminal {
                 command,
                 cwd,
@@ -133,13 +150,6 @@ impl Serialize for PanelKind {
                 plugin_id,
                 plugin_version,
                 settings,
-            },
-            PanelKind::Tui {
-                plugin_id,
-                plugin_version,
-            } => KnownKind::Tui {
-                plugin_id,
-                plugin_version,
             },
             PanelKind::Unsupported { raw } => return raw.raw.serialize(serializer),
         };
@@ -171,6 +181,7 @@ impl<'de> Deserialize<'de> for PanelKind {
                 command,
                 cwd,
                 profile,
+                app: None,
             },
             KnownKind::Browser { url, page_zoom } => PanelKind::Browser { url, page_zoom },
             KnownKind::Plugin {
@@ -185,9 +196,15 @@ impl<'de> Deserialize<'de> for PanelKind {
             KnownKind::Tui {
                 plugin_id,
                 plugin_version,
-            } => PanelKind::Tui {
-                plugin_id,
-                plugin_version,
+                profile,
+            } => PanelKind::Terminal {
+                command: None,
+                cwd: None,
+                profile,
+                app: Some(TerminalApp {
+                    plugin_id,
+                    plugin_version,
+                }),
             },
         })
     }
@@ -227,7 +244,7 @@ impl PanelOverrides {
     }
 
     /// The first bad field, named as `overrides.<field>`. Terminal-only fields on another
-    /// kind are an error.
+    /// kind are an error; an app's terminal counts as a terminal.
     pub fn validate(&self, kind: &PanelKind) -> Result<(), String> {
         if let Some(title) = &self.title {
             check_text("overrides.title", title, MAX_TITLE_CHARS)?;
@@ -247,7 +264,7 @@ impl PanelOverrides {
         check_color("overrides.title_bar_color", &self.title_bar_color)?;
         check_color("overrides.title_color", &self.title_color)?;
         if let Some(colors) = &self.terminal_colors {
-            if !matches!(kind, PanelKind::Terminal { .. }) {
+            if !kind.is_terminal() {
                 return Err(
                     "\"overrides.terminal_colors\" applies only to terminal panels".to_string(),
                 );
@@ -259,13 +276,58 @@ impl PanelOverrides {
 }
 
 impl PanelKind {
+    /// A plain terminal: the profile's command (the login shell by default).
+    pub fn terminal() -> Self {
+        PanelKind::Terminal {
+            command: None,
+            cwd: None,
+            profile: None,
+            app: None,
+        }
+    }
+
+    /// A terminal running a typed command instead of the profile's.
+    pub fn command_terminal(command: impl Into<String>) -> Self {
+        PanelKind::Terminal {
+            command: Some(command.into()),
+            cwd: None,
+            profile: None,
+            app: None,
+        }
+    }
+
+    /// A terminal running TUI plugin `plugin_id`.
+    pub fn app_terminal(plugin_id: impl Into<String>, plugin_version: Option<String>) -> Self {
+        PanelKind::Terminal {
+            command: None,
+            cwd: None,
+            profile: None,
+            app: Some(TerminalApp {
+                plugin_id: plugin_id.into(),
+                plugin_version,
+            }),
+        }
+    }
+
+    /// Every terminal, apps included.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, PanelKind::Terminal { .. })
+    }
+
+    /// The app a terminal runs, if it is an app panel.
+    pub fn app(&self) -> Option<&TerminalApp> {
+        match self {
+            PanelKind::Terminal { app, .. } => app.as_ref(),
+            _ => None,
+        }
+    }
+
     fn default_title(&self) -> String {
         match self {
+            PanelKind::Terminal { app: Some(app), .. } => app.plugin_id.clone(),
             PanelKind::Terminal { .. } => "Terminal".to_string(),
             PanelKind::Browser { url, .. } => url.clone(),
-            PanelKind::Plugin { plugin_id, .. } | PanelKind::Tui { plugin_id, .. } => {
-                plugin_id.clone()
-            }
+            PanelKind::Plugin { plugin_id, .. } => plugin_id.clone(),
             PanelKind::Unsupported { raw } => format!("Unsupported: {}", raw.type_name()),
         }
     }
@@ -332,9 +394,19 @@ impl PanelKind {
                 plugin_id,
                 settings,
             },
-            PanelKind::Tui { plugin_id, .. } => PanelKind::Tui {
-                plugin_version: installed(&plugin_id),
-                plugin_id,
+            PanelKind::Terminal {
+                command,
+                cwd,
+                profile,
+                app: Some(app),
+            } => PanelKind::Terminal {
+                command,
+                cwd,
+                profile,
+                app: Some(TerminalApp {
+                    plugin_version: installed(&app.plugin_id),
+                    plugin_id: app.plugin_id,
+                }),
             },
             other => other,
         }
@@ -731,10 +803,7 @@ mod tests {
         let mut scene = Scene::default();
         let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
         let tui = scene.add(
-            PanelKind::Tui {
-                plugin_id: "notes".to_string(),
-                plugin_version: Some("1.0.0".to_string()),
-            },
+            PanelKind::app_terminal("notes", Some("1.0.0".to_string())),
             rect,
         );
         let plugin = scene.add(
@@ -748,10 +817,7 @@ mod tests {
         let tui_copy = scene.duplicate(tui, installed).unwrap();
         assert_eq!(
             scene.get(tui_copy).unwrap().kind,
-            PanelKind::Tui {
-                plugin_id: "notes".to_string(),
-                plugin_version: Some("2.0.0".to_string()),
-            }
+            PanelKind::app_terminal("notes", Some("2.0.0".to_string()))
         );
         let plugin_copy = scene.duplicate(plugin, installed).unwrap();
         assert_eq!(
@@ -763,10 +829,10 @@ mod tests {
             }
         );
         // The source keeps the version it was saved with.
-        assert!(matches!(
-            &scene.get(tui).unwrap().kind,
-            PanelKind::Tui { plugin_version: Some(v), .. } if v == "1.0.0"
-        ));
+        assert_eq!(
+            scene.get(tui).unwrap().kind,
+            PanelKind::app_terminal("notes", Some("1.0.0".to_string()))
+        );
     }
 
     #[test]
@@ -785,25 +851,16 @@ mod tests {
                 settings: serde_json::json!({ "a": 1 }),
             }
         );
-        let tui = PanelKind::Tui {
-            plugin_id: "notes".to_string(),
-            plugin_version: None,
-        };
-        assert!(matches!(
+        let tui = PanelKind::app_terminal("notes", None);
+        assert_eq!(
             tui.with_installed_version(installed),
-            PanelKind::Tui { plugin_version: Some(v), .. } if v == "1.2.3"
-        ));
-        let missing = PanelKind::Tui {
-            plugin_id: "gone".to_string(),
-            plugin_version: Some("stale".to_string()),
-        };
-        assert!(matches!(
+            PanelKind::app_terminal("notes", Some("1.2.3".to_string()))
+        );
+        let missing = PanelKind::app_terminal("gone", Some("stale".to_string()));
+        assert_eq!(
             missing.with_installed_version(installed),
-            PanelKind::Tui {
-                plugin_version: None,
-                ..
-            }
-        ));
+            PanelKind::app_terminal("gone", None)
+        );
         assert_eq!(terminal().with_installed_version(installed), terminal());
     }
 
@@ -812,6 +869,7 @@ mod tests {
             command: None,
             cwd: None,
             profile: None,
+            app: None,
         }
     }
 
@@ -821,6 +879,7 @@ mod tests {
             command: None,
             cwd: None,
             profile: Some("neon".into()),
+            app: None,
         };
         let json = serde_json::to_value(&with).unwrap();
         assert_eq!(json["profile"], "neon", "{json}");
@@ -969,6 +1028,7 @@ mod tests {
                 command: None,
                 cwd: None,
                 profile: Some("neon".into()),
+                app: None,
             },
             Rect::new(0.0, 0.0, 300.0, 200.0),
         );
@@ -1034,6 +1094,7 @@ mod tests {
             command: Some("htop".into()),
             cwd: Some(PathBuf::from("/tmp")),
             profile: None,
+            app: None,
         };
         let source = scene.add(kind.clone(), Rect::new(10.0, 20.0, 300.0, 200.0));
         let _other = scene.add(terminal(), Rect::new(900.0, 0.0, 200.0, 200.0));
@@ -1121,5 +1182,67 @@ mod tests {
             .unwrap()
             .minimized = true;
         assert_eq!(scene.bounds(), Some(Rect::new(-100.0, -50.0, 700.0, 378.0)));
+    }
+
+    fn kind_round_trip(json: &str) -> String {
+        let kind: PanelKind = serde_json::from_str(json).unwrap();
+        serde_json::to_string(&kind).unwrap()
+    }
+
+    #[test]
+    fn a_saved_tui_kind_round_trips_byte_for_byte() {
+        for json in [
+            r#"{"type":"tui","plugin_id":"top-example","plugin_version":"0.1.0"}"#,
+            r#"{"type":"tui","plugin_id":"top-example","plugin_version":null}"#,
+        ] {
+            assert_eq!(kind_round_trip(json), json);
+        }
+    }
+
+    #[test]
+    fn a_saved_tui_kind_keeps_its_profile() {
+        let json =
+            r#"{"type":"tui","plugin_id":"top-example","plugin_version":"0.1.0","profile":"dark"}"#;
+        assert_eq!(kind_round_trip(json), json);
+    }
+
+    #[test]
+    fn an_app_panel_never_writes_command_or_cwd() {
+        // Even a malformed app kind with a command and cwd saves only the app.
+        let kind = PanelKind::Terminal {
+            command: Some("rm -rf ~".to_string()),
+            cwd: Some(PathBuf::from("/tmp")),
+            profile: None,
+            app: Some(TerminalApp {
+                plugin_id: "top-example".to_string(),
+                plugin_version: None,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_string(&kind).unwrap(),
+            r#"{"type":"tui","plugin_id":"top-example","plugin_version":null}"#
+        );
+        let back: PanelKind = serde_json::from_str(&serde_json::to_string(&kind).unwrap()).unwrap();
+        assert_eq!(back, PanelKind::app_terminal("top-example", None));
+    }
+
+    #[test]
+    fn terminal_colors_overrides_are_valid_on_app_panels() {
+        let overrides = PanelOverrides {
+            terminal_colors: Some(PanelTerminalColors {
+                background: Some("#102030".to_string()),
+                ..PanelTerminalColors::default()
+            }),
+            ..PanelOverrides::default()
+        };
+        assert_eq!(
+            overrides.validate(&PanelKind::app_terminal("top-example", None)),
+            Ok(())
+        );
+        let browser = PanelKind::Browser {
+            url: "about:blank".to_string(),
+            page_zoom: None,
+        };
+        assert!(overrides.validate(&browser).is_err());
     }
 }

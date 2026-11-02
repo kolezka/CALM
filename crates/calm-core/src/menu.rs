@@ -188,10 +188,7 @@ pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
         action(PANEL_SEND_TO_BACK, "Send to Back"),
     ]);
     items.extend([MenuItem::Separator, action(PANEL_SETTINGS, "Settings…")]);
-    if matches!(
-        panel.kind,
-        PanelKind::Terminal { .. } | PanelKind::Tui { .. }
-    ) {
+    if panel.kind.is_terminal() {
         items.extend([MenuItem::Separator, action(PANEL_DUPLICATE, "Duplicate")]);
     }
     items.extend([MenuItem::Separator, action(PANEL_DELETE, "Delete")]);
@@ -219,14 +216,7 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
         _ if terminal_profile_choice(id).is_some() => {
             menu_action(ADD_TERMINAL, world, plugin_sizes)
         }
-        ADD_TERMINAL => add(
-            PanelKind::Terminal {
-                command: None,
-                cwd: None,
-                profile: None,
-            },
-            DEFAULT_TERMINAL_SIZE,
-        ),
+        ADD_TERMINAL => add(PanelKind::terminal(), DEFAULT_TERMINAL_SIZE),
         ADD_BROWSER => add(
             PanelKind::Browser {
                 url: "about:blank".to_string(),
@@ -246,13 +236,7 @@ pub fn menu_action(id: &str, world: Point, plugin_sizes: &[(String, Size)]) -> O
         _ if id.starts_with(ADD_TUI_PREFIX) => {
             let plugin_id = &id[ADD_TUI_PREFIX.len()..];
             let (_, size) = plugin_sizes.iter().find(|(known, _)| known == plugin_id)?;
-            add(
-                PanelKind::Tui {
-                    plugin_id: plugin_id.to_string(),
-                    plugin_version: None,
-                },
-                *size,
-            )
+            add(PanelKind::app_terminal(plugin_id, None), *size)
         }
         _ => {
             let plugin_id = id.strip_prefix(ADD_PLUGIN_PREFIX)?;
@@ -397,6 +381,7 @@ mod tests {
                     command: None,
                     cwd: None,
                     profile: None,
+                    app: None,
                 },
                 rect: Rect::new(120.0, -40.0, 640.0, 400.0),
             })
@@ -445,6 +430,7 @@ mod tests {
             command: None,
             cwd: None,
             profile: None,
+            app: None,
         }
     }
 
@@ -514,10 +500,7 @@ mod tests {
                 plugin_version: None,
                 settings: Default::default(),
             },
-            PanelKind::Tui {
-                plugin_id: "top".to_string(),
-                plugin_version: None,
-            },
+            PanelKind::app_terminal("top", None),
         ];
         for kind in kinds {
             for minimized in [false, true] {
@@ -576,10 +559,7 @@ mod tests {
         assert_eq!(
             menu_action("add.tui.slack", world, &sizes),
             Some(MenuCommand::AddPanel {
-                kind: PanelKind::Tui {
-                    plugin_id: "slack".to_string(),
-                    plugin_version: None,
-                },
+                kind: PanelKind::app_terminal("slack", None),
                 rect: Rect {
                     origin: world,
                     size: Size::new(900.0, 600.0)
@@ -591,10 +571,7 @@ mod tests {
 
     #[test]
     fn exited_tui_panel_offers_restart_first_and_duplicate() {
-        let tui = PanelKind::Tui {
-            plugin_id: "slack".to_string(),
-            plugin_version: None,
-        };
+        let tui = PanelKind::app_terminal("slack", None);
         let items = panel_menu(&panel(tui.clone(), false), true);
         assert_eq!(items[0], action("panel.restart", "Restart"));
         assert_eq!(items[1], MenuItem::Separator);
