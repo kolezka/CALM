@@ -1,7 +1,7 @@
 //! Markdown panels: the text renders to one self-contained HTML page with GitHub styles
 //! and highlight.js inlined, so the page needs no network except for images it links.
 //!
-//! Raw HTML in the source is escaped (comrak's `unsafe` stays off) and dangerous link
+//! Raw HTML in the source is escaped and shows as text (comrak's `escape` on, `unsafe` off) and dangerous link
 //! schemes are dropped by comrak. A content security policy only lets the page's own
 //! scripts run, as a second fence.
 
@@ -215,8 +215,9 @@ fn options() -> comrak::Options<'static> {
     extension.tasklist = true;
     extension.footnotes = true;
     extension.alerts = true;
-    // Spelled out: raw HTML in the source is escaped, never passed through.
+    // Raw HTML in the source shows as text: never passed through, never silently omitted.
     options.render.r#unsafe = false;
+    options.render.escape = true;
     options.render.github_pre_lang = false;
     options
 }
@@ -338,11 +339,20 @@ mod tests {
     #[test]
     fn raw_html_is_escaped_not_passed_through() {
         let html = render_body(
-            "<script>alert(1)</script>\n\nhi <img src=x onerror=alert(1)> <b>bold</b>\n",
+            "<div>Important note</div>\n\n<script>alert(1)</script>\n\n\
+             hi <img src=x onerror=alert(1)> <b>bold</b>\n",
         );
         assert!(!html.contains("<script"), "{html}");
         assert!(!html.contains("<img src=x"), "{html}");
         assert!(!html.contains("<b>"), "{html}");
+        assert!(!html.contains("raw HTML omitted"), "{html}");
+        // The text shows as written.
+        assert!(
+            html.contains("&lt;div&gt;Important note&lt;/div&gt;"),
+            "{html}"
+        );
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"), "{html}");
+        assert!(html.contains("&lt;b&gt;bold&lt;/b&gt;"), "{html}");
     }
 
     #[test]
