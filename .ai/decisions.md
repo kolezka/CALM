@@ -906,3 +906,16 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   panels, or `panels.confirm_close` off) nothing is compared. The Load confirmation and a
   normal panel close share one rule (`close_confirms`): a running terminal or app, or a
   browser, asks first.
+
+## Canvas text sizes snap to half points (2026-11-02, branch `perf/zoom-pan`)
+
+- **Title and other canvas text use `text_size_px`: `12 * zoom` rounded to 0.5 pt.** GPUI
+  keys its glyph atlas and line layout cache by the exact font size, so a continuous zoom
+  rasterized and shaped every title glyph anew on almost every frame. Half a point is one
+  device pixel on Retina and was picked by eye from the arithmetic, not a user test.
+- **The step is a constant, not a setting.** It is a render cache detail, not a look or a
+  behavior a user picks; a setting would only let a user turn the cache off. Cost: if the
+  snap shows on some display, changing it needs a build.
+- **No dedupe of unchanged native frames yet.** `zoom_bench` measured terminal, browser and
+  plugin placement plus native order at about 0.3 ms per zoom frame, and during pan and zoom
+  every frame changes anyway. Revisit if a profile shows AppKit layout cost.

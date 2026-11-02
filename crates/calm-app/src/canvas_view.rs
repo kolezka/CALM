@@ -3505,7 +3505,7 @@ fn paint_text(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let font_px = TITLE_FONT_SIZE * zoom;
+    let font_px = calm_core::chrome::text_size_px(TITLE_FONT_SIZE, zoom);
     if font_px < MIN_TITLE_FONT_PX || text.is_empty() {
         return;
     }

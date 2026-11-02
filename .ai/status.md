@@ -410,6 +410,11 @@ Open questions: `.ai/open-questions.md`.
 
 - Open PRs: #70 (plan the Claude Code integration).
 - No PR yet: a Linux port plan.
+- Branch `perf/zoom-pan` (no PR yet): canvas text sizes snap to 0.5 pt so zoom reuses
+  GPUI's glyph cache, and the opt-in `zoom_bench` smoke step (`CALM_SMOKE_ONLY=zoom_bench`)
+  times paint sections. Numbers in `docs/benchmarks.md`. Unverified: how titles look while
+  zooming (manual GUI check), and whether the user's jank is reproduced: frame time outside
+  CALM's paint (GPUI draw, AppKit layout) is not timed.
 
 ## Not wired yet
 
@@ -443,8 +448,8 @@ Open questions: `.ai/open-questions.md`.
   installed manifest `plugin_version`. Unverified: whether `on_app_quit` fires on cmd-q and
   on every quit path (the smoke calls the quit save directly, not through a real quit), and
   the manual "drag writes `session.json` about 1 s later" check.
-- `--bench` is not built, and `docs/benchmarks.md` does not exist. The Makefile `bench`
-  target calls a flag that is missing.
+- `--bench` is not built. The Makefile `bench` target calls a flag that is missing.
+  `docs/benchmarks.md` holds only the `zoom_bench` smoke numbers.
 - The Ghostty shim patch (plugin API v2 phase 10) is not done, so no terminal `PWD`, title
   or exit code from Ghostty, and TUI `fontSize`, `fontFamily` and `padding` are rejected.
 - Bun lookup for plugin backends (`plugins.bun_path`) is decided but not built; no plugin
