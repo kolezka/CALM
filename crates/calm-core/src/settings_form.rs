@@ -14,6 +14,7 @@ use crate::interaction::MoveModifier;
 use crate::process_stats::{INTERVAL_MS_RANGE, MemoryUnit, clamp_interval_ms};
 use crate::scene::PanelId;
 use crate::settings::{
+    ARROW_MOVE_STEP_RANGE, ARROW_PAN_STEP_RANGE, DEFAULT_ARROW_MOVE_STEP, DEFAULT_ARROW_PAN_STEP,
     GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
     RestoreOnLaunch, SESSION_BACKUP_COUNT_RANGE, SESSION_DEBOUNCE_MS_RANGE, SNAP_EDGE_RANGE,
     SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
@@ -248,6 +249,20 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                     .iter()
                     .position(|value| *value == settings.canvas.move_modifier)
                     .unwrap_or(0),
+            ),
+            slider(
+                "canvas.arrow_pan_step",
+                "Arrow key pan step",
+                settings.canvas.arrow_pan_step,
+                ARROW_PAN_STEP_RANGE,
+                0,
+            ),
+            slider(
+                "canvas.arrow_move_step",
+                "Cmd+Option+arrow move step",
+                settings.canvas.arrow_move_step,
+                ARROW_MOVE_STEP_RANGE,
+                0,
             ),
             checkbox("snap.enabled", "Snap panels", snap.enabled),
             choice("snap.grid", "Snap grid", steps, selected),
@@ -672,6 +687,16 @@ pub fn apply_field(
             settings.canvas.click_empty_clears_focus = on;
             changed
         }
+        ("canvas.arrow_pan_step", FieldValue::Number(_)) => {
+            settings.canvas.arrow_pan_step =
+                number(ARROW_PAN_STEP_RANGE, 0).unwrap_or(DEFAULT_ARROW_PAN_STEP);
+            changed
+        }
+        ("canvas.arrow_move_step", FieldValue::Number(_)) => {
+            settings.canvas.arrow_move_step =
+                number(ARROW_MOVE_STEP_RANGE, 0).unwrap_or(DEFAULT_ARROW_MOVE_STEP);
+            changed
+        }
         ("canvas.move_modifier", FieldValue::Index(index)) => {
             settings.canvas.move_modifier =
                 *MoveModifier::ALL.get(index).ok_or("bad move modifier")?;
@@ -785,6 +810,8 @@ pub fn apply_field(
             | "grid.major_opacity"
             | "canvas.click_empty_clears_focus"
             | "canvas.move_modifier"
+            | "canvas.arrow_pan_step"
+            | "canvas.arrow_move_step"
             | "snap.enabled"
             | "snap.grid"
             | "snap.edge"
@@ -1358,6 +1385,41 @@ mod tests {
         assert_eq!(settings.grid.spacing, 256.0);
         apply_field(&mut settings, "image.blur", FieldValue::Number(f64::NAN)).unwrap();
         assert_eq!(settings.background.image.filters.blur, 0.0);
+        apply_field(
+            &mut settings,
+            "canvas.arrow_pan_step",
+            FieldValue::Number(1.0),
+        )
+        .unwrap();
+        assert_eq!(settings.canvas.arrow_pan_step, 4.0);
+        apply_field(
+            &mut settings,
+            "canvas.arrow_pan_step",
+            FieldValue::Number(9999.0),
+        )
+        .unwrap();
+        assert_eq!(settings.canvas.arrow_pan_step, 400.0);
+        apply_field(
+            &mut settings,
+            "canvas.arrow_move_step",
+            FieldValue::Number(0.2),
+        )
+        .unwrap();
+        assert_eq!(settings.canvas.arrow_move_step, 1.0);
+        apply_field(
+            &mut settings,
+            "canvas.arrow_move_step",
+            FieldValue::Number(12.4),
+        )
+        .unwrap();
+        assert_eq!(settings.canvas.arrow_move_step, 12.0);
+        apply_field(
+            &mut settings,
+            "canvas.arrow_move_step",
+            FieldValue::Number(f64::NAN),
+        )
+        .unwrap();
+        assert_eq!(settings.canvas.arrow_move_step, 8.0);
         assert_eq!(settings.validate(), Ok(()));
     }
 

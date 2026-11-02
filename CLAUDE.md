@@ -79,6 +79,7 @@ panel menu opens that panel's own Settings window. Cmd+drag on a terminal's or p
 reaches it, and Cmd+right-click there opens the panel menu (`canvas.move_modifier`). Space+drag or
 middle-drag pans. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom. `cmd-shift-h`
 centers the world origin, `cmd-shift-0` fits all panels (both also in the View menu).
+Arrows pan the canvas when no live panel has the keyboard, Cmd+Option+arrows move the focused panel, and Shift takes larger steps (`canvas.arrow_pan_step`, `canvas.arrow_move_step`).
 `cmd-shift-backspace` deletes the focused panel (a live one confirms first, as with the menu's Delete).
 Cmd+Shift+, opens the focused panel's Settings window (written `cmd-<` in code, which is how GPUI reports that press).
 `cmd-ctrl-f` fullscreen, `cmd-shift-f` stats (FPS, CPU, memory; items in `developer.stats`). A click on empty canvas clears panel focus

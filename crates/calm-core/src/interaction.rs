@@ -12,6 +12,29 @@ pub const CHROME_BUTTON_SIZE: f64 = crate::chrome::BUTTON_HIT_SIZE;
 pub use crate::chrome::{ChromeButton, chrome_hit};
 /// A press that moves less than this, in screen points, before release is a click.
 pub const CLICK_SLOP: f64 = 4.0;
+/// Shift with an arrow key takes this many normal steps.
+pub const ARROW_LARGE_FACTOR: f64 = 5.0;
+
+/// Direction of an arrow key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArrowDir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl ArrowDir {
+    /// Unit vector in screen and world axes (y grows down).
+    fn unit(self) -> (f64, f64) {
+        match self {
+            ArrowDir::Up => (0.0, -1.0),
+            ArrowDir::Down => (0.0, 1.0),
+            ArrowDir::Left => (-1.0, 0.0),
+            ArrowDir::Right => (1.0, 0.0),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tool {
@@ -189,6 +212,10 @@ pub struct InputHandler {
     pub move_modifier: MoveModifier,
     /// A move-modifier press on GPUI-painted content, waiting to become a click or a move.
     pub content_press: Option<(PanelId, ContentGesture)>,
+    /// Arrow key pan step in screen points (`canvas.arrow_pan_step`).
+    pub arrow_pan_step: f64,
+    /// Cmd+Option+arrow move step in world units (`canvas.arrow_move_step`).
+    pub arrow_move_step: f64,
 }
 
 impl Default for InputHandler {
@@ -202,6 +229,8 @@ impl Default for InputHandler {
             click_empty_clears_focus: true,
             move_modifier: MoveModifier::default(),
             content_press: None,
+            arrow_pan_step: crate::settings::DEFAULT_ARROW_PAN_STEP,
+            arrow_move_step: crate::settings::DEFAULT_ARROW_MOVE_STEP,
         }
     }
 }
@@ -489,6 +518,34 @@ impl InputHandler {
         scene.camera.zoom_by(factor, anchor_screen);
     }
 
+    /// Pans like a scroll: Right reveals what is to the right, so content moves left.
+    pub fn arrow_pan(&mut self, dir: ArrowDir, large: bool, scene: &mut Scene) {
+        let step = self.arrow_pan_step * if large { ARROW_LARGE_FACTOR } else { 1.0 };
+        let (x, y) = dir.unit();
+        scene.camera.pan_by_screen(-x * step, -y * step);
+    }
+
+    /// Moves panel `id` by the world step, without snapping. False when there is no such panel.
+    pub fn arrow_move(
+        &mut self,
+        id: PanelId,
+        dir: ArrowDir,
+        large: bool,
+        scene: &mut Scene,
+    ) -> bool {
+        let step = self.arrow_move_step * if large { ARROW_LARGE_FACTOR } else { 1.0 };
+        let (x, y) = dir.unit();
+        let Some(panel) = scene.get_mut(id) else {
+            return false;
+        };
+        panel.rect.origin = Point::new(
+            panel.rect.origin.x + x * step,
+            panel.rect.origin.y + y * step,
+        );
+        scene.touch();
+        true
+    }
+
     /// A live process needs a second request or Enter before the panel closes.
     pub fn request_close(&mut self, id: PanelId, alive: bool) -> Effect {
         if !alive || self.confirming == Some(id) {
@@ -669,6 +726,56 @@ mod tests {
 
     fn no_mods() -> Modifiers {
         Modifiers::default()
+    }
+
+    #[test]
+    fn arrow_pan_scrolls_by_screen_step_and_shift_is_larger() {
+        let mut input = InputHandler {
+            arrow_pan_step: 40.0,
+            ..InputHandler::default()
+        };
+        let mut scene = Scene::default();
+        scene.camera.zoom = 2.0;
+        let start = scene.camera.offset;
+        input.arrow_pan(ArrowDir::Right, false, &mut scene);
+        // Content moves left, so the view origin moves right by 40 px / zoom 2.
+        assert_eq!(scene.camera.offset.x - start.x, 20.0);
+        assert_eq!(scene.camera.offset.y, start.y);
+        input.arrow_pan(ArrowDir::Down, true, &mut scene);
+        assert_eq!(scene.camera.offset.y - start.y, 20.0 * ARROW_LARGE_FACTOR);
+        input.arrow_pan(ArrowDir::Left, false, &mut scene);
+        input.arrow_pan(ArrowDir::Up, true, &mut scene);
+        assert_eq!(scene.camera.offset, start);
+    }
+
+    #[test]
+    fn arrow_move_moves_only_the_target_by_world_step() {
+        let mut input = InputHandler {
+            arrow_move_step: 8.0,
+            ..InputHandler::default()
+        };
+        let mut scene = Scene::default();
+        scene.camera.zoom = 3.0;
+        let a = scene.add(terminal(), Rect::new(0.0, 0.0, 100.0, 100.0));
+        let b = scene.add(terminal(), Rect::new(200.0, 0.0, 100.0, 100.0));
+        let camera = scene.camera;
+        let size = scene.get(a).unwrap().rect.size;
+        let revision = scene.revision();
+        assert!(input.arrow_move(a, ArrowDir::Right, false, &mut scene));
+        assert!(scene.revision() > revision);
+        assert_eq!(scene.get(a).unwrap().rect.origin, Point::new(8.0, 0.0));
+        assert!(input.arrow_move(a, ArrowDir::Up, true, &mut scene));
+        assert_eq!(
+            scene.get(a).unwrap().rect.origin,
+            Point::new(8.0, -8.0 * ARROW_LARGE_FACTOR)
+        );
+        assert_eq!(scene.get(a).unwrap().rect.size, size);
+        assert_eq!(scene.get(b).unwrap().rect.origin, Point::new(200.0, 0.0));
+        assert_eq!(scene.camera, camera);
+        scene.remove(b);
+        let revision = scene.revision();
+        assert!(!input.arrow_move(b, ArrowDir::Left, false, &mut scene));
+        assert_eq!(scene.revision(), revision);
     }
 
     /// Cmd and Shift held: moves place panels exactly, without snapping.

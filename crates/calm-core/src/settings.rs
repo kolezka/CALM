@@ -43,6 +43,12 @@ pub const SNAP_EDGE_RANGE: RangeInclusive<f64> = 0.0..=32.0;
 pub const TERMINAL_WIDTH_RANGE: RangeInclusive<f64> = 240.0..=2000.0;
 pub const TERMINAL_HEIGHT_RANGE: RangeInclusive<f64> = 120.0..=1600.0;
 pub const PREVIEW_ZOOM_RANGE: RangeInclusive<f64> = 0.1..=1.0;
+/// Arrow key pan step, in screen points.
+pub const DEFAULT_ARROW_PAN_STEP: f64 = 48.0;
+pub const ARROW_PAN_STEP_RANGE: RangeInclusive<f64> = 4.0..=400.0;
+/// Cmd+Option+arrow panel move step, in world units.
+pub const DEFAULT_ARROW_MOVE_STEP: f64 = 8.0;
+pub const ARROW_MOVE_STEP_RANGE: RangeInclusive<f64> = 1.0..=200.0;
 
 /// The version 1 background choice. Kept only to migrate old files.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +210,10 @@ pub struct CanvasSettings {
     /// Held while dragging a panel's content to move the panel.
     #[serde(deserialize_with = "move_modifier_field")]
     pub move_modifier: MoveModifier,
+    /// Screen points an arrow key pans while no live panel has the keyboard.
+    pub arrow_pan_step: f64,
+    /// World units Cmd+Option+arrow moves the focused panel.
+    pub arrow_move_step: f64,
 }
 
 impl Default for CanvasSettings {
@@ -211,6 +221,8 @@ impl Default for CanvasSettings {
         CanvasSettings {
             click_empty_clears_focus: true,
             move_modifier: MoveModifier::Cmd,
+            arrow_pan_step: DEFAULT_ARROW_PAN_STEP,
+            arrow_move_step: DEFAULT_ARROW_MOVE_STEP,
         }
     }
 }
@@ -521,6 +533,16 @@ impl Settings {
             "snap.edge_distance",
             self.snap.edge_distance,
             SNAP_EDGE_RANGE,
+        )?;
+        check(
+            "canvas.arrow_pan_step",
+            self.canvas.arrow_pan_step,
+            ARROW_PAN_STEP_RANGE,
+        )?;
+        check(
+            "canvas.arrow_move_step",
+            self.canvas.arrow_move_step,
+            ARROW_MOVE_STEP_RANGE,
         )?;
         let panels = &self.panels;
         check(
@@ -866,6 +888,30 @@ mod tests {
             r#"{ "version": 2, "developer": { "stats": { "show_cpu": "yes" } } }"#,
         ] {
             assert!(serde_json::from_str::<Settings>(json).is_err(), "{json}");
+        }
+    }
+
+    #[test]
+    fn arrow_steps_default_and_reject_bad_values() {
+        let absent: Settings = serde_json::from_str(r#"{ "version": 2 }"#).unwrap();
+        assert_eq!(absent.canvas.arrow_pan_step, 48.0);
+        assert_eq!(absent.canvas.arrow_move_step, 8.0);
+        let set: Settings = serde_json::from_str(
+            r#"{ "version": 2, "canvas": { "arrow_pan_step": 100, "arrow_move_step": 1 } }"#,
+        )
+        .unwrap();
+        assert!(set.validate().is_ok());
+        for value in [3.9, 400.5, f64::NAN, f64::INFINITY] {
+            let mut bad = Settings::default();
+            bad.canvas.arrow_pan_step = value;
+            let error = bad.validate().unwrap_err();
+            assert!(error.contains("canvas.arrow_pan_step"), "{error}");
+        }
+        for value in [0.0, 0.5, 201.0, f64::NAN] {
+            let mut bad = Settings::default();
+            bad.canvas.arrow_move_step = value;
+            let error = bad.validate().unwrap_err();
+            assert!(error.contains("canvas.arrow_move_step"), "{error}");
         }
     }
 

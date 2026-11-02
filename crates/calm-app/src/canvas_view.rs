@@ -13,7 +13,8 @@ use calm_core::chrome::{
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::{
-    Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool, ZoomStep,
+    ArrowDir, Button, ConfirmKey, Effect, InputHandler, Interaction, Modifiers, ResizeEdge, Tool,
+    ZoomStep,
 };
 use calm_core::join::{Axis, Join, JoinLayout, JoinedEdges, Side};
 use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
@@ -89,7 +90,23 @@ actions!(
         OpenPanelSettings,
         Cancel,
         ConfirmEnter,
-        ToggleFullscreen
+        ToggleFullscreen,
+        PanUp,
+        PanDown,
+        PanLeft,
+        PanRight,
+        PanUpFar,
+        PanDownFar,
+        PanLeftFar,
+        PanRightFar,
+        MovePanelUp,
+        MovePanelDown,
+        MovePanelLeft,
+        MovePanelRight,
+        MovePanelUpFar,
+        MovePanelDownFar,
+        MovePanelLeftFar,
+        MovePanelRightFar
     ]
 );
 
@@ -124,11 +141,36 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("escape", Cancel, ctx),
         KeyBinding::new("enter", ConfirmEnter, ctx),
         KeyBinding::new("cmd-ctrl-f", ToggleFullscreen, ctx),
-        // A focused terminal gets these keys; canvas zoom and fullscreen still apply.
+        KeyBinding::new("up", PanUp, ctx),
+        KeyBinding::new("down", PanDown, ctx),
+        KeyBinding::new("left", PanLeft, ctx),
+        KeyBinding::new("right", PanRight, ctx),
+        KeyBinding::new("shift-up", PanUpFar, ctx),
+        KeyBinding::new("shift-down", PanDownFar, ctx),
+        KeyBinding::new("shift-left", PanLeftFar, ctx),
+        KeyBinding::new("shift-right", PanRightFar, ctx),
+        KeyBinding::new("cmd-alt-up", MovePanelUp, ctx),
+        KeyBinding::new("cmd-alt-down", MovePanelDown, ctx),
+        KeyBinding::new("cmd-alt-left", MovePanelLeft, ctx),
+        KeyBinding::new("cmd-alt-right", MovePanelRight, ctx),
+        KeyBinding::new("cmd-alt-shift-up", MovePanelUpFar, ctx),
+        KeyBinding::new("cmd-alt-shift-down", MovePanelDownFar, ctx),
+        KeyBinding::new("cmd-alt-shift-left", MovePanelLeftFar, ctx),
+        KeyBinding::new("cmd-alt-shift-right", MovePanelRightFar, ctx),
+        // A focused terminal gets these keys; canvas zoom, panel moves and fullscreen
+        // still apply.
         KeyBinding::new("t", NoAction, Some(terminal::KEY_CONTEXT)),
         KeyBinding::new("b", NoAction, Some(terminal::KEY_CONTEXT)),
         KeyBinding::new("escape", NoAction, Some(terminal::KEY_CONTEXT)),
         KeyBinding::new("enter", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("up", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("down", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("left", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("right", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("shift-up", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("shift-down", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("shift-left", NoAction, Some(terminal::KEY_CONTEXT)),
+        KeyBinding::new("shift-right", NoAction, Some(terminal::KEY_CONTEXT)),
     ]
 }
 
@@ -724,6 +766,8 @@ impl CanvasView {
         self.input.click_empty_clears_focus =
             self.settings.settings.canvas.click_empty_clears_focus;
         self.input.move_modifier = self.settings.settings.canvas.move_modifier;
+        self.input.arrow_pan_step = self.settings.settings.canvas.arrow_pan_step;
+        self.input.arrow_move_step = self.settings.settings.canvas.arrow_move_step;
     }
 
     pub fn set_show_stats(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -2280,6 +2324,39 @@ impl CanvasView {
         cx.notify();
     }
 
+    /// Arrow keys pan only while the canvas itself has the keyboard, as Escape does.
+    fn arrow_pan(
+        &mut self,
+        dir: ArrowDir,
+        large: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if calm_native::host_view_is_first_responder(window) != Some(true) {
+            return;
+        }
+        self.input.arrow_pan(dir, large, &mut self.scene);
+        window.refresh();
+        cx.notify();
+    }
+
+    /// Cmd+Option+arrow moves the focused panel, without snapping.
+    fn arrow_move(
+        &mut self,
+        dir: ArrowDir,
+        large: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.focused else {
+            return;
+        };
+        if self.input.arrow_move(id, dir, large, &mut self.scene) {
+            window.refresh();
+            cx.notify();
+        }
+    }
+
     /// Jumps the camera: `CenterOnOrigin` keeps the zoom, `FitAll` frames every panel.
     fn frame_view(&mut self, fit_all: bool, window: &mut Window, cx: &mut Context<Self>) {
         let viewport = self.viewport.size;
@@ -3432,6 +3509,54 @@ impl Render for CanvasView {
                 cx.listener(|view, _: &ConfirmEnter, window, cx| view.confirm_enter(window, cx)),
             )
             .on_action(|_: &ToggleFullscreen, window, _| window.toggle_fullscreen())
+            .on_action(cx.listener(|view, _: &PanUp, window, cx| {
+                view.arrow_pan(ArrowDir::Up, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelUp, window, cx| {
+                view.arrow_move(ArrowDir::Up, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanUpFar, window, cx| {
+                view.arrow_pan(ArrowDir::Up, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelUpFar, window, cx| {
+                view.arrow_move(ArrowDir::Up, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanDown, window, cx| {
+                view.arrow_pan(ArrowDir::Down, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelDown, window, cx| {
+                view.arrow_move(ArrowDir::Down, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanDownFar, window, cx| {
+                view.arrow_pan(ArrowDir::Down, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelDownFar, window, cx| {
+                view.arrow_move(ArrowDir::Down, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanLeft, window, cx| {
+                view.arrow_pan(ArrowDir::Left, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelLeft, window, cx| {
+                view.arrow_move(ArrowDir::Left, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanLeftFar, window, cx| {
+                view.arrow_pan(ArrowDir::Left, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelLeftFar, window, cx| {
+                view.arrow_move(ArrowDir::Left, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanRight, window, cx| {
+                view.arrow_pan(ArrowDir::Right, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelRight, window, cx| {
+                view.arrow_move(ArrowDir::Right, false, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &PanRightFar, window, cx| {
+                view.arrow_pan(ArrowDir::Right, true, window, cx)
+            }))
+            .on_action(cx.listener(|view, _: &MovePanelRightFar, window, cx| {
+                view.arrow_move(ArrowDir::Right, true, window, cx)
+            }))
             .on_action(cx.listener(|view, _: &ToggleFps, window, cx| {
                 view.set_show_stats(!view.show_stats, window, cx)
             }))
@@ -3553,6 +3678,59 @@ mod tests {
             }),
             "panel settings shortcut must not also open global settings"
         );
+    }
+
+    fn binds(keys: &str, action: &dyn gpui::Action, context: &str) -> bool {
+        let keystroke = gpui::Keystroke::parse(keys).unwrap();
+        key_bindings().iter().any(|binding| {
+            binding.match_keystrokes(std::slice::from_ref(&keystroke)) == Some(false)
+                && binding.action().partial_eq(action)
+                && binding
+                    .predicate()
+                    .is_some_and(|p| p.to_string() == context)
+        })
+    }
+
+    #[test]
+    fn plain_arrows_pan_the_canvas_but_reach_a_focused_terminal() {
+        let cases: [(&str, &dyn gpui::Action); 8] = [
+            ("up", &PanUp),
+            ("down", &PanDown),
+            ("left", &PanLeft),
+            ("right", &PanRight),
+            ("shift-up", &PanUpFar),
+            ("shift-down", &PanDownFar),
+            ("shift-left", &PanLeftFar),
+            ("shift-right", &PanRightFar),
+        ];
+        for (keys, action) in cases {
+            assert!(binds(keys, action, KEY_CONTEXT), "canvas must bind {keys}");
+            assert!(
+                binds(keys, &NoAction, terminal::KEY_CONTEXT),
+                "terminal context must keep {keys}"
+            );
+        }
+    }
+
+    #[test]
+    fn panel_move_arrows_are_available_with_terminal_focus() {
+        let cases: [(&str, &dyn gpui::Action); 8] = [
+            ("cmd-alt-up", &MovePanelUp),
+            ("cmd-alt-down", &MovePanelDown),
+            ("cmd-alt-left", &MovePanelLeft),
+            ("cmd-alt-right", &MovePanelRight),
+            ("cmd-alt-shift-up", &MovePanelUpFar),
+            ("cmd-alt-shift-down", &MovePanelDownFar),
+            ("cmd-alt-shift-left", &MovePanelLeftFar),
+            ("cmd-alt-shift-right", &MovePanelRightFar),
+        ];
+        for (keys, action) in cases {
+            assert!(binds(keys, action, KEY_CONTEXT), "canvas must bind {keys}");
+            assert!(
+                !binds(keys, &NoAction, terminal::KEY_CONTEXT),
+                "terminal context must not block {keys}"
+            );
+        }
     }
 
     #[test]
