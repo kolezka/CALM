@@ -19,7 +19,7 @@
 - Customization first: the fade is a setting with a default, validated strictly.
 - `.ai/status.md` and `.ai/decisions.md` are updated in the task that changes the behavior.
 - Code changes in a worktree under `.worktrees/`. Before the final push: `cargo clean -p calm-core -p calm-native -p calm-app`, `cargo check --workspace --tests --examples`, `gmake ci`, and `cargo run -p calm-app -- --smoke; echo rc=$?` on a visible window.
-- Built on PR #63 (`feat/tui-extends-terminal`, head `a7b8286` when this plan was updated). Start only after #63 is merged, from a worktree off `origin/main` that contains it. #63 removes `PanelKind::Tui`: TUI apps and typed commands are `PanelKind::Terminal { app: Some(TerminalApp) | None, .. }`, so "terminals only" covers them with no extra case (spec: TUI counts as a terminal). If #63 renames anything below before it merges, follow #63's names.
+- Built on PR #63 (`feat/tui-extends-terminal`), merged to `main` as `d21a7c9`; the names below were re-checked against it. Start from a worktree off `origin/main` at or after `d21a7c9`. #63 removes `PanelKind::Tui`: TUI apps and typed commands are `PanelKind::Terminal { app: Some(TerminalApp) | None, .. }`, so "terminals only" covers them with no extra case (spec: TUI counts as a terminal). If #63 renames anything below before it merges, follow #63's names.
 
 ## Review Focus
 
