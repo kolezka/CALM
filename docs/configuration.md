@@ -68,7 +68,7 @@ The `session` section controls restore at launch and autosave of `session.json` 
 fresh processes: terminals start a new shell in their saved cwd (home if it is gone),
 browsers load their url, plugins get their saved panel settings. A plugin that is not
 installed, or a panel type this build does not know, shows a placeholder that keeps its
-saved data and offers only Delete. A session file that cannot be parsed is moved to
+saved data and offers only Pin (or Unpin) and Delete. A session file that cannot be parsed is moved to
 `session.json.invalid-<n>` and the launch starts empty; an unreadable one turns autosave
 off for that launch. An empty start never touches the last session until the first change,
 which rotates it into `session.json.1`.

@@ -617,6 +617,26 @@ impl InputHandler {
         }
     }
 
+    /// The panel an active drag or resize holds.
+    pub fn held_panel(&self) -> Option<PanelId> {
+        match self.state {
+            Interaction::Dragging { id, .. } | Interaction::Resizing { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Pins or unpins `id` like `Scene::set_pinned`. Returns true if it changed.
+    /// Refused while `id` is dragged or resized: its grab offset is in the old camera's space.
+    pub fn toggle_pin(&self, id: PanelId, scene: &mut Scene) -> bool {
+        if self.held_panel() == Some(id) {
+            return false;
+        }
+        let Some(pinned) = scene.get(id).map(Panel::is_pinned) else {
+            return false;
+        };
+        scene.set_pinned(id, !pinned)
+    }
+
     /// The resize edge the pointer is over, for the hover cursor. While a resize runs it
     /// is that resize's edge, wherever the pointer is.
     pub fn hover_resize(&self, screen: Point, scene: &Scene) -> Option<ResizeEdge> {
@@ -2470,5 +2490,33 @@ mod tests {
                 "resize, pin {anchor_pin}"
             );
         }
+    }
+
+    #[test]
+    fn toggle_pin_is_refused_for_the_panel_under_a_drag_or_resize() {
+        let mut scene = Scene::default();
+        let a = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        let b = scene.add(terminal(), Rect::new(600.0, 0.0, 400.0, 300.0));
+        let mut input = InputHandler::default();
+        input.mouse_down(Point::new(100.0, 10.0), Button::Left, no_mods(), &mut scene);
+        assert!(matches!(input.state, Interaction::Dragging { id, .. } if id == a));
+        assert_eq!(input.held_panel(), Some(a));
+        assert!(!input.toggle_pin(a, &mut scene));
+        assert!(!scene.get(a).unwrap().is_pinned());
+        assert!(input.toggle_pin(b, &mut scene));
+        assert!(scene.get(b).unwrap().is_pinned());
+        input.mouse_up(Point::new(100.0, 10.0), no_mods(), &mut scene);
+        assert_eq!(input.held_panel(), None);
+        assert!(input.toggle_pin(a, &mut scene));
+        assert!(scene.get(a).unwrap().is_pinned());
+
+        input.state = Interaction::Resizing {
+            id: a,
+            edge: ResizeEdge::Right,
+            grab_offset_world: Point::new(0.0, 0.0),
+        };
+        assert_eq!(input.held_panel(), Some(a));
+        assert!(!input.toggle_pin(a, &mut scene));
+        assert!(scene.get(a).unwrap().is_pinned());
     }
 }

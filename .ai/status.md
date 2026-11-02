@@ -176,7 +176,7 @@ Pull requests:
   `CanvasView::apply_restore_plan` builds panels back to front through the normal open
   paths, then the camera, restacks native views, then starts autosave on the result (the
   empty start guard). A missing plugin, TUI app or unknown kind is a GPUI-only placeholder
-  with a Delete-only menu that keeps its saved kind. `ask` has no dialog: it restores like
+  with a Pin (or Unpin) and Delete menu that keeps its saved kind. `ask` has no dialog: it restores like
   `on` with a notice. Review fixes: an autosave-off restore closes the gate for the whole
   launch (`AutosaveStart::launch_gate`), so a Settings toggle cannot start the writer;
   restored panels keep their saved title until the panel sets one; a gone cwd starts in

@@ -600,6 +600,20 @@ impl Scene {
         }
     }
 
+    /// The canvas world point `gap` right of `panel`'s top right corner, the gap measured
+    /// in the panel's own space. Used to place a new unpinned panel beside it.
+    pub fn canvas_point_right_of(&self, panel: &Panel, gap: f64) -> Point {
+        let anchor = Point::new(
+            panel.rect.origin.x + panel.rect.size.width + gap,
+            panel.rect.origin.y,
+        );
+        if !panel.is_pinned() {
+            return anchor;
+        }
+        let screen = self.camera_of(panel).world_to_screen(anchor);
+        self.camera.screen_to_world(screen)
+    }
+
     /// Pins or unpins a panel without moving it on screen. Its size never changes.
     /// The panel goes to the top of its new tier. Returns true if it changed.
     pub fn set_pinned(&mut self, id: PanelId, pinned: bool) -> bool {
@@ -1706,5 +1720,46 @@ mod tests {
         assert_eq!(scene.get(free_copy).unwrap().pin, None);
         assert_eq!(ids(&scene), vec![free, free_copy, pinned, other, copy]);
         assert_tiers(&scene);
+    }
+
+    #[test]
+    fn point_right_of_unpinned_panel_is_the_world_anchor() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(300.0, 200.0, 400.0, 300.0));
+        scene.camera = Camera {
+            offset: Point::new(120.0, -40.0),
+            zoom: 0.75,
+        };
+        let panel = scene.get(id).unwrap();
+        assert_eq!(
+            scene.canvas_point_right_of(panel, 24.0),
+            Point::new(300.0 + 400.0 + 24.0, 200.0)
+        );
+    }
+
+    #[test]
+    fn point_right_of_pinned_panel_lands_beside_it_on_screen() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(300.0, 200.0, 400.0, 300.0));
+        scene.camera.zoom = 2.0;
+        scene.set_pinned(id, true);
+        scene.camera = Camera {
+            offset: Point::new(120.0, -40.0),
+            zoom: 0.75,
+        };
+        let panel = scene.get(id).unwrap().clone();
+        let point = scene.canvas_point_right_of(&panel, 24.0);
+        // Screen right edge plus the gap at pin zoom 2, top edge, both on screen.
+        let pin_screen = scene.camera_of(&panel).world_rect_to_screen(panel.rect);
+        let want_screen = Point::new(pin_screen.right() + 24.0 * 2.0, pin_screen.origin.y);
+        let got_screen = scene.camera.world_to_screen(point);
+        assert!(
+            (got_screen.x - want_screen.x).abs() < 1e-9,
+            "{got_screen:?}"
+        );
+        assert!(
+            (got_screen.y - want_screen.y).abs() < 1e-9,
+            "{got_screen:?}"
+        );
     }
 }

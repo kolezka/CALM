@@ -212,9 +212,15 @@ pub fn panel_menu(panel: &Panel, can_restart: bool) -> Vec<MenuItem> {
     items
 }
 
-/// A restored panel that cannot run (missing plugin, unknown kind) offers Delete only.
-pub fn placeholder_menu() -> Vec<MenuItem> {
-    vec![action(PANEL_DELETE, "Delete")]
+/// A restored panel that cannot run (missing plugin, unknown kind) offers Pin or Unpin,
+/// then Delete.
+pub fn placeholder_menu(pinned: bool) -> Vec<MenuItem> {
+    let pin = if pinned { "Unpin" } else { "Pin" };
+    vec![
+        action(PANEL_PIN, pin),
+        MenuItem::Separator,
+        action(PANEL_DELETE, "Delete"),
+    ]
 }
 
 /// Maps a chosen id to a command. A new panel's origin is the right-click point `world`.
@@ -559,10 +565,23 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_menu_is_delete_only() {
-        let items = placeholder_menu();
-        assert_eq!(items.len(), 1);
-        assert!(matches!(&items[0], MenuItem::Action { id, .. } if id == PANEL_DELETE));
+    fn placeholder_menu_is_pin_then_delete() {
+        assert_eq!(
+            placeholder_menu(false),
+            vec![
+                action("panel.pin", "Pin"),
+                MenuItem::Separator,
+                action("panel.delete", "Delete"),
+            ]
+        );
+        assert_eq!(
+            placeholder_menu(true),
+            vec![
+                action("panel.pin", "Unpin"),
+                MenuItem::Separator,
+                action("panel.delete", "Delete"),
+            ]
+        );
     }
 
     #[test]
@@ -604,7 +623,7 @@ mod tests {
                 assert!(items.contains(&settings), "{kind:?} minimized={minimized}");
             }
         }
-        assert!(!placeholder_menu().contains(&settings));
+        assert!(!placeholder_menu(false).contains(&settings));
     }
 
     #[test]

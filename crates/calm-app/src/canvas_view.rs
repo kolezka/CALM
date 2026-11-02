@@ -1983,11 +1983,9 @@ impl CanvasView {
     }
 
     /// Pins or unpins a panel, keeping its screen origin. Returns true if it changed.
+    /// A panel being dragged or resized is left alone.
     pub fn toggle_pin(&mut self, id: PanelId, cx: &mut Context<Self>) -> bool {
-        let Some(pinned) = self.scene.get(id).map(Panel::is_pinned) else {
-            return false;
-        };
-        let changed = self.scene.set_pinned(id, !pinned);
+        let changed = self.input.toggle_pin(id, &mut self.scene);
         if changed {
             self.sync_native_order(cx);
             cx.notify();
