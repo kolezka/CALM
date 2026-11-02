@@ -706,3 +706,22 @@ These shipped with #41, next to "Restore at launch" above.
 - **A restored terminal opens its saved profile.** `PanelKind::Terminal.profile` is saved
   with the session. An unknown profile id opens with the defaults and one notice; the saved
   kind keeps the id, so it comes back if the profile does.
+
+## Presets and welcome screen (2026-11-02, design approved by the user, not built)
+
+Spec: `docs/superpowers/specs/2026-11-02-presets-and-welcome-design.md`.
+
+- **The welcome screen is a default preset, not a modal.** A first launch with no
+  `session.json` opens the built-in `welcome` preset: a welcome plugin panel, a browser on
+  `https://calm.raqz.link` and a key bindings panel. Reason: the user wanted it on the canvas
+  and saw presets as the general mechanism. Cost: the welcome panels are ordinary panels a
+  user can close for good.
+- **Presets are layouts.** Same `LayoutFile` v2 format; Save Preset… finally wires layout
+  save. User presets shadow built-in ones by name. Cost: none new; one format to keep valid.
+- **Loading a preset closes the current panels and ends their processes, after one
+  confirmation** (user). Cancel changes nothing.
+- **No first-run marker** (user). No session file means first launch. With autosave off, or
+  after a corrupt session is moved aside and nothing is saved since, the preset opens again.
+- **No music in the welcome panel** (user). Reverses the 2026-11-01 keygen-music idea.
+- **`"addMenu": false` manifest field** hides a plugin from the Add menu, instead of a
+  special case for the welcome plugin's id.
