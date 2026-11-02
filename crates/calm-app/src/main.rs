@@ -1082,6 +1082,10 @@ async fn smoke_run_command(
             let id = view
                 .add_command_terminal(command.clone(), rect, window, cx)
                 .ok_or("no panel for the command")?;
+            // Nothing has painted since the spawn: exit detection must not wait for paint.
+            if !view.terminal(id).is_some_and(|t| t.read(cx).is_ticking()) {
+                return Err("run_command: terminal not ticking before its first paint".into());
+            }
             let kind = view.scene.get(id).map(|panel| panel.kind.clone());
             if kind != Some(PanelKind::command_terminal(command.clone())) {
                 return Err(format!("run_command kind: {kind:?}"));
@@ -1156,7 +1160,8 @@ async fn smoke_run_command(
             let before = view.native_zorder(cx);
             view.restart_terminal(id, true, window, cx);
             let after = view.native_zorder(cx);
-            let kept = view.panel_settings_windows.contains_key(&id)
+            let kept = view.terminal(id).is_some_and(|t| t.read(cx).is_ticking())
+                && view.panel_settings_windows.contains_key(&id)
                 && view.panel_settings_windows.len() == windows_before
                 && view.scene.get(id).is_some();
             (before, after, kept)
@@ -1168,7 +1173,7 @@ async fn smoke_run_command(
     };
     if before.0 != before.1 || after.0 != after.1 || !kept {
         smoke_fail(&format!(
-            "run_command restart: before={before:?} after={after:?} settings_window_kept={kept}"
+            "run_command restart: before={before:?} after={after:?} ticking_and_settings_window_kept={kept}"
         ));
     }
     wait_for(2)(cx).await;
