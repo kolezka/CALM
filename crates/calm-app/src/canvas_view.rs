@@ -20,7 +20,7 @@ use calm_core::join::{Axis, Join, JoinLayout, JoinedEdges, Side};
 use calm_core::layout::{LayoutFile, SessionWriter, load_layout_from};
 use calm_core::menu::{self, MenuCommand, MenuItem};
 use calm_core::occlusion::{native_paint_region, native_visible_region};
-use calm_core::preset::{ClosingKind, ClosingPanel};
+use calm_core::preset::ClosingPanel;
 use calm_core::preview::{PREVIEW_REFRESH_SECS, PanelMode, PreviewImage, decide_mode};
 use calm_core::process_stats::{clamp_interval_ms, cpu_text, memory_text, stats_items};
 use calm_core::resize::ResizePolicy;
@@ -450,11 +450,16 @@ impl CanvasView {
     }
 
     /// Whether closing `id` asks first when `panels.confirm_close` is on. A browser's
-    /// page is state too, so it confirms like a running terminal or app.
+    /// page is state too, so it confirms like a running terminal or app, and so does a
+    /// markdown panel with text (`preset::close_confirms`).
     pub(crate) fn close_confirms(&self, id: PanelId, cx: &App) -> bool {
-        self.terminal(id)
+        let live = self
+            .terminal(id)
             .is_some_and(|terminal| terminal.read(cx).is_alive())
-            || self.browser(id).is_some()
+            || self.browser(id).is_some();
+        self.scene
+            .get(id)
+            .is_some_and(|panel| calm_core::preset::close_confirms(&panel.kind, live))
     }
 
     /// Every panel a preset load would close, for its confirmation. A panel whose kind
@@ -464,16 +469,8 @@ impl CanvasView {
             .panels
             .iter()
             .filter_map(|panel| {
-                let kind = match &panel.kind {
-                    PanelKind::Terminal { app: Some(_), .. } => ClosingKind::App,
-                    PanelKind::Terminal { app: None, .. } => ClosingKind::Terminal,
-                    PanelKind::Browser { .. } => ClosingKind::Browser,
-                    PanelKind::Plugin { .. } => ClosingKind::Plugin,
-                    // Its text is saved with the layout, so closing loses nothing.
-                    PanelKind::Markdown { .. } | PanelKind::Unsupported { .. } => return None,
-                };
                 Some(ClosingPanel {
-                    kind,
+                    kind: calm_core::preset::closing_kind(&panel.kind)?,
                     confirms: self.close_confirms(panel.id, cx),
                 })
             })

@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::layout::{LayoutError, LayoutFile, load_layout_from, valid_layout_name};
+use crate::scene::PanelKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresetOrigin {
@@ -78,6 +79,30 @@ pub enum ClosingKind {
     App,
     Browser,
     Plugin,
+    Markdown,
+}
+
+/// The Load Preset kind of a panel, or `None` for a kind this build cannot read: it
+/// closes too but never confirms, so it is not counted.
+pub fn closing_kind(kind: &PanelKind) -> Option<ClosingKind> {
+    match kind {
+        PanelKind::Terminal { app: Some(_), .. } => Some(ClosingKind::App),
+        PanelKind::Terminal { app: None, .. } => Some(ClosingKind::Terminal),
+        PanelKind::Browser { .. } => Some(ClosingKind::Browser),
+        PanelKind::Plugin { .. } => Some(ClosingKind::Plugin),
+        PanelKind::Markdown { .. } => Some(ClosingKind::Markdown),
+        PanelKind::Unsupported { .. } => None,
+    }
+}
+
+/// Whether closing a panel of `kind` asks first when `panels.confirm_close` is on. `live`
+/// is whether its terminal runs or its browser page is open. A markdown panel asks when it
+/// has text: a preset load or a slip of the key would drop notes the user wrote.
+pub fn close_confirms(kind: &PanelKind, live: bool) -> bool {
+    match kind {
+        PanelKind::Markdown { text } => !text.trim().is_empty(),
+        _ => live,
+    }
 }
 
 /// A panel that loading a preset would close. `confirms` is what a normal close asks.
@@ -102,6 +127,7 @@ pub fn load_confirmation(
         (ClosingKind::App, "app"),
         (ClosingKind::Browser, "browser"),
         (ClosingKind::Plugin, "plugin"),
+        (ClosingKind::Markdown, "markdown panel"),
     ];
     let parts: Vec<String> = nouns
         .iter()
@@ -320,6 +346,40 @@ mod tests {
         panels.extend(closing(ClosingKind::Terminal, 1, false));
         assert_eq!(load_confirmation("x", &panels, true), None);
         assert_eq!(load_confirmation("x", &[], true), None);
+    }
+
+    #[test]
+    fn markdown_with_text_confirms_and_counts_like_a_browser() {
+        let note = PanelKind::Markdown {
+            text: "# Notes".into(),
+        };
+        let empty = PanelKind::Markdown {
+            text: String::new(),
+        };
+        let blank = PanelKind::Markdown { text: " \n".into() };
+        assert!(close_confirms(&note, false), "a note with text confirms");
+        assert!(!close_confirms(&empty, false), "an empty note does not");
+        assert!(!close_confirms(&blank, false), "whitespace is empty");
+        assert_eq!(closing_kind(&note), Some(ClosingKind::Markdown));
+        let closing: Vec<ClosingPanel> = [&note, &empty]
+            .into_iter()
+            .map(|kind| ClosingPanel {
+                kind: closing_kind(kind).unwrap(),
+                confirms: close_confirms(kind, false),
+            })
+            .collect();
+        assert_eq!(
+            load_confirmation("welcome", &closing, true).as_deref(),
+            Some("Load preset welcome? This closes 2 markdown panels.")
+        );
+        let only_empty = [ClosingPanel {
+            kind: closing_kind(&empty).unwrap(),
+            confirms: close_confirms(&empty, false),
+        }];
+        assert_eq!(load_confirmation("x", &only_empty, true), None);
+        // Other kinds still follow `live`.
+        assert!(close_confirms(&PanelKind::terminal(), true));
+        assert!(!close_confirms(&PanelKind::terminal(), false));
     }
 
     #[test]
