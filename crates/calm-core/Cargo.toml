@@ -6,6 +6,7 @@ license-file.workspace = true
 publish = false
 
 [dependencies]
+comrak = { version = "0.59.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 sha2 = "0.10"
