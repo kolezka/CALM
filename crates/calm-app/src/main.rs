@@ -2459,8 +2459,11 @@ fn smoke_terminal_env() {
 }
 
 fn main() {
-    // Before any thread starts: a terminal launched from iTerm2 must not look like iTerm2.
-    calm_native::host_env::scrub_inherited_terminal_env();
+    // A terminal launched from iTerm2 must not look like iTerm2.
+    // SAFETY: first statement of `main`, before CALM or GPUI starts a thread. GPUI's pre-main
+    // constructors only register classes (source-read); system framework start-up was not
+    // audited.
+    unsafe { calm_native::host_env::scrub_inherited_terminal_env() };
     let args = parse_args();
     gpui_platform::application().run(move |cx: &mut App| {
         cx.bind_keys(canvas_view::key_bindings());

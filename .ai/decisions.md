@@ -767,7 +767,9 @@ These shipped with #41, next to "Restore at launch" above.
 
 ## Launching terminal's env is scrubbed (2026-11-02, `fix/terminal-env-scrub`)
 
-- **`main` unsets the launching terminal's identity before any thread starts.** Started from
+- **`main` unsets the launching terminal's identity before CALM starts any thread.** The
+  function is `unsafe` and its caller owns that guarantee. GPUI's pre-main constructors only
+  register classes (source-read in review); system framework start-up is not audited. Started from
   iTerm2, every canvas terminal inherited `ITERM_SESSION_ID` and `LC_TERMINAL`. Claude Code
   2.1.316 treats `ITERM_SESSION_ID` alone as "inside iTerm2", so agent teams split the iTerm2
   tab CALM was launched from. `TERM_PROGRAM` did not leak into Ghostty terminals: the

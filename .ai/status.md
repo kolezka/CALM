@@ -257,7 +257,7 @@ Open questions: `.ai/open-questions.md`.
 ## In progress (not on `main`)
 
 - `fix/terminal-env-scrub`: CALM unsets the launching terminal's identity (`ITERM_*`,
-  `TERM_PROGRAM*`, `LC_TERMINAL*`, `TMUX*`, ...) at startup, so Claude Code agent teams no
+  `TERM_PROGRAM*`, `LC_TERMINAL*`, `TMUX`, `TMUX_PANE`, ...) at startup, so Claude Code agent teams no
   longer split the iTerm2 tab CALM runs in. Smoke `terminal_env` checks a `std::process`
   child; that a Ghostty surface child sees the scrubbed env is inferred, not yet observed.
 
