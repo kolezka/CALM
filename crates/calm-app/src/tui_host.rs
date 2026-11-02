@@ -98,17 +98,20 @@ impl CommandRun {
         }
     }
 
-    /// The command a "command not found" title names.
-    pub fn command(&self) -> &str {
+    /// The command a "command not found" title or log names. A typed command shows only
+    /// its name, since the full line may carry env values.
+    pub fn command(&self) -> String {
         match &self.source {
-            RunSource::App { .. } => self.spec().map_or("", |spec| spec.command.as_str()),
-            RunSource::Typed { command } => command,
+            RunSource::App { .. } => self
+                .spec()
+                .map_or(String::new(), |spec| spec.command.clone()),
+            RunSource::Typed { command } => tui::command_name(command),
         }
     }
 
     /// The chrome title for a terminal whose own title is `base`.
     pub fn title(&self, base: &str) -> String {
-        self.supervisor.title(base, self.command())
+        self.supervisor.title(base, &self.command())
     }
 
     /// The layer between the profile and the overrides: an app's manifest look and env,
@@ -233,4 +236,26 @@ pub fn read_exit_code(path: &Path) -> Option<i32> {
 /// Per app run, so two CALM instances never read each other's status files.
 fn runtime_dir() -> PathBuf {
     std::env::temp_dir().join(format!("calm-{}", std::process::id()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_typed_command_title_and_name_never_show_its_env_values() {
+        let mut run = CommandRun::typed(
+            "API_TOKEN=calm-secret-value calm-no-such-command-xyz --flag".to_string(),
+            CommandRestart::Never,
+        );
+        assert_eq!(run.name(), "calm-no-such-command-xyz");
+        run.supervisor
+            .exited(Some(tui::COMMAND_NOT_FOUND), std::time::Duration::ZERO);
+        assert_eq!(run.supervisor.state, tui::TuiState::NotFound);
+        let title = run.title("Run");
+        assert_eq!(
+            title, "Run: command not found: calm-no-such-command-xyz",
+            "{title}"
+        );
+    }
 }

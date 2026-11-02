@@ -103,10 +103,67 @@ pub fn typed_command_spec(
     }
 }
 
+/// `command_name` for a command that is only env assignments.
+pub const FALLBACK_COMMAND_NAME: &str = "command";
+
 /// What `{name}` and the exit line call a command: its first word without the folder.
+/// Leading `NAME=value` words are skipped, so a typed secret never shows.
 pub fn command_name(command: &str) -> String {
-    let first = command.split_whitespace().next().unwrap_or_default();
-    first.rsplit('/').next().unwrap_or(first).to_string()
+    if command.trim().is_empty() {
+        return String::new();
+    }
+    match shell_words(command)
+        .into_iter()
+        .find(|word| !is_assignment(word))
+    {
+        Some(first) => first.rsplit('/').next().unwrap_or(&first).to_string(),
+        None => FALLBACK_COMMAND_NAME.to_string(),
+    }
+}
+
+/// Splits on whitespace outside quotes, keeping each word's raw text.
+fn shell_words(command: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (None, c) if c.is_whitespace() => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+                continue;
+            }
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), c) if c == q => quote = None,
+            (None | Some('"'), '\\') => {
+                word.push(c);
+                if let Some(next) = chars.next() {
+                    word.push(next);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        word.push(c);
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// A shell assignment word: `NAME=value` with NAME like `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// One POSIX shell word that stands for exactly `word`.
@@ -435,13 +492,33 @@ mod tests {
             "{stdout}"
         );
         assert!(!stdout.contains("[calm] plugin:"), "{stdout}");
+
+        let stdout = run("API_TOKEN=calm-secret-value calm-no-such-command-xyz");
+        assert_eq!(std::fs::read_to_string(status).unwrap(), "127\n");
+        assert!(
+            stdout.contains("[calm] command not found: calm-no-such-command-xyz"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("calm-secret-value"), "{stdout}");
     }
 
     #[test]
     fn command_name_is_the_first_word_without_its_folder() {
         assert_eq!(command_name("htop -d 5"), "htop");
         assert_eq!(command_name("  /usr/bin/top"), "top");
+        assert_eq!(command_name("/usr/bin/top -d 5"), "top");
         assert_eq!(command_name(""), "");
+    }
+
+    #[test]
+    fn command_name_skips_env_assignments_so_their_values_never_show() {
+        assert_eq!(command_name("API_TOKEN=x htop -d 5"), "htop");
+        assert_eq!(command_name("A=1 B=2 /usr/bin/top"), "top");
+        assert_eq!(command_name("A='x y' _b=\"1 2\" top"), "top");
+        assert_eq!(command_name("FOO=bar"), "command");
+        // Not assignments: a bad name, or `=` only after the first word.
+        assert_eq!(command_name("1A=x htop"), "1A=x");
+        assert_eq!(command_name("ls a=b"), "ls");
     }
 
     #[test]
