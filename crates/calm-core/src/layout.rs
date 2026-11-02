@@ -157,14 +157,10 @@ impl Scene {
     pub fn from_layout(layout: LayoutFile) -> Scene {
         let mut scene = Scene::default();
         scene.camera = layout.camera;
-        let (unpinned, pinned): (Vec<_>, Vec<_>) = layout
-            .panels
-            .into_iter()
-            .partition(|panel| panel.pin.is_none());
         // `add_with_overrides` inserts below the pinned tier, so pins are set after
         // every panel is in place.
         let mut pins = Vec::new();
-        for layout_panel in unpinned.into_iter().chain(pinned) {
+        for layout_panel in tier_order(layout.panels) {
             let id = scene.add_with_overrides(
                 layout_panel.kind,
                 layout_panel.rect,
@@ -183,6 +179,14 @@ impl Scene {
         }
         scene
     }
+}
+
+/// The order panels are restored in: unpinned ones in file order, then pinned ones in
+/// file order. Add them in this order and set each pin only after all are added.
+pub fn tier_order(panels: Vec<LayoutPanel>) -> Vec<LayoutPanel> {
+    let (unpinned, pinned): (Vec<_>, Vec<_>) =
+        panels.into_iter().partition(|panel| panel.pin.is_none());
+    unpinned.into_iter().chain(pinned).collect()
 }
 
 /// `$CALM_HOME/layouts` when `CALM_HOME` is set, else `$HOME/.config/calm/layouts`.
@@ -2130,6 +2134,27 @@ mod tests {
         assert!(
             matches!(&restored.panels[1].kind, PanelKind::Browser { url, .. } if url == "https://a.example")
         );
+    }
+
+    #[test]
+    fn tier_order_keeps_file_order_within_each_tier() {
+        let panel = |title: &str, pin: Option<f64>| LayoutPanel {
+            kind: browser_kind(title),
+            rect: Rect::new(0.0, 0.0, 400.0, 300.0),
+            title: title.into(),
+            minimized: false,
+            overrides: PanelOverrides::default(),
+            pin,
+        };
+        let ordered = tier_order(vec![
+            panel("p1", Some(1.0)),
+            panel("u1", None),
+            panel("p2", Some(0.5)),
+            panel("u2", None),
+        ]);
+        let titles: Vec<&str> = ordered.iter().map(|panel| panel.title.as_str()).collect();
+        assert_eq!(titles, ["u1", "u2", "p1", "p2"]);
+        assert_eq!(ordered[2].pin, Some(1.0));
     }
 
     #[test]

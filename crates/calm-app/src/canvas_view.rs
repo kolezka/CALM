@@ -467,10 +467,14 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) -> Vec<String> {
         let mut notices = Vec::new();
-        for saved in layout.panels {
+        // Pins are set once every panel exists: `add_with_overrides` inserts below the
+        // pinned tier. Written as is, since a saved pinned rect is already in pin space.
+        let mut pins = Vec::new();
+        for saved in calm_core::layout::tier_order(layout.panels) {
             let id = self
                 .scene
                 .add_with_overrides(saved.kind.clone(), saved.rect, saved.overrides);
+            pins.push((id, saved.pin));
             let saved_title = saved.title.clone();
             if let Some(panel) = self.scene.get_mut(id) {
                 panel.title = saved.title;
@@ -549,6 +553,11 @@ impl CanvasView {
             // its own. A panel that failed to open keeps its failure title.
             if self.panel_running(id) && !saved_title.is_empty() {
                 self.scene.set_title(id, saved_title);
+            }
+        }
+        for (id, pin) in pins {
+            if let Some(panel) = self.scene.get_mut(id) {
+                panel.pin = pin;
             }
         }
         // Last, so placement runs once with the saved zoom.
