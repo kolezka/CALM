@@ -26,6 +26,9 @@ native children.
   command, args and env stay in the manifest.
 - `Browser { url }`: a native address bar plus a WKWebView. No `calm` bridge.
 - `Plugin { plugin_id, settings }`: the plugin's HTML entry in a WKWebView with the bridge.
+- `Markdown { text }`: text rendered by `calm_core::markdown` (comrak, GFM) into one page with
+  GitHub CSS and highlight.js inlined, shown in `calm_native::MarkdownView`. No bridge. Style
+  is `settings.markdown` overlaid with `overrides.markdown`, field by field.
 
 ## Crates
 
@@ -84,6 +87,9 @@ pages), built by `web/Dockerfile` and hosted on Coolify at https://calm.raqz.lin
   `SessionWriter`, `move_aside`. Not called by the app yet, except `write_durable` and
   `move_aside` for settings.
 - `menu`: context menu model.
+- `markdown`: `render_body`, `page_html` (CSP with a per-page script nonce), `style_css`,
+  `MarkdownSettings` and `PanelMarkdownStyle` with validation and `resolve`, `navigation`
+  (allow `about:`, open clicked http/https/mailto outside, block the rest), `PROBE_JS`.
 - `plugin_menu`: plugin menu items (`MenuContribution`, `MenuWhen`), the merged section after
   the built-ins, the `command` payload and which panel a command goes to.
 - `frame_stats`, `stats`: FPS and percentiles.
@@ -97,6 +103,8 @@ pages), built by `web/Dockerfile` and hosted on Coolify at https://calm.raqz.lin
   `load_file`, `eval_js`, user scripts at document start.
 - `browser`: `BrowserView`, address bar plus WKWebView in the zoom view, with navigation
   events and the key monitor.
+- `markdown`: `MarkdownView`, a WKWebView with `drawsBackground` off, a navigation delegate
+  that opens clicked links through `NSWorkspace`, `load_html` and a JS probe.
 - `menu`: native NSMenu context menu.
 - `settings_window`: the Settings NSWindow that renders a `settings_form`.
 - `status_bar`: `StatusBar`, a translucent `NSVisualEffectView` pill kept topmost.
@@ -132,6 +140,8 @@ pages), built by `web/Dockerfile` and hosted on Coolify at https://calm.raqz.lin
 - `tui_host.rs`: `CommandRun`, the supervised run of an app or typed command inside a
   terminal: manifest layer, status wrapper files, restart.
 - `browser_panel.rs`: browser panels around `BrowserView`.
+- `markdown_panel.rs`: markdown panels around `MarkdownView`. They take the plugin placement
+  path (`plugin_ids`), and reload only when their page changed.
 - `plugin_host.rs`: plugin discovery report, plugin panels, `served_methods`, `route` and
   `dispatch` (the bridge calls served on the UI thread).
 - `plugin_services.rs`: `github.api`, `storage.*` and `openExternal`, parsed on the UI

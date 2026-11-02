@@ -408,6 +408,26 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
+- Markdown panels (branch `feat/markdown-panel`, not merged). New kind `Markdown { text }`,
+  saved as `type=markdown`. Add > Markdown and the `m` draw key (`canvas.draw_markdown`).
+  Text is edited in the panel Settings window (a 12 row text area, Return types a newline,
+  the change applies when editing ends). Style: `markdown` settings section and Markdown
+  tab, per-panel `overrides.markdown`, field by field (background color and opacity, text
+  and link color, font family, size, padding). comrak 0.59 with GFM tables, task lists,
+  strikethrough, autolinks, footnotes and alerts; raw HTML escaped. Vendored
+  github-markdown-css 5.8.1 (dark) and highlight.js 11.11.1 (common build) inlined, under
+  `crates/calm-core/assets/markdown` with their licenses. Links: clicked http, https and
+  mailto open in the default app, the page never navigates. Duplicate copies text and
+  style. Smoke step `markdown` probes the page (h1, table, task boxes, highlighted code),
+  sets opacity 0 and new text through the panel Settings path, checks `drawsBackground`
+  false and the re-render.
+  Limits: a markdown panel in preview shows the flat title placeholder (opaque), not a
+  snapshot. The text area has no scroll bar of its own: long text scrolls only while editing.
+  A long text reloads the whole page on each edit. The panel uses the browser icon.
+  Unverified by eye: the grid showing through a markdown panel at opacity 0 with Borderless,
+  link clicks opening the default browser and mail app, remote images loading, the text
+  area editing feel, the Markdown tab, zoom and z-order with terminals over and under it.
+
 - Open PRs: #70 (plan the Claude Code integration).
 - Branch `perf/settings-path`, no PR yet: Settings window changes save after
   `session.settings_save_ms` of quiet (default 400) and on window close or quit, and the

@@ -181,6 +181,7 @@ so on first launch right-click it and pick Open. See [docs/release.md](docs/rele
 | --------------------- | -------------------------------------- |
 | Draw a terminal       | `t`, then drag on the canvas           |
 | Draw a browser        | `b`, then drag on the canvas           |
+| Draw a markdown panel | `m`, then drag on the canvas           |
 | Add a panel or plugin | Right-click empty canvas               |
 | Pan                   | Space and drag, middle-drag, scroll    |
 | Zoom                  | Pinch, or `cmd` and scroll             |
@@ -197,6 +198,7 @@ Every key is a default; change any of them in Settings > Keys.
 | ------------------------------- | ----------------------------------------- |
 | Draw a terminal                 | `t`, then drag on the canvas              |
 | Draw a browser                  | `b`, then drag on the canvas              |
+| Draw a markdown panel           | `m`, then drag on the canvas              |
 | Cancel drawing                  | `Esc`                                     |
 | Add a panel or plugin           | Right-click empty canvas                  |
 | Panel actions                   | Right-click a title bar                   |

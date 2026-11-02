@@ -25,7 +25,8 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
   resize policy, grid, layout v2 and session storage (durable writes, backups, url scrub),
   viewport placement, preview policy, snapping, settings and the settings form, terminal
   profiles, backgrounds, status bar rect, TUI launch, menus and plugin menus, presets (find,
-  list, the Load confirmation), frame and process stats math. No GPUI, no AppKit. Everything
+  list, the Load confirmation), frame and process stats math, markdown rendering (comrak,
+  vendored GitHub CSS and highlight.js in `assets/markdown`). No GPUI, no AppKit. Everything
   here has unit tests.
 - `crates/calm-native`: AppKit. Clip view plus zoom view for each native child, Ghostty
   parenting, WKWebView with the `calm` message handler, the browser view, the NSMenu context
@@ -36,7 +37,7 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
   `BRIDGE_METHODS`), event coalescer (`events.rs`, not wired), `gh api` client and token
   lookup (`gh_token.rs`).
 - `crates/calm-app`: the GPUI binary. Thin: maps events to `calm-core`, places native views,
-  hosts terminals, TUI apps, browsers and plugins, owns the File (presets), Developer and
+  hosts terminals, TUI apps, browsers, markdown panels and plugins, owns the File (presets), Developer and
   Settings menus and the libghostty adapter.
 - `plugins/hello-world`, `plugins/github-prs`: first-party web plugins (`github-prs` is Preact
   TSX built with bun). `plugins/calm-welcome` (the welcome page) and `plugins/calm-keys` (key
@@ -76,7 +77,9 @@ Keep `.ai/` current: update `status.md` when a task lands or a gap is found, and
 
 ## In the app
 
-`t` then drag draws a terminal, `b` then drag a browser. Add > Run Command… asks for a command
+`t` then drag draws a terminal, `b` then drag a browser, `m` then drag a markdown panel
+(also Add > Markdown); its text and look are set in its own Settings window (Settings… in
+the panel menu), with global defaults in the Markdown tab of `cmd-,`. Add > Run Command… asks for a command
 (say `htop`) and opens a terminal running it, restarted per `terminal.command_restart`.
 Right-click opens Add, Settings and panel actions, plus plugin menu items; Settings… in the
 panel menu opens that panel's own Settings window. Cmd+drag on a terminal's or page's content moves the panel, a Cmd+click still
@@ -91,7 +94,7 @@ Cmd+Shift+, opens the focused panel's Settings window (written `cmd-<` in code, 
 `cmd-ctrl-f` fullscreen, `cmd-shift-f` stats (FPS, CPU, memory; items in `developer.stats`). A click on empty canvas clears panel focus
 (`canvas.click_empty_clears_focus`). Cmd+drag snaps, Cmd+Shift+drag does not; a drag that starts on a resize edge always resizes (default
 grid 8 world units, edge snap within 8). `cmd-,` opens the native Settings window
-(background, grid, snapping, panels, terminal, session, developer). Settings persist in
+(background, grid, snapping, panels, terminal, markdown, session, developer). Settings persist in
 `~/.config/calm/settings.json`; `CALM_HOME` overrides the directory. A launch restores the
 last session from `session.json` (new shells, browsers at their url, plugins with their
 settings) and autosaves it; `--no-restore` starts empty, `--layout NAME` opens

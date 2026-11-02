@@ -28,9 +28,14 @@ page explains how the parts work together.
 | Tui | Ghostty surface running a TUI plugin's command | `tui_host.rs` (terminal code underneath) |
 | Browser | native address bar plus WKWebView, no bridge | `browser_panel.rs` |
 | Plugin | the plugin's HTML entry in a WKWebView with `window.calm` | `plugin_host.rs` |
+| Markdown | text from the panel's Settings, rendered by comrak to a page in a WKWebView, no bridge | `markdown_panel.rs` |
 
 Every kind has the same chrome, menu actions, joins, resize, preview and close
-confirmation. Only explicit confirmed close ends a panel's process.
+confirmation. A markdown panel never confirms a close: its text is saved with the layout.
+Its page paints its own background at `markdown.background_opacity`, the web view draws
+none and CALM paints no content fill under a live one, so opacity 0 plus Borderless shows
+the canvas through it. A clicked http, https or mailto link opens in the default app;
+the page itself never navigates. Only explicit confirmed close ends a panel's process.
 
 ## Native hosting
 

@@ -982,3 +982,33 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   was key. Off keeps the canvas at full rate with Settings open; the cost is a little more
   energy while CALM is in the background. GPUI reads it at window creation, so it applies
   after restart.
+
+## Markdown panels (2026-11-02, branch feat/markdown-panel)
+
+- **A built-in kind, not a plugin.** `PanelKind::Markdown { text }`, saved as `type=markdown`.
+  The text is content, so it lives in the kind: restore and duplicate bring it back and Reset
+  to global keeps it. Approved by the user.
+- **comrak in calm-core, shown in a WKWebView.** Rendering is pure and tested; the web view
+  gives zoom view scaling, z-order and placement the same as plugin pages. Assets are
+  vendored and inlined so the page needs no network except for linked images. Cost: about
+  150 KB of CSS and JS per page load.
+- **Raw HTML stays off** (`render.unsafe = false`, comrak escapes it and drops `javascript:`,
+  `vbscript:`, `file:` and non-image `data:` links). The page also carries a CSP whose script
+  nonce is a hash of the rendered body, so only CALM's two script tags run.
+- **Links go to the system browser.** The navigation delegate allows only `about:` (the page
+  and jumps inside it), opens a clicked http, https or mailto link with `NSWorkspace`, and
+  cancels the rest. The page never navigates away. No `calm` bridge.
+- **The whole rect takes clicks.** The web view gets every click like a browser page; Cmd+drag
+  moves the panel through the usual content gesture.
+- **Transparency is the page's job.** The web view's `drawsBackground` is off (KVC) and its
+  under-page color is clear; the page paints `rgba(background, opacity)`. CALM paints no
+  content fill under a live markdown panel (`ContentKind::LiveMarkdown`). Opacity 0 plus
+  Borderless is fully see-through. Text never fades.
+- **Bad style fields fall back, they do not fail the load.** Loading a layout does not check
+  `overrides.markdown`; `resolve` uses only fields that pass the checks, so a hand-edited
+  file cannot put arbitrary text into the page CSS. Writers (the forms) validate strictly.
+  Font family is limited to letters, digits, spaces, commas, quotes, dots, hyphens and
+  underscores.
+- **Markdown panels do not count in the Load confirmation and never confirm a close.**
+  Nothing is lost: the text is saved with the layout.
+
