@@ -292,6 +292,16 @@ impl NativeChild {
         self.clip.setHidden(!visible || self.occluded);
     }
 
+    /// Fades the whole panel content, Ghostty's surface included, by the clip view's alpha.
+    pub fn set_opacity(&self, opacity: f64) {
+        self.clip.setAlphaValue(opacity);
+    }
+
+    /// The clip view's opacity read back from AppKit.
+    pub fn opacity(&self) -> f64 {
+        self.clip.alphaValue()
+    }
+
     /// Moves the clip view above its siblings, so this panel draws over other native panels.
     pub fn bring_to_front(&mut self) {
         // SAFETY: main thread only (NSView is MainThreadOnly); superview returns a retained view.

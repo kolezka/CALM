@@ -1289,6 +1289,11 @@ impl CanvasView {
         // A restart replaces the native view without changing its panel id.
         self.native_order.clear();
         self.spawn_terminal(id, options, window, cx)?;
+        if let Some(terminal) = self.terminal(id) {
+            terminal.update(cx, |terminal, _| {
+                terminal.set_content_opacity(resolved.content_opacity)
+            });
+        }
         if supervised {
             let terminal = self
                 .terminal(id)
@@ -1380,6 +1385,12 @@ impl CanvasView {
         let applied = meta.applied_colors;
         let resolved = self.resolve_terminal(id);
         self.refresh_terminal_chrome(id, &resolved);
+        // Before the unchanged-colors return: opacity changes on its own.
+        if let Some(terminal) = self.terminal(id) {
+            terminal.update(cx, |terminal, _| {
+                terminal.set_content_opacity(resolved.content_opacity)
+            });
+        }
         let Some(colors) = resolved.colors.filter(|colors| Some(*colors) != applied) else {
             return;
         };
@@ -1851,6 +1862,14 @@ impl CanvasView {
                     (terminal.frame_count(), terminal.is_alive())
                 })
             })
+            .collect()
+    }
+
+    /// The native view's opacity per terminal, in creation order.
+    pub fn terminal_opacities(&self, cx: &App) -> Vec<(PanelId, f64)> {
+        self.terminals
+            .iter()
+            .map(|(id, terminal)| (*id, terminal.read(cx).native_opacity()))
             .collect()
     }
 

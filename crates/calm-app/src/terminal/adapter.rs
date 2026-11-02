@@ -53,6 +53,8 @@ pub struct TerminalPanel {
     snapshot_count: u64,
     snapshot_error_logged: bool,
     exit_reported: bool,
+    /// Resolved content opacity, kept for the preview path.
+    content_opacity: f64,
     _subscriptions: Vec<Subscription>,
     host: NativeChild,
 }
@@ -108,6 +110,7 @@ impl TerminalPanel {
                 snapshot_count: 0,
                 snapshot_error_logged: false,
                 exit_reported: false,
+                content_opacity: 1.0,
                 _subscriptions: subscriptions,
                 host,
             };
@@ -128,6 +131,22 @@ impl TerminalPanel {
     /// the screen contents stay; whether the user config is read was fixed at spawn.
     pub fn apply_theme(&mut self, theme: &TerminalTheme) -> Result<(), String> {
         self.theme.apply(&mut self.surface, theme)
+    }
+
+    /// Fades the native view. The process and the screen contents stay.
+    pub fn set_content_opacity(&mut self, opacity: f64) {
+        self.content_opacity = opacity;
+        self.host.set_opacity(opacity);
+    }
+
+    #[expect(dead_code, reason = "the preview path reads it from Task 5 on")]
+    pub fn content_opacity(&self) -> f64 {
+        self.content_opacity
+    }
+
+    /// What the native view shows, read back from AppKit.
+    pub fn native_opacity(&self) -> f64 {
+        self.host.opacity()
     }
 
     pub fn is_alive(&self) -> bool {
