@@ -6,6 +6,7 @@ mod dev_menu;
 mod grid_paint;
 mod icon_image;
 mod keymap;
+mod paint_profile;
 mod panel_settings;
 mod plugin_host;
 mod plugin_services;
@@ -657,6 +658,7 @@ fn wait_for_terminal_frames(view: Entity<CanvasView>, window: AnyWindowHandle, c
             }
         })
         .await;
+        smoke_step(&mut run, "zoom_bench", smoke_zoom_bench(&view, window, cx)).await;
         smoke_step(&mut run, "background", async {
             // The gradient set by `smoke_settings` rendered once per size, off the UI thread.
             let (renders, idle, error) = cx.update(|cx| {
@@ -2100,6 +2102,94 @@ async fn smoke_plugin_menus(
     if let Err(err) = fixtures.close() {
         eprintln!("smoke: could not remove the plugin menus temp dir: {err}");
     }
+}
+
+/// Frames per bench phase direction; a phase goes there and back.
+const BENCH_FRAMES: usize = 120;
+const BENCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Pans, then zooms 0.3 to 3.0 and back, one camera per frame, and prints frame times
+/// and the paint sections. The way back uses slightly different zooms, as a real gesture does.
+async fn smoke_zoom_bench(
+    view: &Entity<CanvasView>,
+    window: AnyWindowHandle,
+    cx: &mut gpui::AsyncApp,
+) {
+    let (start, size, panels) = cx.update(|cx| {
+        let view = view.read(cx);
+        (
+            view.scene.camera,
+            view.viewport.size,
+            view.scene.panels.len(),
+        )
+    });
+    let center = Point::new(size.width / 2.0, size.height / 2.0);
+    let mut pan = Vec::new();
+    let mut camera = start;
+    for i in 0..2 * BENCH_FRAMES {
+        let dx = if i < BENCH_FRAMES { 6.0 } else { -6.0 };
+        camera.pan_by_screen(dx, 1.5 * dx.signum());
+        pan.push(camera);
+    }
+    let mut zoom = Vec::new();
+    let mut camera = start;
+    let (low, high) = (0.3_f64, 3.0_f64);
+    for i in 0..2 * BENCH_FRAMES {
+        let t = (i % BENCH_FRAMES) as f64 / (BENCH_FRAMES - 1) as f64;
+        let target = if i < BENCH_FRAMES {
+            low * (high / low).powf(t)
+        } else {
+            high * (low / high).powf(t) * 1.0037
+        };
+        camera.zoom_by(target / camera.zoom, center);
+        zoom.push(camera);
+    }
+    println!(
+        "smoke: zoom_bench panels={panels} frames_per_phase={}",
+        2 * BENCH_FRAMES
+    );
+    for (phase, cameras) in [("pan", pan), ("zoom", zoom)] {
+        let expected = cameras.len();
+        cx.update(|cx| {
+            paint_profile::start();
+            view.update(cx, |view, cx| {
+                view.camera_script = cameras.into();
+                cx.notify();
+            });
+        });
+        let started = Instant::now();
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+            let left = cx.update(|cx| view.read(cx).camera_script.len());
+            if left == 0 || started.elapsed() > BENCH_TIMEOUT {
+                break;
+            }
+        }
+        // One more frame paints the last camera.
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+        let frames = cx.update(|_| paint_profile::stop());
+        if frames.len() < expected / 2 {
+            let visible = cx.update(|cx| window_visible(window, cx));
+            cx.update(|cx| view.update(cx, |view, _| view.camera_script.clear()));
+            smoke_fail(&format!(
+                "zoom_bench {phase}: only {} of {expected} frames painted window_visible={visible:?}",
+                frames.len()
+            ));
+        }
+        for line in paint_profile::report(phase, &frames) {
+            println!("smoke: zoom_bench {line}");
+        }
+    }
+    cx.update(|cx| {
+        view.update(cx, |view, cx| {
+            view.scene.camera = start;
+            cx.notify();
+        })
+    });
 }
 
 fn set_zoom(view: &Entity<CanvasView>, zoom: f64, cx: &mut App) {

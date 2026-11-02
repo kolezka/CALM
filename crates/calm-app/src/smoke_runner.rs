@@ -46,6 +46,8 @@ pub const STEPS: &[StepSpec] = &[
     step("grid", &["preview"], &["preview_cadence"]),
     step("preview_input_targets", &["preview"], &["preview_cadence"]),
     step("live", &["terminals"], &["preview"]),
+    // Opt-in: runs only when `CALM_SMOKE_ONLY` names it.
+    step("zoom_bench", &["terminals"], &["live", "plugins"]),
     step("background", &[], &[]),
     step("browser", &[], &[]),
     step("resize", &[], &[]),
@@ -59,6 +61,9 @@ pub const STEPS: &[StepSpec] = &[
     step("session", &[], &[]),
     step("presets", &[], &["session"]),
 ];
+
+/// Steps a full run leaves out. Naming one in `CALM_SMOKE_ONLY` runs it.
+pub const OPT_IN: &[&str] = &["zoom_bench"];
 
 /// Failures seen before and written up in `.ai/conventions.md` ("Smoke flakes").
 /// Checked in order, so a specific id wins over `window-hidden`.
@@ -93,7 +98,11 @@ pub fn classify(message: &str) -> String {
 /// `requires` and `after` steps are added. Empty values and unknown names are errors.
 pub fn select(only: Option<&str>) -> Result<BTreeSet<&'static str>, String> {
     let Some(raw) = only else {
-        return Ok(STEPS.iter().map(|s| s.name).collect());
+        return Ok(STEPS
+            .iter()
+            .map(|s| s.name)
+            .filter(|n| !OPT_IN.contains(n))
+            .collect());
     };
     let names: Vec<&str> = raw
         .split(',')
@@ -265,6 +274,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn opt_in_steps_run_only_when_named() {
+        let all = select(None).unwrap();
+        assert!(!all.contains("zoom_bench"));
+        let named = select(Some("zoom_bench")).unwrap();
+        assert!(named.contains("zoom_bench") && named.contains("terminals"));
+        assert!(OPT_IN.iter().all(|n| spec(n).is_some()));
+    }
+
+    #[test]
     fn steps_are_unique_and_dependencies_come_first() {
         for (i, step) in STEPS.iter().enumerate() {
             assert_eq!(STEPS.iter().filter(|s| s.name == step.name).count(), 1);
@@ -316,7 +334,7 @@ mod tests {
 
     #[test]
     fn no_filter_selects_every_step() {
-        assert_eq!(select(None).unwrap().len(), STEPS.len());
+        assert_eq!(select(None).unwrap().len(), STEPS.len() - OPT_IN.len());
     }
 
     #[test]
