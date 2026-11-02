@@ -33,7 +33,7 @@ source. Keep that true. Do not claim a download, a sandbox, or a Linux build.
 
 ## Deploy
 
-Hosted on Coolify as `calm.raqz.pl`, built from this `Dockerfile` and served by
+Hosted on Coolify as `calm.raqz.link`, built from this `Dockerfile` and served by
 nginx. Nothing in the page depends on Coolify, so any static host works.
 
 Coolify application settings:
@@ -46,10 +46,10 @@ Coolify application settings:
 | Base directory | `/web` |
 | Dockerfile location | `/Dockerfile` |
 | Ports exposes | `80` |
-| Domain | `https://calm.raqz.pl` |
+| Domain | `https://calm.raqz.link` |
 
 The base directory matters: the build context must be `web/`, not the repo
-root. Pointing `calm.raqz.pl` at Coolify means a DNS record for the host. Turn
+root. Pointing `calm.raqz.link` at Coolify means a DNS record for the host. Turn
 Cloudflare's proxy off until the first certificate issues, then turn it back on.
 
 Test the image without Coolify:
