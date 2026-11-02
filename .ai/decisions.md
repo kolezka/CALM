@@ -854,9 +854,12 @@ Rulings made while building it (2026-11-02). Each changes or settles a point of 
   is inside the first 1280x800 view and none overlap. Cost: a less balanced first screen.
 - **Load decides everything before it closes anything.** The preset is chosen and read and
   the one confirmation answered first; cancel or an error at any step leaves the canvas as
-  it was. If what would close changed while a dialog was open, the load is refused with an
-  alert. The Load confirmation and a normal panel close share one rule (`close_confirms`):
-  a running terminal or app, or a browser, asks first.
+  it was. If the confirmation summary (the count of closing panels per kind) changed while a
+  dialog was open, the load is refused with an alert. A panel replaced by one of the same
+  kind keeps the counts equal and is not detected, and with no confirmation (none of those
+  panels, or `panels.confirm_close` off) nothing is compared. The Load confirmation and a
+  normal panel close share one rule (`close_confirms`): a running terminal or app, or a
+  browser, asks first.
 
 ## Color wells without opacity (2026-11-02, `feat/terminal-transparency`)
 

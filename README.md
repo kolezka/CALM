@@ -64,10 +64,12 @@ pan, zoom or minimize it. Only an explicit, confirmed close ends it.
 
 ### Plugins
 
-- Installed plugins appear in the right-click Add menu and open as canvas panels.
+- Installed plugins appear in the right-click Add menu and open as canvas panels. A manifest
+  with `"addMenu": false` stays out of Add; presets and sessions still open it.
 - Plugins are HTML and JavaScript, or TSX built with bun, talking to CALM through
   `window.calm`.
-- First-party plugins (Hello World, GitHub PRs, a `top` TUI example) load without install.
+- First-party plugins (Hello World, GitHub PRs, a `top` TUI example) load without install, as
+  do the welcome and key bindings pages that the `welcome` preset opens.
 - Plugins can add items to the right-click menus.
 - `calm.github.api` runs `gh api` on the host; plugin code never sees a token.
 - Rejected calls carry a `code`, and `calm.has(method)` says what this CALM serves.
@@ -133,16 +135,17 @@ Scrolling over empty canvas pans it. Scrolling over a terminal scrolls the termi
 ## Plugins
 
 A plugin is a folder with a `calm-plugin.json` manifest and an HTML entry page. CALM finds it
-at startup, lists it in the Add menu and runs it in a panel. Plugins are trusted code that you
-install yourself, with full access, so only install plugins you have read or whose author you
-trust. The host serves all 18 bridge methods of the v1 API, including opening, focusing and
-listing panels and `process.exec`. The wider v2 API (events, camera, terminal and browser
+at startup, lists it in the Add menu (unless its manifest sets `"addMenu": false`) and runs
+it in a panel. Plugins are trusted code that you install yourself, with full access, so only
+install plugins you have read or whose author you trust. The host serves all 18 bridge
+methods of the v1 API, including opening, focusing and listing panels and `process.exec`. The wider v2 API (events, camera, terminal and browser
 control, plugin backends) is design only.
 
 From a clone, `gmake plugins && cargo run -p calm-app` builds the first-party plugins and shows
-them under right-click > Add. A development build reads the repository's `plugins/` folder
-directly; installed plugins go in `~/.config/calm/plugins`. Set `CALM_NO_BUILTIN_PLUGINS=1` to
-hide the built-in ones.
+them under right-click > Add. The welcome page (`calm-welcome`) and the key bindings page
+(`calm-keys`) set `addMenu: false`, so they are not in Add; the `welcome` preset opens them.
+A development build reads the repository's `plugins/` folder directly; installed plugins go in
+`~/.config/calm/plugins`. Set `CALM_NO_BUILTIN_PLUGINS=1` to hide the built-in ones.
 
 A TUI app plugin needs no HTML: its manifest names a command, and CALM runs it in a terminal
 panel. See "TUI apps" in [docs/plugins.md](docs/plugins.md#tui-apps) and
