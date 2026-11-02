@@ -4,7 +4,7 @@
 side by side, all of them still running while you move around. A plugin SDK lets you shape
 it into whatever workspace you need.**
 
-**[calm.raqz.link](https://calm.raqz.link)** · [Docs](#documentation) · [Plugins](https://calm.raqz.link/plugins/)
+**[calm.raqz.link](https://calm.raqz.link)** · [Docs](#documentation) · [Plugins](docs/plugins.md)
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)
 ![Apple Silicon](https://img.shields.io/badge/Apple_Silicon-arm64-555555)
