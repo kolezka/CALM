@@ -125,6 +125,12 @@ one means a new entry, not an edit.
   per-launch file and exits 0. 127 means command not found and never auto-restarts. Cost:
   a 127 from the program itself reads as not found; a killed wrapper gives "code unknown".
   The Ghostty fork planned in Plugin API v2 could replace this.
+- **The wrapper runs at least 0.4 s (2026-11-02, `fix/tui-quick-exit-banner`).** On macOS
+  Ghostty treats any child exit under `abnormal-command-exit-runtime` (250 ms) as a failed
+  launch, whatever the exit code, and replaces the output with "Ghostty failed to launch the
+  requested command". gpui-libghostty 0.3.1 cannot set that key, so the wrapper starts a
+  background `sleep 0.4` and waits for it before exiting (`tui::MIN_WRAPPER_RUNTIME`).
+  Longer runs are not delayed. Cost: a quick command's closing line shows up to 0.4 s late.
 - **TUI look comes from the manifest; confirmation colors stay fixed.** `accentColor`,
   `titleBarColor` and `titleColor` override the theme per panel, but a close confirmation
   always paints the theme's warning bar, border and text, so a plugin cannot hide it. The
