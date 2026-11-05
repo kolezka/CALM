@@ -39,6 +39,11 @@ mid-save leaves the old file whole.
   arrives quickly. Off keeps the full frame rate there, at a small energy cost when CALM
   sits in the background. Read when the canvas window opens, so a change applies after
   restart. In the Settings window under Canvas and Snapping.
+- `scroll_over_panels` (default `"terminal"`): what a scroll over a live terminal or page
+  does. `"terminal"` scrolls the panel's own content, as before. `"pan"` pans the canvas
+  instead, and Cmd+scroll zooms, the same as over empty canvas. Applies at once. In the
+  Settings window under Canvas and Snapping as "Scroll over panels". Middle drag pans over
+  a panel either way, and so does Space+drag while no panel has the keyboard.
 
 ## Developer stats
 

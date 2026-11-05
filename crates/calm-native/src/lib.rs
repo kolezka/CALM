@@ -24,7 +24,7 @@ pub use child::{
     zoom_bounds, zoom_frame,
 };
 pub use content_gesture::{
-    ContentDecision, ContentEvent, ContentGestureMonitor, GestureMods, held_mods,
+    ContentButton, ContentDecision, ContentEvent, ContentGestureMonitor, GestureMods, held_mods,
 };
 pub use markdown::MarkdownView;
 pub use menu::{ContextMenu, HostView, show_context_menu};

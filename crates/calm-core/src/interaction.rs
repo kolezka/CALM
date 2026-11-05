@@ -497,6 +497,22 @@ impl InputHandler {
         }
     }
 
+    /// `scroll` that pans over panels too, for `canvas.scroll_over_panels` `pan`.
+    pub fn scroll_anywhere(
+        &mut self,
+        screen: Point,
+        dx: f64,
+        dy: f64,
+        mods: Modifiers,
+        scene: &mut Scene,
+    ) {
+        if mods.platform {
+            scene.camera.zoom_by((-dy / 300.0).exp2(), screen);
+            return;
+        }
+        scene.camera.pan_by_screen(dx, dy);
+    }
+
     /// Trackpad pinch. `delta` is the fractional change, 0.1 is 10 % in.
     pub fn pinch(&mut self, screen: Point, delta: f64, scene: &mut Scene) -> Vec<Effect> {
         // A gesture must not move the canvas under a rectangle being drawn or resized.
@@ -1249,6 +1265,26 @@ mod tests {
         // Without the modifier, scrolling over empty canvas pans instead.
         handler.scroll(pointer, 10.0, 0.0, no_mods(), &mut scene);
         assert!((scene.camera.zoom - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn scroll_anywhere_pans_and_zooms_over_a_panel() {
+        let mut scene = Scene::default();
+        scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mut handler = InputHandler::default();
+        let over_panel = Point::new(100.0, 100.0);
+        // Control: the plain scroll leaves a panel's scrolling to the panel.
+        handler.scroll(over_panel, 10.0, 5.0, no_mods(), &mut scene);
+        assert_eq!(scene.camera.offset, Point::new(0.0, 0.0));
+        handler.scroll_anywhere(over_panel, 10.0, 5.0, no_mods(), &mut scene);
+        assert_ne!(scene.camera.offset, Point::new(0.0, 0.0));
+        let mods = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        handler.scroll_anywhere(over_panel, 0.0, -300.0, mods, &mut scene);
+        assert!((scene.camera.zoom - 2.0).abs() < 1e-9);
+        assert_eq!(scene.panels[0].rect, Rect::new(0.0, 0.0, 400.0, 300.0));
     }
 
     #[test]

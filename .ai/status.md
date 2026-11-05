@@ -429,6 +429,12 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
+- Pan over panels (branch `feat/pan-over-panels`, not merged). The content gesture monitor
+  takes a middle drag over a terminal or page and pans the canvas, takes Space+drag there
+  while the canvas has the keyboard, and with `canvas.scroll_over_panels` `pan` takes
+  scrolls (Cmd+scroll zooms). Tests cover the tracker and app policy; real gestures are
+  a manual GUI pass.
+
 - Markdown panels (branch `feat/markdown-panel`, not merged). New kind `Markdown { text }`,
   saved as `type=markdown`. Add > Markdown and the `m` draw key (`canvas.draw_markdown`).
   Text is edited in the panel Settings window (a 12 row text area, Return types a newline,

@@ -2503,13 +2503,15 @@ impl CanvasView {
             ScrollDelta::Lines(_) => event.delta.pixel_delta(px(20.0)),
         };
         let screen = self.to_canvas(event.position);
-        self.input.scroll(
-            screen,
-            f64::from(f32::from(delta.x)),
-            f64::from(f32::from(delta.y)),
-            to_mods(&event.modifiers),
-            &mut self.scene,
-        );
+        let (dx, dy) = (f64::from(f32::from(delta.x)), f64::from(f32::from(delta.y)));
+        let mods = to_mods(&event.modifiers);
+        // Over a preview or placeholder too, so `pan` acts the same on every panel.
+        if crate::content_move::wants_scroll(&self.settings.settings) {
+            self.input
+                .scroll_anywhere(screen, dx, dy, mods, &mut self.scene);
+        } else {
+            self.input.scroll(screen, dx, dy, mods, &mut self.scene);
+        }
         window.refresh();
         cx.notify();
     }
