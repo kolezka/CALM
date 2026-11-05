@@ -273,10 +273,14 @@ colors per surface. They come from your Ghostty config for every terminal.
   Ghostty, whose built-in bindings make the font bigger, smaller and default size again for
   that terminal alone; the canvas zooms only when no terminal has the keyboard. `"canvas"`
   zooms the canvas from inside a terminal too, as before. Any other value is an error. Pinch,
-  Cmd+scroll and the View menu zoom the canvas either way. Ghostty applies its default
-  bindings on top of your Ghostty config, so if that config unbinds them the keys do nothing
-  in a terminal. CALM cannot set a terminal's font size itself: gpui-libghostty passes only
-  colors per surface. Settings > Terminal shows it as "Zoom keys in a terminal".
+  Cmd+scroll and the View menu zoom the canvas either way. CALM forwards the key press as
+  it is; it does not translate it into a font action. So the font changes only while the
+  key you press is one Ghostty binds to a font size action: its defaults are Cmd+=, Cmd+-
+  and Cmd+0, and your Ghostty config can change or unbind them. If you rebind
+  `canvas.zoom_in` in CALM to, say, `cmd-k`, a focused terminal gets Cmd+K, which Ghostty
+  binds to clearing the screen, not to the font; add a matching `keybind` to your Ghostty
+  config for that. CALM cannot set a terminal's font size itself: gpui-libghostty passes
+  only colors per surface. Settings > Terminal shows it as "Zoom keys in a terminal".
 
 ### Run Command
 
