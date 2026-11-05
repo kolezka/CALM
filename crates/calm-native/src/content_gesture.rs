@@ -833,6 +833,44 @@ mod tests {
         );
     }
 
+    /// The user's case: a flick that starts on empty canvas while a panel slides under the
+    /// pointer. AppKit's real phases, mapped and fed through the tracker, keep every event
+    /// with the canvas, the finger lift and the momentum included.
+    #[test]
+    fn a_flick_from_empty_canvas_keeps_panning_through_the_finger_lift_and_momentum() {
+        let none = NSEventPhase::None;
+        let flick = [
+            (NSEventPhase::MayBegin, none),
+            (NSEventPhase::Began, none),
+            (NSEventPhase::Changed, none),
+            (NSEventPhase::Changed, none),
+            (NSEventPhase::Ended, none),
+            (none, NSEventPhase::Began),
+            (none, NSEventPhase::Changed),
+            (none, NSEventPhase::Ended),
+        ];
+        let mut tracker = Tracker::<&str>::default();
+        let mut no_replay = |_| panic!("no replay");
+        let mut asked = 0;
+        for (index, (phase, momentum)) in flick.iter().enumerate() {
+            let stage = scroll_stage(*phase, *momentum);
+            // Only the gesture starts ask; from the first Changed on, a panel sits under
+            // the pointer and would answer false.
+            let disposition = tracker.input(Input::Scroll(stage), "event", || {
+                asked += 1;
+                index < 2
+            });
+            assert_eq!(disposition, Disposition::Report, "event {index} {stage:?}");
+            tracker.decide(ContentDecision::Moving, &mut no_replay);
+        }
+        assert_eq!(asked, 2, "MayBegin and Began each start the gesture");
+        // Over: the next event is on its own again.
+        assert_eq!(
+            tracker.input(Input::Scroll(ScrollStage::Continued), "stray", || false),
+            Disposition::Pass
+        );
+    }
+
     #[test]
     fn a_panel_scroll_gesture_stays_with_the_panel_until_it_ends() {
         let mut tracker = Tracker::<&str>::default();
