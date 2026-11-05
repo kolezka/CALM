@@ -30,11 +30,13 @@ pub enum ContentEvent {
     MiddleDragged(Point),
     MiddleUp(Point),
     /// A scroll wheel or trackpad scroll. `precise` deltas are points, others are lines.
+    /// `mods` are the keys held when the scroll happened, not when it is handled.
     Scroll {
         point: Point,
         dx: f64,
         dy: f64,
         precise: bool,
+        mods: GestureMods,
     },
 }
 
@@ -235,6 +237,7 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
             dx: event.scrollingDeltaX(),
             dy: event.scrollingDeltaY(),
             precise: event.hasPreciseScrollingDeltas(),
+            mods: gesture_mods(event),
         },
     };
     let decision = match shared.on_event.try_borrow_mut() {

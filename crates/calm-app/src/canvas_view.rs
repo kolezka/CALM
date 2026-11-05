@@ -195,7 +195,7 @@ pub struct CanvasView {
     browser_listener: Option<Task<()>>,
     /// Back-to-front order of native panels (terminals, browsers and plugins) as last stacked.
     native_order: Vec<PanelId>,
-    focus_handle: FocusHandle,
+    pub(crate) focus_handle: FocusHandle,
     /// The stats readout (cmd-shift-f). Which items it shows is `developer.stats`.
     pub show_stats: bool,
     /// Counts finished close flushes of the Settings window, so smoke can wait for one.
@@ -883,6 +883,7 @@ impl CanvasView {
                         self.panel_created(id, &kind, window, cx);
                     }
                     self.focused = Some(id);
+                    self.input.keyboard_left_canvas();
                     if let Some(terminal) = self.terminal(id) {
                         terminal.update(cx, |terminal, cx| terminal.focus(window, cx));
                     }

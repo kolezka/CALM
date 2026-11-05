@@ -170,6 +170,15 @@ impl ContentMove {
                 Some(id) => (ContentDecision::Moving, input.content_menu(id, screen)),
                 None => (ContentDecision::Click, Vec::new()),
             },
+            // One pointer gesture at a time: a left move, resize or Space pan keeps going.
+            // The monitor still swallows these, so the native view sees no stray middle click.
+            ContentEvent::MiddleDown(_)
+            | ContentEvent::MiddleDragged(_)
+            | ContentEvent::MiddleUp(_)
+                if self.gesture.is_some() || self.resizing || self.panning =>
+            {
+                (ContentDecision::Moving, Vec::new())
+            }
             // The monitor takes a middle gesture whole; the core pans on a middle press.
             ContentEvent::MiddleDown(screen) => (
                 ContentDecision::Moving,
@@ -187,9 +196,11 @@ impl ContentMove {
                 dx,
                 dy,
                 precise,
+                mods: scroll_mods,
             } => {
+                // The keys at the scroll, not now: Cmd may have changed since.
                 let (dx, dy) = scroll_points(dx, dy, precise);
-                input.scroll_anywhere(point, dx, dy, mods, scene);
+                input.scroll_anywhere(point, dx, dy, to_modifiers(scroll_mods), scene);
                 (ContentDecision::Moving, vec![Effect::Redraw])
             }
         }
@@ -220,11 +231,13 @@ fn in_canvas(event: ContentEvent, canvas_origin: Point) -> ContentEvent {
             dx,
             dy,
             precise,
+            mods,
         } => ContentEvent::Scroll {
             point: to_canvas(point, canvas_origin),
             dx,
             dy,
             precise,
+            mods,
         },
     }
 }
@@ -299,7 +312,10 @@ impl CanvasView {
         ) {
             return true;
         }
-        let canvas_has_keyboard = calm_native::host_view_is_first_responder(window) == Some(true);
+        // Both are needed: a focused terminal takes GPUI focus but leaves the GPUI host view
+        // as first responder, while a focused page takes first responder.
+        let canvas_has_keyboard = self.focus_handle.is_focused(window)
+            && calm_native::host_view_is_first_responder(window) == Some(true);
         if button == ContentButton::Left && space_pans(&self.input, canvas_has_keyboard) {
             self.content_move.arm_space_pan(true);
             return true;
@@ -750,25 +766,107 @@ mod tests {
         let mut input = InputHandler::default();
         let mut gesture = ContentMove::default();
         let at = content_point(&scene, id);
-        let scroll = |dx, dy, precise| ContentEvent::Scroll {
+        let scroll = |dx, dy, precise, command| ContentEvent::Scroll {
             point: at,
             dx,
             dy,
             precise,
+            mods: GestureMods {
+                command,
+                ..GestureMods::default()
+            },
         };
         let none = Modifiers::default();
         let (decision, effects) =
-            gesture.event(scroll(0.0, 1.0, false), none, &mut input, &mut scene);
+            gesture.event(scroll(0.0, 1.0, false, false), none, &mut input, &mut scene);
         assert_eq!(decision, ContentDecision::Moving);
         assert_eq!(effects, vec![Effect::Redraw]);
         let panned = scene.camera.offset;
         assert_ne!(panned, Point::new(0.0, 0.0));
-        gesture.event(scroll(0.0, -300.0, true), CMD, &mut input, &mut scene);
+        gesture.event(scroll(0.0, -300.0, true, true), CMD, &mut input, &mut scene);
         assert!(
             (scene.camera.zoom - 2.0).abs() < 1e-9,
             "{}",
             scene.camera.zoom
         );
+    }
+
+    #[test]
+    fn a_scroll_reads_its_own_modifiers_not_the_keys_held_later() {
+        let (mut scene, id) = scene_with_terminal();
+        let mut input = InputHandler::default();
+        let mut gesture = ContentMove::default();
+        let at = content_point(&scene, id);
+        let scroll = |command| ContentEvent::Scroll {
+            point: at,
+            dx: 0.0,
+            dy: -300.0,
+            precise: true,
+            mods: GestureMods {
+                command,
+                ..GestureMods::default()
+            },
+        };
+        // Cmd was down at the scroll and is up by the time it is handled: a zoom.
+        let none = Modifiers::default();
+        gesture.event(scroll(true), none, &mut input, &mut scene);
+        assert!(
+            (scene.camera.zoom - 2.0).abs() < 1e-9,
+            "{}",
+            scene.camera.zoom
+        );
+        let zoomed = scene.camera.offset;
+        // Cmd was up at the scroll and is down now: a pan, the zoom stays.
+        gesture.event(scroll(false), CMD, &mut input, &mut scene);
+        assert!(
+            (scene.camera.zoom - 2.0).abs() < 1e-9,
+            "{}",
+            scene.camera.zoom
+        );
+        assert_ne!(scene.camera.offset, zoomed);
+    }
+
+    #[test]
+    fn a_middle_gesture_leaves_a_cmd_move_in_progress_alone() {
+        let (mut scene, id) = scene_with_terminal();
+        let mut input = InputHandler::default();
+        let mut gesture = ContentMove::default();
+        let at = content_point(&scene, id);
+        let before = scene.get(id).unwrap().rect;
+        gesture.event(ContentEvent::Down(at), CMD_SHIFT, &mut input, &mut scene);
+        let far = Point::new(at.x + 60.0, at.y + 20.0);
+        let (decision, _) = gesture.event(
+            ContentEvent::Dragged(far),
+            CMD_SHIFT,
+            &mut input,
+            &mut scene,
+        );
+        assert_eq!(decision, ContentDecision::Moving);
+        let elsewhere = Point::new(at.x - 50.0, at.y + 70.0);
+        for event in [
+            ContentEvent::MiddleDown(far),
+            ContentEvent::MiddleDragged(elsewhere),
+            ContentEvent::MiddleUp(elsewhere),
+        ] {
+            let (decision, effects) = gesture.event(event, CMD_SHIFT, &mut input, &mut scene);
+            // Still swallowed, so the native view never sees a stray middle click.
+            assert_eq!(decision, ContentDecision::Moving, "{event:?}");
+            assert!(effects.is_empty(), "{event:?}: {effects:?}");
+        }
+        let farther = Point::new(at.x + 80.0, at.y + 30.0);
+        gesture.event(
+            ContentEvent::Dragged(farther),
+            CMD_SHIFT,
+            &mut input,
+            &mut scene,
+        );
+        let (up, _) = gesture.event(ContentEvent::Up(farther), CMD_SHIFT, &mut input, &mut scene);
+        assert_eq!(up, ContentDecision::Moving);
+        assert_eq!(
+            scene.get(id).unwrap().rect.origin,
+            Point::new(before.origin.x + 80.0, before.origin.y + 30.0)
+        );
+        assert_eq!(scene.camera.offset, Point::new(0.0, 0.0));
     }
 
     #[test]
