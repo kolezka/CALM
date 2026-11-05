@@ -732,12 +732,16 @@ impl Scene {
     /// area). Returns false for an unknown id or no change.
     pub fn set_minimized(&mut self, id: PanelId, minimized: bool, viewport: Size) -> bool {
         let min_height = self.chrome.bar_height + MIN_CONTENT_HEIGHT;
+        // Check through `get`: `get_mut` bumps the revision, and a no-op must not.
+        if self
+            .get(id)
+            .is_none_or(|panel| panel.minimized == minimized)
+        {
+            return false;
+        }
         let Some(panel) = self.get_mut(id) else {
             return false;
         };
-        if panel.minimized == minimized {
-            return false;
-        }
         panel.minimized = minimized;
         if !minimized
             && panel.overrides.borderless != Some(true)
