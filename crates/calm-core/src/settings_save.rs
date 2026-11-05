@@ -40,9 +40,12 @@ impl SaveDebounce {
 }
 
 /// Whether the key bindings or the menu bar read anything that changed. Rebuilding both
-/// costs about a millisecond, too much for every slider tick.
+/// costs about a millisecond, too much for every slider tick. `terminal.zoom_keys` decides
+/// which keys a focused terminal keeps, so it is part of the keymap too.
 pub fn keymap_affected(old: &Settings, new: &Settings) -> bool {
-    old.keybindings != new.keybindings || old.grid.show != new.grid.show
+    old.keybindings != new.keybindings
+        || old.grid.show != new.grid.show
+        || old.terminal.zoom_keys != new.terminal.zoom_keys
 }
 
 #[cfg(test)]
@@ -140,5 +143,9 @@ mod tests {
         let mut keys = old.clone();
         keys.keybindings.insert("fit_all".into(), None);
         assert!(keymap_affected(&old, &keys));
+        // The zoom keys setting adds or drops NoAction bindings in terminals.
+        let mut zoom = old.clone();
+        zoom.terminal.zoom_keys = crate::terminal_profile::ZoomKeys::Canvas;
+        assert!(keymap_affected(&old, &zoom));
     }
 }
