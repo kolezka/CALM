@@ -22,8 +22,8 @@ use crate::settings::{
     ARROW_MOVE_STEP_RANGE, ARROW_PAN_STEP_RANGE, DEFAULT_ARROW_MOVE_STEP, DEFAULT_ARROW_PAN_STEP,
     GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
     RestoreOnLaunch, SESSION_BACKUP_COUNT_RANGE, SESSION_DEBOUNCE_MS_RANGE, SETTINGS_SAVE_MS_RANGE,
-    SNAP_EDGE_RANGE, SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
-    TITLE_BAR_HEIGHT_RANGE, TITLE_FONT_SIZE_RANGE,
+    SNAP_EDGE_RANGE, SNAP_GRID_STEPS, ScrollOverPanels, Settings, TERMINAL_HEIGHT_RANGE,
+    TERMINAL_WIDTH_RANGE, TITLE_BAR_HEIGHT_RANGE, TITLE_FONT_SIZE_RANGE,
 };
 use crate::terminal_profile::{
     CommandRestart, DEFAULT_CONTENT_OPACITY, MIN_CONTENT_OPACITY, PALETTE_PRESETS, TerminalColors,
@@ -405,6 +405,18 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                 MoveModifier::ALL
                     .iter()
                     .position(|value| *value == settings.canvas.move_modifier)
+                    .unwrap_or(0),
+            ),
+            choice(
+                "canvas.scroll_over_panels",
+                "Scroll over panels",
+                ScrollOverPanels::ALL
+                    .iter()
+                    .map(|value| value.label().to_string())
+                    .collect(),
+                ScrollOverPanels::ALL
+                    .iter()
+                    .position(|value| *value == settings.canvas.scroll_over_panels)
                     .unwrap_or(0),
             ),
             slider(
@@ -998,6 +1010,12 @@ pub fn apply_field(
                 *MoveModifier::ALL.get(index).ok_or("bad move modifier")?;
             changed
         }
+        ("canvas.scroll_over_panels", FieldValue::Index(index)) => {
+            settings.canvas.scroll_over_panels = *ScrollOverPanels::ALL
+                .get(index)
+                .ok_or("bad scroll over panels choice")?;
+            changed
+        }
         ("panels.confirm_close", FieldValue::Bool(on)) => {
             settings.panels.confirm_close = on;
             changed
@@ -1129,6 +1147,7 @@ pub fn apply_field(
             | "canvas.click_empty_clears_focus"
             | "canvas.skip_repeated_cursor_sets"
             | "canvas.move_modifier"
+            | "canvas.scroll_over_panels"
             | "canvas.arrow_pan_step"
             | "canvas.arrow_move_step"
             | "canvas.limit_inactive_fps"
@@ -1956,6 +1975,29 @@ mod tests {
         assert!(apply_field(&mut settings, id, FieldValue::Index(6)).is_err());
         assert!(apply_field(&mut settings, id, FieldValue::Bool(true)).is_err());
         assert_eq!(settings.canvas.move_modifier, MoveModifier::CtrlAlt);
+    }
+
+    #[test]
+    fn scroll_over_panels_choice_shows_labels_and_applies_strictly() {
+        let mut settings = Settings::default();
+        let sections = settings_form(&settings, &FormContext::default());
+        let field = sections
+            .iter()
+            .flat_map(|s| s.fields.iter())
+            .find(|f| f.id == "canvas.scroll_over_panels")
+            .unwrap();
+        assert_eq!(field.label, "Scroll over panels");
+        let Control::Choice { options, selected } = &field.control else {
+            panic!("expected a choice, got {:?}", field.control);
+        };
+        assert_eq!(options, &["Scrolls the panel", "Pans the canvas"]);
+        assert_eq!(*selected, 0);
+        let id = "canvas.scroll_over_panels";
+        apply_field(&mut settings, id, FieldValue::Index(1)).unwrap();
+        assert_eq!(settings.canvas.scroll_over_panels, ScrollOverPanels::Pan);
+        assert!(apply_field(&mut settings, id, FieldValue::Index(2)).is_err());
+        assert!(apply_field(&mut settings, id, FieldValue::Bool(true)).is_err());
+        assert_eq!(settings.canvas.scroll_over_panels, ScrollOverPanels::Pan);
     }
 
     #[test]

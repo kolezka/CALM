@@ -254,6 +254,31 @@ pub struct CanvasSettings {
     pub skip_repeated_cursor_sets: bool,
     /// Cap the canvas at about 30 fps while another window is active. Read at launch.
     pub limit_inactive_fps: bool,
+    /// What a scroll over a terminal or page does.
+    #[serde(deserialize_with = "scroll_over_panels_field")]
+    pub scroll_over_panels: ScrollOverPanels,
+}
+
+/// What a scroll over a live panel does (`canvas.scroll_over_panels`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollOverPanels {
+    /// The terminal or page scrolls its own content.
+    #[default]
+    Terminal,
+    /// The canvas pans, and Cmd+scroll zooms, as over empty canvas.
+    Pan,
+}
+
+impl ScrollOverPanels {
+    pub const ALL: [ScrollOverPanels; 2] = [ScrollOverPanels::Terminal, ScrollOverPanels::Pan];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ScrollOverPanels::Terminal => "Scrolls the panel",
+            ScrollOverPanels::Pan => "Pans the canvas",
+        }
+    }
 }
 
 impl Default for CanvasSettings {
@@ -265,6 +290,7 @@ impl Default for CanvasSettings {
             arrow_move_step: DEFAULT_ARROW_MOVE_STEP,
             skip_repeated_cursor_sets: true,
             limit_inactive_fps: false,
+            scroll_over_panels: ScrollOverPanels::Terminal,
         }
     }
 }
@@ -282,6 +308,14 @@ fn move_modifier_field<'de, D: serde::Deserializer<'de>>(
 ) -> Result<MoveModifier, D::Error> {
     MoveModifier::deserialize(deserializer)
         .map_err(|error| serde::de::Error::custom(format!("\"canvas.move_modifier\": {error}")))
+}
+
+fn scroll_over_panels_field<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<ScrollOverPanels, D::Error> {
+    ScrollOverPanels::deserialize(deserializer).map_err(|error| {
+        serde::de::Error::custom(format!("\"canvas.scroll_over_panels\": {error}"))
+    })
 }
 
 /// Plugin discovery options. Read once at startup.
@@ -1170,6 +1204,50 @@ mod tests {
                 .contains("\"version\": 2")
         );
         assert_eq!(read_settings_from(&path).unwrap(), settings);
+    }
+
+    #[test]
+    fn unknown_scroll_over_panels_is_a_settings_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        // Positive control: both values load and save by name, and a file without it scrolls the panel.
+        for (name, value) in [
+            ("terminal", ScrollOverPanels::Terminal),
+            ("pan", ScrollOverPanels::Pan),
+        ] {
+            let text = format!(r#"{{"version": 2, "canvas": {{"scroll_over_panels": "{name}"}}}}"#);
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(
+                read_settings_from(&path).unwrap().canvas.scroll_over_panels,
+                value
+            );
+            let mut settings = Settings::default();
+            settings.canvas.scroll_over_panels = value;
+            let json = serde_json::to_value(&settings).unwrap();
+            assert_eq!(json["canvas"]["scroll_over_panels"], name);
+        }
+        std::fs::write(&path, r#"{"version": 2}"#).unwrap();
+        assert_eq!(
+            read_settings_from(&path).unwrap().canvas.scroll_over_panels,
+            ScrollOverPanels::Terminal
+        );
+        for text in [
+            r#"{"version": 2, "canvas": {"scroll_over_panels": "Pan"}}"#,
+            r#"{"version": 2, "canvas": {"scroll_over_panels": "zoom"}}"#,
+            r#"{"version": 2, "canvas": {"scroll_over_panels": true}}"#,
+            r#"{"version": 2, "canvas": {"scroll_over_panels": null}}"#,
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let error = read_settings_from(&path).unwrap_err();
+            assert!(
+                matches!(&error, SettingsError::Malformed { .. }),
+                "{text}: {error:?}"
+            );
+            assert!(
+                error.to_string().contains("canvas.scroll_over_panels"),
+                "{text}: {error}"
+            );
+        }
     }
 
     #[test]

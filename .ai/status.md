@@ -435,6 +435,12 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
+- Pan over panels (branch `feat/pan-over-panels`, not merged). The content gesture monitor
+  takes a middle drag over a terminal or page and pans the canvas, takes Space+drag there
+  while the canvas has the keyboard, and with `canvas.scroll_over_panels` `pan` takes
+  scrolls (Cmd+scroll zooms). Tests cover the tracker and app policy; real gestures are
+  a manual GUI pass.
+
 - Title bar settings (branch `feat/title-bar-settings`, not merged): `panels.title_bar_height` (16 to
   64, default 28) and `panels.title_font_size` (6 to 32, default 12), in Settings > Panels,
   wired live through `Scene::chrome` (`ChromeMetrics`). Minimized chip height stays 28.

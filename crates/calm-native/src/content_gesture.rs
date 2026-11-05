@@ -1,7 +1,8 @@
 //! Watches mouse events over native panels (Ghostty, WKWebView) so the app can turn a
 //! modifier+drag on panel content into a panel move, while a plain click still reaches the
-//! native view. The monitor holds no policy: `wants` decides which presses it takes and
-//! `on_event` decides what each held gesture becomes.
+//! native view. A middle drag over a panel always goes to the app (it pans the canvas), and
+//! so does a scroll when `wants_scroll` says so. The monitor holds no policy: `wants`
+//! decides which presses it takes and `on_event` decides what each held gesture becomes.
 
 use std::cell::RefCell;
 use std::ptr::NonNull;
@@ -25,6 +26,25 @@ pub enum ContentEvent {
     Dragged(Point),
     Up(Point),
     RightDown(Point),
+    MiddleDown(Point),
+    MiddleDragged(Point),
+    MiddleUp(Point),
+    /// A scroll wheel or trackpad scroll. `precise` deltas are points, others are lines.
+    /// `mods` are the keys held when the scroll happened, not when it is handled.
+    Scroll {
+        point: Point,
+        dx: f64,
+        dy: f64,
+        precise: bool,
+        mods: GestureMods,
+    },
+}
+
+/// The button of a press the app is asked about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentButton {
+    Left,
+    Right,
 }
 
 /// Modifier keys held at a press.
@@ -47,12 +67,14 @@ pub enum ContentDecision {
     Click,
 }
 
-type Wants = Box<dyn Fn(Point, GestureMods) -> bool>;
+type Wants = Box<dyn Fn(ContentButton, Point, GestureMods) -> bool>;
+type WantsScroll = Box<dyn Fn(Point) -> bool>;
 type OnEvent = Box<dyn FnMut(ContentEvent) -> ContentDecision>;
 
 struct Shared {
     window: Weak<NSWindow>,
     wants: Wants,
+    wants_scroll: WantsScroll,
     on_event: RefCell<OnEvent>,
     tracker: RefCell<Tracker<Retained<NSEvent>>>,
     /// Events this monitor is replaying; they pass through untouched.
@@ -65,18 +87,21 @@ pub struct ContentGestureMonitor {
 }
 
 impl ContentGestureMonitor {
-    /// Watches left and right mouse events over `window`'s native panels. `wants` decides
-    /// at a press whether the gesture is taken; `on_event` gets every taken event and
+    /// Watches mouse and scroll events over `window`'s native panels. `wants` decides at
+    /// a left or right press whether the gesture is taken, `wants_scroll` decides per
+    /// scroll event; a middle press is always taken. `on_event` gets every taken event and
     /// answers what the gesture is so far.
     pub fn install(
         window: &NSWindow,
-        wants: impl Fn(Point, GestureMods) -> bool + 'static,
+        wants: impl Fn(ContentButton, Point, GestureMods) -> bool + 'static,
+        wants_scroll: impl Fn(Point) -> bool + 'static,
         on_event: impl FnMut(ContentEvent) -> ContentDecision + 'static,
     ) -> Result<ContentGestureMonitor, NativeError> {
         MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
         let shared = Rc::new(Shared {
             window: Weak::new(window),
             wants: Box::new(wants),
+            wants_scroll: Box::new(wants_scroll),
             on_event: RefCell::new(Box::new(on_event)),
             tracker: RefCell::new(Tracker::default()),
             replaying: RefCell::new(Vec::new()),
@@ -94,7 +119,11 @@ impl ContentGestureMonitor {
             | NSEventMask::LeftMouseDragged
             | NSEventMask::LeftMouseUp
             | NSEventMask::RightMouseDown
-            | NSEventMask::RightMouseUp;
+            | NSEventMask::RightMouseUp
+            | NSEventMask::OtherMouseDown
+            | NSEventMask::OtherMouseDragged
+            | NSEventMask::OtherMouseUp
+            | NSEventMask::ScrollWheel;
         // SAFETY: the block returns the event or null as the API requires; the monitor is
         // removed in Drop, which releases the block and what it captured.
         let monitor =
@@ -105,11 +134,12 @@ impl ContentGestureMonitor {
     /// `install` on the AppKit window behind a window handle, such as a GPUI window.
     pub fn install_for(
         window: &impl HasWindowHandle,
-        wants: impl Fn(Point, GestureMods) -> bool + 'static,
+        wants: impl Fn(ContentButton, Point, GestureMods) -> bool + 'static,
+        wants_scroll: impl Fn(Point) -> bool + 'static,
         on_event: impl FnMut(ContentEvent) -> ContentDecision + 'static,
     ) -> Result<ContentGestureMonitor, NativeError> {
         let ns_window = ns_window(window)?;
-        ContentGestureMonitor::install(&ns_window, wants, on_event)
+        ContentGestureMonitor::install(&ns_window, wants, wants_scroll, on_event)
     }
 }
 
@@ -159,6 +189,13 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
         NSEventType::LeftMouseUp => Input::LeftUp,
         NSEventType::RightMouseDown => Input::RightDown,
         NSEventType::RightMouseUp => Input::RightUp,
+        // Button 2 is the middle button; other extra buttons stay with AppKit.
+        NSEventType::OtherMouseDown if event.buttonNumber() == MIDDLE_BUTTON => Input::MiddleDown,
+        NSEventType::OtherMouseDragged if event.buttonNumber() == MIDDLE_BUTTON => {
+            Input::MiddleDragged
+        }
+        NSEventType::OtherMouseUp if event.buttonNumber() == MIDDLE_BUTTON => Input::MiddleUp,
+        NSEventType::ScrollWheel => Input::Scroll,
         _ => return false,
     };
     let Some(window) = shared.window.load() else {
@@ -172,7 +209,15 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
     let disposition = tracker.input(input, event.retain(), || {
         let over_native = over_native_child(&window, event);
         // `wants` is app policy: ask it only for presses over a native view.
-        let wants = over_native && (shared.wants)(point, gesture_mods(event));
+        let wants = over_native
+            && match input {
+                Input::LeftDown => (shared.wants)(ContentButton::Left, point, gesture_mods(event)),
+                Input::RightDown => {
+                    (shared.wants)(ContentButton::Right, point, gesture_mods(event))
+                }
+                Input::Scroll => (shared.wants_scroll)(point),
+                _ => true,
+            };
         !decide_passthrough(over_native, wants)
     });
     drop(tracker);
@@ -184,6 +229,16 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
         Input::LeftDragged => ContentEvent::Dragged(point),
         Input::LeftUp => ContentEvent::Up(point),
         Input::RightDown | Input::RightUp => ContentEvent::RightDown(point),
+        Input::MiddleDown => ContentEvent::MiddleDown(point),
+        Input::MiddleDragged => ContentEvent::MiddleDragged(point),
+        Input::MiddleUp => ContentEvent::MiddleUp(point),
+        Input::Scroll => ContentEvent::Scroll {
+            point,
+            dx: event.scrollingDeltaX(),
+            dy: event.scrollingDeltaY(),
+            precise: event.hasPreciseScrollingDeltas(),
+            mods: gesture_mods(event),
+        },
     };
     let decision = match shared.on_event.try_borrow_mut() {
         Ok(mut on_event) => on_event(content_event),
@@ -209,6 +264,9 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
     }
     true
 }
+
+/// `buttonNumber` of the middle mouse button.
+const MIDDLE_BUTTON: isize = 2;
 
 /// The event's window is this window and the view under it is part of a native panel.
 fn over_native_child(window: &NSWindow, event: &NSEvent) -> bool {
@@ -270,6 +328,10 @@ pub(crate) enum Input {
     LeftUp,
     RightDown,
     RightUp,
+    MiddleDown,
+    MiddleDragged,
+    MiddleUp,
+    Scroll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +359,9 @@ enum Phase {
 pub(crate) struct Tracker<E> {
     phase: Phase,
     swallow_right_up: bool,
+    /// A middle press over a native view is ours until its up. Kept apart from `phase` so
+    /// a middle drag leaves a held left press alone.
+    middle: bool,
     /// The swallowed left press, until the gesture is a move or a click.
     held: Option<E>,
     /// The event being reported, until `decide`.
@@ -308,6 +373,7 @@ impl<E> Default for Tracker<E> {
         Tracker {
             phase: Phase::Idle,
             swallow_right_up: false,
+            middle: false,
             held: None,
             current: None,
         }
@@ -348,6 +414,25 @@ impl<E: Clone> Tracker<E> {
                 self.swallow_right_up = false;
                 return Disposition::Swallow;
             }
+            (_, Input::MiddleDown) => {
+                // No hold and no replay: a middle press over a panel is never a click.
+                self.middle = candidate();
+                if !self.middle {
+                    return Disposition::Pass;
+                }
+                Disposition::Report
+            }
+            (_, Input::MiddleDragged) if self.middle => Disposition::Report,
+            (_, Input::MiddleUp) if self.middle => {
+                self.middle = false;
+                Disposition::Report
+            }
+            (_, Input::Scroll) => {
+                if !candidate() {
+                    return Disposition::Pass;
+                }
+                Disposition::Report
+            }
             _ => return Disposition::Pass,
         };
         self.current = Some((input, event));
@@ -359,7 +444,8 @@ impl<E: Clone> Tracker<E> {
         let Some((input, event)) = self.current.take() else {
             return;
         };
-        if input == Input::RightDown {
+        // Only a left gesture holds a press: the answer to anything else changes nothing.
+        if !matches!(input, Input::LeftDown | Input::LeftDragged | Input::LeftUp) {
             return;
         }
         match decision {
@@ -572,6 +658,95 @@ mod tests {
             Disposition::Pass
         );
         assert!(sink.is_empty(), "replayed {sink:?}");
+    }
+
+    #[test]
+    fn middle_press_over_native_is_taken_with_its_drags_and_up() {
+        let mut tracker = Tracker::<&str>::default();
+        assert_eq!(
+            tracker.input(Input::MiddleDown, "mdown", || true),
+            Disposition::Report
+        );
+        tracker.decide(ContentDecision::Moving, &mut |_| panic!("no replay"));
+        for _ in 0..2 {
+            assert_eq!(
+                tracker.input(Input::MiddleDragged, "mdrag", || unreachable!()),
+                Disposition::Report
+            );
+            tracker.decide(ContentDecision::Moving, &mut |_| panic!("no replay"));
+        }
+        assert_eq!(
+            tracker.input(Input::MiddleUp, "mup", || unreachable!()),
+            Disposition::Report
+        );
+        tracker.decide(ContentDecision::Moving, &mut |_| panic!("no replay"));
+        // The gesture is over: a stray drag or up is not ours.
+        assert_eq!(
+            tracker.input(Input::MiddleDragged, "mdrag2", || unreachable!()),
+            Disposition::Pass
+        );
+        assert_eq!(
+            tracker.input(Input::MiddleUp, "mup2", || unreachable!()),
+            Disposition::Pass
+        );
+    }
+
+    #[test]
+    fn middle_press_off_native_passes_with_its_drags_and_up() {
+        let mut tracker = Tracker::<&str>::default();
+        assert_eq!(
+            tracker.input(Input::MiddleDown, "mdown", || false),
+            Disposition::Pass
+        );
+        assert_eq!(
+            tracker.input(Input::MiddleDragged, "mdrag", || unreachable!()),
+            Disposition::Pass
+        );
+        assert_eq!(
+            tracker.input(Input::MiddleUp, "mup", || unreachable!()),
+            Disposition::Pass
+        );
+    }
+
+    #[test]
+    fn scroll_passes_unless_wanted_and_is_reported_when_wanted() {
+        let mut tracker = Tracker::<&str>::default();
+        assert_eq!(
+            tracker.input(Input::Scroll, "scroll", || false),
+            Disposition::Pass
+        );
+        assert_eq!(
+            tracker.input(Input::Scroll, "scroll2", || true),
+            Disposition::Report
+        );
+        tracker.decide(ContentDecision::Click, &mut |_| panic!("no replay"));
+        // Asked per event: wanted once does not mean wanted next time.
+        assert_eq!(
+            tracker.input(Input::Scroll, "scroll3", || false),
+            Disposition::Pass
+        );
+    }
+
+    #[test]
+    fn middle_gesture_leaves_a_held_left_press_alone() {
+        let mut tracker = Tracker::default();
+        let mut sink = Vec::new();
+        tracker.input(Input::LeftDown, "down", || true);
+        tracker.decide(ContentDecision::Hold, &mut |e| sink.push(e));
+        tracker.input(Input::MiddleDown, "mdown", || true);
+        tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
+        tracker.input(Input::MiddleUp, "mup", || unreachable!());
+        tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
+        tracker.input(Input::Scroll, "scroll", || true);
+        tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
+        assert!(sink.is_empty(), "replayed {sink:?}");
+        // The left press is still held and still becomes a click.
+        assert_eq!(
+            tracker.input(Input::LeftUp, "up", || unreachable!()),
+            Disposition::Report
+        );
+        tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
+        assert_eq!(sink, ["down", "up"]);
     }
 
     #[test]

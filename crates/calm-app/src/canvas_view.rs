@@ -195,7 +195,7 @@ pub struct CanvasView {
     browser_listener: Option<Task<()>>,
     /// Back-to-front order of native panels (terminals, browsers and plugins) as last stacked.
     native_order: Vec<PanelId>,
-    focus_handle: FocusHandle,
+    pub(crate) focus_handle: FocusHandle,
     /// The stats readout (cmd-shift-f). Which items it shows is `developer.stats`.
     pub show_stats: bool,
     /// Counts finished close flushes of the Settings window, so smoke can wait for one.
@@ -887,6 +887,7 @@ impl CanvasView {
                         self.panel_created(id, &kind, window, cx);
                     }
                     self.focused = Some(id);
+                    self.input.keyboard_left_canvas();
                     if let Some(terminal) = self.terminal(id) {
                         terminal.update(cx, |terminal, cx| terminal.focus(window, cx));
                     }
@@ -2417,13 +2418,15 @@ impl CanvasView {
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(event.button, MouseButton::Left | MouseButton::Middle) {
-            return;
-        }
+        let button = match event.button {
+            MouseButton::Left => Button::Left,
+            MouseButton::Middle => Button::Middle,
+            _ => return,
+        };
         let screen = self.to_canvas(event.position);
-        let effects = self
-            .input
-            .mouse_up(screen, to_mods(&event.modifiers), &mut self.scene);
+        let effects =
+            self.input
+                .mouse_up_for(button, screen, to_mods(&event.modifiers), &mut self.scene);
         let cursor_changed = self.update_resize_cursor(screen);
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
@@ -2507,13 +2510,15 @@ impl CanvasView {
             ScrollDelta::Lines(_) => event.delta.pixel_delta(px(20.0)),
         };
         let screen = self.to_canvas(event.position);
-        self.input.scroll(
-            screen,
-            f64::from(f32::from(delta.x)),
-            f64::from(f32::from(delta.y)),
-            to_mods(&event.modifiers),
-            &mut self.scene,
-        );
+        let (dx, dy) = (f64::from(f32::from(delta.x)), f64::from(f32::from(delta.y)));
+        let mods = to_mods(&event.modifiers);
+        // Over a preview or placeholder too, so `pan` acts the same on every panel.
+        if crate::content_move::wants_scroll(&self.settings.settings) {
+            self.input
+                .scroll_anywhere(screen, dx, dy, mods, &mut self.scene);
+        } else {
+            self.input.scroll(screen, dx, dy, mods, &mut self.scene);
+        }
         window.refresh();
         cx.notify();
     }
