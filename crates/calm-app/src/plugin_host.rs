@@ -435,7 +435,7 @@ pub fn dispatch(host: &mut HostContext, request: &BridgeRequest) -> Route {
         // Settled before the close: the page goes away with its panel.
         "panel.close" => apply(Ok((Value::Null, vec![HostEffect::Close(caller)]))),
         "canvas.listPanels" => reply(Ok(list_panels(host.scene, host.focused))),
-        "canvas.focusPanel" => apply(focus_panel(host.scene, params)),
+        "canvas.focusPanel" => apply(focus_panel(host.scene, host.viewport, params)),
         "canvas.createPanel" => apply(create_panel(host, params)),
         "theme.get" => reply(Ok(serde_json::json!({ "background": host.background }))),
         "keys.list" => reply(Ok(serde_json::json!({
@@ -534,14 +534,15 @@ fn panel_id_param(params: &Value, field: &str) -> Result<PanelId, ApiError> {
 }
 
 /// Restores a minimized panel, raises it and gives it the keyboard.
-fn focus_panel(scene: &mut Scene, params: &Value) -> Result<(Value, Vec<HostEffect>), ApiError> {
+fn focus_panel(
+    scene: &mut Scene,
+    viewport: Size,
+    params: &Value,
+) -> Result<(Value, Vec<HostEffect>), ApiError> {
     let id = panel_id_param(params, "id")?;
-    let panel = scene.get(id).ok_or_else(|| ApiError::not_found(id))?;
-    if panel.minimized
-        && let Some(panel) = scene.get_mut(id)
-    {
-        panel.minimized = false;
-    }
+    scene.get(id).ok_or_else(|| ApiError::not_found(id))?;
+    // The real viewport, so a restored pinned panel is clamped like a menu restore.
+    scene.set_minimized(id, false, viewport);
     scene.bring_to_front(id);
     Ok((Value::Null, vec![HostEffect::Focus(id)]))
 }

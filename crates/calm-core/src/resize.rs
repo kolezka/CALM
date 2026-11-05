@@ -169,6 +169,7 @@ fn in_joined_neighbor(scene: &Scene, joins: &JoinLayout, id: PanelId, world: Poi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::ChromeMetrics;
     use crate::scene::content_rect;
 
     /// `resize_target` at a point given in the canvas camera's world space.
@@ -324,7 +325,7 @@ mod tests {
     fn browser_has_a_handle_outside_its_web_view() {
         let mut scene = Scene::default();
         let id = scene.add(browser(), Rect::new(100.0, 100.0, 800.0, 600.0));
-        let content = content_rect(scene.get(id).unwrap());
+        let content = content_rect(&ChromeMetrics::default(), scene.get(id).unwrap());
         let outside = Point::new(content.right() + 2.0, content.bottom() + 2.0);
         assert!(!content.contains(outside));
         assert_eq!(target(&scene, outside), Some((id, ResizeEdge::BottomRight)));

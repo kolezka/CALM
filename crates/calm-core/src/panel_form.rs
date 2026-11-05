@@ -6,7 +6,9 @@ use crate::chrome::{BUILTIN_ICON_PREFIX, ChromeOverrides, PanelIcon, lay_overrid
 use crate::markdown::{
     FONT_SIZE_RANGE, MarkdownSettings, PADDING_RANGE, PanelMarkdownStyle, check_font_family,
 };
-use crate::scene::{Panel, PanelId, PanelKind, PanelOverrides, Scene, set_borderless};
+use crate::scene::{
+    ChromeMetrics, Panel, PanelId, PanelKind, PanelOverrides, Scene, set_borderless,
+};
 use crate::settings::Settings;
 use crate::settings_form::{
     CHROME_SEED, Control, Field, FieldState, FieldValue, FormCommand, FormOutcome, Section, button,
@@ -346,7 +348,7 @@ pub fn apply_panel_field(
         .get(id)
         .ok_or_else(|| format!("no panel {id:?} for field {field:?}"))?
         .clone();
-    let outcome = edit(&mut panel, field, value)?;
+    let outcome = edit(&scene.chrome, &mut panel, field, value)?;
     if let FormOutcome::Command(_) = outcome {
         return Ok(outcome);
     }
@@ -373,7 +375,12 @@ fn flipped(before: bool, after: bool) -> FormOutcome {
     }
 }
 
-fn edit(panel: &mut Panel, field: &str, value: FieldValue) -> Result<FormOutcome, String> {
+fn edit(
+    metrics: &ChromeMetrics,
+    panel: &mut Panel,
+    field: &str,
+    value: FieldValue,
+) -> Result<FormOutcome, String> {
     let rebuilt = FormOutcome::Changed { rebuild: true };
     let wrong = || format!("panel field {field:?} got {value:?}");
     let is_terminal = matches!(panel.kind, PanelKind::Terminal { .. });
@@ -474,11 +481,11 @@ fn edit(panel: &mut Panel, field: &str, value: FieldValue) -> Result<FormOutcome
         }
         ("panel.borderless", FieldValue::Bool(on)) => {
             let was = overrides.borderless.is_some();
-            set_borderless(panel, on);
+            set_borderless(metrics, panel, on);
             Ok(flipped(was, panel.overrides.borderless.is_some()))
         }
         ("panel.borderless", FieldValue::Reset) => {
-            set_borderless(panel, false);
+            set_borderless(metrics, panel, false);
             Ok(rebuilt)
         }
         ("panel.accent" | "panel.title_bar" | "panel.title_color", value) => {
@@ -507,7 +514,7 @@ fn edit(panel: &mut Panel, field: &str, value: FieldValue) -> Result<FormOutcome
             Ok(flipped(was, overrides.content_opacity.is_some()))
         }
         ("panel.reset_all", FieldValue::Pressed) => {
-            set_borderless(panel, false);
+            set_borderless(metrics, panel, false);
             panel.overrides = Default::default();
             Ok(rebuilt)
         }
@@ -614,6 +621,7 @@ fn field_set(style: &PanelMarkdownStyle, part: &str) -> bool {
 mod tests {
     use super::*;
     use crate::geometry::Rect;
+    use crate::scene::ChromeMetrics;
     use crate::scene::content_rect;
     use crate::terminal_profile::TerminalColorsSetting;
 
@@ -1303,7 +1311,7 @@ mod tests {
     fn borderless_and_reset_all_keep_the_content_rect() {
         let settings = with_global_colors();
         let (mut scene, id) = scene_with(terminal());
-        let content = content_rect(scene.get(id).unwrap());
+        let content = content_rect(&ChromeMetrics::default(), scene.get(id).unwrap());
         apply(
             &mut scene,
             id,
@@ -1330,7 +1338,7 @@ mod tests {
         .unwrap();
         let panel = scene.get(id).unwrap();
         assert_eq!(panel.overrides.borderless, Some(true));
-        assert_eq!(content_rect(panel), content);
+        assert_eq!(content_rect(&ChromeMetrics::default(), panel), content);
 
         let revision = scene.revision();
         assert_eq!(
@@ -1350,7 +1358,7 @@ mod tests {
         );
         let panel = scene.get(id).unwrap();
         assert!(panel.overrides.is_empty(), "{:?}", panel.overrides);
-        assert_eq!(content_rect(panel), content);
+        assert_eq!(content_rect(&ChromeMetrics::default(), panel), content);
         assert_eq!(panel.rect, Rect::new(10.0, 20.0, 400.0, 300.0));
     }
 

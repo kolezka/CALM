@@ -315,7 +315,11 @@ impl InputHandler {
             if panel.minimized {
                 return vec![Effect::ToggleMinimize(id), Effect::Redraw];
             }
-            match chrome_hit(panel, scene.camera_of(panel).screen_to_world(screen)) {
+            match chrome_hit(
+                &scene.chrome,
+                panel,
+                scene.camera_of(panel).screen_to_world(screen),
+            ) {
                 Some(ChromeButton::Close) => return vec![Effect::ClosePanelRequested(id)],
                 Some(ChromeButton::Minimize) => {
                     return vec![Effect::ToggleMinimize(id), Effect::Redraw];
@@ -346,7 +350,7 @@ impl InputHandler {
         };
         let id = panel.id;
         let local = scene.camera_of(panel).screen_to_world(screen);
-        if local.y < panel.rect.origin.y + chrome_height(panel) {
+        if local.y < panel.rect.origin.y + chrome_height(&scene.chrome, panel) {
             self.state = Interaction::Dragging {
                 id,
                 grab_offset_world: Point::new(
@@ -830,7 +834,7 @@ fn context_menu(screen: Point, scene: &Scene) -> Vec<Effect> {
         Some(panel)
             if panel.minimized
                 || scene.camera_of(panel).screen_to_world(screen).y
-                    < panel.rect.origin.y + chrome_height(panel) =>
+                    < panel.rect.origin.y + chrome_height(&scene.chrome, panel) =>
         {
             vec![Effect::ShowPanelMenu { id, screen }]
         }
@@ -858,6 +862,7 @@ fn resize_panel(panel: &mut Panel, edge: ResizeEdge, edge_world: Point) {
 mod tests {
     use super::*;
     use crate::geometry::{Point, Rect};
+    use crate::scene::ChromeMetrics;
     use crate::scene::{PanelId, PanelKind, Scene};
 
     fn terminal() -> PanelKind {
@@ -1053,7 +1058,10 @@ mod tests {
                     scene.camera.zoom = zoom;
                     // Browser default size.
                     let id = scene.add(kind.clone(), Rect::new(100.0, 100.0, 800.0, 600.0));
-                    let content = crate::scene::content_rect(scene.get(id).unwrap());
+                    let content = crate::scene::content_rect(
+                        &ChromeMetrics::default(),
+                        scene.get(id).unwrap(),
+                    );
                     let outside = 3.0 / zoom;
                     let world = match edge {
                         ResizeEdge::Right => Point::new(content.right() + outside, 400.0),
@@ -1512,14 +1520,17 @@ mod tests {
         let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
         let panel = scene.get(id).unwrap().clone();
         assert_eq!(
-            chrome_hit(&panel, Point::new(386.0, 14.0)),
+            chrome_hit(&ChromeMetrics::default(), &panel, Point::new(386.0, 14.0)),
             Some(ChromeButton::Close)
         );
         assert_eq!(
-            chrome_hit(&panel, Point::new(362.0, 14.0)),
+            chrome_hit(&ChromeMetrics::default(), &panel, Point::new(362.0, 14.0)),
             Some(ChromeButton::Minimize)
         );
-        assert_eq!(chrome_hit(&panel, Point::new(100.0, 14.0)), None);
+        assert_eq!(
+            chrome_hit(&ChromeMetrics::default(), &panel, Point::new(100.0, 14.0)),
+            None
+        );
 
         let mut handler = InputHandler::default();
         let effects =
@@ -1766,16 +1777,23 @@ mod tests {
     fn borderless_panel_has_no_chrome_hit_and_no_bar_menu() {
         let mut scene = Scene::default();
         let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
-        crate::scene::set_borderless(scene.get_mut(id).unwrap(), true);
+        crate::scene::set_borderless(&ChromeMetrics::default(), scene.get_mut(id).unwrap(), true);
         let panel = scene.get(id).unwrap();
         // Inside the panel, within the strip where a bar would be, over where Close sits.
         let top = panel.rect.origin.y;
         let close_spot = Point::new(panel.rect.right() - 14.0, top + 14.0);
-        assert!(close_spot.y < top + crate::scene::CHROME_HEIGHT);
+        assert!(close_spot.y < top + crate::scene::DEFAULT_CHROME_HEIGHT);
         assert_eq!(scene.hit_test_screen(close_spot), Some(id));
-        assert_eq!(crate::chrome::chrome_hit(panel, close_spot), None);
         assert_eq!(
-            crate::chrome::chrome_hit(panel, Point::new(panel.rect.right() - 38.0, top + 14.0)),
+            crate::chrome::chrome_hit(&ChromeMetrics::default(), panel, close_spot),
+            None
+        );
+        assert_eq!(
+            crate::chrome::chrome_hit(
+                &ChromeMetrics::default(),
+                panel,
+                Point::new(panel.rect.right() - 38.0, top + 14.0)
+            ),
             None
         );
 
@@ -2105,7 +2123,9 @@ mod tests {
         let mut scene = Scene::default();
         let id = scene.add(terminal(), Rect::new(100.0, 100.0, 400.0, 300.0));
         let panel = scene.get(id).unwrap();
-        let button = crate::chrome::title_bar_layout(panel).close.unwrap();
+        let button = crate::chrome::title_bar_layout(&ChromeMetrics::default(), panel)
+            .close
+            .unwrap();
         let press = Point::new(
             button.right() - 1.0,
             button.origin.y + button.size.height / 2.0,
@@ -2330,7 +2350,11 @@ mod tests {
     fn gpui_painted_panels() -> (Scene, Vec<PanelId>) {
         let mut scene = Scene::default();
         let plugin = scene.add(plugin_kind(), Rect::new(0.0, 0.0, 400.0, 300.0));
-        crate::scene::set_borderless(scene.get_mut(plugin).unwrap(), true);
+        crate::scene::set_borderless(
+            &ChromeMetrics::default(),
+            scene.get_mut(plugin).unwrap(),
+            true,
+        );
         let unknown: PanelKind = serde_json::from_str(r#"{"type":"mystery"}"#).unwrap();
         assert!(matches!(unknown, PanelKind::Unsupported { .. }));
         let placeholder = scene.add(unknown, Rect::new(1000.0, 0.0, 400.0, 300.0));
@@ -2338,7 +2362,7 @@ mod tests {
     }
 
     fn center(scene: &Scene, id: PanelId) -> Point {
-        let rect = crate::scene::content_rect(scene.get(id).unwrap());
+        let rect = crate::scene::content_rect(&ChromeMetrics::default(), scene.get(id).unwrap());
         scene.camera.world_to_screen(Point::new(
             rect.origin.x + rect.size.width / 2.0,
             rect.origin.y + rect.size.height / 2.0,

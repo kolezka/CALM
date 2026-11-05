@@ -389,7 +389,7 @@ mod tests {
     }
 
     fn content_point(scene: &Scene, id: PanelId) -> Point {
-        let content = content_rect(scene.get(id).unwrap());
+        let content = content_rect(&scene.chrome, scene.get(id).unwrap());
         let world = Point::new(
             content.origin.x + content.size.width / 2.0,
             content.origin.y + content.size.height / 2.0,

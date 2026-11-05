@@ -7,6 +7,12 @@ describes `main`, not branches. Facts are verified against the code unless marke
 
 ## Done and merged to `main`
 
+Not merged yet (branch `feat/terminal-font-keys`): `terminal.zoom_keys` (`font` default,
+`canvas`). With `font`, the keys bound to `canvas.zoom_in`, `canvas.zoom_out` and
+`canvas.zoom_reset` get a `NoAction` in the `Terminal` key context, so a focused terminal
+passes them to Ghostty, whose built-in bindings change the font size. Settings > Terminal
+shows it as "Zoom keys in a terminal". Key delivery to Ghostty is not verified by an agent.
+
 Foundation (before the PR series):
 
 - Workspace, toolchain, Makefile (`gmake`), CI on the self-hosted Arch runner, Release
@@ -434,6 +440,10 @@ Open questions: `.ai/open-questions.md`.
   while the canvas has the keyboard, and with `canvas.scroll_over_panels` `pan` takes
   scrolls (Cmd+scroll zooms). Tests cover the tracker and app policy; real gestures are
   a manual GUI pass.
+
+- Title bar settings (branch `feat/title-bar-settings`, not merged): `panels.title_bar_height` (16 to
+  64, default 28) and `panels.title_font_size` (6 to 32, default 12), in Settings > Panels,
+  wired live through `Scene::chrome` (`ChromeMetrics`). Minimized chip height stays 28.
 
 - Markdown panels (branch `feat/markdown-panel`, not merged). New kind `Markdown { text }`,
   saved as `type=markdown`. Add > Markdown and the `m` draw key (`canvas.draw_markdown`).

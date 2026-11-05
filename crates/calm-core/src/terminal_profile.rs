@@ -348,8 +348,52 @@ pub struct TerminalSettings {
         deserialize_with = "CommandRestart::deserialize_named"
     )]
     pub command_restart: CommandRestart,
+    /// What the canvas zoom keys do while a terminal has the keyboard.
+    #[serde(
+        skip_serializing_if = "ZoomKeys::is_default",
+        deserialize_with = "ZoomKeys::deserialize_named"
+    )]
+    pub zoom_keys: ZoomKeys,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, Value>,
+}
+
+/// What Cmd+=, Cmd+- and Cmd+0 do while a terminal has the keyboard. `Font` leaves them
+/// to Ghostty, whose built-in bindings change the font size; `Canvas` zooms the canvas as
+/// everywhere else.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoomKeys {
+    #[default]
+    Font,
+    Canvas,
+}
+
+impl ZoomKeys {
+    pub const ALL: [ZoomKeys; 2] = [ZoomKeys::Font, ZoomKeys::Canvas];
+
+    fn is_default(&self) -> bool {
+        *self == ZoomKeys::default()
+    }
+
+    /// Serde's own error would not name the field.
+    fn deserialize_named<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        serde_json::from_value(value.clone()).map_err(|_| {
+            serde::de::Error::custom(format!(
+                "\"terminal.zoom_keys\" is {value}, expected \"font\" or \"canvas\""
+            ))
+        })
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ZoomKeys::Font => "Change the font size",
+            ZoomKeys::Canvas => "Zoom the canvas",
+        }
+    }
 }
 
 /// What a terminal running a typed command does when the command exits.
@@ -1560,6 +1604,28 @@ mod tests {
                 &json
             };
             assert_eq!(serde_json::to_string(&settings).unwrap(), written);
+        }
+    }
+
+    #[test]
+    fn zoom_keys_takes_two_values_and_defaults_to_font() {
+        assert_eq!(parse("{}").unwrap().zoom_keys, ZoomKeys::Font);
+        for (text, value) in [("font", ZoomKeys::Font), ("canvas", ZoomKeys::Canvas)] {
+            let json = format!(r#"{{"zoom_keys":"{text}"}}"#);
+            let settings = parse(&json).unwrap();
+            assert_eq!(settings.zoom_keys, value, "{text}");
+            // The default is not written back.
+            let written = if value == ZoomKeys::Font { "{}" } else { &json };
+            assert_eq!(serde_json::to_string(&settings).unwrap(), written);
+        }
+    }
+
+    #[test]
+    fn a_bad_zoom_keys_value_is_rejected_by_name() {
+        for bad in [r#""fonts""#, r#""Font""#, "true", "null", "1"] {
+            let json = format!(r#"{{"zoom_keys": {bad}}}"#);
+            let error = error(&json);
+            assert!(error.contains("\"terminal.zoom_keys\""), "{json}: {error}");
         }
     }
 

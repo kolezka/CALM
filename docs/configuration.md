@@ -10,7 +10,8 @@ while CALM is closed. Missing fields take their default, so a file may hold only
 change. A wrong value is an error that names the field. CALM then moves the file aside to
 `settings.json.invalid-<n>` and starts with the defaults, so nothing you wrote is lost.
 
-This page covers the `terminal`, `canvas`, `developer` and `session` sections. The other
+This page covers the `terminal`, `canvas`, `developer` and `session` sections and the
+panel title bar keys of `panels`. The other
 sections (`background`, `grid`, `snap`, `panels`, `plugins`) are editable in the Settings
 window, except `plugins.builtin` and `plugins.menus`, which are file only. Plugin menu
 settings are described in [plugins.md](plugins.md#context-menu-contributions).
@@ -44,6 +45,26 @@ mid-save leaves the old file whole.
   instead, and Cmd+scroll zooms, the same as over empty canvas. Applies at once. In the
   Settings window under Canvas and Snapping as "Scroll over panels". Middle drag pans over
   a panel either way, and so does Space+drag while no panel has the keyboard.
+
+## Panel title bar
+
+```json
+{ "panels": { "title_bar_height": 28, "title_font_size": 12 } }
+```
+
+- `title_bar_height` (default `28`, range `16` to `64`, world units): the height of every
+  panel's title bar. The buttons sit centered in it; in a bar shorter than 20 they shrink
+  to the bar. A change applies at once. Each panel keeps its outer rect, so its content
+  grows or shrinks by the difference. A panel too short for a taller bar grows downward to
+  keep 16 of content. A borderless panel has no bar, is not affected, and may be as short
+  as 16 at any bar height.
+  The minimized chip keeps its own height of 28.
+- `title_font_size` (default `12`, range `6` to `32`, points at zoom 1): the size of panel
+  titles, the close prompt and the label on a preview with no snapshot yet. Text that does
+  not fit the bar is clipped. A text icon keeps the default size, as its box is fixed.
+
+Both are in the Settings window under Panels. A value out of range is an error that names
+the field, for example `"panels.title_bar_height" is 70, expected 16 to 64`.
 
 ## Developer stats
 
@@ -273,6 +294,20 @@ colors per surface. They come from your Ghostty config for every terminal.
   a running one. TUI apps use the manifest `restart` instead. Settings > Terminal shows it
   as "Restart typed commands" with "Never", "When it exits" and "On Enter".
 
+- `zoom_keys`: what the canvas zoom keys (`cmd-=`, `cmd--`, `cmd-0` by default, see
+  `keybindings`) do while a terminal has the keyboard. `"font"` (default) passes them to
+  Ghostty, whose built-in bindings make the font bigger, smaller and default size again for
+  that terminal alone; the canvas zooms only when no terminal has the keyboard. `"canvas"`
+  zooms the canvas from inside a terminal too, as before. Any other value is an error. Pinch,
+  Cmd+scroll and the View menu zoom the canvas either way. CALM forwards the key press as
+  it is; it does not translate it into a font action. So the font changes only while the
+  key you press is one Ghostty binds to a font size action: its defaults are Cmd+=, Cmd+-
+  and Cmd+0, and your Ghostty config can change or unbind them. If you rebind
+  `canvas.zoom_in` in CALM to, say, `cmd-k`, a focused terminal gets Cmd+K, which Ghostty
+  binds to clearing the screen, not to the font; add a matching `keybind` to your Ghostty
+  config for that. CALM cannot set a terminal's font size itself: gpui-libghostty passes
+  only colors per surface. Settings > Terminal shows it as "Zoom keys in a terminal".
+
 ### Run Command
 
 Add > Run Command… comes right after Terminal (after Terminal Profiles when you have
@@ -308,8 +343,8 @@ profile. Duplicate keeps the source terminal's profile.
 Settings > Terminal edits the defaults: a switch for custom title bar colors with three color
 wells, a switch for custom terminal colors with background, foreground and 16 palette wells,
 Load buttons for three built-in palettes (CALM Neon, Solarized Dark, Ghostty Default), the
-default profile, "Restart typed commands" and the default opacity. The environment shows
-keys with masked values.
+default profile, "Restart typed commands", "Zoom keys in a terminal" and the default opacity.
+The environment shows keys with masked values.
 
 Not in the window yet: title template, icon, launch fields, and adding, duplicating,
 renaming or deleting profiles. These need text input the window does not have. Edit

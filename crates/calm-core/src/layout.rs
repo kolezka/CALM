@@ -604,6 +604,7 @@ mod tests {
     use super::*;
     use crate::camera::Camera;
     use crate::geometry::{Point, Rect};
+    use crate::scene::ChromeMetrics;
     use crate::scene::{PanelKind, Scene};
     use std::path::PathBuf;
 
@@ -620,12 +621,15 @@ mod tests {
             },
             Rect::new(0.0, 0.0, MIN_PANEL_SIZE.width, MIN_PANEL_SIZE.height),
         );
-        set_borderless(scene.get_mut(id).unwrap(), true);
+        set_borderless(&ChromeMetrics::default(), scene.get_mut(id).unwrap(), true);
         let restored = Scene::from_layout(scene.to_layout());
         let before = scene.get(id).unwrap();
         let after = &restored.panels[0];
         assert_eq!(after.rect, before.rect);
-        assert_eq!(content_rect(after), content_rect(before));
+        assert_eq!(
+            content_rect(&ChromeMetrics::default(), after),
+            content_rect(&ChromeMetrics::default(), before)
+        );
     }
 
     #[test]
