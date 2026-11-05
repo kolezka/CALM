@@ -248,7 +248,7 @@ impl InputHandler {
         scene: &mut Scene,
     ) -> Vec<Effect> {
         // One pointer gesture at a time: another button's press leaves it alone.
-        if self.gesture_button.is_some() && self.gesture_active() {
+        if self.gesture_owned() {
             return Vec::new();
         }
         let effects = self.press(screen, button, mods, scene);
@@ -259,6 +259,11 @@ impl InputHandler {
     /// A pending content press counts: it becomes a drag on the next move.
     fn gesture_active(&self) -> bool {
         self.state != Interaction::Idle || self.content_press.is_some()
+    }
+
+    /// A gesture is running and a button owns it.
+    fn gesture_owned(&self) -> bool {
+        self.gesture_button.is_some() && self.gesture_active()
     }
 
     fn press(
@@ -362,7 +367,11 @@ impl InputHandler {
     }
 
     /// Starts resizing at a screen point if it hits a resize handle.
+    /// Refused while another button owns a gesture.
     pub fn begin_resize_at(&mut self, screen: Point, scene: &mut Scene) -> Option<Vec<Effect>> {
+        if self.gesture_owned() {
+            return None;
+        }
         let (id, edge) = self.resize_target_at(screen, scene)?;
         let panel = scene.get(id)?;
         let world = scene.camera_of(panel).screen_to_world(screen);
@@ -374,18 +383,23 @@ impl InputHandler {
                 panel.rect.bottom() - world.y,
             ),
         };
+        self.gesture_button = Some(Button::Left);
         scene.bring_to_front(id);
         Some(vec![Effect::FocusPanel(id), Effect::Redraw])
     }
 
     /// A move-modifier drag on content: the same state and effects as a title bar press.
-    /// Later `mouse_move` and `mouse_up` move and drop the panel.
+    /// Later `mouse_move` and `mouse_up` move and drop the panel. Refused (no effects)
+    /// while another button owns a gesture.
     pub fn begin_content_move(
         &mut self,
         id: PanelId,
         screen: Point,
         scene: &mut Scene,
     ) -> Vec<Effect> {
+        if self.gesture_owned() {
+            return Vec::new();
+        }
         let Some(panel) = scene.get(id) else {
             return Vec::new();
         };
@@ -397,6 +411,7 @@ impl InputHandler {
                 world.y - panel.rect.origin.y,
             ),
         };
+        self.gesture_button = Some(Button::Left);
         scene.bring_to_front(id);
         vec![Effect::FocusPanel(id), Effect::Redraw]
     }
@@ -2260,6 +2275,37 @@ mod tests {
             Vec::new()
         );
         assert_eq!(handler.state, Interaction::Idle);
+    }
+
+    #[test]
+    fn begin_content_move_waits_for_the_owner_of_a_running_gesture() {
+        let (mut scene, moving) = two_panels();
+        let mut handler = InputHandler::default();
+        let press = Point::new(310.0, 360.0);
+        let canvas = Point::new(700.0, 700.0);
+        handler.mouse_down(canvas, Button::Middle, no_mods(), &mut scene);
+        assert!(matches!(handler.state, Interaction::Panning { .. }));
+        assert_eq!(
+            handler.begin_content_move(moving, press, &mut scene),
+            Vec::new()
+        );
+        assert!(
+            matches!(handler.state, Interaction::Panning { .. }),
+            "{:?}",
+            handler.state
+        );
+        assert_eq!(handler.gesture_button, Some(Button::Middle));
+        handler.mouse_up_for(Button::Middle, canvas, no_mods(), &mut scene);
+        assert_eq!(handler.state, Interaction::Idle);
+        assert_eq!(handler.gesture_button, None);
+        // Free again: the move starts and the left button owns it.
+        assert!(
+            !handler
+                .begin_content_move(moving, press, &mut scene)
+                .is_empty()
+        );
+        assert!(matches!(handler.state, Interaction::Dragging { id, .. } if id == moving));
+        assert_eq!(handler.gesture_button, Some(Button::Left));
     }
 
     fn cmd() -> Modifiers {
