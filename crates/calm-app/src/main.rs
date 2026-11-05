@@ -1522,10 +1522,12 @@ async fn smoke_resize(view: &Entity<CanvasView>, window: AnyWindowHandle, cx: &m
             .await;
         let (rect, page, locked_rect) = cx.update(|cx| {
             let view = view.read(cx);
-            let rect = view
-                .scene
-                .get(browser)
-                .map(|panel| (panel.rect, calm_core::scene::content_rect(panel).size));
+            let rect = view.scene.get(browser).map(|panel| {
+                (
+                    panel.rect,
+                    calm_core::scene::content_rect(&view.scene.chrome, panel).size,
+                )
+            });
             let page = view
                 .browser_page_sizes()
                 .into_iter()
@@ -2073,12 +2075,17 @@ fn smoke_panel_overrides(
             };
             let id = view.scene.add(kind, Rect::new(720.0, 860.0, 300.0, 160.0));
             view.open_terminal(id, None, None, None, None, window, cx)?;
-            let before = view.scene.get(id).map(content_rect).ok_or("no panel")?;
+            let chrome = view.scene.chrome;
+            let before = view
+                .scene
+                .get(id)
+                .map(|panel| content_rect(&chrome, panel))
+                .ok_or("no panel")?;
             if let Some(panel) = view.scene.get_mut(id) {
                 panel.overrides.title = Some(TITLE.to_string());
                 panel.overrides.accent_color = Some("#12ab34".to_string());
                 panel.overrides.terminal_colors = Some(PanelTerminalColors::from_colors(&palette));
-                set_borderless(panel, true);
+                set_borderless(&chrome, panel, true);
             }
             view.apply_panel_overrides(id, cx);
             if let Some(panel) = view.scene.get_mut(id) {
@@ -2101,20 +2108,32 @@ fn smoke_panel_overrides(
                 .scene
                 .panels
                 .iter()
-                .filter(|panel| chrome_height(panel) == 0.0 && content_rect(panel) == panel.rect)
+                .filter(|panel| {
+                    chrome_height(&chrome, panel) == 0.0
+                        && content_rect(&chrome, panel) == panel.rect
+                })
                 .count();
-            let after = view.scene.get(id).map(content_rect).ok_or("no panel")?;
+            let after = view
+                .scene
+                .get(id)
+                .map(|panel| content_rect(&chrome, panel))
+                .ok_or("no panel")?;
             let scene_title = view.scene.get(id).map(|panel| panel.title.clone());
             let recolored =
                 view.terminal_meta(id).and_then(|meta| meta.applied_colors) == Some(palette);
             if let Some(panel) = view.scene.get_mut(id) {
-                set_borderless(panel, false);
+                set_borderless(&chrome, panel, false);
                 panel.overrides = Default::default();
             }
             view.apply_panel_overrides(id, cx);
             let opacity_reset = view.terminal_opacities(cx);
-            let cleared = view.scene.get(id).map(content_rect) == Some(before)
-                && view.scene.get(id).map(chrome_height) == Some(calm_core::scene::CHROME_HEIGHT)
+            let cleared = view.scene.get(id).map(|panel| content_rect(&chrome, panel))
+                == Some(before)
+                && view
+                    .scene
+                    .get(id)
+                    .map(|panel| chrome_height(&chrome, panel))
+                    == Some(chrome.bar_height)
                 && view.panel_look(id).title.is_none()
                 && view.scene.get(id).is_some_and(|panel| panel.title != TITLE);
             // The shell is still running: close as if the user confirmed.
@@ -4583,7 +4602,8 @@ async fn smoke_pin_restore(
             far_panel.rect
         )),
     }
-    let content = content_rect(&near);
+    let chrome = cx.update(|cx| view.read(cx).scene.chrome);
+    let content = content_rect(&chrome, &near);
     let container = Rect::new(
         content.origin.x * PIN + viewport.origin.x,
         content.origin.y * PIN + viewport.origin.y,

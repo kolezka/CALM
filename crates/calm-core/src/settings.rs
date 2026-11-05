@@ -45,6 +45,10 @@ pub const SNAP_EDGE_RANGE: RangeInclusive<f64> = 0.0..=32.0;
 pub const TERMINAL_WIDTH_RANGE: RangeInclusive<f64> = 240.0..=2000.0;
 pub const TERMINAL_HEIGHT_RANGE: RangeInclusive<f64> = 120.0..=1600.0;
 pub const PREVIEW_ZOOM_RANGE: RangeInclusive<f64> = 0.1..=1.0;
+/// Panel title bar height, in world units.
+pub const TITLE_BAR_HEIGHT_RANGE: RangeInclusive<f64> = 16.0..=64.0;
+/// Panel title font size, in points at zoom 1.
+pub const TITLE_FONT_SIZE_RANGE: RangeInclusive<f64> = 6.0..=32.0;
 /// Arrow key pan step, in screen points.
 pub const DEFAULT_ARROW_PAN_STEP: f64 = 48.0;
 pub const ARROW_PAN_STEP_RANGE: RangeInclusive<f64> = 4.0..=400.0;
@@ -454,6 +458,11 @@ pub struct PanelSettings {
     pub default_terminal_height: f64,
     /// Below this zoom panels show a snapshot instead of the live view.
     pub preview_below_zoom: f64,
+    /// Height of every panel's title bar, in world units. A change keeps each panel's
+    /// outer rect, so its content grows or shrinks by the difference.
+    pub title_bar_height: f64,
+    /// Size of panel titles, in points at zoom 1.
+    pub title_font_size: f64,
 }
 
 impl Default for PanelSettings {
@@ -464,6 +473,8 @@ impl Default for PanelSettings {
             default_terminal_width: DEFAULT_TERMINAL_SIZE.width,
             default_terminal_height: DEFAULT_TERMINAL_SIZE.height,
             preview_below_zoom: PREVIEW_ZOOM_THRESHOLD,
+            title_bar_height: crate::scene::DEFAULT_CHROME_HEIGHT,
+            title_font_size: crate::scene::DEFAULT_TITLE_FONT_SIZE,
         }
     }
 }
@@ -606,6 +617,16 @@ impl Settings {
             "panels.preview_below_zoom",
             panels.preview_below_zoom,
             PREVIEW_ZOOM_RANGE,
+        )?;
+        check(
+            "panels.title_bar_height",
+            panels.title_bar_height,
+            TITLE_BAR_HEIGHT_RANGE,
+        )?;
+        check(
+            "panels.title_font_size",
+            panels.title_font_size,
+            TITLE_FONT_SIZE_RANGE,
         )?;
         self.terminal.validate()?;
         let interval = self.developer.stats.interval_ms;
@@ -984,6 +1005,40 @@ mod tests {
             bad.canvas.arrow_move_step = value;
             let error = bad.validate().unwrap_err();
             assert!(error.contains("canvas.arrow_move_step"), "{error}");
+        }
+    }
+
+    #[test]
+    fn title_bar_settings_default_accept_the_range_and_reject_the_rest() {
+        let absent: Settings =
+            serde_json::from_str(r#"{ "version": 2, "panels": { "confirm_close": false } }"#)
+                .unwrap();
+        assert_eq!(absent.panels.title_bar_height, 28.0);
+        assert_eq!(absent.panels.title_font_size, 12.0);
+        assert!(absent.validate().is_ok());
+        for (height, font) in [(16.0, 6.0), (64.0, 32.0), (40.0, 14.0)] {
+            let set: Settings = serde_json::from_str(&format!(
+                r#"{{ "version": 2, "panels": {{ "title_bar_height": {height}, "title_font_size": {font} }} }}"#
+            ))
+            .unwrap();
+            assert!(set.validate().is_ok(), "{height} {font}");
+            let metrics = crate::scene::ChromeMetrics::from_settings(&set.panels);
+            assert_eq!(
+                (metrics.bar_height, metrics.title_font_size),
+                (height, font)
+            );
+        }
+        for value in [15.9, 64.5, 0.0, f64::NAN, f64::INFINITY] {
+            let mut bad = Settings::default();
+            bad.panels.title_bar_height = value;
+            let error = bad.validate().unwrap_err();
+            assert!(error.contains("panels.title_bar_height"), "{error}");
+        }
+        for value in [5.9, 32.5, -1.0, f64::NAN] {
+            let mut bad = Settings::default();
+            bad.panels.title_font_size = value;
+            let error = bad.validate().unwrap_err();
+            assert!(error.contains("panels.title_font_size"), "{error}");
         }
     }
 

@@ -435,6 +435,10 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
+- Title bar settings (branch `feat/title-bar-settings`, not merged): `panels.title_bar_height` (16 to
+  64, default 28) and `panels.title_font_size` (6 to 32, default 12), in Settings > Panels,
+  wired live through `Scene::chrome` (`ChromeMetrics`). Minimized chip height stays 28.
+
 - Markdown panels (branch `feat/markdown-panel`, not merged). New kind `Markdown { text }`,
   saved as `type=markdown`. Add > Markdown and the `m` draw key (`canvas.draw_markdown`).
   Text is edited in the panel Settings window (a 12 row text area, Return types a newline,

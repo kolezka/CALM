@@ -3,11 +3,9 @@
 
 use crate::geometry::{Point, Rect};
 use crate::scene::{
-    CHROME_HEIGHT, Panel, PanelId, PanelKind, PanelOverrides, Scene, chip_rect, chrome_height,
+    ChromeMetrics, Panel, PanelId, PanelKind, PanelOverrides, Scene, chip_rect, chrome_height,
 };
 
-/// Height of the title bar. Same as the strip `content_rect` leaves above the content.
-pub const TITLE_BAR_HEIGHT: f64 = CHROME_HEIGHT;
 /// Width of the ring outside a panel's rect, in screen pixels at any zoom.
 pub const RING_PX: f64 = 1.0;
 /// Radius of the title bar's top corners and of a minimized chip.
@@ -15,7 +13,15 @@ pub const CORNER_RADIUS: f64 = 8.0;
 /// Side of each square button hit target.
 pub const BUTTON_HIT_SIZE: f64 = 20.0;
 /// Inset of the buttons from the bar's top, bottom and right edge, and between them.
-pub const BUTTON_MARGIN: f64 = (TITLE_BAR_HEIGHT - BUTTON_HIT_SIZE) / 2.0;
+pub fn button_margin(bar_height: f64) -> f64 {
+    ((bar_height - BUTTON_HIT_SIZE) / 2.0).max(0.0)
+}
+
+/// Side of the button hit targets: `BUTTON_HIT_SIZE`, shrunk to fit a shorter bar.
+pub fn button_hit_size(bar_height: f64) -> f64 {
+    BUTTON_HIT_SIZE.min(bar_height)
+}
+
 /// Diameter of the visible circle inside each button hit target.
 pub const BUTTON_DOT_DIAMETER: f64 = 14.0;
 /// Space between the bar's left edge and the icon.
@@ -94,7 +100,7 @@ pub struct TitleBarLayout {
     pub close: Option<Rect>,
 }
 
-pub fn title_bar_layout(panel: &Panel) -> TitleBarLayout {
+pub fn title_bar_layout(metrics: &ChromeMetrics, panel: &Panel) -> TitleBarLayout {
     let bar = if panel.minimized {
         chip_rect(panel)
     } else {
@@ -102,7 +108,7 @@ pub fn title_bar_layout(panel: &Panel) -> TitleBarLayout {
             panel.rect.origin.x,
             panel.rect.origin.y,
             panel.rect.size.width,
-            chrome_height(panel),
+            chrome_height(metrics, panel),
         )
     };
     let borderless = !panel.minimized && bar.size.height == 0.0;
@@ -119,17 +125,14 @@ pub fn title_bar_layout(panel: &Panel) -> TitleBarLayout {
     let (minimize, close, trailing_edge) = if panel.minimized || borderless {
         (None, None, bar.right() - LEADING_PADDING)
     } else {
-        let top = bar.origin.y + BUTTON_MARGIN;
-        let close_left = bar.right() - BUTTON_MARGIN - BUTTON_HIT_SIZE;
-        let minimize_left = close_left - BUTTON_MARGIN - BUTTON_HIT_SIZE;
+        let margin = button_margin(bar.size.height);
+        let size = button_hit_size(bar.size.height);
+        let top = bar.origin.y + margin;
+        let close_left = bar.right() - margin - size;
+        let minimize_left = close_left - margin - size;
         (
-            Some(Rect::new(
-                minimize_left,
-                top,
-                BUTTON_HIT_SIZE,
-                BUTTON_HIT_SIZE,
-            )),
-            Some(Rect::new(close_left, top, BUTTON_HIT_SIZE, BUTTON_HIT_SIZE)),
+            Some(Rect::new(minimize_left, top, size, size)),
+            Some(Rect::new(close_left, top, size, size)),
             minimize_left - ICON_GAP,
         )
     };
@@ -161,8 +164,8 @@ pub fn button_dot(hit: Rect) -> Rect {
 }
 
 /// Close is the rightmost button of the bar, Minimize sits to its left.
-pub fn chrome_hit(panel: &Panel, world: Point) -> Option<ChromeButton> {
-    let layout = title_bar_layout(panel);
+pub fn chrome_hit(metrics: &ChromeMetrics, panel: &Panel, world: Point) -> Option<ChromeButton> {
+    let layout = title_bar_layout(metrics, panel);
     if layout.close.is_some_and(|rect| rect.contains(world)) {
         Some(ChromeButton::Close)
     } else if layout.minimize.is_some_and(|rect| rect.contains(world)) {
@@ -177,12 +180,18 @@ pub fn hover_target(scene: &Scene, screen: Point) -> Option<(PanelId, Option<Chr
     let id = scene.hit_test_screen(screen)?;
     let panel = scene.get(id)?;
     let world = scene.camera_of(panel).screen_to_world(screen);
-    Some((id, chrome_hit(panel, world)))
+    Some((id, chrome_hit(&scene.chrome, panel, world)))
 }
 
-/// True when the bar is tall enough on screen for its icon, title and buttons to read.
-pub fn details_visible(zoom: f64) -> bool {
-    TITLE_BAR_HEIGHT * zoom >= MIN_DETAIL_PX
+/// True when a bar `bar_height` tall in world units is tall enough on screen for its icon,
+/// title and buttons to read. Pass the drawn height: a minimized chip has its own.
+pub fn details_visible(bar_height: f64, zoom: f64) -> bool {
+    bar_height * zoom >= MIN_DETAIL_PX
+}
+
+/// `details_visible` for the bar `panel` draws: its chip when minimized.
+pub fn panel_details_visible(metrics: &ChromeMetrics, panel: &Panel, zoom: f64) -> bool {
+    details_visible(title_bar_layout(metrics, panel).bar.size.height, zoom)
 }
 
 /// Screen font sizes of canvas text snap to multiples of this, in points (one device pixel
@@ -507,6 +516,7 @@ mod color_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::{ChromeMetrics, DEFAULT_CHROME_HEIGHT};
     use crate::scene::{MINIMIZED_CHIP, content_rect};
 
     /// Each distinct size is a fresh glyph rasterization in GPUI, so a zoom gesture must
@@ -527,6 +537,38 @@ mod tests {
         // 3.6 to 36 points on a half point grid.
         let bound = ((base * high - base * low) / TEXT_SIZE_STEP_PX) as usize + 2;
         assert!(sizes.len() <= bound, "{} sizes, bound {bound}", sizes.len());
+    }
+
+    #[test]
+    fn buttons_stay_inside_the_shortest_and_tallest_bar() {
+        for bar_height in [16.0, 64.0] {
+            let metrics = ChromeMetrics {
+                bar_height,
+                ..ChromeMetrics::default()
+            };
+            let mut scene = Scene::default();
+            scene.chrome = metrics;
+            let id = scene.add(terminal(), Rect::new(100.0, 50.0, 400.0, 300.0));
+            let layout = title_bar_layout(&metrics, scene.get(id).unwrap());
+            assert_eq!(layout.bar.size.height, bar_height);
+            for button in [layout.minimize.unwrap(), layout.close.unwrap()] {
+                assert!(button.origin.y >= layout.bar.origin.y, "{bar_height}");
+                assert!(button.bottom() <= layout.bar.bottom(), "{bar_height}");
+                assert!(button.right() <= layout.bar.right(), "{bar_height}");
+                assert!(button.origin.x >= layout.middle.right(), "{bar_height}");
+            }
+            assert!(layout.icon.bottom() <= layout.bar.bottom());
+        }
+        assert_eq!(button_margin(16.0), 0.0);
+        assert_eq!(button_hit_size(16.0), 16.0);
+        assert_eq!(button_margin(64.0), 22.0);
+        assert_eq!(button_hit_size(64.0), BUTTON_HIT_SIZE);
+        let short = ChromeMetrics {
+            bar_height: 16.0,
+            ..ChromeMetrics::default()
+        };
+        assert!(!details_visible(short.bar_height, 0.7));
+        assert!(details_visible(DEFAULT_CHROME_HEIGHT, 0.7));
     }
 
     fn terminal() -> PanelKind {
@@ -570,8 +612,8 @@ mod tests {
     #[test]
     fn borderless_layout_has_no_icon_and_no_middle() {
         let (mut scene, id) = scene_with_panel();
-        crate::scene::set_borderless(scene.get_mut(id).unwrap(), true);
-        let layout = title_bar_layout(scene.get(id).unwrap());
+        crate::scene::set_borderless(&ChromeMetrics::default(), scene.get_mut(id).unwrap(), true);
+        let layout = title_bar_layout(&ChromeMetrics::default(), scene.get(id).unwrap());
         assert_eq!(layout.icon.size.width, 0.0);
         assert_eq!(layout.icon.size.height, 0.0);
         assert_eq!(layout.middle.size.height, 0.0);
@@ -583,9 +625,12 @@ mod tests {
     fn bar_sits_exactly_above_content() {
         let (scene, id) = scene_with_panel();
         let panel = scene.get(id).unwrap();
-        let layout = title_bar_layout(panel);
-        let content = content_rect(panel);
-        assert_eq!(layout.bar, Rect::new(100.0, 50.0, 400.0, TITLE_BAR_HEIGHT));
+        let layout = title_bar_layout(&ChromeMetrics::default(), panel);
+        let content = content_rect(&ChromeMetrics::default(), panel);
+        assert_eq!(
+            layout.bar,
+            Rect::new(100.0, 50.0, 400.0, DEFAULT_CHROME_HEIGHT)
+        );
         assert_eq!(layout.bar.bottom(), content.origin.y);
         assert_eq!(layout.bar.size.width, content.size.width);
     }
@@ -593,7 +638,7 @@ mod tests {
     #[test]
     fn every_part_stays_inside_the_bar_and_parts_do_not_overlap() {
         let (scene, id) = scene_with_panel();
-        let layout = title_bar_layout(scene.get(id).unwrap());
+        let layout = title_bar_layout(&ChromeMetrics::default(), scene.get(id).unwrap());
         let close = layout.close.unwrap();
         let minimize = layout.minimize.unwrap();
         for part in [layout.icon, layout.middle, close, minimize] {
@@ -605,14 +650,17 @@ mod tests {
         assert!(layout.icon.right() < layout.middle.origin.x);
         assert!(layout.middle.right() < minimize.origin.x);
         assert!(minimize.right() < close.origin.x);
-        assert_eq!(close.right(), layout.bar.right() - BUTTON_MARGIN);
+        assert_eq!(
+            close.right(),
+            layout.bar.right() - button_margin(DEFAULT_CHROME_HEIGHT)
+        );
     }
 
     #[test]
     fn hit_matches_the_layout_buttons() {
         let (scene, id) = scene_with_panel();
         let panel = scene.get(id).unwrap();
-        let layout = title_bar_layout(panel);
+        let layout = title_bar_layout(&ChromeMetrics::default(), panel);
         let center = |rect: Rect| {
             Point::new(
                 rect.origin.x + rect.size.width / 2.0,
@@ -620,21 +668,35 @@ mod tests {
             )
         };
         assert_eq!(
-            chrome_hit(panel, center(layout.close.unwrap())),
+            chrome_hit(
+                &ChromeMetrics::default(),
+                panel,
+                center(layout.close.unwrap())
+            ),
             Some(ChromeButton::Close)
         );
         assert_eq!(
-            chrome_hit(panel, center(layout.minimize.unwrap())),
+            chrome_hit(
+                &ChromeMetrics::default(),
+                panel,
+                center(layout.minimize.unwrap())
+            ),
             Some(ChromeButton::Minimize)
         );
-        assert_eq!(chrome_hit(panel, center(layout.middle)), None);
-        assert_eq!(chrome_hit(panel, center(layout.icon)), None);
+        assert_eq!(
+            chrome_hit(&ChromeMetrics::default(), panel, center(layout.middle)),
+            None
+        );
+        assert_eq!(
+            chrome_hit(&ChromeMetrics::default(), panel, center(layout.icon)),
+            None
+        );
         // The gap between the two buttons is drag area, not a button.
         let gap = Point::new(
-            layout.minimize.unwrap().right() + BUTTON_MARGIN / 2.0,
+            layout.minimize.unwrap().right() + button_margin(DEFAULT_CHROME_HEIGHT) / 2.0,
             center(layout.close.unwrap()).y,
         );
-        assert_eq!(chrome_hit(panel, gap), None);
+        assert_eq!(chrome_hit(&ChromeMetrics::default(), panel, gap), None);
     }
 
     #[test]
@@ -651,13 +713,17 @@ mod tests {
         let (mut scene, id) = scene_with_panel();
         scene.get_mut(id).unwrap().minimized = true;
         let panel = scene.get(id).unwrap();
-        let layout = title_bar_layout(panel);
+        let layout = title_bar_layout(&ChromeMetrics::default(), panel);
         assert_eq!(layout.bar.size, MINIMIZED_CHIP);
         assert_eq!(layout.close, None);
         assert_eq!(layout.minimize, None);
         assert_eq!(layout.middle.right(), layout.bar.right() - LEADING_PADDING);
         assert_eq!(
-            chrome_hit(panel, Point::new(layout.bar.right() - 5.0, 64.0)),
+            chrome_hit(
+                &ChromeMetrics::default(),
+                panel,
+                Point::new(layout.bar.right() - 5.0, 64.0)
+            ),
             None
         );
     }
@@ -666,14 +732,14 @@ mod tests {
     fn narrow_panel_never_gets_negative_middle() {
         let mut scene = Scene::default();
         let id = scene.add(terminal(), Rect::new(0.0, 0.0, 10.0, 10.0));
-        let layout = title_bar_layout(scene.get(id).unwrap());
+        let layout = title_bar_layout(&ChromeMetrics::default(), scene.get(id).unwrap());
         assert!(layout.middle.size.width >= 0.0);
     }
 
     #[test]
     fn hover_reports_panel_and_button() {
         let (scene, id) = scene_with_panel();
-        let layout = title_bar_layout(scene.get(id).unwrap());
+        let layout = title_bar_layout(&ChromeMetrics::default(), scene.get(id).unwrap());
         let close = layout.close.unwrap();
         assert_eq!(
             hover_target(
@@ -691,9 +757,27 @@ mod tests {
 
     #[test]
     fn details_hide_when_the_bar_gets_small_on_screen() {
-        assert!(details_visible(1.0));
-        assert!(details_visible(MIN_DETAIL_PX / TITLE_BAR_HEIGHT));
-        assert!(!details_visible(0.4));
+        assert!(details_visible(DEFAULT_CHROME_HEIGHT, 1.0));
+        assert!(details_visible(
+            DEFAULT_CHROME_HEIGHT,
+            MIN_DETAIL_PX / DEFAULT_CHROME_HEIGHT
+        ));
+        assert!(!details_visible(DEFAULT_CHROME_HEIGHT, 0.4));
+    }
+
+    #[test]
+    fn a_minimized_chip_keeps_its_details_under_a_short_bar() {
+        let short = ChromeMetrics {
+            bar_height: 16.0,
+            ..ChromeMetrics::default()
+        };
+        let (mut scene, id) = scene_with_panel();
+        scene.chrome = short;
+        scene.get_mut(id).unwrap().minimized = true;
+        // The chip is 14 on screen at zoom 0.5; a 16 bar would be 8 and hide.
+        assert!(panel_details_visible(&short, scene.get(id).unwrap(), 0.5));
+        scene.get_mut(id).unwrap().minimized = false;
+        assert!(!panel_details_visible(&short, scene.get(id).unwrap(), 0.5));
     }
 
     #[test]
@@ -737,7 +821,7 @@ mod tests {
         scene.camera.offset = Point::new(300.0, 300.0);
         let panel = scene.get(id).unwrap();
         let camera = scene.camera_of(panel);
-        let layout = title_bar_layout(panel);
+        let layout = title_bar_layout(&ChromeMetrics::default(), panel);
         let close = layout.close.unwrap();
         let on_close =
             camera.world_to_screen(Point::new(close.origin.x + 1.0, close.origin.y + 1.0));

@@ -123,7 +123,10 @@ pub fn native_paint_region(
         let camera = scene.camera_of(panel);
         let outline = occluder_rect(panel, &camera);
         if live_native(panel.id) && !panel.minimized {
-            subtract(outline, camera.world_rect_to_screen(content_rect(panel)))
+            subtract(
+                outline,
+                camera.world_rect_to_screen(content_rect(&scene.chrome, panel)),
+            )
         } else {
             vec![outline]
         }
@@ -201,6 +204,7 @@ impl PointerGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::ChromeMetrics;
     use crate::scene::MINIMIZED_CHIP;
 
     const CONTAINER: Rect = Rect::new(0.0, 0.0, 100.0, 100.0);
@@ -403,7 +407,10 @@ mod tests {
         assert_eq!(joins.len(), 1);
         let container = scene
             .camera
-            .world_rect_to_screen(crate::scene::content_rect(scene.get(rear).unwrap()));
+            .world_rect_to_screen(crate::scene::content_rect(
+                &ChromeMetrics::default(),
+                scene.get(rear).unwrap(),
+            ));
         (scene, joins, rear, container)
     }
 
@@ -445,7 +452,10 @@ mod tests {
         assert_eq!(joins.len(), 1);
         let container = scene
             .camera
-            .world_rect_to_screen(crate::scene::content_rect(scene.get(target).unwrap()));
+            .world_rect_to_screen(crate::scene::content_rect(
+                &ChromeMetrics::default(),
+                scene.get(target).unwrap(),
+            ));
         assert_eq!(
             native_visible_region(&scene, &joins, target, container, Point::new(0.0, 0.0)),
             vec![container]
@@ -464,7 +474,10 @@ mod tests {
         let content = |id| {
             scene
                 .camera
-                .world_rect_to_screen(crate::scene::content_rect(scene.get(id).unwrap()))
+                .world_rect_to_screen(crate::scene::content_rect(
+                    &ChromeMetrics::default(),
+                    scene.get(id).unwrap(),
+                ))
         };
         // Both of the left panel's dividers are painted above it, yet sit outside it.
         for id in [left, right, below] {
@@ -484,7 +497,10 @@ mod tests {
         let front = scene.add(terminal(), Rect::new(100.0, 100.0, 200.0, 200.0));
         let container = scene
             .camera
-            .world_rect_to_screen(crate::scene::content_rect(scene.get(back).unwrap()));
+            .world_rect_to_screen(crate::scene::content_rect(
+                &ChromeMetrics::default(),
+                scene.get(back).unwrap(),
+            ));
         (scene, back, front, container)
     }
 
@@ -507,7 +523,7 @@ mod tests {
         assert!(!region_contains(&pieces, IN_FRONT_RING), "ring exposed");
         let front_panel = scene.get(front).unwrap();
         let outline = occluder_rect(front_panel, &scene.camera);
-        let content = crate::scene::content_rect(front_panel);
+        let content = crate::scene::content_rect(&ChromeMetrics::default(), front_panel);
         assert_exact(&pieces, container, &subtract(outline, content));
     }
 
@@ -655,7 +671,10 @@ mod tests {
         scene.camera.zoom = 0.5;
         let container = scene
             .camera
-            .world_rect_to_screen(crate::scene::content_rect(scene.get(back).unwrap()));
+            .world_rect_to_screen(crate::scene::content_rect(
+                &ChromeMetrics::default(),
+                scene.get(back).unwrap(),
+            ));
         let front_panel = scene.get(front).unwrap();
         let outline = occluder_rect(front_panel, &scene.camera_of(front_panel));
         let not_live = |_: PanelId| false;
@@ -665,9 +684,13 @@ mod tests {
         );
         // A live pinned front keeps its content hole in its own camera.
         let live = move |id: PanelId| id == front;
-        let content = scene
-            .camera_of(front_panel)
-            .world_rect_to_screen(crate::scene::content_rect(front_panel));
+        let content =
+            scene
+                .camera_of(front_panel)
+                .world_rect_to_screen(crate::scene::content_rect(
+                    &ChromeMetrics::default(),
+                    front_panel,
+                ));
         let pieces = native_paint_region(&scene, &[], back, container, ORIGIN, &live);
         assert_exact(&pieces, container, &subtract(outline, content));
     }

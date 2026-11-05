@@ -23,6 +23,7 @@ use crate::settings::{
     GRID_MAJOR_EVERY_MAX, GRID_MARK_SIZE_RANGE, GRID_SPACING_RANGE, PREVIEW_ZOOM_RANGE,
     RestoreOnLaunch, SESSION_BACKUP_COUNT_RANGE, SESSION_DEBOUNCE_MS_RANGE, SETTINGS_SAVE_MS_RANGE,
     SNAP_EDGE_RANGE, SNAP_GRID_STEPS, Settings, TERMINAL_HEIGHT_RANGE, TERMINAL_WIDTH_RANGE,
+    TITLE_BAR_HEIGHT_RANGE, TITLE_FONT_SIZE_RANGE,
 };
 use crate::terminal_profile::{
     CommandRestart, DEFAULT_CONTENT_OPACITY, MIN_CONTENT_OPACITY, PALETTE_PRESETS, TerminalColors,
@@ -476,6 +477,20 @@ pub fn settings_form(settings: &Settings, context: &FormContext) -> Vec<Section>
                 panels.preview_below_zoom,
                 PREVIEW_ZOOM_RANGE,
                 2,
+            ),
+            slider(
+                "panels.title_bar_height",
+                "Title bar height",
+                panels.title_bar_height,
+                TITLE_BAR_HEIGHT_RANGE,
+                0,
+            ),
+            slider(
+                "panels.title_font_size",
+                "Title font size",
+                panels.title_font_size,
+                TITLE_FONT_SIZE_RANGE,
+                0,
             ),
         ],
     ));
@@ -1005,6 +1020,16 @@ pub fn apply_field(
             settings.panels.preview_below_zoom = number(PREVIEW_ZOOM_RANGE, 2).unwrap_or(0.5);
             changed
         }
+        ("panels.title_bar_height", FieldValue::Number(_)) => {
+            settings.panels.title_bar_height =
+                number(TITLE_BAR_HEIGHT_RANGE, 0).ok_or("bad title bar height")?;
+            changed
+        }
+        ("panels.title_font_size", FieldValue::Number(_)) => {
+            settings.panels.title_font_size =
+                number(TITLE_FONT_SIZE_RANGE, 0).ok_or("bad title font size")?;
+            changed
+        }
         ("developer.show_stats", FieldValue::Bool(on)) => {
             Ok(FormOutcome::Command(FormCommand::SetShowStats(on)))
         }
@@ -1115,6 +1140,8 @@ pub fn apply_field(
             | "panels.terminal_width"
             | "panels.terminal_height"
             | "panels.preview_zoom"
+            | "panels.title_bar_height"
+            | "panels.title_font_size"
             | "session.restore_on_launch"
             | "session.first_launch_preset"
             | "session.autosave"
