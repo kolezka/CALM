@@ -442,6 +442,8 @@ Open questions: `.ai/open-questions.md`.
   a manual GUI pass.
   A scroll gesture keeps the target it started on, momentum included (branch
   `feat/scroll-gesture-owner`, not merged; trackpad behavior unverified, needs a GUI pass).
+  In the default mode a scroll pans over every panel except the focused one, which keeps
+  its own scrolling (branch `feat/scroll-unfocused-pans`; trackpad behavior unverified).
 
 - Title bar settings (branch `feat/title-bar-settings`, not merged): `panels.title_bar_height` (16 to
   64, default 28) and `panels.title_font_size` (6 to 32, default 12), in Settings > Panels,

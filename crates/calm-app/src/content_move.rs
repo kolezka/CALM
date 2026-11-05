@@ -54,13 +54,23 @@ pub fn space_pans(input: &InputHandler, canvas_has_keyboard: bool) -> bool {
 }
 
 /// Whether a scroll gesture starting at `screen`, or a wheel scroll there, pans the
-/// canvas. `over_native` says a native view is under the pointer.
-pub fn wants_scroll(settings: &Settings, scene: &Scene, screen: Point, over_native: bool) -> bool {
+/// canvas. `over_native` says a native view is under the pointer; `focused` is the panel
+/// with the keyboard.
+pub fn wants_scroll(
+    settings: &Settings,
+    scene: &Scene,
+    screen: Point,
+    over_native: bool,
+    focused: Option<PanelId>,
+) -> bool {
     match settings.canvas.scroll_over_panels {
         ScrollOverPanels::Pan => true,
-        // Only over empty canvas. Painted previews and placeholders are panels too, and a
-        // native view outside any panel keeps its own scrolls.
-        ScrollOverPanels::Terminal => !over_native && scene.hit_test_screen(screen).is_none(),
+        // Everything pans except the focused panel, which keeps its own scrolling, and a
+        // native view outside any panel (the status pill, say).
+        ScrollOverPanels::Terminal => match scene.hit_test_screen(screen) {
+            Some(id) => Some(id) != focused,
+            None => !over_native,
+        },
     }
 }
 
@@ -302,6 +312,7 @@ impl CanvasView {
                                 &view.scene,
                                 screen,
                                 over_native,
+                                view.focused(),
                             )
                     })
                     .unwrap_or(false)
@@ -720,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scroll_is_wanted_over_empty_canvas_and_over_panels_only_when_set_to_pan() {
+    fn a_scroll_pans_everywhere_but_over_the_focused_panel() {
         let (scene, id) = scene_with_terminal();
         let content = content_point(&scene, id);
         let panel = scene.get(id).unwrap().rect;
@@ -741,14 +752,27 @@ mod tests {
             settings.canvas.scroll_over_panels,
             ScrollOverPanels::Terminal
         );
-        assert!(wants_scroll(&settings, &scene, empty, false));
-        assert!(!wants_scroll(&settings, &scene, content, true));
-        assert!(!wants_scroll(&settings, &scene, title_bar, false));
+        // Nothing focused: every panel pans, a native view outside any panel does not.
+        assert!(wants_scroll(&settings, &scene, empty, false, None));
+        assert!(wants_scroll(&settings, &scene, content, true, None));
+        assert!(wants_scroll(&settings, &scene, title_bar, false, None));
+        assert!(!wants_scroll(&settings, &scene, empty, true, None));
+        // The focused panel keeps its own scrolling; another focused panel does not matter.
+        assert!(!wants_scroll(&settings, &scene, content, true, Some(id)));
+        assert!(!wants_scroll(&settings, &scene, title_bar, false, Some(id)));
+        assert!(wants_scroll(&settings, &scene, empty, false, Some(id)));
+        assert!(wants_scroll(
+            &settings,
+            &scene,
+            content,
+            true,
+            Some(PanelId(99))
+        ));
 
         settings.canvas.scroll_over_panels = ScrollOverPanels::Pan;
-        assert!(wants_scroll(&settings, &scene, empty, false));
-        assert!(wants_scroll(&settings, &scene, content, true));
-        assert!(wants_scroll(&settings, &scene, title_bar, false));
+        assert!(wants_scroll(&settings, &scene, empty, false, Some(id)));
+        assert!(wants_scroll(&settings, &scene, content, true, Some(id)));
+        assert!(wants_scroll(&settings, &scene, title_bar, false, Some(id)));
     }
 
     #[test]

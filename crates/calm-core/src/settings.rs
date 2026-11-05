@@ -263,7 +263,7 @@ pub struct CanvasSettings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScrollOverPanels {
-    /// The terminal or page scrolls its own content.
+    /// The focused terminal or page scrolls its own content; any other panel pans.
     #[default]
     Terminal,
     /// The canvas pans, and Cmd+scroll zooms, as over empty canvas.
@@ -275,7 +275,7 @@ impl ScrollOverPanels {
 
     pub fn label(self) -> &'static str {
         match self {
-            ScrollOverPanels::Terminal => "Scrolls the panel",
+            ScrollOverPanels::Terminal => "Scrolls the focused panel",
             ScrollOverPanels::Pan => "Pans the canvas",
         }
     }
