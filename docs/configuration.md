@@ -268,6 +268,16 @@ colors per surface. They come from your Ghostty config for every terminal.
   a running one. TUI apps use the manifest `restart` instead. Settings > Terminal shows it
   as "Restart typed commands" with "Never", "When it exits" and "On Enter".
 
+- `zoom_keys`: what the canvas zoom keys (`cmd-=`, `cmd--`, `cmd-0` by default, see
+  `keybindings`) do while a terminal has the keyboard. `"font"` (default) passes them to
+  Ghostty, whose built-in bindings make the font bigger, smaller and default size again for
+  that terminal alone; the canvas zooms only when no terminal has the keyboard. `"canvas"`
+  zooms the canvas from inside a terminal too, as before. Any other value is an error. Pinch,
+  Cmd+scroll and the View menu zoom the canvas either way. Ghostty applies its default
+  bindings on top of your Ghostty config, so if that config unbinds them the keys do nothing
+  in a terminal. CALM cannot set a terminal's font size itself: gpui-libghostty passes only
+  colors per surface. Settings > Terminal shows it as "Zoom keys in a terminal".
+
 ### Run Command
 
 Add > Run Command… comes right after Terminal (after Terminal Profiles when you have
@@ -303,8 +313,8 @@ profile. Duplicate keeps the source terminal's profile.
 Settings > Terminal edits the defaults: a switch for custom title bar colors with three color
 wells, a switch for custom terminal colors with background, foreground and 16 palette wells,
 Load buttons for three built-in palettes (CALM Neon, Solarized Dark, Ghostty Default), the
-default profile, "Restart typed commands" and the default opacity. The environment shows
-keys with masked values.
+default profile, "Restart typed commands", "Zoom keys in a terminal" and the default opacity.
+The environment shows keys with masked values.
 
 Not in the window yet: title template, icon, launch fields, and adding, duplicating,
 renaming or deleting profiles. These need text input the window does not have. Edit
