@@ -10,7 +10,8 @@ while CALM is closed. Missing fields take their default, so a file may hold only
 change. A wrong value is an error that names the field. CALM then moves the file aside to
 `settings.json.invalid-<n>` and starts with the defaults, so nothing you wrote is lost.
 
-This page covers the `terminal`, `canvas`, `developer` and `session` sections. The other
+This page covers the `terminal`, `canvas`, `developer` and `session` sections and the
+panel title bar keys of `panels`. The other
 sections (`background`, `grid`, `snap`, `panels`, `plugins`) are editable in the Settings
 window, except `plugins.builtin` and `plugins.menus`, which are file only. Plugin menu
 settings are described in [plugins.md](plugins.md#context-menu-contributions).
@@ -39,6 +40,24 @@ mid-save leaves the old file whole.
   arrives quickly. Off keeps the full frame rate there, at a small energy cost when CALM
   sits in the background. Read when the canvas window opens, so a change applies after
   restart. In the Settings window under Canvas and Snapping.
+
+## Panel title bar
+
+```json
+{ "panels": { "title_bar_height": 28, "title_font_size": 12 } }
+```
+
+- `title_bar_height` (default `28`, range `16` to `64`, world units): the height of every
+  panel's title bar. The buttons sit centered in it; in a bar shorter than 20 they shrink
+  to the bar. A change applies at once. Each panel keeps its outer rect, so its content
+  grows or shrinks by the difference. A borderless panel has no bar and is not affected.
+  The minimized chip keeps its own height of 28.
+- `title_font_size` (default `12`, range `6` to `32`, points at zoom 1): the size of panel
+  titles, the close prompt and the label on a preview with no snapshot yet. Text that does
+  not fit the bar is clipped. A text icon keeps the default size, as its box is fixed.
+
+Both are in the Settings window under Panels. A value out of range is an error that names
+the field, for example `"panels.title_bar_height" is 70, expected 16 to 64`.
 
 ## Developer stats
 

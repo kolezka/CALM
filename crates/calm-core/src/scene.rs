@@ -14,8 +14,12 @@ use crate::terminal_profile::{
 };
 
 pub const MIN_PANEL_SIZE: Size = Size::new(120.0, 80.0);
-/// Height of the title strip at the top of every panel, in world units.
-pub const CHROME_HEIGHT: f64 = 28.0;
+/// Default height of the title strip at the top of every panel, in world units.
+pub const DEFAULT_CHROME_HEIGHT: f64 = 28.0;
+/// Default size of panel titles, in points at zoom 1.
+pub const DEFAULT_TITLE_FONT_SIZE: f64 = 12.0;
+/// Smallest content height a panel keeps, whatever the bar height.
+pub const MIN_CONTENT_HEIGHT: f64 = 16.0;
 pub const MINIMIZED_CHIP: Size = Size::new(200.0, 28.0);
 /// How far a duplicate sits from its source, in world units. A multiple of the snap grid.
 pub const DUPLICATE_OFFSET: f64 = 32.0;
@@ -409,6 +413,31 @@ impl Panel {
     }
 }
 
+/// Title bar size from `panels.title_bar_height` and `panels.title_font_size`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChromeMetrics {
+    pub bar_height: f64,
+    pub title_font_size: f64,
+}
+
+impl Default for ChromeMetrics {
+    fn default() -> Self {
+        Self {
+            bar_height: DEFAULT_CHROME_HEIGHT,
+            title_font_size: DEFAULT_TITLE_FONT_SIZE,
+        }
+    }
+}
+
+impl ChromeMetrics {
+    pub fn from_settings(panels: &crate::settings::PanelSettings) -> Self {
+        Self {
+            bar_height: panels.title_bar_height,
+            title_font_size: panels.title_font_size,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Scene {
     /// Back to front: the last panel is topmost. Pinned panels all come after unpinned
@@ -422,6 +451,8 @@ pub struct Scene {
     revision: u64,
     /// The camera as of the last `sync_revision`.
     camera_seen: Camera,
+    /// Title bar size. A view setting, not layout content.
+    pub chrome: ChromeMetrics,
 }
 
 impl Default for Scene {
@@ -432,6 +463,7 @@ impl Default for Scene {
             next_id: 1,
             revision: 0,
             camera_seen: Camera::default(),
+            chrome: ChromeMetrics::default(),
         }
     }
 }
@@ -528,7 +560,7 @@ impl Scene {
         let id = PanelId(self.next_id);
         self.next_id += 1;
         let min_height = if overrides.borderless == Some(true) {
-            MIN_PANEL_SIZE.height - CHROME_HEIGHT
+            (MIN_PANEL_SIZE.height - self.chrome.bar_height).max(MIN_CONTENT_HEIGHT)
         } else {
             MIN_PANEL_SIZE.height
         };
@@ -679,7 +711,7 @@ impl Scene {
             let Some(zoom) = panel.pin else {
                 continue;
             };
-            let keep = pinned_keep_rect(panel, zoom);
+            let keep = pinned_keep_rect(&self.chrome, panel, zoom);
             let x = clamp_axis(keep.origin.x, keep.size.width, viewport.width);
             let y = clamp_axis(keep.origin.y, keep.size.height, viewport.height);
             if x != keep.origin.x || y != keep.origin.y {
@@ -778,12 +810,12 @@ fn hit_rect(panel: &Panel) -> Rect {
 }
 
 /// The screen rect of a pinned panel that `clamp_pinned` keeps inside the viewport.
-fn pinned_keep_rect(panel: &Panel, zoom: f64) -> Rect {
+fn pinned_keep_rect(metrics: &ChromeMetrics, panel: &Panel, zoom: f64) -> Rect {
     let camera = pin_camera(zoom);
     if panel.minimized {
         return camera.world_rect_to_screen(chip_rect(panel));
     }
-    let strip = chrome_height(panel);
+    let strip = chrome_height(metrics, panel);
     let mut keep = camera.world_rect_to_screen(Rect {
         origin: panel.rect.origin,
         size: Size::new(panel.rect.size.width, strip),
@@ -807,30 +839,31 @@ pub fn chip_rect(panel: &Panel) -> Rect {
 }
 
 /// Height of the strip above the content: 0 for a borderless panel.
-pub fn chrome_height(panel: &Panel) -> f64 {
+pub fn chrome_height(metrics: &ChromeMetrics, panel: &Panel) -> f64 {
     if panel.overrides.borderless == Some(true) {
         0.0
     } else {
-        CHROME_HEIGHT
+        metrics.bar_height
     }
 }
 
 /// Turns borderless on or off, moving the outer rect so `content_rect` stays put.
 /// Off clears the field rather than storing `false`.
-pub fn set_borderless(panel: &mut Panel, on: bool) {
-    let was = chrome_height(panel) == 0.0;
+pub fn set_borderless(metrics: &ChromeMetrics, panel: &mut Panel, on: bool) {
+    let bar = metrics.bar_height;
+    let was = chrome_height(metrics, panel) == 0.0;
     panel.overrides.borderless = on.then_some(true);
     if on && !was {
-        panel.rect.origin.y += CHROME_HEIGHT;
-        panel.rect.size.height = (panel.rect.size.height - CHROME_HEIGHT).max(0.0);
+        panel.rect.origin.y += bar;
+        panel.rect.size.height = (panel.rect.size.height - bar).max(0.0);
     } else if !on && was {
-        panel.rect.origin.y -= CHROME_HEIGHT;
-        panel.rect.size.height += CHROME_HEIGHT;
+        panel.rect.origin.y -= bar;
+        panel.rect.size.height += bar;
     }
 }
 
-pub fn content_rect(panel: &Panel) -> Rect {
-    let bar = chrome_height(panel);
+pub fn content_rect(metrics: &ChromeMetrics, panel: &Panel) -> Rect {
+    let bar = chrome_height(metrics, panel);
     Rect::new(
         panel.rect.origin.x,
         panel.rect.origin.y + bar,
@@ -860,16 +893,67 @@ mod tests {
         let mut scene = Scene::default();
         let id = scene.add(terminal(), Rect::new(10.0, 20.0, 300.0, 200.0));
         let panel = scene.get_mut(id).unwrap();
-        let before = content_rect(panel);
-        set_borderless(panel, true);
+        let before = content_rect(&ChromeMetrics::default(), panel);
+        set_borderless(&ChromeMetrics::default(), panel, true);
         assert_eq!(panel.overrides.borderless, Some(true));
-        assert_eq!(chrome_height(panel), 0.0);
-        assert_eq!(content_rect(panel), before);
-        set_borderless(panel, false);
+        assert_eq!(chrome_height(&ChromeMetrics::default(), panel), 0.0);
+        assert_eq!(content_rect(&ChromeMetrics::default(), panel), before);
+        set_borderless(&ChromeMetrics::default(), panel, false);
         assert_eq!(panel.overrides.borderless, None);
-        assert_eq!(chrome_height(panel), CHROME_HEIGHT);
-        assert_eq!(content_rect(panel), before);
+        assert_eq!(
+            chrome_height(&ChromeMetrics::default(), panel),
+            DEFAULT_CHROME_HEIGHT
+        );
+        assert_eq!(content_rect(&ChromeMetrics::default(), panel), before);
         assert_eq!(panel.rect, Rect::new(10.0, 20.0, 300.0, 200.0));
+    }
+
+    #[test]
+    fn a_taller_bar_moves_the_content_and_borderless_still_keeps_it() {
+        let tall = ChromeMetrics {
+            bar_height: 40.0,
+            ..ChromeMetrics::default()
+        };
+        let mut scene = Scene {
+            chrome: tall,
+            ..Scene::default()
+        };
+        let id = scene.add(terminal(), Rect::new(10.0, 20.0, 300.0, 200.0));
+        let panel = scene.get_mut(id).unwrap();
+        assert_eq!(chrome_height(&tall, panel), 40.0);
+        let before = content_rect(&tall, panel);
+        assert_eq!(before, Rect::new(10.0, 60.0, 300.0, 160.0));
+        set_borderless(&tall, panel, true);
+        assert_eq!(panel.rect, Rect::new(10.0, 60.0, 300.0, 160.0));
+        assert_eq!(chrome_height(&tall, panel), 0.0);
+        assert_eq!(content_rect(&tall, panel), before);
+        set_borderless(&tall, panel, false);
+        assert_eq!(panel.rect, Rect::new(10.0, 20.0, 300.0, 200.0));
+        assert_eq!(content_rect(&tall, panel), before);
+        // The outer rect is the stored one, so a bar change resizes the content instead.
+        let panel = scene.get(id).unwrap();
+        assert_eq!(
+            content_rect(&ChromeMetrics::default(), panel),
+            Rect::new(10.0, 48.0, 300.0, 172.0)
+        );
+    }
+
+    #[test]
+    fn a_borderless_panel_keeps_a_minimum_content_height_under_any_bar() {
+        let borderless = PanelOverrides {
+            borderless: Some(true),
+            ..PanelOverrides::default()
+        };
+        for (bar, min) in [(16.0, 64.0), (28.0, 52.0), (64.0, MIN_CONTENT_HEIGHT)] {
+            let mut scene = Scene::default();
+            scene.chrome.bar_height = bar;
+            let id = scene.add_with_overrides(
+                terminal(),
+                Rect::new(0.0, 0.0, 300.0, 1.0),
+                borderless.clone(),
+            );
+            assert_eq!(scene.get(id).unwrap().rect.size.height, min, "bar {bar}");
+        }
     }
 
     #[test]
@@ -1276,7 +1360,7 @@ mod tests {
             borderless: Some(true),
             ..PanelOverrides::default()
         };
-        let content_min = MIN_PANEL_SIZE.height - CHROME_HEIGHT;
+        let content_min = MIN_PANEL_SIZE.height - DEFAULT_CHROME_HEIGHT;
         let mut scene = Scene::default();
         let small = Rect::new(0.0, 0.0, MIN_PANEL_SIZE.width, content_min);
         let id = scene.add_with_overrides(terminal(), small, borderless.clone());
@@ -1300,12 +1384,19 @@ mod tests {
             terminal(),
             Rect::new(0.0, 0.0, MIN_PANEL_SIZE.width, MIN_PANEL_SIZE.height),
         );
-        set_borderless(scene.get_mut(source).unwrap(), true);
+        set_borderless(
+            &ChromeMetrics::default(),
+            scene.get_mut(source).unwrap(),
+            true,
+        );
         let copy = scene.duplicate(source, |_| None).unwrap();
         let source = scene.get(source).unwrap();
         let copy = scene.get(copy).unwrap();
         assert_eq!(copy.rect.size, source.rect.size);
-        assert_eq!(content_rect(copy).size, content_rect(source).size);
+        assert_eq!(
+            content_rect(&ChromeMetrics::default(), copy).size,
+            content_rect(&ChromeMetrics::default(), source).size
+        );
     }
 
     #[test]
@@ -1381,8 +1472,13 @@ mod tests {
         assert_eq!(panel.rect, Rect::new(5.0, 6.0, 120.0, 80.0));
         assert_eq!(MIN_PANEL_SIZE, Size::new(120.0, 80.0));
         assert_eq!(
-            content_rect(panel),
-            Rect::new(5.0, 6.0 + CHROME_HEIGHT, 120.0, 80.0 - CHROME_HEIGHT)
+            content_rect(&ChromeMetrics::default(), panel),
+            Rect::new(
+                5.0,
+                6.0 + DEFAULT_CHROME_HEIGHT,
+                120.0,
+                80.0 - DEFAULT_CHROME_HEIGHT
+            )
         );
     }
 
@@ -1701,7 +1797,11 @@ mod tests {
         scene.get_mut(left).unwrap().rect.origin = Point::new(-150.0, -40.0);
         scene.get_mut(chip).unwrap().rect.origin = Point::new(395.0, 100.0);
         scene.get_mut(chip).unwrap().minimized = true;
-        set_borderless(scene.get_mut(bare).unwrap(), true);
+        set_borderless(
+            &ChromeMetrics::default(),
+            scene.get_mut(bare).unwrap(),
+            true,
+        );
         scene.get_mut(bare).unwrap().rect.origin = Point::new(100.0, 295.0);
         let before = scene.sync_revision();
         assert!(scene.clamp_pinned(viewport));
@@ -1709,7 +1809,10 @@ mod tests {
 
         // Title strip: 400 x 56 on screen, fully inside.
         let strip = screen_rect(&scene, right);
-        assert_eq!(strip.origin, Point::new(400.0, 600.0 - CHROME_HEIGHT * 2.0));
+        assert_eq!(
+            strip.origin,
+            Point::new(400.0, 600.0 - DEFAULT_CHROME_HEIGHT * 2.0)
+        );
         let strip = screen_rect(&scene, left);
         assert_eq!(strip.origin, Point::new(0.0, 0.0));
         // Chip: 400 x 56 on screen.

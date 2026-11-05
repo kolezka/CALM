@@ -56,13 +56,14 @@ impl ContentGesture {
 pub fn content_gesture_target(scene: &Scene, screen: Point) -> Option<PanelId> {
     let panel = scene.get(scene.hit_test_screen(screen)?)?;
     let world = scene.camera_of(panel).screen_to_world(screen);
-    (!panel.minimized && content_rect(panel).contains(world)).then_some(panel.id)
+    (!panel.minimized && content_rect(&scene.chrome, panel).contains(world)).then_some(panel.id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::geometry::{Point, Rect};
+    use crate::scene::ChromeMetrics;
     use crate::scene::{PanelKind, Scene};
 
     fn terminal() -> PanelKind {
@@ -118,7 +119,7 @@ mod tests {
         let chip = scene.add(terminal(), Rect::new(1000.0, 1000.0, 400.0, 300.0));
         scene.get_mut(chip).unwrap().minimized = true;
         let over = scene.add(terminal(), Rect::new(0.0, 500.0, 400.0, 300.0));
-        let content_y = 500.0 + crate::scene::CHROME_HEIGHT + 50.0;
+        let content_y = 500.0 + crate::scene::DEFAULT_CHROME_HEIGHT + 50.0;
 
         // Positive controls: content of the back panel, and the front panel where they overlap.
         assert_eq!(
@@ -143,7 +144,11 @@ mod tests {
             None
         );
         // A borderless chip: its content rect starts at the chip, so only `minimized` decides.
-        crate::scene::set_borderless(scene.get_mut(chip).unwrap(), true);
+        crate::scene::set_borderless(
+            &ChromeMetrics::default(),
+            scene.get_mut(chip).unwrap(),
+            true,
+        );
         let chip_at = scene.get(chip).unwrap().rect.origin;
         let in_chip = Point::new(chip_at.x + 5.0, chip_at.y + 5.0);
         assert_eq!(content_gesture_target(&scene, in_chip), None);
@@ -159,7 +164,11 @@ mod tests {
             None
         );
         // Borderless: the whole rect is content.
-        crate::scene::set_borderless(scene.get_mut(front).unwrap(), true);
+        crate::scene::set_borderless(
+            &ChromeMetrics::default(),
+            scene.get_mut(front).unwrap(),
+            true,
+        );
         let top = scene.get(front).unwrap().rect.origin;
         assert_eq!(
             content_gesture_target(&scene, Point::new(top.x + 100.0, top.y + 2.0)),

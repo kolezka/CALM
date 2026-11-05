@@ -7,8 +7,8 @@ use calm_core::autosave::{
 use calm_core::camera::{Camera, FIT_MARGIN};
 use calm_core::chrome::{
     BUILTIN_ICON_PREFIX, CORNER_RADIUS, ChromeButton, ChromeOverrides, ChromePalette, ChromeState,
-    PanelIcon, TITLE_BAR_HEIGHT, button_dot, button_strokes, chrome_colors, details_visible,
-    divider_color, hover_target, icon_strokes, icon_tint, lay_overrides, title_bar_layout,
+    PanelIcon, button_dot, button_strokes, chrome_colors, details_visible, divider_color,
+    hover_target, icon_strokes, icon_tint, lay_overrides, title_bar_layout,
 };
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
@@ -29,7 +29,8 @@ use calm_core::restore::{
     restored_profile, version_note,
 };
 use calm_core::scene::{
-    Panel, PanelId, PanelKind, Scene, TerminalApp, chip_rect, chrome_height, content_rect,
+    ChromeMetrics, DEFAULT_TITLE_FONT_SIZE, Panel, PanelId, PanelKind, Scene, TerminalApp,
+    chip_rect, chrome_height, content_rect,
 };
 use calm_core::status_bar::{status_bar_rect, status_text};
 use calm_core::terminal_profile::{
@@ -116,7 +117,6 @@ actions!(
 );
 
 pub const KEY_CONTEXT: &str = "Canvas";
-const TITLE_FONT_SIZE: f64 = 12.0;
 /// Below this the title is unreadable, so it is skipped.
 const MIN_TITLE_FONT_PX: f64 = 6.0;
 /// Width of the ring around a panel, in screen pixels at any zoom.
@@ -845,6 +845,8 @@ impl CanvasView {
         self.confirm_title = calm_core::keymap::confirm_prompt(&self.settings.settings.keybindings);
         self.input.arrow_pan_step = self.settings.settings.canvas.arrow_pan_step;
         self.input.arrow_move_step = self.settings.settings.canvas.arrow_move_step;
+        // Live: each panel keeps its outer rect, so its content takes up the difference.
+        self.scene.chrome = ChromeMetrics::from_settings(&self.settings.settings.panels);
     }
 
     pub fn set_show_stats(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -2842,7 +2844,7 @@ fn terminal_mode(
 ) -> PanelMode {
     let local = Rect::new(0.0, 0.0, viewport.size.width, viewport.size.height);
     let camera = scene.camera_of(panel);
-    let screen = camera.world_rect_to_screen(content_rect(panel));
+    let screen = camera.world_rect_to_screen(content_rect(&scene.chrome, panel));
     decide_mode(
         camera.zoom,
         preview_below_zoom,
@@ -2891,7 +2893,11 @@ fn terminal_placement(
         return None;
     }
     let local = Rect::new(0.0, 0.0, viewport.size.width, viewport.size.height);
-    let mut placement = place_native(content_rect(panel), &scene.camera_of(panel), local)?;
+    let mut placement = place_native(
+        content_rect(&scene.chrome, panel),
+        &scene.camera_of(panel),
+        local,
+    )?;
     placement.container.origin.x += viewport.origin.x;
     placement.container.origin.y += viewport.origin.y;
     placement.visible =
@@ -3258,7 +3264,8 @@ impl PaintSnapshot {
         // The shared span starts at the lower of the two tops; both bars run to the higher
         // top plus the bar height.
         let bars_top = join.divider.origin.y;
-        let bars_bottom = (first.rect.origin.y.min(second.rect.origin.y) + TITLE_BAR_HEIGHT)
+        let bars_bottom = (first.rect.origin.y.min(second.rect.origin.y)
+            + self.scene.chrome.bar_height)
             .min(join.divider.bottom());
         if bars_bottom <= bars_top {
             return;
@@ -3286,10 +3293,10 @@ impl PaintSnapshot {
             Some((id, button)) if id == panel.id => Some(button),
             _ => None,
         };
-        let layout = title_bar_layout(panel);
+        let layout = title_bar_layout(&self.scene.chrome, panel);
         let look = self.looks.get(&panel.id);
         // A borderless panel has no bar; its minimized chip still draws.
-        let bar_shown = panel.minimized || chrome_height(panel) > 0.0;
+        let bar_shown = panel.minimized || chrome_height(&self.scene.chrome, panel) > 0.0;
         let own_title = look
             .and_then(|look| look.title.as_deref())
             .unwrap_or(&panel.title);
@@ -3345,7 +3352,8 @@ impl PaintSnapshot {
         }
 
         if !panel.minimized {
-            let content_screen = camera.world_rect_to_screen(content_rect(panel));
+            let content_screen =
+                camera.world_rect_to_screen(content_rect(&self.scene.chrome, panel));
             let content_bounds = to_bounds(content_screen, origin);
             let divider = Rect::new(
                 content_screen.origin.x,
@@ -3398,7 +3406,7 @@ impl PaintSnapshot {
                         content_screen.origin.x + padding,
                         content_screen.origin.y + padding,
                         (content_screen.size.width - 2.0 * padding).max(0.0),
-                        TITLE_BAR_HEIGHT * zoom,
+                        self.scene.chrome.bar_height * zoom,
                     );
                     paint_text(
                         own_title,
@@ -3406,6 +3414,7 @@ impl PaintSnapshot {
                         TextLook {
                             align: TextAlign::Left,
                             color: opaque(theme::TITLE_TEXT),
+                            size: self.scene.chrome.title_font_size,
                         },
                         zoom,
                         origin,
@@ -3420,11 +3429,12 @@ impl PaintSnapshot {
                             content_screen.origin.x + padding,
                             content_screen.origin.y + padding,
                             (content_screen.size.width - 2.0 * padding).max(0.0),
-                            TITLE_BAR_HEIGHT * zoom,
+                            self.scene.chrome.bar_height * zoom,
                         );
                         let look = TextLook {
                             align: TextAlign::Left,
                             color: opaque(theme::TITLE_TEXT),
+                            size: self.scene.chrome.title_font_size,
                         };
                         paint_text(reason, line, look, zoom, origin, window, cx);
                     }
@@ -3432,12 +3442,14 @@ impl PaintSnapshot {
             }
         }
 
-        if let Some(ConfirmPrompt::Strip(strip)) = confirm_prompt(panel, confirming) {
+        if let Some(ConfirmPrompt::Strip(strip)) =
+            confirm_prompt(&self.scene.chrome, panel, confirming)
+        {
             // While a close is confirmed the native view is a preview (`modal_open`), so
             // this strip covers no live native rect.
             let strip_screen = camera.world_rect_to_screen(strip);
             window.paint_quad(fill(to_bounds(strip_screen, origin), rgba(colors.bar)));
-            if details_visible(zoom) {
+            if details_visible(&self.scene.chrome, zoom) {
                 let padding = 8.0 * zoom;
                 let line = Rect::new(
                     strip_screen.origin.x + padding,
@@ -3448,11 +3460,12 @@ impl PaintSnapshot {
                 let look = TextLook {
                     align: TextAlign::Left,
                     color: colors.title,
+                    size: self.scene.chrome.title_font_size,
                 };
                 paint_text(&self.confirm_title, line, look, zoom, origin, window, cx);
             }
         }
-        if !bar_shown || !details_visible(zoom) {
+        if !bar_shown || !details_visible(&self.scene.chrome, zoom) {
             return;
         }
         let kind_color = match PanelIcon::for_kind(&panel.kind) {
@@ -3477,6 +3490,8 @@ impl PaintSnapshot {
                 TextLook {
                     align: TextAlign::Center,
                     color: icon_color,
+                    // The icon box has a fixed size, so its glyph keeps the default.
+                    size: DEFAULT_TITLE_FONT_SIZE,
                 },
                 zoom,
                 origin,
@@ -3550,6 +3565,7 @@ impl PaintSnapshot {
                 TextLook {
                     align: TextAlign::Right,
                     color: opaque(theme::STALE_TEXT),
+                    size: self.scene.chrome.title_font_size,
                 },
                 zoom,
                 origin,
@@ -3573,6 +3589,7 @@ impl PaintSnapshot {
             TextLook {
                 align: TextAlign::Left,
                 color: colors.title,
+                size: self.scene.chrome.title_font_size,
             },
             zoom,
             origin,
@@ -3591,19 +3608,23 @@ enum ConfirmPrompt {
     Strip(Rect),
 }
 
-fn confirm_prompt(panel: &Panel, confirming: bool) -> Option<ConfirmPrompt> {
+fn confirm_prompt(
+    metrics: &ChromeMetrics,
+    panel: &Panel,
+    confirming: bool,
+) -> Option<ConfirmPrompt> {
     if !confirming {
         return None;
     }
-    if panel.minimized || chrome_height(panel) > 0.0 {
+    if panel.minimized || chrome_height(metrics, panel) > 0.0 {
         return Some(ConfirmPrompt::InTitleBar);
     }
-    let content = content_rect(panel);
+    let content = content_rect(metrics, panel);
     Some(ConfirmPrompt::Strip(Rect::new(
         content.origin.x,
         content.origin.y,
         content.size.width,
-        calm_core::scene::CHROME_HEIGHT.min(content.size.height),
+        metrics.bar_height.min(content.size.height),
     )))
 }
 
@@ -3671,6 +3692,8 @@ fn paint_strokes(
 
 /// Alignment and color of one `paint_text` line.
 struct TextLook {
+    /// Font size in points at zoom 1.
+    size: f64,
     align: TextAlign,
     /// 0xRRGGBBAA.
     color: u32,
@@ -3686,7 +3709,7 @@ fn paint_text(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let font_px = calm_core::chrome::text_size_px(TITLE_FONT_SIZE, zoom);
+    let font_px = calm_core::chrome::text_size_px(look.size, zoom);
     if font_px < MIN_TITLE_FONT_PX || text.is_empty() {
         return;
     }
@@ -4137,24 +4160,37 @@ mod tests {
         };
         let bar = scene.add(kind.clone(), Rect::new(0.0, 0.0, 300.0, 200.0));
         let borderless = scene.add(kind, Rect::new(400.0, 0.0, 300.0, 200.0));
-        calm_core::scene::set_borderless(scene.get_mut(borderless).unwrap(), true);
+        calm_core::scene::set_borderless(
+            &ChromeMetrics::default(),
+            scene.get_mut(borderless).unwrap(),
+            true,
+        );
         let bar = scene.get(bar).unwrap();
-        assert_eq!(confirm_prompt(bar, false), None);
-        assert_eq!(confirm_prompt(bar, true), Some(ConfirmPrompt::InTitleBar));
-        let panel = scene.get(borderless).unwrap().clone();
-        assert_eq!(confirm_prompt(&panel, false), None);
-        let content = content_rect(&panel);
+        assert_eq!(confirm_prompt(&ChromeMetrics::default(), bar, false), None);
         assert_eq!(
-            confirm_prompt(&panel, true),
+            confirm_prompt(&ChromeMetrics::default(), bar, true),
+            Some(ConfirmPrompt::InTitleBar)
+        );
+        let panel = scene.get(borderless).unwrap().clone();
+        assert_eq!(
+            confirm_prompt(&ChromeMetrics::default(), &panel, false),
+            None
+        );
+        let content = content_rect(&ChromeMetrics::default(), &panel);
+        assert_eq!(
+            confirm_prompt(&ChromeMetrics::default(), &panel, true),
             Some(ConfirmPrompt::Strip(Rect::new(
                 content.origin.x,
                 content.origin.y,
                 content.size.width,
-                calm_core::scene::CHROME_HEIGHT,
+                calm_core::scene::DEFAULT_CHROME_HEIGHT,
             )))
         );
         let mut chip = panel;
         chip.minimized = true;
-        assert_eq!(confirm_prompt(&chip, true), Some(ConfirmPrompt::InTitleBar));
+        assert_eq!(
+            confirm_prompt(&ChromeMetrics::default(), &chip, true),
+            Some(ConfirmPrompt::InTitleBar)
+        );
     }
 }
