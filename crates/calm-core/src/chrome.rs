@@ -183,9 +183,15 @@ pub fn hover_target(scene: &Scene, screen: Point) -> Option<(PanelId, Option<Chr
     Some((id, chrome_hit(&scene.chrome, panel, world)))
 }
 
-/// True when the bar is tall enough on screen for its icon, title and buttons to read.
-pub fn details_visible(metrics: &ChromeMetrics, zoom: f64) -> bool {
-    metrics.bar_height * zoom >= MIN_DETAIL_PX
+/// True when a bar `bar_height` tall in world units is tall enough on screen for its icon,
+/// title and buttons to read. Pass the drawn height: a minimized chip has its own.
+pub fn details_visible(bar_height: f64, zoom: f64) -> bool {
+    bar_height * zoom >= MIN_DETAIL_PX
+}
+
+/// `details_visible` for the bar `panel` draws: its chip when minimized.
+pub fn panel_details_visible(metrics: &ChromeMetrics, panel: &Panel, zoom: f64) -> bool {
+    details_visible(title_bar_layout(metrics, panel).bar.size.height, zoom)
 }
 
 /// Screen font sizes of canvas text snap to multiples of this, in points (one device pixel
@@ -561,8 +567,8 @@ mod tests {
             bar_height: 16.0,
             ..ChromeMetrics::default()
         };
-        assert!(!details_visible(&short, 0.7));
-        assert!(details_visible(&ChromeMetrics::default(), 0.7));
+        assert!(!details_visible(short.bar_height, 0.7));
+        assert!(details_visible(DEFAULT_CHROME_HEIGHT, 0.7));
     }
 
     fn terminal() -> PanelKind {
@@ -751,12 +757,27 @@ mod tests {
 
     #[test]
     fn details_hide_when_the_bar_gets_small_on_screen() {
-        assert!(details_visible(&ChromeMetrics::default(), 1.0));
+        assert!(details_visible(DEFAULT_CHROME_HEIGHT, 1.0));
         assert!(details_visible(
-            &ChromeMetrics::default(),
+            DEFAULT_CHROME_HEIGHT,
             MIN_DETAIL_PX / DEFAULT_CHROME_HEIGHT
         ));
-        assert!(!details_visible(&ChromeMetrics::default(), 0.4));
+        assert!(!details_visible(DEFAULT_CHROME_HEIGHT, 0.4));
+    }
+
+    #[test]
+    fn a_minimized_chip_keeps_its_details_under_a_short_bar() {
+        let short = ChromeMetrics {
+            bar_height: 16.0,
+            ..ChromeMetrics::default()
+        };
+        let (mut scene, id) = scene_with_panel();
+        scene.chrome = short;
+        scene.get_mut(id).unwrap().minimized = true;
+        // The chip is 14 on screen at zoom 0.5; a 16 bar would be 8 and hide.
+        assert!(panel_details_visible(&short, scene.get(id).unwrap(), 0.5));
+        scene.get_mut(id).unwrap().minimized = false;
+        assert!(!panel_details_visible(&short, scene.get(id).unwrap(), 0.5));
     }
 
     #[test]

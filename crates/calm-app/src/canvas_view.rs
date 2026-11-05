@@ -8,7 +8,7 @@ use calm_core::camera::{Camera, FIT_MARGIN};
 use calm_core::chrome::{
     BUILTIN_ICON_PREFIX, CORNER_RADIUS, ChromeButton, ChromeOverrides, ChromePalette, ChromeState,
     PanelIcon, button_dot, button_strokes, chrome_colors, details_visible, divider_color,
-    hover_target, icon_strokes, icon_tint, lay_overrides, title_bar_layout,
+    hover_target, icon_strokes, icon_tint, lay_overrides, panel_details_visible, title_bar_layout,
 };
 use calm_core::frame_stats::FrameStats;
 use calm_core::geometry::{Point, Rect, Size};
@@ -845,8 +845,10 @@ impl CanvasView {
         self.confirm_title = calm_core::keymap::confirm_prompt(&self.settings.settings.keybindings);
         self.input.arrow_pan_step = self.settings.settings.canvas.arrow_pan_step;
         self.input.arrow_move_step = self.settings.settings.canvas.arrow_move_step;
-        // Live: each panel keeps its outer rect, so its content takes up the difference.
-        self.scene.chrome = ChromeMetrics::from_settings(&self.settings.settings.panels);
+        // Live: each panel keeps its outer rect, so its content takes up the difference. A
+        // panel too short for the bar grows, and pinned panels stay reachable. Callers redraw.
+        let metrics = ChromeMetrics::from_settings(&self.settings.settings.panels);
+        self.scene.set_chrome(metrics, self.viewport.size);
     }
 
     pub fn set_show_stats(&mut self, show: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -3449,7 +3451,7 @@ impl PaintSnapshot {
             // this strip covers no live native rect.
             let strip_screen = camera.world_rect_to_screen(strip);
             window.paint_quad(fill(to_bounds(strip_screen, origin), rgba(colors.bar)));
-            if details_visible(&self.scene.chrome, zoom) {
+            if details_visible(strip.size.height, zoom) {
                 let padding = 8.0 * zoom;
                 let line = Rect::new(
                     strip_screen.origin.x + padding,
@@ -3465,7 +3467,7 @@ impl PaintSnapshot {
                 paint_text(&self.confirm_title, line, look, zoom, origin, window, cx);
             }
         }
-        if !bar_shown || !details_visible(&self.scene.chrome, zoom) {
+        if !bar_shown || !panel_details_visible(&self.scene.chrome, panel, zoom) {
             return;
         }
         let kind_color = match PanelIcon::for_kind(&panel.kind) {

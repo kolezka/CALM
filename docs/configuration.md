@@ -50,7 +50,9 @@ mid-save leaves the old file whole.
 - `title_bar_height` (default `28`, range `16` to `64`, world units): the height of every
   panel's title bar. The buttons sit centered in it; in a bar shorter than 20 they shrink
   to the bar. A change applies at once. Each panel keeps its outer rect, so its content
-  grows or shrinks by the difference. A borderless panel has no bar and is not affected.
+  grows or shrinks by the difference. A panel too short for a taller bar grows downward to
+  keep 16 of content. A borderless panel has no bar, is not affected, and may be as short
+  as 16 at any bar height.
   The minimized chip keeps its own height of 28.
 - `title_font_size` (default `12`, range `6` to `32`, points at zoom 1): the size of panel
   titles, the close prompt and the label on a preview with no snapshot yet. Text that does
