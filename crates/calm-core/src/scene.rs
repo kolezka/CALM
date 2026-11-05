@@ -711,7 +711,8 @@ impl Scene {
         let min_height = metrics.bar_height + MIN_CONTENT_HEIGHT;
         let mut grown = false;
         for panel in self.panels.iter_mut() {
-            if panel.minimized || panel.overrides.borderless == Some(true) {
+            // A minimized panel grows too: its rect is what it restores to.
+            if panel.overrides.borderless == Some(true) {
                 continue;
             }
             if panel.rect.size.height < min_height {
@@ -724,6 +725,30 @@ impl Scene {
         }
         let clamped = viewport.width > 0.0 && viewport.height > 0.0 && self.clamp_pinned(viewport);
         grown || clamped
+    }
+
+    /// Minimizes or restores `id`. A restored panel with a bar keeps `MIN_CONTENT_HEIGHT`
+    /// of content, and pinned panels are clamped into `viewport` (skipped while it has no
+    /// area). Returns false for an unknown id or no change.
+    pub fn set_minimized(&mut self, id: PanelId, minimized: bool, viewport: Size) -> bool {
+        let min_height = self.chrome.bar_height + MIN_CONTENT_HEIGHT;
+        let Some(panel) = self.get_mut(id) else {
+            return false;
+        };
+        if panel.minimized == minimized {
+            return false;
+        }
+        panel.minimized = minimized;
+        if !minimized
+            && panel.overrides.borderless != Some(true)
+            && panel.rect.size.height < min_height
+        {
+            panel.rect.size.height = min_height;
+        }
+        if !minimized && viewport.width > 0.0 && viewport.height > 0.0 {
+            self.clamp_pinned(viewport);
+        }
+        true
     }
 
     /// Moves each pinned panel so its title strip (its chip when minimized, a top band
@@ -1996,6 +2021,66 @@ mod tests {
         scene.set_chrome(short, Size::new(0.0, 0.0));
         assert!(!scene.set_chrome(tall, Size::new(0.0, 0.0)));
         assert_eq!(scene.get(id).unwrap().rect.origin.y, fits);
+    }
+
+    #[test]
+    fn a_minimized_panel_restores_with_room_for_a_taller_bar() {
+        let bar = |bar_height| ChromeMetrics {
+            bar_height,
+            ..ChromeMetrics::default()
+        };
+        let no_viewport = Size::new(0.0, 0.0);
+        let mut scene = Scene::default();
+        scene.set_chrome(bar(64.0), no_viewport);
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 300.0, 80.0));
+        // Borderless on at bar 64, off at bar 16: the panel is left 32 high.
+        let metrics = scene.chrome;
+        set_borderless(&metrics, scene.get_mut(id).unwrap(), true);
+        scene.set_chrome(bar(16.0), no_viewport);
+        let metrics = scene.chrome;
+        set_borderless(&metrics, scene.get_mut(id).unwrap(), false);
+        assert_eq!(scene.get(id).unwrap().rect.size.height, 32.0);
+        assert!(scene.set_minimized(id, true, no_viewport));
+        assert!(scene.set_chrome(bar(64.0), no_viewport));
+        // The stored rect grows while minimized; the chip keeps its size.
+        assert_eq!(scene.get(id).unwrap().rect.size.height, 64.0 + 16.0);
+        assert_eq!(chip_rect(scene.get(id).unwrap()).size, MINIMIZED_CHIP);
+        assert!(scene.set_minimized(id, false, no_viewport));
+        assert!(!scene.get(id).unwrap().minimized);
+        assert!(scene.get(id).unwrap().rect.size.height >= 64.0 + MIN_CONTENT_HEIGHT);
+        assert_bar_fits(&scene, id, "restored at bar 64");
+        assert!(!scene.set_minimized(id, false, no_viewport));
+    }
+
+    #[test]
+    fn restoring_a_pinned_panel_keeps_its_taller_bar_inside_the_viewport() {
+        let viewport = Size::new(800.0, 600.0);
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 150.0));
+        scene.set_pinned(id, true);
+        assert!(scene.set_minimized(id, true, viewport));
+        // Zoom 1: the 28 high chip ends exactly at the viewport bottom.
+        let fits = 600.0 - MINIMIZED_CHIP.height;
+        scene.get_mut(id).unwrap().rect.origin = Point::new(100.0, fits);
+        assert!(!scene.clamp_pinned(viewport));
+        let tall = ChromeMetrics {
+            bar_height: 64.0,
+            ..ChromeMetrics::default()
+        };
+        scene.set_chrome(tall, viewport);
+        assert_eq!(scene.get(id).unwrap().rect.origin.y, fits);
+        let before = scene.sync_revision();
+        assert!(scene.set_minimized(id, false, viewport));
+        assert_ne!(scene.sync_revision(), before);
+        let panel = scene.get(id).unwrap();
+        let bar = scene
+            .camera_of(panel)
+            .world_rect_to_screen(crate::chrome::title_bar_layout(&scene.chrome, panel).bar);
+        assert!(
+            bar.bottom() <= viewport.height,
+            "bar {bar:?} past viewport {viewport:?}"
+        );
+        assert_eq!(bar.origin.y, 600.0 - 64.0);
     }
 
     #[test]

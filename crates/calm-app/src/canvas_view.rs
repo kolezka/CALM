@@ -926,8 +926,8 @@ impl CanvasView {
                     self.focus_handle.focus(window, cx);
                 }
                 Effect::ToggleMinimize(id) => {
-                    if let Some(panel) = self.scene.get_mut(id) {
-                        panel.minimized = !panel.minimized;
+                    if let Some(minimized) = self.scene.get(id).map(|panel| panel.minimized) {
+                        self.scene.set_minimized(id, !minimized, self.viewport.size);
                     }
                 }
                 Effect::Redraw => {}
