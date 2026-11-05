@@ -248,12 +248,17 @@ impl InputHandler {
         scene: &mut Scene,
     ) -> Vec<Effect> {
         // One pointer gesture at a time: another button's press leaves it alone.
-        if self.gesture_button.is_some() && self.state != Interaction::Idle {
+        if self.gesture_button.is_some() && self.gesture_active() {
             return Vec::new();
         }
         let effects = self.press(screen, button, mods, scene);
-        self.gesture_button = (self.state != Interaction::Idle).then_some(button);
+        self.gesture_button = self.gesture_active().then_some(button);
         effects
+    }
+
+    /// A pending content press counts: it becomes a drag on the next move.
+    fn gesture_active(&self) -> bool {
+        self.state != Interaction::Idle || self.content_press.is_some()
     }
 
     fn press(
@@ -646,6 +651,11 @@ impl InputHandler {
     /// Escape answers a pending close first. Otherwise it drops the draw tool and the panel
     /// focus, but only while no native view holds the keyboard: those get Escape themselves.
     pub fn escape(&mut self, native_keyboard: bool) -> Vec<Effect> {
+        // A pan whose release was lost would ignore every later press.
+        if matches!(self.state, Interaction::Panning { .. }) {
+            self.state = Interaction::Idle;
+            self.gesture_button = None;
+        }
         if self.confirming.is_some() {
             return self.confirm_key(ConfirmKey::Escape).into_iter().collect();
         }
@@ -1414,6 +1424,29 @@ mod tests {
             Rect::new(40.0, 20.0, 400.0, 300.0)
         );
         assert_eq!(scene.camera.offset, Point::new(0.0, 0.0));
+    }
+
+    #[test]
+    fn escape_cancels_a_pan_whose_release_was_lost() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mut handler = InputHandler::default();
+        handler.mouse_down(
+            Point::new(500.0, 500.0),
+            Button::Middle,
+            no_mods(),
+            &mut scene,
+        );
+        assert!(matches!(handler.state, Interaction::Panning { .. }));
+        handler.escape(false);
+        assert_eq!(handler.state, Interaction::Idle);
+        assert_eq!(handler.gesture_button, None);
+        handler.mouse_down(Point::new(100.0, 10.0), Button::Left, no_mods(), &mut scene);
+        assert!(
+            matches!(handler.state, Interaction::Dragging { id: d, .. } if d == id),
+            "a left press after Escape: {:?}",
+            handler.state
+        );
     }
 
     #[test]
@@ -2290,6 +2323,35 @@ mod tests {
             );
             assert_eq!(handler.state, Interaction::Idle);
         }
+    }
+
+    #[test]
+    fn a_pending_content_press_owns_its_gesture() {
+        let (mut scene, ids) = gpui_painted_panels();
+        let id = ids[0];
+        let press = center(&scene, id);
+        let mut handler = unsnapped();
+        handler.mouse_down(press, Button::Left, cmd(), &mut scene);
+        assert!(handler.content_press.is_some());
+        let down = handler.mouse_down(press, Button::Middle, no_mods(), &mut scene);
+        assert!(down.is_empty(), "{down:?}");
+        assert!(
+            handler.content_press.is_some(),
+            "a middle press dropped the content press: {:?}",
+            handler.state
+        );
+        let to = Point::new(press.x + 80.0, press.y + 40.0);
+        handler.mouse_move(to, cmd(), &mut scene);
+        assert!(matches!(handler.state, Interaction::Dragging { id: d, .. } if d == id));
+        let up = handler.mouse_up_for(Button::Middle, to, cmd(), &mut scene);
+        assert!(up.is_empty(), "{up:?}");
+        assert!(
+            matches!(handler.state, Interaction::Dragging { .. }),
+            "a middle release ended the content move: {:?}",
+            handler.state
+        );
+        handler.mouse_up_for(Button::Left, to, cmd(), &mut scene);
+        assert_eq!(handler.state, Interaction::Idle);
     }
 
     #[test]

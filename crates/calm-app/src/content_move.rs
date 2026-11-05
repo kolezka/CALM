@@ -157,12 +157,16 @@ impl ContentMove {
             ContentEvent::Up(screen) if self.resizing || self.panning => {
                 self.resizing = false;
                 self.panning = false;
-                (ContentDecision::Moving, input.mouse_up(screen, mods, scene))
+                (
+                    ContentDecision::Moving,
+                    input.mouse_up_for(Button::Left, screen, mods, scene),
+                )
             }
             ContentEvent::Up(screen) => match self.gesture.take() {
-                Some((_, gesture)) if gesture.release() == GestureStep::Moving => {
-                    (ContentDecision::Moving, input.mouse_up(screen, mods, scene))
-                }
+                Some((_, gesture)) if gesture.release() == GestureStep::Moving => (
+                    ContentDecision::Moving,
+                    input.mouse_up_for(Button::Left, screen, mods, scene),
+                ),
                 _ => (ContentDecision::Click, Vec::new()),
             },
             // The monitor ignores the answer to a right press.
@@ -188,9 +192,11 @@ impl ContentMove {
                 ContentDecision::Moving,
                 input.mouse_move(screen, mods, scene),
             ),
-            ContentEvent::MiddleUp(screen) => {
-                (ContentDecision::Moving, input.mouse_up(screen, mods, scene))
-            }
+            // Only the owner's release ends a gesture: a canvas draw outlives a middle click.
+            ContentEvent::MiddleUp(screen) => (
+                ContentDecision::Moving,
+                input.mouse_up_for(Button::Middle, screen, mods, scene),
+            ),
             ContentEvent::Scroll {
                 point,
                 dx,
@@ -824,6 +830,48 @@ mod tests {
             scene.camera.zoom
         );
         assert_ne!(scene.camera.offset, zoomed);
+    }
+
+    #[test]
+    fn a_middle_click_over_content_leaves_a_canvas_draw_alone() {
+        use calm_core::interaction::{Interaction, Tool};
+        let (mut scene, id) = scene_with_terminal();
+        let mut input = InputHandler {
+            tool: Tool::DrawTerminal,
+            ..InputHandler::default()
+        };
+        let none = Modifiers::default();
+        let start = Point::new(700.0, 600.0);
+        let end = Point::new(900.0, 800.0);
+        input.mouse_down(start, Button::Left, none, &mut scene);
+        input.mouse_move(end, CMD_SHIFT, &mut scene);
+        assert!(matches!(input.state, Interaction::Drawing { .. }));
+        let mut gesture = ContentMove::default();
+        let at = content_point(&scene, id);
+        for event in [
+            ContentEvent::MiddleDown(at),
+            ContentEvent::MiddleDragged(at),
+            ContentEvent::MiddleUp(at),
+        ] {
+            let (_, effects) = gesture.event(event, none, &mut input, &mut scene);
+            assert!(
+                !effects
+                    .iter()
+                    .any(|effect| matches!(effect, Effect::CreatePanel { .. })),
+                "{event:?} committed the draw: {effects:?}"
+            );
+        }
+        assert!(
+            matches!(input.state, Interaction::Drawing { .. }),
+            "{:?}",
+            input.state
+        );
+        let up = input.mouse_up_for(Button::Left, end, CMD_SHIFT, &mut scene);
+        assert!(
+            up.iter()
+                .any(|effect| matches!(effect, Effect::CreatePanel { .. })),
+            "{up:?}"
+        );
     }
 
     #[test]
