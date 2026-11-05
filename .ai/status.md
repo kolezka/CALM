@@ -7,6 +7,12 @@ describes `main`, not branches. Facts are verified against the code unless marke
 
 ## Done and merged to `main`
 
+Not merged yet (branch `feat/terminal-font-keys`): `terminal.zoom_keys` (`font` default,
+`canvas`). With `font`, the keys bound to `canvas.zoom_in`, `canvas.zoom_out` and
+`canvas.zoom_reset` get a `NoAction` in the `Terminal` key context, so a focused terminal
+passes them to Ghostty, whose built-in bindings change the font size. Settings > Terminal
+shows it as "Zoom keys in a terminal". Key delivery to Ghostty is not verified by an agent.
+
 Foundation (before the PR series):
 
 - Workspace, toolchain, Makefile (`gmake`), CI on the self-hosted Arch runner, Release

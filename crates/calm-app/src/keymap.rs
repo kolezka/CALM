@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use calm_core::keymap::{Scope, bound_keys, parse_key, passes_to_terminal};
 use calm_core::settings::Settings;
+use calm_core::terminal_profile::ZoomKeys;
 use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, NoAction};
 
 use crate::canvas_view::{
@@ -75,10 +76,15 @@ fn load(key: &str, action: Box<dyn Action>, context: Option<&str>) -> Option<Key
     KeyBinding::load(key, action, predicate, false, None, &DummyKeyboardMapper).ok()
 }
 
+/// Actions whose keys a focused terminal keeps when `terminal.zoom_keys` is `font`:
+/// Ghostty's built-in bindings on them change the font size.
+pub const ZOOM_ACTIONS: [&str; 3] = ["canvas.zoom_in", "canvas.zoom_out", "canvas.zoom_reset"];
+
 /// Every binding the settings ask for, then a `NoAction` per typing key so a focused
-/// terminal keeps it.
+/// terminal keeps it, and per zoom key when the zoom keys change the terminal font.
 pub fn key_bindings(settings: &Settings) -> Vec<KeyBinding> {
     let bound = bound_keys(&settings.keybindings);
+    let zoom_keys_to_terminal = settings.terminal.zoom_keys == ZoomKeys::Font;
     let mut bindings = Vec::new();
     for (spec, key) in &bound {
         let context = match spec.scope {
@@ -92,7 +98,9 @@ pub fn key_bindings(settings: &Settings) -> Vec<KeyBinding> {
         }
     }
     for (spec, key) in &bound {
-        if parse_key(key).is_ok_and(|k| passes_to_terminal(&k)) {
+        let frees_in_terminal = parse_key(key).is_ok_and(|k| passes_to_terminal(&k))
+            || (zoom_keys_to_terminal && ZOOM_ACTIONS.contains(&spec.id));
+        if frees_in_terminal {
             match load(key, Box::new(NoAction), Some(terminal::KEY_CONTEXT)) {
                 Some(binding) => bindings.push(binding),
                 None => eprintln!(
@@ -205,9 +213,48 @@ mod tests {
         assert!(!bindings.iter().any(|b| matches(b, "b")));
     }
 
+    /// With the default `zoom_keys` the three zoom keys stay free in a terminal so Ghostty's
+    /// font size bindings get them; `canvas` takes them back for the canvas.
+    #[test]
+    fn zoom_keys_are_freed_in_terminals_only_when_they_change_the_font() {
+        let noaction_keys = |settings: &Settings| -> BTreeSet<String> {
+            key_bindings(settings)
+                .iter()
+                .filter(|b| b.action().partial_eq(&NoAction))
+                .inspect(|b| assert_eq!(ctx(b).as_deref(), Some(terminal::KEY_CONTEXT)))
+                .filter_map(|b| {
+                    ["cmd-=", "cmd--", "cmd-0", "cmd-k"]
+                        .into_iter()
+                        .find(|k| matches(b, k))
+                        .map(str::to_string)
+                })
+                .collect()
+        };
+        let mut settings = Settings::default();
+        assert_eq!(settings.terminal.zoom_keys, ZoomKeys::Font);
+        let want: BTreeSet<String> = ["cmd-=", "cmd--", "cmd-0"].map(String::from).into();
+        assert_eq!(noaction_keys(&settings), want);
+        // The canvas binding itself stays, so the keys still zoom outside a terminal.
+        assert!(
+            key_bindings(&settings)
+                .iter()
+                .any(|b| matches(b, "cmd-=") && b.action().partial_eq(&ZoomIn))
+        );
+        // A rebound zoom key follows.
+        settings
+            .keybindings
+            .insert("canvas.zoom_in".into(), Some("cmd-k".into()));
+        let want: BTreeSet<String> = ["cmd-k", "cmd--", "cmd-0"].map(String::from).into();
+        assert_eq!(noaction_keys(&settings), want);
+        settings.terminal.zoom_keys = ZoomKeys::Canvas;
+        assert!(noaction_keys(&settings).is_empty());
+    }
+
     #[test]
     fn terminal_noaction_exactly_for_keys_without_cmd_or_ctrl() {
         let mut settings = Settings::default();
+        // The zoom keys have their own test above.
+        settings.terminal.zoom_keys = ZoomKeys::Canvas;
         settings
             .keybindings
             .insert("canvas.zoom_in".into(), Some("f5".into()));
