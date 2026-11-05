@@ -705,8 +705,13 @@ impl Scene {
 
     /// Installs new title bar metrics. Each panel with a bar grows downward to keep
     /// `MIN_CONTENT_HEIGHT` of content, then pinned panels are clamped into `viewport`
-    /// (skipped while it has no area). Returns true if any panel changed.
+    /// (skipped while it has no area). Repeating the same metrics changes nothing.
+    /// `CanvasView::set_viewport` clamps pinned panels on viewport changes. Returns true if any
+    /// panel changed.
     pub fn set_chrome(&mut self, metrics: ChromeMetrics, viewport: Size) -> bool {
+        if metrics == self.chrome {
+            return false;
+        }
         self.chrome = metrics;
         let min_height = metrics.bar_height + MIN_CONTENT_HEIGHT;
         let mut grown = false;
@@ -1997,6 +2002,28 @@ mod tests {
         let settled = scene.sync_revision();
         assert!(!scene.clamp_pinned(viewport));
         assert_eq!(scene.sync_revision(), settled);
+    }
+
+    #[test]
+    fn unchanged_chrome_metrics_leave_a_pinned_panel_unchanged() {
+        let viewport = Size::new(800.0, 600.0);
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 200.0, 150.0));
+        scene.set_pinned(id, true);
+        scene.get_mut(id).unwrap().rect.origin.y = viewport.height - DEFAULT_CHROME_HEIGHT + 4.0;
+        let rect = scene.get(id).unwrap().rect;
+        let revision = scene.sync_revision();
+        assert!(scene.get(id).unwrap().rect.origin.y + scene.chrome.bar_height > viewport.height);
+
+        assert!(!scene.set_chrome(scene.chrome, viewport));
+        assert_eq!(scene.get(id).unwrap().rect, rect);
+        assert_eq!(scene.sync_revision(), revision);
+
+        let tall = ChromeMetrics {
+            bar_height: 64.0,
+            ..scene.chrome
+        };
+        assert!(scene.set_chrome(tall, viewport));
     }
 
     #[test]
