@@ -440,6 +440,8 @@ Open questions: `.ai/open-questions.md`.
   while the canvas has the keyboard, and with `canvas.scroll_over_panels` `pan` takes
   scrolls (Cmd+scroll zooms). Tests cover the tracker and app policy; real gestures are
   a manual GUI pass.
+  A scroll gesture keeps the target it started on, momentum included (branch
+  `feat/scroll-gesture-owner`, not merged; trackpad behavior unverified, needs a GUI pass).
 
 - Title bar settings (branch `feat/title-bar-settings`, not merged): `panels.title_bar_height` (16 to
   64, default 28) and `panels.title_font_size` (6 to 32, default 12), in Settings > Panels,

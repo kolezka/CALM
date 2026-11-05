@@ -1,10 +1,11 @@
 //! Move-modifier gestures on a native panel's content: a drag moves the panel, a click
 //! still reaches the page or terminal, a right click opens the panel menu. Middle drag,
 //! Space+drag (while the canvas has the keyboard) and, with `canvas.scroll_over_panels`
-//! `pan`, scrolling pan the canvas over a panel too. This is the app policy behind
+//! `pan`, scrolling pan the canvas over a panel too. A scroll gesture that starts on empty
+//! canvas pans to its end even over panels. This is the app policy behind
 //! `calm_native::ContentGestureMonitor`.
 
-use calm_core::geometry::Point;
+use calm_core::geometry::{Point, Rect};
 use calm_core::gesture::{ContentGesture, GestureStep, content_gesture_target};
 use calm_core::interaction::{Button, Effect, InputHandler, Modifiers};
 use calm_core::scene::{PanelId, Scene};
@@ -52,9 +53,15 @@ pub fn space_pans(input: &InputHandler, canvas_has_keyboard: bool) -> bool {
     input.space_held && canvas_has_keyboard
 }
 
-/// The monitor takes scrolls over a panel only when they pan the canvas.
-pub fn wants_scroll(settings: &Settings) -> bool {
-    settings.canvas.scroll_over_panels == ScrollOverPanels::Pan
+/// Whether a scroll gesture starting at `screen`, or a wheel scroll there, pans the
+/// canvas. `over_native` says a native view is under the pointer.
+pub fn wants_scroll(settings: &Settings, scene: &Scene, screen: Point, over_native: bool) -> bool {
+    match settings.canvas.scroll_over_panels {
+        ScrollOverPanels::Pan => true,
+        // Only over empty canvas. Painted previews and placeholders are panels too, and a
+        // native view outside any panel keeps its own scrolls.
+        ScrollOverPanels::Terminal => !over_native && scene.hit_test_screen(screen).is_none(),
+    }
 }
 
 /// Scroll deltas in screen points, as `CanvasView::scroll` reads GPUI's: line deltas
@@ -276,11 +283,27 @@ impl CanvasView {
                     })
                     .unwrap_or(false)
             },
-            // Asked per scroll, so a settings change applies at once.
-            move |_| {
+            // Asked per gesture or wheel scroll, so a settings change applies at once.
+            move |point, over_native| {
                 let mut cx = scroll_cx.clone();
                 scroll_view
-                    .update_in(&mut cx, |view, _, _| wants_scroll(&view.settings.settings))
+                    .update_in(&mut cx, |view, _, _| {
+                        let screen = to_canvas(point, view.viewport.origin);
+                        // Outside the canvas the scroll is not the canvas's to take.
+                        let canvas = Rect::new(
+                            0.0,
+                            0.0,
+                            view.viewport.size.width,
+                            view.viewport.size.height,
+                        );
+                        canvas.contains(screen)
+                            && wants_scroll(
+                                &view.settings.settings,
+                                &view.scene,
+                                screen,
+                                over_native,
+                            )
+                    })
                     .unwrap_or(false)
             },
             move |event| {
@@ -356,7 +379,6 @@ impl CanvasView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calm_core::geometry::Rect;
     use calm_core::interaction::{Interaction, MoveModifier};
     use calm_core::scene::{PanelKind, content_rect};
 
@@ -698,11 +720,35 @@ mod tests {
     }
 
     #[test]
-    fn scroll_is_wanted_only_when_set_to_pan() {
+    fn a_scroll_is_wanted_over_empty_canvas_and_over_panels_only_when_set_to_pan() {
+        let (scene, id) = scene_with_terminal();
+        let content = content_point(&scene, id);
+        let panel = scene.get(id).unwrap().rect;
+        let title_bar = scene.camera.world_to_screen(Point::new(
+            panel.origin.x + panel.size.width / 2.0,
+            panel.origin.y + 2.0,
+        ));
+        assert_eq!(scene.hit_test_screen(title_bar), Some(id));
+        assert!(
+            !content_rect(&scene.chrome, scene.get(id).unwrap())
+                .contains(scene.camera.screen_to_world(title_bar))
+        );
+        let empty = Point::new(20.0, 20.0);
+        assert_eq!(scene.hit_test_screen(empty), None);
+
         let mut settings = Settings::default();
-        assert!(!wants_scroll(&settings));
+        assert_eq!(
+            settings.canvas.scroll_over_panels,
+            ScrollOverPanels::Terminal
+        );
+        assert!(wants_scroll(&settings, &scene, empty, false));
+        assert!(!wants_scroll(&settings, &scene, content, true));
+        assert!(!wants_scroll(&settings, &scene, title_bar, false));
+
         settings.canvas.scroll_over_panels = ScrollOverPanels::Pan;
-        assert!(wants_scroll(&settings));
+        assert!(wants_scroll(&settings, &scene, empty, false));
+        assert!(wants_scroll(&settings, &scene, content, true));
+        assert!(wants_scroll(&settings, &scene, title_bar, false));
     }
 
     #[test]

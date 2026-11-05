@@ -1,7 +1,8 @@
 //! Watches mouse events over native panels (Ghostty, WKWebView) so the app can turn a
 //! modifier+drag on panel content into a panel move, while a plain click still reaches the
 //! native view. A middle drag over a panel always goes to the app (it pans the canvas), and
-//! so does a scroll when `wants_scroll` says so. The monitor holds no policy: `wants`
+//! so does a scroll when `wants_scroll` says so. A trackpad scroll gesture keeps the owner
+//! it got at its first event, momentum included. The monitor holds no policy: `wants`
 //! decides which presses it takes and `on_event` decides what each held gesture becomes.
 
 use std::cell::RefCell;
@@ -13,7 +14,9 @@ use calm_core::geometry::Point;
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, Message};
-use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSView, NSWindow};
+use objc2_app_kit::{
+    NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase, NSEventType, NSView, NSWindow,
+};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
 use crate::NativeError;
@@ -68,7 +71,7 @@ pub enum ContentDecision {
 }
 
 type Wants = Box<dyn Fn(ContentButton, Point, GestureMods) -> bool>;
-type WantsScroll = Box<dyn Fn(Point) -> bool>;
+type WantsScroll = Box<dyn Fn(Point, bool) -> bool>;
 type OnEvent = Box<dyn FnMut(ContentEvent) -> ContentDecision>;
 
 struct Shared {
@@ -88,13 +91,14 @@ pub struct ContentGestureMonitor {
 
 impl ContentGestureMonitor {
     /// Watches mouse and scroll events over `window`'s native panels. `wants` decides at
-    /// a left or right press whether the gesture is taken, `wants_scroll` decides per
-    /// scroll event; a middle press is always taken. `on_event` gets every taken event and
-    /// answers what the gesture is so far.
+    /// a left or right press whether the gesture is taken; a middle press is always taken.
+    /// `wants_scroll(point, over_native)` decides at the first event of a scroll gesture,
+    /// or per event for a wheel without phases, anywhere in the window. `on_event` gets
+    /// every taken event and answers what the gesture is so far.
     pub fn install(
         window: &NSWindow,
         wants: impl Fn(ContentButton, Point, GestureMods) -> bool + 'static,
-        wants_scroll: impl Fn(Point) -> bool + 'static,
+        wants_scroll: impl Fn(Point, bool) -> bool + 'static,
         on_event: impl FnMut(ContentEvent) -> ContentDecision + 'static,
     ) -> Result<ContentGestureMonitor, NativeError> {
         MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
@@ -135,7 +139,7 @@ impl ContentGestureMonitor {
     pub fn install_for(
         window: &impl HasWindowHandle,
         wants: impl Fn(ContentButton, Point, GestureMods) -> bool + 'static,
-        wants_scroll: impl Fn(Point) -> bool + 'static,
+        wants_scroll: impl Fn(Point, bool) -> bool + 'static,
         on_event: impl FnMut(ContentEvent) -> ContentDecision + 'static,
     ) -> Result<ContentGestureMonitor, NativeError> {
         let ns_window = ns_window(window)?;
@@ -195,12 +199,18 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
             Input::MiddleDragged
         }
         NSEventType::OtherMouseUp if event.buttonNumber() == MIDDLE_BUTTON => Input::MiddleUp,
-        NSEventType::ScrollWheel => Input::Scroll,
+        NSEventType::ScrollWheel => {
+            Input::Scroll(scroll_stage(event.phase(), event.momentumPhase()))
+        }
         _ => return false,
     };
     let Some(window) = shared.window.load() else {
         return false;
     };
+    // The monitor sees every window of the app; a scroll in another one is not ours.
+    if matches!(input, Input::Scroll(_)) && !is_this_window(&window, event) {
+        return false;
+    }
     // A nested event loop inside `on_event` (a menu, say) must not re-enter the gesture.
     let Ok(mut tracker) = shared.tracker.try_borrow_mut() else {
         return false;
@@ -208,6 +218,11 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
     let point = window_point(&window, event);
     let disposition = tracker.input(input, event.retain(), || {
         let over_native = over_native_child(&window, event);
+        // A scroll is asked anywhere in the window: a gesture that starts on empty canvas
+        // stays with the canvas when a panel slides under the pointer.
+        if matches!(input, Input::Scroll(_)) {
+            return (shared.wants_scroll)(point, over_native);
+        }
         // `wants` is app policy: ask it only for presses over a native view.
         let wants = over_native
             && match input {
@@ -215,7 +230,6 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
                 Input::RightDown => {
                     (shared.wants)(ContentButton::Right, point, gesture_mods(event))
                 }
-                Input::Scroll => (shared.wants_scroll)(point),
                 _ => true,
             };
         !decide_passthrough(over_native, wants)
@@ -232,7 +246,7 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
         Input::MiddleDown => ContentEvent::MiddleDown(point),
         Input::MiddleDragged => ContentEvent::MiddleDragged(point),
         Input::MiddleUp => ContentEvent::MiddleUp(point),
-        Input::Scroll => ContentEvent::Scroll {
+        Input::Scroll(_) => ContentEvent::Scroll {
             point,
             dx: event.scrollingDeltaX(),
             dy: event.scrollingDeltaY(),
@@ -268,10 +282,14 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
 /// `buttonNumber` of the middle mouse button.
 const MIDDLE_BUTTON: isize = 2;
 
+fn is_this_window(window: &NSWindow, event: &NSEvent) -> bool {
+    let mtm = MainThreadMarker::from(window);
+    event.window(mtm).as_deref() == Some(window)
+}
+
 /// The event's window is this window and the view under it is part of a native panel.
 fn over_native_child(window: &NSWindow, event: &NSEvent) -> bool {
-    let mtm = MainThreadMarker::from(window);
-    if event.window(mtm).as_deref() != Some(window) {
+    if !is_this_window(window, event) {
         return false;
     }
     let Some(content) = window.contentView() else {
@@ -331,7 +349,44 @@ pub(crate) enum Input {
     MiddleDown,
     MiddleDragged,
     MiddleUp,
-    Scroll,
+    Scroll(ScrollStage),
+}
+
+/// Where a scroll event sits in a trackpad gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScrollStage {
+    /// No gesture phases: a mouse wheel.
+    Wheel,
+    /// The first event of a gesture.
+    Began,
+    /// A later event, momentum included.
+    Continued,
+    /// The last event of a gesture. It still carries a delta.
+    Ended,
+}
+
+/// The stage of a scroll from its `phase` and `momentumPhase`. Both are empty for a mouse
+/// wheel. Fingers lifted with momentum to follow do not end the gesture.
+pub(crate) fn scroll_stage(phase: NSEventPhase, momentum: NSEventPhase) -> ScrollStage {
+    let done = NSEventPhase::Ended | NSEventPhase::Cancelled;
+    if phase.is_empty() && momentum.is_empty() {
+        ScrollStage::Wheel
+    } else if phase.intersects(NSEventPhase::Began | NSEventPhase::MayBegin) {
+        ScrollStage::Began
+    } else if momentum.intersects(done) || (phase.intersects(done) && momentum.is_empty()) {
+        ScrollStage::Ended
+    } else {
+        ScrollStage::Continued
+    }
+}
+
+/// Who a scroll gesture belongs to, fixed at its first event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScrollOwner {
+    /// Reported to the app, which pans or zooms the canvas.
+    Canvas,
+    /// Left to AppKit, which sends it to the view under the pointer.
+    Panel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,6 +417,8 @@ pub(crate) struct Tracker<E> {
     /// A middle press over a native view is ours until its up. Kept apart from `phase` so
     /// a middle drag leaves a held left press alone.
     middle: bool,
+    /// The owner of the scroll gesture in progress. Kept apart from the buttons.
+    scroll_owner: Option<ScrollOwner>,
     /// The swallowed left press, until the gesture is a move or a click.
     held: Option<E>,
     /// The event being reported, until `decide`.
@@ -374,6 +431,7 @@ impl<E> Default for Tracker<E> {
             phase: Phase::Idle,
             swallow_right_up: false,
             middle: false,
+            scroll_owner: None,
             held: None,
             current: None,
         }
@@ -381,8 +439,8 @@ impl<E> Default for Tracker<E> {
 }
 
 impl<E: Clone> Tracker<E> {
-    /// Classifies one event. `candidate` (over a native view and wanted) is asked only for
-    /// presses that could start a gesture.
+    /// Classifies one event. `candidate` (over a native view and wanted, or for a scroll
+    /// just wanted) is asked only for events that could start a gesture.
     pub(crate) fn input(
         &mut self,
         input: Input,
@@ -427,8 +485,26 @@ impl<E: Clone> Tracker<E> {
                 self.middle = false;
                 Disposition::Report
             }
-            (_, Input::Scroll) => {
-                if !candidate() {
+            (_, Input::Scroll(stage)) => {
+                let owner = match stage {
+                    ScrollStage::Continued => self.scroll_owner,
+                    ScrollStage::Ended => self.scroll_owner.take(),
+                    ScrollStage::Began | ScrollStage::Wheel => None,
+                };
+                // No owner: a wheel, or a gesture that began before the monitor did or
+                // after a cancel. A new gesture always picks its owner afresh.
+                let ours = match owner {
+                    Some(owner) => owner == ScrollOwner::Canvas,
+                    None => candidate(),
+                };
+                if stage == ScrollStage::Began {
+                    self.scroll_owner = Some(if ours {
+                        ScrollOwner::Canvas
+                    } else {
+                        ScrollOwner::Panel
+                    });
+                }
+                if !ours {
                     return Disposition::Pass;
                 }
                 Disposition::Report
@@ -709,21 +785,75 @@ mod tests {
     }
 
     #[test]
-    fn scroll_passes_unless_wanted_and_is_reported_when_wanted() {
+    fn a_wheel_scroll_is_asked_per_event() {
         let mut tracker = Tracker::<&str>::default();
+        let wheel = Input::Scroll(ScrollStage::Wheel);
+        assert_eq!(tracker.input(wheel, "scroll", || false), Disposition::Pass);
         assert_eq!(
-            tracker.input(Input::Scroll, "scroll", || false),
-            Disposition::Pass
-        );
-        assert_eq!(
-            tracker.input(Input::Scroll, "scroll2", || true),
+            tracker.input(wheel, "scroll2", || true),
             Disposition::Report
         );
         tracker.decide(ContentDecision::Click, &mut |_| panic!("no replay"));
         // Asked per event: wanted once does not mean wanted next time.
+        assert_eq!(tracker.input(wheel, "scroll3", || false), Disposition::Pass);
+    }
+
+    #[test]
+    fn a_canvas_scroll_gesture_stays_with_the_canvas_until_it_ends() {
+        let mut tracker = Tracker::<&str>::default();
+        let mut no_replay = |_| panic!("no replay");
         assert_eq!(
-            tracker.input(Input::Scroll, "scroll3", || false),
+            tracker.input(Input::Scroll(ScrollStage::Began), "began", || true),
+            Disposition::Report
+        );
+        tracker.decide(ContentDecision::Moving, &mut no_replay);
+        // A panel under the pointer now would say no; it is never asked.
+        for _ in 0..3 {
+            assert_eq!(
+                tracker.input(Input::Scroll(ScrollStage::Continued), "changed", || {
+                    panic!("asked mid gesture")
+                }),
+                Disposition::Report
+            );
+            tracker.decide(ContentDecision::Moving, &mut no_replay);
+        }
+        assert_eq!(
+            tracker.input(Input::Scroll(ScrollStage::Ended), "ended", || {
+                panic!("asked at the end")
+            }),
+            Disposition::Report
+        );
+        tracker.decide(ContentDecision::Moving, &mut no_replay);
+        // The gesture is over: a stray event is decided on its own, like a wheel.
+        assert_eq!(
+            tracker.input(Input::Scroll(ScrollStage::Continued), "stray", || false),
             Disposition::Pass
+        );
+    }
+
+    #[test]
+    fn a_panel_scroll_gesture_stays_with_the_panel_until_it_ends() {
+        let mut tracker = Tracker::<&str>::default();
+        assert_eq!(
+            tracker.input(Input::Scroll(ScrollStage::Began), "began", || false),
+            Disposition::Pass
+        );
+        assert_eq!(
+            tracker.input(Input::Scroll(ScrollStage::Continued), "changed", || {
+                panic!("asked mid gesture")
+            }),
+            Disposition::Pass
+        );
+        assert_eq!(
+            tracker.input(Input::Scroll(ScrollStage::Ended), "ended", || {
+                panic!("asked at the end")
+            }),
+            Disposition::Pass
+        );
+        // A new gesture asks again and may go to the canvas.
+        assert_eq!(
+            tracker.input(Input::Scroll(ScrollStage::Began), "began2", || true),
+            Disposition::Report
         );
     }
 
@@ -737,7 +867,7 @@ mod tests {
         tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
         tracker.input(Input::MiddleUp, "mup", || unreachable!());
         tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
-        tracker.input(Input::Scroll, "scroll", || true);
+        tracker.input(Input::Scroll(ScrollStage::Wheel), "scroll", || true);
         tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
         assert!(sink.is_empty(), "replayed {sink:?}");
         // The left press is still held and still becomes a click.
@@ -747,6 +877,64 @@ mod tests {
         );
         tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
         assert_eq!(sink, ["down", "up"]);
+    }
+
+    #[test]
+    fn a_canvas_scroll_gesture_leaves_a_held_left_press_alone() {
+        let mut tracker = Tracker::default();
+        let mut sink = Vec::new();
+        tracker.input(Input::LeftDown, "down", || true);
+        tracker.decide(ContentDecision::Hold, &mut |e| sink.push(e));
+        for (stage, event) in [
+            (ScrollStage::Began, "began"),
+            (ScrollStage::Continued, "changed"),
+            (ScrollStage::Ended, "ended"),
+        ] {
+            assert_eq!(
+                tracker.input(Input::Scroll(stage), event, || true),
+                Disposition::Report
+            );
+            tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
+        }
+        assert!(sink.is_empty(), "replayed {sink:?}");
+        // The left press is still held and still becomes a click.
+        assert_eq!(
+            tracker.input(Input::LeftUp, "up", || unreachable!()),
+            Disposition::Report
+        );
+        tracker.decide(ContentDecision::Click, &mut |e| sink.push(e));
+        assert_eq!(sink, ["down", "up"]);
+    }
+
+    #[test]
+    fn scroll_stages_follow_the_gesture_and_momentum_phases() {
+        let none = NSEventPhase::None;
+        let cases = [
+            (none, none, ScrollStage::Wheel),
+            (NSEventPhase::MayBegin, none, ScrollStage::Began),
+            (NSEventPhase::Began, none, ScrollStage::Began),
+            (NSEventPhase::Changed, none, ScrollStage::Continued),
+            (NSEventPhase::Stationary, none, ScrollStage::Continued),
+            (NSEventPhase::Ended, none, ScrollStage::Ended),
+            (NSEventPhase::Cancelled, none, ScrollStage::Ended),
+            (none, NSEventPhase::Began, ScrollStage::Continued),
+            (none, NSEventPhase::Changed, ScrollStage::Continued),
+            (none, NSEventPhase::Ended, ScrollStage::Ended),
+            (none, NSEventPhase::Cancelled, ScrollStage::Ended),
+            // Fingers lifted with momentum to follow: the gesture goes on.
+            (
+                NSEventPhase::Ended,
+                NSEventPhase::Began,
+                ScrollStage::Continued,
+            ),
+        ];
+        for (phase, momentum, stage) in cases {
+            assert_eq!(
+                scroll_stage(phase, momentum),
+                stage,
+                "{phase:?} {momentum:?}"
+            );
+        }
     }
 
     #[test]

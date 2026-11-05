@@ -44,7 +44,11 @@ mid-save leaves the old file whole.
   does. `"terminal"` scrolls the panel's own content, as before. `"pan"` pans the canvas
   instead, and Cmd+scroll zooms, the same as over empty canvas. Applies at once. In the
   Settings window under Canvas and Snapping as "Scroll over panels". Middle drag pans over
-  a panel either way, and so does Space+drag while no panel has the keyboard.
+  a panel either way, and so does Space+drag while no panel has the keyboard. In
+  `"terminal"` a trackpad scroll gesture keeps the target it started on, momentum
+  included: one that starts on empty canvas pans to its end even when a panel slides
+  under the pointer, and one that starts on a panel scrolls that panel to its end. A
+  mouse wheel without gesture phases is decided per event.
 
 ## Panel title bar
 
