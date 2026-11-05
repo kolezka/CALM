@@ -2512,8 +2512,12 @@ impl CanvasView {
         let screen = self.to_canvas(event.position);
         let (dx, dy) = (f64::from(f32::from(delta.x)), f64::from(f32::from(delta.y)));
         let mods = to_mods(&event.modifiers);
+        // A scroll gesture the canvas owns never gets here: the content monitor takes all of
+        // it. This sees panel gestures and wheel scrolls the monitor left alone.
         // Over a preview or placeholder too, so `pan` acts the same on every panel.
-        if crate::content_move::wants_scroll(&self.settings.settings) {
+        if self.settings.settings.canvas.scroll_over_panels
+            == calm_core::settings::ScrollOverPanels::Pan
+        {
             self.input
                 .scroll_anywhere(screen, dx, dy, mods, &mut self.scene);
         } else {

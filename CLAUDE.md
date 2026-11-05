@@ -84,7 +84,7 @@ the panel menu), with global defaults in the Markdown tab of `cmd-,`. Add > Run 
 Right-click opens Add, Settings and panel actions, plus plugin menu items; Settings… in the
 panel menu opens that panel's own Settings window. Cmd+drag on a terminal's or page's content moves the panel, a Cmd+click still
 reaches it, and Cmd+right-click there opens the panel menu (`canvas.move_modifier`). Space+drag or
-middle-drag pans, also over a terminal or page (Space+drag while the canvas has the keyboard); scrolling there pans too with `canvas.scroll_over_panels` `pan`. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom; inside a focused terminal
+middle-drag pans, also over a terminal or page (Space+drag while the canvas has the keyboard); scrolling there pans too with `canvas.scroll_over_panels` `pan`, and a scroll gesture keeps the target it started on. Pinch, cmd+scroll, `cmd-=`, `cmd--`, `cmd-0` zoom; inside a focused terminal
 the three keys go to Ghostty and change its font size instead (`terminal.zoom_keys`). `cmd-shift-h`
 centers the world origin, Cmd+Shift+0 (stored as `cmd-)`, which GPUI reports for it) fits all panels (both also in the View menu).
 Every key binding is a setting: `keybindings` in `settings.json` holds overrides, the Keys
