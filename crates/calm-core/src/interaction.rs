@@ -217,6 +217,8 @@ pub struct InputHandler {
     pub arrow_pan_step: f64,
     /// Cmd+Option+arrow move step in world units (`canvas.arrow_move_step`).
     pub arrow_move_step: f64,
+    /// The button whose press started the current gesture. Only its release ends it.
+    pub gesture_button: Option<Button>,
 }
 
 impl Default for InputHandler {
@@ -232,12 +234,29 @@ impl Default for InputHandler {
             content_press: None,
             arrow_pan_step: crate::settings::DEFAULT_ARROW_PAN_STEP,
             arrow_move_step: crate::settings::DEFAULT_ARROW_MOVE_STEP,
+            gesture_button: None,
         }
     }
 }
 
 impl InputHandler {
     pub fn mouse_down(
+        &mut self,
+        screen: Point,
+        button: Button,
+        mods: Modifiers,
+        scene: &mut Scene,
+    ) -> Vec<Effect> {
+        // One pointer gesture at a time: another button's press leaves it alone.
+        if self.gesture_button.is_some() && self.state != Interaction::Idle {
+            return Vec::new();
+        }
+        let effects = self.press(screen, button, mods, scene);
+        self.gesture_button = (self.state != Interaction::Idle).then_some(button);
+        effects
+    }
+
+    fn press(
         &mut self,
         screen: Point,
         button: Button,
@@ -455,9 +474,24 @@ impl InputHandler {
         }
     }
 
+    /// `mouse_up` for a known button: only the button that started the gesture ends it.
+    pub fn mouse_up_for(
+        &mut self,
+        button: Button,
+        screen: Point,
+        mods: Modifiers,
+        scene: &mut Scene,
+    ) -> Vec<Effect> {
+        if self.gesture_button.is_some_and(|owner| owner != button) {
+            return Vec::new();
+        }
+        self.mouse_up(screen, mods, scene)
+    }
+
     /// Ends the current interaction. Drag and resize geometry comes only from
     /// `mouse_move`, so a press and release without movement changes nothing.
     pub fn mouse_up(&mut self, screen: Point, mods: Modifiers, scene: &mut Scene) -> Vec<Effect> {
+        self.gesture_button = None;
         let mut effects = Vec::new();
         // Released within the slop: a plain click, already focused at the press.
         if self.content_press.take().is_some() {
@@ -1275,6 +1309,86 @@ mod tests {
             scene.get(id).unwrap().rect,
             Rect::new(30.0, 10.0, 400.0, 300.0)
         );
+    }
+
+    #[test]
+    fn a_middle_release_leaves_a_left_draw_alone() {
+        let mut scene = Scene::default();
+        let mut handler = InputHandler {
+            tool: Tool::DrawTerminal,
+            ..InputHandler::default()
+        };
+        handler.mouse_down(
+            Point::new(100.0, 100.0),
+            Button::Left,
+            no_mods(),
+            &mut scene,
+        );
+        handler.mouse_move(Point::new(400.0, 300.0), free(), &mut scene);
+        let drawing = handler.state;
+        assert!(matches!(drawing, Interaction::Drawing { .. }));
+        let at = Point::new(400.0, 300.0);
+        let down = handler.mouse_down(at, Button::Middle, no_mods(), &mut scene);
+        assert!(down.is_empty(), "{down:?}");
+        let up = handler.mouse_up_for(Button::Middle, at, free(), &mut scene);
+        assert!(up.is_empty(), "a middle release created a panel: {up:?}");
+        assert_eq!(handler.state, drawing);
+        let up = handler.mouse_up_for(Button::Left, at, free(), &mut scene);
+        assert!(
+            up.iter()
+                .any(|effect| matches!(effect, Effect::CreatePanel { .. })),
+            "{up:?}"
+        );
+        assert_eq!(handler.state, Interaction::Idle);
+    }
+
+    #[test]
+    fn a_middle_release_leaves_a_left_drag_alone() {
+        let mut scene = Scene::default();
+        let id = scene.add(terminal(), Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mut handler = InputHandler::default();
+        handler.mouse_down(Point::new(100.0, 10.0), Button::Left, no_mods(), &mut scene);
+        handler.mouse_move(Point::new(110.0, 10.0), free(), &mut scene);
+        let at = Point::new(110.0, 10.0);
+        let up = handler.mouse_up_for(Button::Middle, at, free(), &mut scene);
+        assert!(up.is_empty(), "{up:?}");
+        assert!(
+            matches!(handler.state, Interaction::Dragging { .. }),
+            "a middle release ended the drag: {:?}",
+            handler.state
+        );
+        handler.mouse_move(Point::new(140.0, 30.0), free(), &mut scene);
+        assert_eq!(
+            scene.get(id).unwrap().rect,
+            Rect::new(40.0, 20.0, 400.0, 300.0)
+        );
+        handler.mouse_up_for(Button::Left, Point::new(140.0, 30.0), free(), &mut scene);
+        assert_eq!(handler.state, Interaction::Idle);
+        handler.mouse_move(Point::new(200.0, 80.0), free(), &mut scene);
+        assert_eq!(
+            scene.get(id).unwrap().rect,
+            Rect::new(40.0, 20.0, 400.0, 300.0)
+        );
+    }
+
+    #[test]
+    fn a_left_press_and_release_leave_a_middle_pan_alone() {
+        let mut scene = Scene::default();
+        let mut handler = InputHandler::default();
+        let at = Point::new(100.0, 100.0);
+        handler.mouse_down(at, Button::Middle, no_mods(), &mut scene);
+        let panning = handler.state;
+        assert!(matches!(panning, Interaction::Panning { .. }));
+        let down = handler.mouse_down(at, Button::Left, no_mods(), &mut scene);
+        assert!(down.is_empty(), "{down:?}");
+        assert_eq!(handler.state, panning);
+        let up = handler.mouse_up_for(Button::Left, at, free(), &mut scene);
+        assert!(up.is_empty(), "{up:?}");
+        assert_eq!(handler.state, panning, "a left release ended the pan");
+        handler.mouse_move(Point::new(130.0, 120.0), free(), &mut scene);
+        assert_eq!(scene.camera.offset, Point::new(-30.0, -20.0));
+        handler.mouse_up_for(Button::Middle, Point::new(130.0, 120.0), free(), &mut scene);
+        assert_eq!(handler.state, Interaction::Idle);
     }
 
     #[test]

@@ -2414,13 +2414,15 @@ impl CanvasView {
     }
 
     fn mouse_up(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(event.button, MouseButton::Left | MouseButton::Middle) {
-            return;
-        }
+        let button = match event.button {
+            MouseButton::Left => Button::Left,
+            MouseButton::Middle => Button::Middle,
+            _ => return,
+        };
         let screen = self.to_canvas(event.position);
-        let effects = self
-            .input
-            .mouse_up(screen, to_mods(&event.modifiers), &mut self.scene);
+        let effects =
+            self.input
+                .mouse_up_for(button, screen, to_mods(&event.modifiers), &mut self.scene);
         let cursor_changed = self.update_resize_cursor(screen);
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
