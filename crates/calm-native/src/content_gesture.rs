@@ -366,14 +366,16 @@ pub(crate) enum ScrollStage {
 }
 
 /// The stage of a scroll from its `phase` and `momentumPhase`. Both are empty for a mouse
-/// wheel. Fingers lifted with momentum to follow do not end the gesture.
+/// wheel. A finger lift (`phase` Ended) does not end the gesture: AppKit sends it alone and
+/// momentum follows with an empty `phase`, so the owner holds until the momentum ends. A
+/// gesture without momentum leaves its owner behind, and the next Began replaces it.
 pub(crate) fn scroll_stage(phase: NSEventPhase, momentum: NSEventPhase) -> ScrollStage {
     let done = NSEventPhase::Ended | NSEventPhase::Cancelled;
     if phase.is_empty() && momentum.is_empty() {
         ScrollStage::Wheel
     } else if phase.intersects(NSEventPhase::Began | NSEventPhase::MayBegin) {
         ScrollStage::Began
-    } else if momentum.intersects(done) || (phase.intersects(done) && momentum.is_empty()) {
+    } else if momentum.intersects(done) || phase.intersects(NSEventPhase::Cancelled) {
         ScrollStage::Ended
     } else {
         ScrollStage::Continued
@@ -915,7 +917,9 @@ mod tests {
             (NSEventPhase::Began, none, ScrollStage::Began),
             (NSEventPhase::Changed, none, ScrollStage::Continued),
             (NSEventPhase::Stationary, none, ScrollStage::Continued),
-            (NSEventPhase::Ended, none, ScrollStage::Ended),
+            // Fingers lifted: AppKit sends this alone, then momentum with an empty phase,
+            // so the gesture is not over yet.
+            (NSEventPhase::Ended, none, ScrollStage::Continued),
             (NSEventPhase::Cancelled, none, ScrollStage::Ended),
             (none, NSEventPhase::Began, ScrollStage::Continued),
             (none, NSEventPhase::Changed, ScrollStage::Continued),
@@ -935,6 +939,33 @@ mod tests {
                 "{phase:?} {momentum:?}"
             );
         }
+        // The sequence AppKit really sends for a flick: the gesture ends only with the
+        // momentum, so the owner set at Began holds through the finger lift.
+        let flick = [
+            (NSEventPhase::MayBegin, none),
+            (NSEventPhase::Began, none),
+            (NSEventPhase::Changed, none),
+            (NSEventPhase::Ended, none),
+            (none, NSEventPhase::Began),
+            (none, NSEventPhase::Changed),
+            (none, NSEventPhase::Ended),
+        ];
+        let stages: Vec<ScrollStage> = flick
+            .iter()
+            .map(|(phase, momentum)| scroll_stage(*phase, *momentum))
+            .collect();
+        assert_eq!(
+            stages,
+            [
+                ScrollStage::Began,
+                ScrollStage::Began,
+                ScrollStage::Continued,
+                ScrollStage::Continued,
+                ScrollStage::Continued,
+                ScrollStage::Continued,
+                ScrollStage::Ended,
+            ]
+        );
     }
 
     #[test]
