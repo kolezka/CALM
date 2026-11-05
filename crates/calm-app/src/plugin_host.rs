@@ -536,12 +536,9 @@ fn panel_id_param(params: &Value, field: &str) -> Result<PanelId, ApiError> {
 /// Restores a minimized panel, raises it and gives it the keyboard.
 fn focus_panel(scene: &mut Scene, params: &Value) -> Result<(Value, Vec<HostEffect>), ApiError> {
     let id = panel_id_param(params, "id")?;
-    let panel = scene.get(id).ok_or_else(|| ApiError::not_found(id))?;
-    if panel.minimized
-        && let Some(panel) = scene.get_mut(id)
-    {
-        panel.minimized = false;
-    }
+    scene.get(id).ok_or_else(|| ApiError::not_found(id))?;
+    // No viewport here: the restore grows the panel for the bar but cannot clamp a pin.
+    scene.set_minimized(id, false, Size::new(0.0, 0.0));
     scene.bring_to_front(id);
     Ok((Value::Null, vec![HostEffect::Focus(id)]))
 }
