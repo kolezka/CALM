@@ -1990,7 +1990,7 @@ mod tests {
         let Control::Choice { options, selected } = &field.control else {
             panic!("expected a choice, got {:?}", field.control);
         };
-        assert_eq!(options, &["Scrolls the panel", "Pans the canvas"]);
+        assert_eq!(options, &["Scrolls the focused panel", "Pans the canvas"]);
         assert_eq!(*selected, 0);
         let id = "canvas.scroll_over_panels";
         apply_field(&mut settings, id, FieldValue::Index(1)).unwrap();

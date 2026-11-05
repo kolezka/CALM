@@ -41,14 +41,16 @@ mid-save leaves the old file whole.
   sits in the background. Read when the canvas window opens, so a change applies after
   restart. In the Settings window under Canvas and Snapping.
 - `scroll_over_panels` (default `"terminal"`): what a scroll over a live terminal or page
-  does. `"terminal"` scrolls the panel's own content, as before. `"pan"` pans the canvas
-  instead, and Cmd+scroll zooms, the same as over empty canvas. Applies at once. In the
-  Settings window under Canvas and Snapping as "Scroll over panels". Middle drag pans over
-  a panel either way, and so does Space+drag while no panel has the keyboard. In
-  `"terminal"` a trackpad scroll gesture keeps the target it started on, momentum
-  included: one that starts on empty canvas pans to its end even when a panel slides
-  under the pointer, and one that starts on a panel scrolls that panel to its end. A
-  mouse wheel without gesture phases is decided per event.
+  does. `"terminal"` pans the canvas everywhere except over the focused panel, which
+  scrolls its own content; click a panel to scroll it, click empty canvas (or press
+  Escape) to pan over it again. `"pan"` pans the canvas over every panel, the focused one
+  too. Cmd+scroll zooms in both. Applies at once. In the Settings window under Canvas and
+  Snapping as "Scroll over panels". Middle drag pans over a panel either way, and so does
+  Space+drag while no panel has the keyboard. A trackpad scroll gesture keeps the target
+  it started on, momentum included: one that starts over the canvas or an unfocused panel
+  pans to its end even when the focused panel slides under the pointer, and one that
+  starts on the focused panel scrolls that panel to its end. A mouse wheel without gesture
+  phases is decided per event.
 
 ## Panel title bar
 
