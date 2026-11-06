@@ -676,7 +676,8 @@ impl InputHandler {
             self.gesture_button = None;
         }
         if self.confirming.is_some() {
-            return self.confirm_key(ConfirmKey::Escape).into_iter().collect();
+            self.confirm_key(ConfirmKey::Escape);
+            return vec![Effect::Redraw];
         }
         self.tool = Tool::Select;
         let effects = if native_keyboard {
@@ -1673,7 +1674,7 @@ mod tests {
         assert!(handler.escape(false).contains(&Effect::ClearFocus));
         // A pending close takes Escape first and keeps focus.
         handler.confirming = Some(PanelId(1));
-        assert!(handler.escape(false).is_empty());
+        assert_eq!(handler.escape(false), vec![Effect::Redraw]);
         assert_eq!(handler.confirming, None);
     }
 
@@ -1745,7 +1746,7 @@ mod tests {
         let mut handler = InputHandler::default();
         let id = PanelId(9);
         handler.request_close(id, true);
-        assert_eq!(handler.confirm_key(ConfirmKey::Escape), None);
+        assert_eq!(handler.escape(false), vec![Effect::Redraw]);
         assert_eq!(handler.confirming, None);
         assert_eq!(handler.confirm_key(ConfirmKey::Enter), None);
     }
