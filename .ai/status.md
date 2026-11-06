@@ -438,8 +438,15 @@ Open questions: `.ai/open-questions.md`.
 - `feat/close-panel-key`: action `panel.close` ("Close focused panel without asking",
   default `cmd-w`, Keys tab row, no menu item) closes the focused panel through
   `Effect::ClosePanel` with no confirmation, also for a running terminal. Table and
-  keymap tests updated (34 default keys, 42 registered actions). By eye, owed by the
-  user: Cmd+W with a focused terminal closes the panel instead of reaching Ghostty.
+  keymap tests updated (34 default keys, 42 registered actions). A settings file that
+  already gives `cmd-w` to another action keeps loading: the new action starts unbound
+  (`keymap::yield_defaults_to_overrides`, explicit null, one `calm:` line). Smoke gate not
+  met yet: six runs on this branch failed with stalled paint (`window_visible=Some(false)`
+  in `pin`, 0 frames after `show_stats`) while `origin/main` passed 33/33 twice in between,
+  then `origin/main` failed the same way once the user was working on the machine (window
+  loses key status, GPUI's display link does not restart). Rerun the smoke on a free machine,
+  control on `origin/main` first. By eye, owed by the user: Cmd+W with a focused terminal
+  closes the panel instead of reaching Ghostty.
 
 - Pan over panels (branch `feat/pan-over-panels`, not merged). The content gesture monitor
   takes a middle drag over a terminal or page and pans the canvas, takes Space+drag there
