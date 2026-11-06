@@ -128,6 +128,15 @@ pub const ACTIONS: &[ActionSpec] = &[
         Some("cmd-shift-backspace"),
         false,
     ),
+    // Skips the live-process confirmation on purpose: one key, the panel is gone.
+    row(
+        "panel.close",
+        "Close focused panel without asking",
+        Group::Panels,
+        Scope::Canvas,
+        Some("cmd-w"),
+        false,
+    ),
     row(
         "panel.settings",
         "Focused panel Settings",
@@ -917,6 +926,7 @@ mod tests {
                 "canvas.cancel",
                 "canvas.confirm",
                 "panel.delete",
+                "panel.close",
                 "panel.settings",
                 "panel.pin",
                 "panel.move_up",
@@ -969,8 +979,22 @@ mod tests {
         assert!(defaults.contains(&("canvas.fit_all", Some("cmd-)"))));
         assert!(defaults.contains(&("panel.settings", Some("cmd-<"))));
         assert!(defaults.contains(&("app.about", None)));
-        assert_eq!(defaults.iter().filter(|(_, d)| d.is_some()).count(), 33);
+        assert_eq!(defaults.iter().filter(|(_, d)| d.is_some()).count(), 34);
         assert!(defaults.contains(&("canvas.draw_markdown", Some("m"))));
+    }
+
+    #[test]
+    fn panel_close_action_has_cmd_w_and_no_menu_row() {
+        let close = action("panel.close").expect("panel.close");
+        assert_eq!(close.label, "Close focused panel without asking");
+        assert_eq!(
+            (close.group, close.scope, close.in_menu),
+            (Group::Panels, Scope::Canvas, false)
+        );
+        assert_eq!(close.default, Some("cmd-w"));
+        assert!(check_rebind(&KeyOverrides::new(), close, "cmd-w").is_ok());
+        // Cmd+W carries Cmd, so a focused terminal does not keep it.
+        assert!(!passes_to_terminal(&parse_key("cmd-w").unwrap()));
     }
 
     #[test]

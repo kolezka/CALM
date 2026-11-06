@@ -92,6 +92,7 @@ actions!(
         DrawBrowser,
         DrawMarkdown,
         DeletePanel,
+        ClosePanelNow,
         OpenPanelSettings,
         Cancel,
         ConfirmEnter,
@@ -3925,6 +3926,13 @@ impl Render for CanvasView {
             .on_action(cx.listener(|view, _: &DeletePanel, window, cx| {
                 if let Some(id) = view.focused {
                     view.apply_effects(vec![Effect::ClosePanelRequested(id)], window, cx);
+                }
+            }))
+            .on_action(cx.listener(|view, _: &ClosePanelNow, window, cx| {
+                if let Some(id) = view.focused {
+                    // `alive: false` skips the confirmation and clears a pending one.
+                    let close = view.input.request_close(id, false);
+                    view.apply_effects(vec![close], window, cx);
                 }
             }))
             .on_action(cx.listener(|view, _: &TogglePinPanel, _, cx| {

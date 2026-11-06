@@ -191,6 +191,7 @@ so on first launch right-click it and pick Open. See [docs/release.md](docs/rele
 | Zoom                  | Pinch, or `cmd` and scroll             |
 | Fit all panels        | Cmd+Shift+0                            |
 | Delete focused panel  | `cmd-shift-backspace` (confirms a live one) |
+| Close focused panel, no confirmation | `cmd-w`                 |
 | Pin or unpin focused panel | `cmd-shift-p`                     |
 | Settings              | `cmd-,`                                |
 
@@ -211,6 +212,7 @@ Every key is a default; change any of them in Settings > Keys.
 | Move a panel by its content     | `cmd`-drag on a terminal or page          |
 | Panel menu from its content     | `cmd`-right-click on a terminal or page   |
 | Delete focused panel            | `cmd-shift-backspace` (confirms a live one) |
+| Close focused panel, no confirmation | `cmd-w` (ends a running terminal at once) |
 | Focused panel Settings          | `cmd-shift-,`                             |
 | Pin or unpin the focused panel  | `cmd-shift-p` (inside a terminal it wins over Ghostty's command palette) |
 | Pan                             | Space and drag, middle-drag, scroll       |

@@ -435,6 +435,12 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
+- `feat/close-panel-key`: action `panel.close` ("Close focused panel without asking",
+  default `cmd-w`, Keys tab row, no menu item) closes the focused panel through
+  `Effect::ClosePanel` with no confirmation, also for a running terminal. Table and
+  keymap tests updated (34 default keys, 42 registered actions). By eye, owed by the
+  user: Cmd+W with a focused terminal closes the panel instead of reaching Ghostty.
+
 - Pan over panels (branch `feat/pan-over-panels`, not merged). The content gesture monitor
   takes a middle drag over a terminal or page and pans the canvas, takes Space+drag there
   while the canvas has the keyboard, and with `canvas.scroll_over_panels` `pan` takes
