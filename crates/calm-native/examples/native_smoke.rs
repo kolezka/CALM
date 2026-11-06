@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use calm_core::camera::Camera;
 use calm_core::geometry::{Point, Rect};
-use calm_core::menu::canvas_menu;
+use calm_core::menu::{MenuItem, canvas_menu};
 use calm_core::settings_form::{Control, Field, FieldState, FieldValue, Section};
 use calm_core::viewport::place_native;
 use calm_native::{ContextMenu, NativeChild, SettingsWindow, WebPanel, WindowLayout};
@@ -46,6 +46,18 @@ impl HasWindowHandle for ContentViewHandle {
 fn fail(reason: &str) -> ! {
     eprintln!("native_smoke: FAIL {reason}");
     exit(1);
+}
+
+fn menu_counts(items: &[MenuItem]) -> (usize, usize) {
+    let mut counts = (items.len(), 0);
+    for item in items {
+        if let MenuItem::Submenu { items, .. } = item {
+            let nested = menu_counts(items);
+            counts.0 += nested.0;
+            counts.1 += 1 + nested.1;
+        }
+    }
+    counts
 }
 
 fn fmt_rect(r: NSRect) -> String {
@@ -318,10 +330,14 @@ fn main() {
     let menu = ContextMenu::build(&sample).unwrap_or_else(|e| fail(&e.to_string()));
     let (items, submenus) = menu.counts();
     println!("native_smoke: menu items={items} submenus={submenus}");
-    // Add, then inside it the Native header, Terminal, Run Command, Browser, a separator,
-    // the Plugins header and Hello World. Headers are real menu items.
-    if (items, submenus) != (8, 1) {
-        fail("menu tree does not match the sample spec");
+    let expected = menu_counts(&sample);
+    if expected.0 == 0 || expected.1 == 0 {
+        fail("sample menu must contain items and submenus");
+    }
+    if (items, submenus) != expected {
+        fail(&format!(
+            "menu tree counts do not match core: expected {expected:?}"
+        ));
     }
 
     settings_window_check();
