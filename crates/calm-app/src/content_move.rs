@@ -378,6 +378,10 @@ impl CanvasView {
     ) -> ContentDecision {
         let event = in_canvas(event, self.viewport.origin);
         if let ContentEvent::Moved(screen) = event {
+            if !self.has_hover() {
+                // Native content cannot be a chrome hover target.
+                return ContentDecision::Click;
+            }
             if self.update_hover_target(screen) {
                 cx.notify();
             }

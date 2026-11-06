@@ -2402,6 +2402,10 @@ impl CanvasView {
         self.apply_effects(effects, window, cx);
     }
 
+    pub(super) fn has_hover(&self) -> bool {
+        self.hover.is_some()
+    }
+
     pub(super) fn update_hover_target(&mut self, screen: Point) -> bool {
         let hover = hover_target(&self.scene, screen);
         let changed = hover != self.hover;
