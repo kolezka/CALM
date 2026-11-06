@@ -28,6 +28,8 @@ pub enum ContentEvent {
     Down(Point),
     Dragged(Point),
     Up(Point),
+    /// A pointer move over a native child. It is still sent to AppKit.
+    Moved(Point),
     RightDown(Point),
     MiddleDown(Point),
     MiddleDragged(Point),
@@ -119,7 +121,8 @@ impl ContentGestureMonitor {
                 event.as_ptr()
             }
         });
-        let mask = NSEventMask::LeftMouseDown
+        let mask = NSEventMask::MouseMoved
+            | NSEventMask::LeftMouseDown
             | NSEventMask::LeftMouseDragged
             | NSEventMask::LeftMouseUp
             | NSEventMask::RightMouseDown
@@ -186,6 +189,15 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
             replaying.remove(index);
             return false;
         }
+    }
+    if event.r#type() == NSEventType::MouseMoved {
+        if let Some(window) = shared.window.load()
+            && over_native_child(&window, event)
+            && let Ok(mut on_event) = shared.on_event.try_borrow_mut()
+        {
+            on_event(ContentEvent::Moved(window_point(&window, event)));
+        }
+        return false;
     }
     let input = match event.r#type() {
         NSEventType::LeftMouseDown => Input::LeftDown,
