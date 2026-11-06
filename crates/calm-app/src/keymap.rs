@@ -9,11 +9,11 @@ use calm_core::terminal_profile::ZoomKeys;
 use gpui::{Action, App, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, NoAction};
 
 use crate::canvas_view::{
-    self, Cancel, CenterOnOrigin, ConfirmEnter, DeletePanel, DrawBrowser, DrawMarkdown,
-    DrawTerminal, FitAll, MovePanelDown, MovePanelDownFar, MovePanelLeft, MovePanelLeftFar,
-    MovePanelRight, MovePanelRightFar, MovePanelUp, MovePanelUpFar, OpenPanelSettings, PanDown,
-    PanDownFar, PanLeft, PanLeftFar, PanRight, PanRightFar, PanUp, PanUpFar, ToggleFullscreen,
-    TogglePinPanel, ZoomIn, ZoomOut, ZoomReset,
+    self, Cancel, CenterOnOrigin, ClosePanelNow, ConfirmEnter, DeletePanel, DrawBrowser,
+    DrawMarkdown, DrawTerminal, FitAll, MovePanelDown, MovePanelDownFar, MovePanelLeft,
+    MovePanelLeftFar, MovePanelRight, MovePanelRightFar, MovePanelUp, MovePanelUpFar,
+    OpenPanelSettings, PanDown, PanDownFar, PanLeft, PanLeftFar, PanRight, PanRightFar, PanUp,
+    PanUpFar, ToggleFullscreen, TogglePinPanel, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::dev_menu::{About, Quit, ResetFps, ToggleFps};
 use crate::preset_menu::{LoadPreset, SavePreset, ShowWelcome};
@@ -51,6 +51,7 @@ pub fn gpui_action(id: &str) -> Option<Box<dyn Action>> {
         "panel.move_left_far" => Box::new(MovePanelLeftFar),
         "panel.move_right_far" => Box::new(MovePanelRightFar),
         "panel.delete" => Box::new(DeletePanel),
+        "panel.close" => Box::new(ClosePanelNow),
         "panel.settings" => Box::new(OpenPanelSettings),
         "panel.pin" => Box::new(TogglePinPanel),
         "developer.toggle_stats" => Box::new(ToggleFps),
@@ -162,7 +163,7 @@ mod tests {
                 data.name
             );
         }
-        assert_eq!(ours.len(), 41);
+        assert_eq!(ours.len(), 42);
     }
 
     #[test]

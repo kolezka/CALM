@@ -91,6 +91,7 @@ Every key binding is a setting: `keybindings` in `settings.json` holds overrides
 tab of Settings records a key per action; CALM's browser keys and Enter-to-restart are fixed.
 Arrows pan the canvas when no live panel has the keyboard, Cmd+Option+arrows move the focused panel, and Shift takes larger steps (`canvas.arrow_pan_step`, `canvas.arrow_move_step`).
 `cmd-shift-backspace` deletes the focused panel (a live one confirms first, as with the menu's Delete).
+`cmd-w` (action `panel.close`) closes the focused panel at once, no confirmation even for a running terminal; inside a terminal it wins over Ghostty's close.
 Cmd+Shift+, opens the focused panel's Settings window (written `cmd-<` in code, which is how GPUI reports that press).
 `cmd-shift-p` (action `panel.pin`, also Pin/Unpin in the panel menu) pins the focused panel to the screen: pan, zoom,
 fit-all, `cmd-shift-h` and arrow pan leave its screen position and size alone, zoom never makes it a preview, and pinned panels

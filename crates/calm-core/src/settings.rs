@@ -784,7 +784,7 @@ pub fn read_settings_from(path: &Path) -> Result<Settings, SettingsError> {
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| malformed("missing or non-integer \"version\"".to_string()))?;
-    let settings: Settings = match found {
+    let mut settings: Settings = match found {
         1 => serde_json::from_value::<SettingsV1>(value)
             .map_err(|error| malformed(error.to_string()))?
             .into(),
@@ -796,6 +796,12 @@ pub fn read_settings_from(path: &Path) -> Result<Settings, SettingsError> {
             });
         }
     };
+    for id in crate::keymap::yield_defaults_to_overrides(&mut settings.keybindings) {
+        eprintln!(
+            "calm: keybindings: {id} starts unbound, its default key is already used in {}",
+            path.display()
+        );
+    }
     settings.validate().map_err(malformed)?;
     Ok(settings)
 }
@@ -1584,6 +1590,32 @@ mod tests {
     }
 
     #[test]
+    fn a_file_bound_before_a_new_default_key_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"version": 2, "keybindings": {"panel.delete": "cmd-w"}}"#,
+        )
+        .unwrap();
+        let loaded = read_settings_from(&path).unwrap();
+        assert_eq!(
+            loaded.keybindings.get("panel.delete"),
+            Some(&Some("cmd-w".to_string()))
+        );
+        assert_eq!(loaded.keybindings.get("panel.close"), Some(&None));
+        assert_eq!(loaded.validate(), Ok(()));
+        // The same for a hand-edited file: an explicit key beats a default, never an error.
+        std::fs::write(
+            &path,
+            r#"{"version": 2, "keybindings": {"panel.delete": "cmd-="}}"#,
+        )
+        .unwrap();
+        let loaded = read_settings_from(&path).unwrap();
+        assert_eq!(loaded.keybindings.get("canvas.zoom_in"), Some(&None));
+    }
+
+    #[test]
     fn each_bad_keybinding_is_its_own_settings_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -1619,9 +1651,9 @@ mod tests {
                 "hold-to-pan",
             ),
             (
-                r#""panel.delete": "cmd-=""#,
-                "keybindings.panel.delete",
-                "Used by Zoom in",
+                r#""panel.delete": "cmd-=", "canvas.zoom_in": "cmd-=""#,
+                "keybindings.canvas.zoom_in",
+                "Used by Delete focused panel",
             ),
         ] {
             std::fs::write(

@@ -128,6 +128,15 @@ pub const ACTIONS: &[ActionSpec] = &[
         Some("cmd-shift-backspace"),
         false,
     ),
+    // Skips the live-process confirmation on purpose: one key, the panel is gone.
+    row(
+        "panel.close",
+        "Close focused panel without asking",
+        Group::Panels,
+        Scope::Canvas,
+        Some("cmd-w"),
+        false,
+    ),
     row(
         "panel.settings",
         "Focused panel Settings",
@@ -694,6 +703,38 @@ fn check_menu(action: &ActionSpec, key: &KeySpec) -> Result<(), KeyError> {
     }
 }
 
+/// A default added after the user bound that key to another action must not invalidate
+/// their file: the new action starts unbound, written as an explicit null so the Keys tab
+/// and the saved file say so. Returns the ids that yielded. Two explicit choices of one key
+/// are left for `validate_overrides` to refuse.
+pub fn yield_defaults_to_overrides(overrides: &mut KeyOverrides) -> Vec<&'static str> {
+    let taken: Vec<(&ActionSpec, KeySpec)> = overrides
+        .iter()
+        .filter_map(|(id, key)| {
+            let spec = action(id)?;
+            let key = parse_key(key.as_deref()?).ok()?;
+            Some((spec, key))
+        })
+        .collect();
+    let mut yielded = Vec::new();
+    for a in ACTIONS {
+        if overrides.contains_key(a.id) {
+            continue;
+        }
+        let Some(default) = a.default.and_then(|d| parse_key(d).ok()) else {
+            continue;
+        };
+        if taken
+            .iter()
+            .any(|(o, k)| o.id != a.id && *k == default && o.scope.overlaps(a.scope))
+        {
+            overrides.insert(a.id.to_string(), None);
+            yielded.push(a.id);
+        }
+    }
+    yielded
+}
+
 /// The first problem in a `keybindings` section, naming the field.
 pub fn validate_overrides(overrides: &KeyOverrides) -> Result<(), String> {
     let mut seen: Vec<(&ActionSpec, KeySpec)> = Vec::new();
@@ -917,6 +958,7 @@ mod tests {
                 "canvas.cancel",
                 "canvas.confirm",
                 "panel.delete",
+                "panel.close",
                 "panel.settings",
                 "panel.pin",
                 "panel.move_up",
@@ -969,8 +1011,56 @@ mod tests {
         assert!(defaults.contains(&("canvas.fit_all", Some("cmd-)"))));
         assert!(defaults.contains(&("panel.settings", Some("cmd-<"))));
         assert!(defaults.contains(&("app.about", None)));
-        assert_eq!(defaults.iter().filter(|(_, d)| d.is_some()).count(), 33);
+        assert_eq!(defaults.iter().filter(|(_, d)| d.is_some()).count(), 34);
         assert!(defaults.contains(&("canvas.draw_markdown", Some("m"))));
+    }
+
+    #[test]
+    fn panel_close_action_has_cmd_w_and_no_menu_row() {
+        let close = action("panel.close").expect("panel.close");
+        assert_eq!(close.label, "Close focused panel without asking");
+        assert_eq!(
+            (close.group, close.scope, close.in_menu),
+            (Group::Panels, Scope::Canvas, false)
+        );
+        assert_eq!(close.default, Some("cmd-w"));
+        assert!(check_rebind(&KeyOverrides::new(), close, "cmd-w").is_ok());
+        // Cmd+W carries Cmd, so a focused terminal does not keep it.
+        assert!(!passes_to_terminal(&parse_key("cmd-w").unwrap()));
+    }
+
+    #[test]
+    fn a_new_default_yields_to_an_existing_override() {
+        // A user bound cmd-w before panel.close existed. The file must stay valid and the
+        // new action starts unbound, written down as an explicit null.
+        let mut overrides = KeyOverrides::new();
+        overrides.insert("panel.delete".into(), Some("cmd-w".into()));
+        assert_eq!(
+            yield_defaults_to_overrides(&mut overrides),
+            vec!["panel.close"]
+        );
+        assert_eq!(overrides.get("panel.close"), Some(&None));
+        assert_eq!(validate_overrides(&overrides), Ok(()));
+        let bound = bound_keys(&overrides);
+        assert!(
+            bound
+                .iter()
+                .any(|(a, k)| a.id == "panel.delete" && k == "cmd-w")
+        );
+        assert!(!bound.iter().any(|(a, _)| a.id == "panel.close"));
+        // A second pass changes nothing.
+        assert!(yield_defaults_to_overrides(&mut overrides).is_empty());
+        // Two explicit choices of one key are still the user's error.
+        overrides.insert("panel.close".into(), Some("cmd-w".into()));
+        assert!(yield_defaults_to_overrides(&mut overrides).is_empty());
+        assert!(validate_overrides(&overrides).is_err());
+        // Modifier order does not hide the collision.
+        let mut overrides = KeyOverrides::new();
+        overrides.insert("app.quit".into(), Some("shift-cmd-p".into()));
+        assert_eq!(
+            yield_defaults_to_overrides(&mut overrides),
+            vec!["panel.pin"]
+        );
     }
 
     #[test]

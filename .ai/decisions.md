@@ -778,6 +778,21 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
 - **Any click off the recorder, or a tab change, stops recording**, so a key meant for
   another field is never recorded. Clicks are never swallowed.
 - **Symbols use Apple's modifier order** `⌃⌥⇧⌘`, so Cmd+Shift+Backspace shows as `⇧⌘⌫`.
+- **`panel.close` (`cmd-w`) closes the focused panel without asking** (user, 2026-11-06). It
+  is a second action next to `panel.delete`, not a setting on it, so both keys exist at
+  once: Delete keeps the confirmation for a live process, Cmd+W skips it and
+  `panels.confirm_close` does not apply. It goes through `request_close(id, false)`, so a
+  pending "Close?" on that panel is cleared and the same `Effect::ClosePanel` path ends the
+  process. Cmd+W carries Cmd, so a focused terminal does not keep it; CALM's binding
+  shadows Ghostty's close-surface key, as `cmd-shift-p` shadows its palette. No menu item:
+  the panel menu's Delete already covers the mouse path.
+- **A new default key yields to an existing explicit binding** (review of the cmd-w PR,
+  2026-11-06). A settings file written before an action existed may already give that
+  action's default key to another action. Rejecting the file would start CALM on defaults
+  and move the user's settings aside. So at load, `keymap::yield_defaults_to_overrides`
+  writes an explicit `null` for the newer action (the Keys tab shows it unbound, a save
+  keeps it) and logs one `calm:` line. Two explicit entries on one key are still an error,
+  and the recorder still refuses a key in use; only defaults give way.
   The close prompt names its keys in words (`Close? enter / esc`), as the user chose.
 
 ## TUI apps are terminals (2026-11-02, PR #63)
