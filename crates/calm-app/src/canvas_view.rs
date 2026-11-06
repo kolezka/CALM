@@ -578,7 +578,7 @@ impl CanvasView {
                     self.panel_created(id, kind, window, cx);
                 }
             }
-            // Title origin is inferred at restore; layouts do not store provenance.
+            // Infer at restore: a saved title that differs from a placeholder-free template render is a literal.
             let supervised = self
                 .terminal_meta(id)
                 .is_some_and(|meta| meta.run.is_some());
@@ -586,6 +586,7 @@ impl CanvasView {
                 let literal = calm_core::restore::keep_restored_terminal_title(
                     &saved_title,
                     &panel.title,
+                    &self.resolve_terminal(id).title_template,
                     panel.overrides.title.is_some(),
                     supervised,
                 );

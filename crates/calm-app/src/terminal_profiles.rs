@@ -19,6 +19,7 @@ pub struct TerminalMeta {
     pub index: u64,
     /// Where it started. `{cwd}` and the next "inherit" read it.
     pub cwd: PathBuf,
+    /// A restored title that did not match the template, kept until the title is set or reset. Not saved.
     pub restored_title: Option<String>,
     /// The colors the surface has now. `None`: whatever its configuration gave it.
     pub applied_colors: Option<TerminalColors>,
