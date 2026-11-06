@@ -786,6 +786,13 @@ Spec `docs/superpowers/specs/2026-11-02-keybindings-settings-design.md`. One tab
   process. Cmd+W carries Cmd, so a focused terminal does not keep it; CALM's binding
   shadows Ghostty's close-surface key, as `cmd-shift-p` shadows its palette. No menu item:
   the panel menu's Delete already covers the mouse path.
+- **A new default key yields to an existing explicit binding** (review of the cmd-w PR,
+  2026-11-06). A settings file written before an action existed may already give that
+  action's default key to another action. Rejecting the file would start CALM on defaults
+  and move the user's settings aside. So at load, `keymap::yield_defaults_to_overrides`
+  writes an explicit `null` for the newer action (the Keys tab shows it unbound, a save
+  keeps it) and logs one `calm:` line. Two explicit entries on one key are still an error,
+  and the recorder still refuses a key in use; only defaults give way.
   The close prompt names its keys in words (`Close? enter / esc`), as the user chose.
 
 ## TUI apps are terminals (2026-11-02, PR #63)
