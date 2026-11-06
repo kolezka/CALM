@@ -14,7 +14,7 @@ use gpui::{
     AppContext as _, ClipboardItem, Context, DispatchPhase, Entity, EventEmitter, FocusHandle,
     InteractiveElement as _, IntoElement, KeyDownEvent, KeyUpEvent, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ParentElement as _, Pixels, Render, RenderImage, ScrollDelta, ScrollWheelEvent,
-    Styled as _, Subscription, Task, Window, div,
+    Styled as _, Subscription, Task, WeakEntity, Window, div,
 };
 use gpui_libghostty::__private::{
     KeyAction, Modifiers, MouseButton, MouseState, NativeSurface, TerminalThemeState,
@@ -412,7 +412,7 @@ impl TerminalPanel {
         );
     }
 
-    /// Only a terminal that took the press passes its release to Ghostty.
+    /// Only a terminal whose gate took the press passes its release to Ghostty.
     fn mouse_up(&mut self, event: &MouseUpEvent) {
         if !self.pointer.release(button_index(event.button)) {
             return;
@@ -425,23 +425,11 @@ impl TerminalPanel {
         );
     }
 
-    fn mouse_up_outside(&mut self, event: &MouseUpEvent) {
-        if !self.takes_pointer(event.position) {
-            self.mouse_up(event);
-        }
-    }
-
     /// Motion over a covered part belongs to the panel in front, unless a drag started here.
     fn mouse_move(&mut self, event: &MouseMoveEvent) {
         let visible = self.takes_pointer(event.position);
         if self.pointer.motion(visible, event.pressed_button.is_some()) {
             self.mouse_position(event.position, event.modifiers);
-        }
-    }
-
-    fn mouse_move_outside(&mut self, event: &MouseMoveEvent) {
-        if !self.takes_pointer(event.position) {
-            self.mouse_move(event);
         }
     }
 
@@ -468,9 +456,10 @@ impl TerminalPanel {
     }
 }
 
+/// Window-wide so a drag keeps its motion and release after leaving the terminal.
 fn register_window_drag_events<T: 'static>(
     window: &mut Window,
-    entity: Entity<T>,
+    entity: WeakEntity<T>,
     mut on_move: impl FnMut(&mut T, &MouseMoveEvent) + 'static,
     mut on_up: impl FnMut(&mut T, &MouseUpEvent) + 'static,
 ) {
@@ -479,13 +468,13 @@ fn register_window_drag_events<T: 'static>(
         if phase != DispatchPhase::Capture {
             return;
         }
-        move_entity.update(cx, |view, _| on_move(view, event));
+        move_entity.update(cx, |view, _| on_move(view, event)).ok();
     });
     window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
         if phase != DispatchPhase::Capture {
             return;
         }
-        entity.update(cx, |view, _| on_up(view, event));
+        entity.update(cx, |view, _| on_up(view, event)).ok();
     });
 }
 
@@ -493,15 +482,15 @@ impl Render for TerminalPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_focus(window);
         self.start_ticking(cx);
-        let terminal = cx.entity().clone();
+        let terminal = cx.entity().downgrade();
         let mouse_capture = gpui::canvas(
             |_, _, _| (),
             move |_, (), window, _| {
                 register_window_drag_events(
                     window,
                     terminal,
-                    |terminal, event| terminal.mouse_move_outside(event),
-                    |terminal, event| terminal.mouse_up_outside(event),
+                    TerminalPanel::mouse_move,
+                    TerminalPanel::mouse_up,
                 );
             },
         )
@@ -513,26 +502,16 @@ impl Render for TerminalPanel {
             .size_full()
             .child(mouse_capture)
             .on_key_down(cx.listener(|terminal, event, _, cx| terminal.key_down(event, cx)))
-            .on_key_up(cx.listener(|terminal, event, _, cx| terminal.key_up(event, cx)))
-            .on_mouse_move(
-                cx.listener(|terminal, event: &MouseMoveEvent, _, _| terminal.mouse_move(event)),
-            );
+            .on_key_up(cx.listener(|terminal, event, _, cx| terminal.key_up(event, cx)));
         for button in [
             gpui::MouseButton::Left,
             gpui::MouseButton::Middle,
             gpui::MouseButton::Right,
         ] {
-            element = element
-                .on_mouse_down(
-                    button,
-                    cx.listener(|terminal, event, window, cx| {
-                        terminal.mouse_down(event, window, cx)
-                    }),
-                )
-                .on_mouse_up(
-                    button,
-                    cx.listener(|terminal, event, _, _| terminal.mouse_up(event)),
-                );
+            element = element.on_mouse_down(
+                button,
+                cx.listener(|terminal, event, window, cx| terminal.mouse_down(event, window, cx)),
+            );
         }
         element.on_scroll_wheel(cx.listener(|terminal, event, _, cx| terminal.scroll(event, cx)))
     }
@@ -599,7 +578,8 @@ mod tests {
         fn visible(&self, position: gpui::Point<Pixels>) -> bool {
             let x = f32::from(position.x);
             let y = f32::from(position.y);
-            (0.0..100.0).contains(&x) && (0.0..100.0).contains(&y)
+            // The rest of the hitbox is covered by a panel in front.
+            (0.0..40.0).contains(&x) && (0.0..100.0).contains(&y)
         }
 
         fn mouse_move(&mut self, event: &MouseMoveEvent) {
@@ -611,12 +591,6 @@ mod tests {
             }
         }
 
-        fn mouse_move_outside(&mut self, event: &MouseMoveEvent) {
-            if !self.visible(event.position) {
-                self.mouse_move(event);
-            }
-        }
-
         fn mouse_up(&mut self, event: &MouseUpEvent) {
             if self.pointer.release(button_index(event.button)) {
                 self.forwarded
@@ -624,25 +598,19 @@ mod tests {
                     .push(ForwardedMouseEvent::Release);
             }
         }
-
-        fn mouse_up_outside(&mut self, event: &MouseUpEvent) {
-            if !self.visible(event.position) {
-                self.mouse_up(event);
-            }
-        }
     }
 
     impl Render for DragProbe {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            let probe = cx.entity().clone();
+            let probe = cx.entity().downgrade();
             let mouse_capture = gpui::canvas(
                 |_, _, _| (),
                 move |_, (), window, _| {
                     register_window_drag_events(
                         window,
                         probe,
-                        |probe, event| probe.mouse_move_outside(event),
-                        |probe, event| probe.mouse_up_outside(event),
+                        DragProbe::mouse_move,
+                        DragProbe::mouse_up,
                     );
                 },
             )
@@ -658,15 +626,6 @@ mod tests {
                         probe
                             .pointer
                             .press(button_index(event.button), probe.visible(event.position));
-                    }),
-                )
-                .on_mouse_move(cx.listener(|probe, event: &MouseMoveEvent, _, _| {
-                    probe.mouse_move(event);
-                }))
-                .on_mouse_up(
-                    GpuiMouseButton::Left,
-                    cx.listener(|probe, event: &MouseUpEvent, _, _| {
-                        probe.mouse_up(event);
                     }),
                 )
         }
@@ -687,6 +646,11 @@ mod tests {
 
         window.simulate_mouse_down(point(px(20.0), px(20.0)), GpuiMouseButton::Left, modifiers);
         window.simulate_mouse_move(
+            point(px(50.0), px(20.0)),
+            Some(GpuiMouseButton::Left),
+            modifiers,
+        );
+        window.simulate_mouse_move(
             point(px(120.0), px(20.0)),
             Some(GpuiMouseButton::Left),
             modifiers,
@@ -696,7 +660,11 @@ mod tests {
 
         assert_eq!(
             *forwarded.borrow(),
-            [ForwardedMouseEvent::Move, ForwardedMouseEvent::Release]
+            [
+                ForwardedMouseEvent::Move,
+                ForwardedMouseEvent::Move,
+                ForwardedMouseEvent::Release
+            ]
         );
     }
 }
