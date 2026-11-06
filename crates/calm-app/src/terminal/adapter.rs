@@ -400,6 +400,8 @@ impl TerminalPanel {
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let visible = self.takes_pointer(event.position);
         if !self.pointer.press(button_index(event.button), visible) {
+            // The tracked-focus listener also focuses on presses this terminal rejects.
+            window.prevent_default();
             return;
         }
         self.focus.focus(window, cx);
@@ -525,5 +527,55 @@ fn mouse_button(value: gpui::MouseButton) -> MouseButton {
         gpui::MouseButton::Right => MouseButton::Right,
         gpui::MouseButton::Middle => MouseButton::Middle,
         _ => MouseButton::Unknown,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PointerGate;
+
+    #[test]
+    fn rejected_terminal_press_suppresses_automatic_focus() {
+        let source = include_str!("adapter.rs");
+        let terminal_render = source
+            .split("impl Render for TerminalPanel")
+            .nth(1)
+            .and_then(|render| render.split("/// A stable index per button").next())
+            .expect("terminal render implementation exists");
+        assert!(
+            terminal_render.contains(".track_focus(&self.focus)"),
+            "terminal input must remain registered to its focus handle"
+        );
+
+        let mouse_down = source
+            .split("fn mouse_down(")
+            .nth(1)
+            .and_then(|handler| handler.split("/// GPUI sends the release").next())
+            .expect("terminal mouse-down handler exists");
+        let gate_check = mouse_down
+            .find("if !self.pointer.press")
+            .expect("terminal mouse-down checks the pointer gate");
+        let rejected_return = mouse_down[gate_check..]
+            .find("return;")
+            .map(|offset| gate_check + offset)
+            .expect("a rejected press returns before focusing");
+        let prevents_auto_focus = mouse_down.find("window.prevent_default()");
+        assert!(
+            prevents_auto_focus.is_some_and(|prevent_default| {
+                gate_check < prevent_default && prevent_default < rejected_return
+            }),
+            "a rejected press must suppress GPUI's automatic focus transfer"
+        );
+        let focus_request = mouse_down
+            .find("self.focus.focus(window, cx)")
+            .expect("accepted terminal presses still request focus");
+        assert!(
+            rejected_return < focus_request,
+            "focus must follow the pointer gate's rejected-press return"
+        );
+
+        let mut gate = PointerGate::default();
+        assert!(!gate.press(0, false));
+        assert!(gate.press(0, true));
     }
 }
