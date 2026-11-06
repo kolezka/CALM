@@ -53,8 +53,10 @@ use gpui::{
 
 use calm_plugins::{BridgeRequest, InstalledPlugin, PluginContent};
 use futures::StreamExt as _;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -175,6 +177,7 @@ pub struct CanvasView {
     focused: Option<PanelId>,
     /// Panel chrome under the pointer and its button, if any. Shows the buttons.
     hover: Option<(PanelId, Option<ChromeButton>)>,
+    pub(super) move_wanted: Rc<Cell<bool>>,
     /// Resize edge under the pointer, or of the resize under way. Sets the cursor.
     resize_cursor: Option<ResizeEdge>,
     /// Live terminals by panel. Dropping an entry ends its process.
@@ -313,6 +316,7 @@ impl CanvasView {
             saved_flash: None,
             focused: None,
             hover: None,
+            move_wanted: Rc::new(Cell::new(false)),
             resize_cursor: None,
             terminals: Vec::new(),
             terminal_meta: Vec::new(),
@@ -2410,6 +2414,7 @@ impl CanvasView {
         let hover = hover_target(&self.scene, screen);
         let changed = hover != self.hover;
         self.hover = hover;
+        self.move_wanted.set(self.hover.is_some());
         changed
     }
 

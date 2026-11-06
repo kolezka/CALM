@@ -1749,6 +1749,9 @@ mod tests {
         assert_eq!(handler.escape(false), vec![Effect::Redraw]);
         assert_eq!(handler.confirming, None);
         assert_eq!(handler.confirm_key(ConfirmKey::Enter), None);
+        handler.request_close(id, true);
+        assert_eq!(handler.confirm_key(ConfirmKey::Escape), None);
+        assert_eq!(handler.confirming, None);
     }
 
     #[test]

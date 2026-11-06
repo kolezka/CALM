@@ -5,7 +5,7 @@
 //! it got at its first event, momentum included. The monitor holds no policy: `wants`
 //! decides which presses it takes and `on_event` decides what each held gesture becomes.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -78,6 +78,7 @@ type OnEvent = Box<dyn FnMut(ContentEvent) -> ContentDecision>;
 
 struct Shared {
     window: Weak<NSWindow>,
+    move_wanted: Rc<Cell<bool>>,
     wants: Wants,
     wants_scroll: WantsScroll,
     on_event: RefCell<OnEvent>,
@@ -99,6 +100,7 @@ impl ContentGestureMonitor {
     /// every taken event and answers what the gesture is so far.
     pub fn install(
         window: &NSWindow,
+        move_wanted: Rc<Cell<bool>>,
         wants: impl Fn(ContentButton, Point, GestureMods) -> bool + 'static,
         wants_scroll: impl Fn(Point, bool) -> bool + 'static,
         on_event: impl FnMut(ContentEvent) -> ContentDecision + 'static,
@@ -106,6 +108,7 @@ impl ContentGestureMonitor {
         MainThreadMarker::new().ok_or(NativeError::NotMainThread)?;
         let shared = Rc::new(Shared {
             window: Weak::new(window),
+            move_wanted,
             wants: Box::new(wants),
             wants_scroll: Box::new(wants_scroll),
             on_event: RefCell::new(Box::new(on_event)),
@@ -141,12 +144,13 @@ impl ContentGestureMonitor {
     /// `install` on the AppKit window behind a window handle, such as a GPUI window.
     pub fn install_for(
         window: &impl HasWindowHandle,
+        move_wanted: Rc<Cell<bool>>,
         wants: impl Fn(ContentButton, Point, GestureMods) -> bool + 'static,
         wants_scroll: impl Fn(Point, bool) -> bool + 'static,
         on_event: impl FnMut(ContentEvent) -> ContentDecision + 'static,
     ) -> Result<ContentGestureMonitor, NativeError> {
         let ns_window = ns_window(window)?;
-        ContentGestureMonitor::install(&ns_window, wants, wants_scroll, on_event)
+        ContentGestureMonitor::install(&ns_window, move_wanted, wants, wants_scroll, on_event)
     }
 }
 
@@ -191,6 +195,9 @@ fn handle_event(shared: &Shared, event: &NSEvent) -> bool {
         }
     }
     if event.r#type() == NSEventType::MouseMoved {
+        if !shared.move_wanted.get() {
+            return false;
+        }
         if let Some(window) = shared.window.load()
             && over_native_child(&window, event)
             && let Ok(mut on_event) = shared.on_event.try_borrow_mut()

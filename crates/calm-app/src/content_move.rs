@@ -286,6 +286,7 @@ impl CanvasView {
         let scroll_cx = async_cx.clone();
         let installed = ContentGestureMonitor::install_for(
             window,
+            self.move_wanted.clone(),
             move |button, point, mods| {
                 let mut cx = wants_cx.clone();
                 // Fails while GPUI is mid-update (a modal loop, say): leave the press alone.
