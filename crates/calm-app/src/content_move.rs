@@ -118,6 +118,7 @@ impl ContentMove {
         scene: &mut Scene,
     ) -> (ContentDecision, Vec<Effect>) {
         match event {
+            ContentEvent::Moved(_) => (ContentDecision::Click, Vec::new()),
             ContentEvent::Down(screen) if std::mem::take(&mut self.space_pan_armed) => {
                 // Never a click for the panel: the core pans while Space is held.
                 self.resizing = false;
@@ -243,6 +244,7 @@ impl ContentMove {
 /// `event` with its point moved into canvas coordinates.
 fn in_canvas(event: ContentEvent, canvas_origin: Point) -> ContentEvent {
     match event {
+        ContentEvent::Moved(point) => ContentEvent::Moved(to_canvas(point, canvas_origin)),
         ContentEvent::Down(point) => ContentEvent::Down(to_canvas(point, canvas_origin)),
         ContentEvent::Dragged(point) => ContentEvent::Dragged(to_canvas(point, canvas_origin)),
         ContentEvent::Up(point) => ContentEvent::Up(to_canvas(point, canvas_origin)),
@@ -284,6 +286,7 @@ impl CanvasView {
         let scroll_cx = async_cx.clone();
         let installed = ContentGestureMonitor::install_for(
             window,
+            self.move_wanted.clone(),
             move |button, point, mods| {
                 let mut cx = wants_cx.clone();
                 // Fails while GPUI is mid-update (a modal loop, say): leave the press alone.
@@ -375,6 +378,16 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) -> ContentDecision {
         let event = in_canvas(event, self.viewport.origin);
+        if let ContentEvent::Moved(screen) = event {
+            if !self.has_hover() {
+                // Native content cannot be a chrome hover target.
+                return ContentDecision::Click;
+            }
+            if self.update_hover_target(screen) {
+                cx.notify();
+            }
+            return ContentDecision::Click;
+        }
         let held = to_modifiers(calm_native::held_mods());
         let mods = event_modifiers(event, &mut self.content_press_mods, held);
         let (decision, effects) =
