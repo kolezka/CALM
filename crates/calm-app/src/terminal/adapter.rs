@@ -400,6 +400,8 @@ impl TerminalPanel {
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let visible = self.takes_pointer(event.position);
         if !self.pointer.press(button_index(event.button), visible) {
+            // The tracked-focus listener also focuses on presses this terminal rejects.
+            window.prevent_default();
             return;
         }
         self.focus.focus(window, cx);
