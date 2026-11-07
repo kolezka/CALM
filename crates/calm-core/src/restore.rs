@@ -13,6 +13,26 @@ use crate::settings::RestoreOnLaunch;
 pub const ASK_FALLBACK_NOTICE: &str =
     "session.restore_on_launch is \"ask\", which has no dialog yet: restored the last session";
 
+/// Use a saved title only for a running panel without a plugin load error.
+pub fn use_saved_title(saved: &str, running: bool, plugin_failed: bool) -> bool {
+    running && !saved.is_empty() && !plugin_failed
+}
+
+/// Keep a mismatched saved title only when the template is literal text.
+pub fn keep_restored_terminal_title(
+    saved: &str,
+    rendered: &str,
+    template: &str,
+    has_override: bool,
+    supervised: bool,
+) -> bool {
+    !saved.is_empty()
+        && !has_override
+        && !supervised
+        && crate::terminal_profile::template_is_literal_text(template)
+        && saved != rendered
+}
+
 /// The launch flags that pick what to restore.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LaunchFlags {
@@ -783,5 +803,89 @@ mod tests {
         .unwrap();
         assert_eq!(plan.layout, Some(sample()));
         assert!(!plan.save_at_start);
+    }
+}
+
+#[cfg(test)]
+mod restored_title_tests {
+    use super::{keep_restored_terminal_title, use_saved_title};
+
+    #[test]
+    fn restored_terminal_title_preserves_literals_but_not_template_or_override() {
+        assert!(keep_restored_terminal_title(
+            "My terminal",
+            "Terminal 1",
+            "Terminal 1",
+            false,
+            false
+        ));
+        assert!(!keep_restored_terminal_title(
+            "Terminal 1",
+            "Terminal 1",
+            "Terminal 1",
+            false,
+            false
+        ));
+        assert!(!keep_restored_terminal_title(
+            "My terminal",
+            "Terminal 1",
+            "Terminal 1",
+            true,
+            false
+        ));
+        assert!(!keep_restored_terminal_title(
+            "",
+            "Terminal 1",
+            "Terminal 1",
+            false,
+            false
+        ));
+    }
+
+    fn keep_title_for_template(saved: &str, template: &str) -> bool {
+        let rendered = crate::terminal_profile::render_title(template, 1, "~", "shell");
+        keep_restored_terminal_title(saved, &rendered, template, false, false)
+    }
+
+    #[test]
+    fn changed_index_does_not_make_template_title_literal() {
+        assert!(!keep_title_for_template("Terminal 3", "Terminal {n}"));
+    }
+
+    #[test]
+    fn restored_title_inference_uses_the_renderers_placeholders() {
+        for (template, literal) in [
+            ("Terminal", true),
+            ("{unknown}", true),
+            ("Terminal {n}", false),
+            ("Directory {cwd}", false),
+            ("Process {name}", false),
+        ] {
+            assert_eq!(
+                keep_title_for_template("saved title", template),
+                literal,
+                "{template}"
+            );
+        }
+    }
+
+    #[test]
+    fn supervised_exit_title_is_not_a_restored_literal() {
+        assert!(!keep_restored_terminal_title(
+            "command: exited, code 1",
+            "command",
+            "command",
+            false,
+            true,
+        ));
+    }
+
+    #[test]
+    fn unbuilt_plugin_keeps_failure_title_instead_of_saved_title() {
+        assert!(!use_saved_title("Saved plugin title", true, true));
+        assert!(use_saved_title("Saved plugin title", true, false));
+        assert!(!use_saved_title("", true, false));
+        assert!(!use_saved_title("Saved plugin title", false, false));
+        assert!(!use_saved_title("Saved plugin title", false, true));
     }
 }

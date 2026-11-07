@@ -139,6 +139,9 @@ impl CanvasView {
         }
         match apply_panel_field(&mut self.scene, id, field, value) {
             Ok(FormOutcome::Changed { rebuild }) => {
+                if matches!(field, "panel.title" | "panel.reset_all") {
+                    self.clear_restored_terminal_title(id);
+                }
                 self.apply_panel_overrides(id, cx);
                 if let (Some(settings_window), Some(panel)) =
                     (self.panel_settings_windows.get(&id), self.scene.get(id))

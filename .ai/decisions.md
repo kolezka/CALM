@@ -1064,3 +1064,5 @@ Spec: `docs/superpowers/specs/2026-11-02-pinned-panels-design.md`.
 - **Global Settings changes re-render notes only when `markdown` changed.** Each refresh
   renders every page.
 
+- A restored terminal title is a literal only under a placeholder-free template (2026-11-06, review of the restored-titles fix). With `{n}`, `{cwd}` or `{name}` the render changes between launches, so a mismatch proves nothing and the template keeps owning the title. Layouts still store no provenance.
+
