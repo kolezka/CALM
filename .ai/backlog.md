@@ -36,7 +36,7 @@ expect from windows.
 A click inside a web page goes straight to the WKWebView, so scene focus and z-order do
 not change.
 
-- State: done for browser panels. `calm-native::browser` watches clicks with a local event
+- State: PR #98 open (`fix/plugin-click-focus`): `WebPanel` gets the browser's click monitor and the app routes both through `native_click`. Browser side was done in PR #6.
   monitor and sends `BrowserEvent::Clicked`, which `canvas_view.rs` handles (PR #6). Still
   open for plugin panels: `WebPanel` has no such monitor (`status.md`, "Not wired yet").
 - Blocker: none known. The browser monitor is the model to copy.
@@ -133,7 +133,7 @@ Since PR #41, a restored plugin panel keeps its saved title until the panel sets
 A plugin that fails to load never sets one, so its saved title hides the `(not built)`
 title.
 
-- State: not started. On `main` since #41.
+- State: PR #97 open (`fix/restored-titles`): `restore::use_saved_title` keeps the "(not built)" title when the plugin failed to load.
 - Blocker: none known.
 - Origin: side effect of the PR #41 review fix for restored titles.
 
@@ -142,7 +142,7 @@ title.
 `terminal_settings_changed` re-renders every plain terminal title from the template, which
 replaces a title restored by PR #41.
 
-- State: not started. On `main` since #41.
+- State: PR #97 open (`fix/restored-titles`): a literal saved title is kept in memory (`TerminalMeta.restored_title`) under a placeholder-free template; supervised terminals unchanged.
 - Blocker: none known.
 - Origin: PR #41.
 
@@ -180,7 +180,7 @@ A press on the part of a terminal that a panel in front covers is ignored by the
 `.track_focus`, and GPUI's automatic focus-on-press listener still runs. A click on the
 title bar of a front panel over a rear terminal can give that terminal keyboard focus.
 
-- State: not started. Read-verified by a cross-family review of PR #54; not reproduced in
+- State: PR #93 open (`fix/covered-terminal-focus`): `window.prevent_default()` on a press the gate rejects. By eye owed.
   the app. Present on `main` before #54.
 - Fix idea: drop `.track_focus` from the terminal input div and focus only from the
   accepted press in `mouse_down`, or check visibility before focusing.
@@ -194,7 +194,7 @@ release: Ghostty gets neither the last motion nor the release, so a selection or
 mouse-reporting program can be left mid-drag. `PointerGate` clears the press on the next
 move with no button held, but cannot send the missing release.
 
-- State: not started. Read-verified by a cross-family review of PR #54; not reproduced in
+- State: PR #94 open (`fix/terminal-drag-release`): window-level capture listeners are the only move and release path, `WeakEntity`, `TestAppContext` regression. By eye owed.
   the app. Present on `main` before #54.
 - Fix idea: a window-level mouse listener (or pointer capture) for the terminal that took
   the press, until its release.
