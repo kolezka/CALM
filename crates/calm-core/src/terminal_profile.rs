@@ -905,6 +905,11 @@ pub fn render_title(template: &str, index: u64, cwd: &str, name: &str) -> String
     title
 }
 
+/// Whether the renderer treats the whole template as literal text.
+pub fn template_is_literal_text(template: &str) -> bool {
+    render_title(template, 0, "", "") == template
+}
+
 /// `path` with a leading `home` shown as `~`.
 pub fn display_cwd(path: &Path, home: &Path) -> String {
     match path.strip_prefix(home) {

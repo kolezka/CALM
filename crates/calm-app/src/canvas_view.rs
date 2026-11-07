@@ -582,9 +582,32 @@ impl CanvasView {
                     self.panel_created(id, kind, window, cx);
                 }
             }
-            // The open paths set a default title; the saved one stays until the panel sets
-            // its own. A panel that failed to open keeps its failure title.
-            if self.panel_running(id) && !saved_title.is_empty() {
+            // Infer at restore: a saved title that differs from a placeholder-free template render is a literal.
+            let supervised = self
+                .terminal_meta(id)
+                .is_some_and(|meta| meta.run.is_some());
+            if let Some(panel) = self.scene.get(id) {
+                let literal = calm_core::restore::keep_restored_terminal_title(
+                    &saved_title,
+                    &panel.title,
+                    &self.resolve_terminal(id).title_template,
+                    panel.overrides.title.is_some(),
+                    supervised,
+                );
+                if let Some(meta) = self.terminal_meta_mut(id) {
+                    meta.restored_title = literal.then(|| saved_title.clone());
+                }
+            }
+            // A panel that failed to open keeps its failure title.
+            let plugin_failed = self
+                .plugin_panels
+                .iter()
+                .any(|(panel_id, panel)| *panel_id == id && panel.load_error().is_some());
+            if calm_core::restore::use_saved_title(
+                &saved_title,
+                self.panel_running(id),
+                plugin_failed,
+            ) {
                 self.scene.set_title(id, saved_title);
             }
         }
@@ -1299,6 +1322,7 @@ impl CanvasView {
                 profile: profile.clone(),
                 index: self.terminals_opened,
                 cwd: home.clone(),
+                restored_title: None,
                 applied_colors: None,
                 configuration: "default",
                 run,
@@ -1364,6 +1388,12 @@ impl CanvasView {
             .iter_mut()
             .find(|(panel, _)| *panel == id)
             .map(|(_, meta)| meta)
+    }
+
+    pub(crate) fn clear_restored_terminal_title(&mut self, id: PanelId) {
+        if let Some(meta) = self.terminal_meta_mut(id) {
+            meta.restored_title = None;
+        }
     }
 
     fn command_run(&self, id: PanelId) -> Option<&CommandRun> {
@@ -1486,6 +1516,8 @@ impl CanvasView {
         // An override title is shown as typed, `{n}` and all.
         let base = if resolved.title_is_literal {
             resolved.title_template.clone()
+        } else if let Some(restored_title) = &meta.restored_title {
+            restored_title.clone()
         } else {
             render_title(&resolved.title_template, meta.index, &cwd, &name)
         };
