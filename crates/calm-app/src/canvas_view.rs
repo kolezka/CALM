@@ -1757,6 +1757,13 @@ impl CanvasView {
             .collect()
     }
 
+    fn native_click(&mut self, id: PanelId, window: &mut Window, cx: &mut Context<Self>) {
+        if apply_native_click(&mut self.scene, &mut self.focused, id) {
+            self.sync_native_order(cx);
+            self.focus_handle.focus(window, cx);
+        }
+    }
+
     /// Opens the web view for a plugin panel already in the scene. The chrome shows the
     /// plugin's name, or that it is not built.
     pub fn open_plugin_panel(
@@ -1766,12 +1773,13 @@ impl CanvasView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
+        let events = self.browser_events(window, cx);
         let plugin = self
             .installed_plugins
             .iter()
             .find(|plugin| plugin.manifest.id == plugin_id)
             .ok_or_else(|| format!("plugin {plugin_id} is not installed"))?;
-        let panel = PluginPanel::open(id, plugin, self.bridge.clone(), window)?;
+        let panel = PluginPanel::open(id, plugin, self.bridge.clone(), events, window)?;
         let title = match panel.load_error() {
             Some(_) => format!("{} (not built)", plugin.manifest.name),
             None => plugin.manifest.name.clone(),
@@ -2019,13 +2027,7 @@ impl CanvasView {
                 };
                 panel.kind = PanelKind::Browser { url, page_zoom };
             }
-            BrowserEvent::Clicked => {
-                // The click went to the native view, so GPUI never saw it.
-                self.scene.bring_to_front(id);
-                self.sync_native_order(cx);
-                self.focused = Some(id);
-                self.focus_handle.focus(window, cx);
-            }
+            BrowserEvent::Clicked => self.native_click(id, window, cx),
         }
         window.refresh();
         cx.notify();
@@ -4108,6 +4110,15 @@ fn to_bounds(rect: Rect, origin: gpui::Point<f64>) -> Bounds<Pixels> {
     }
 }
 
+fn apply_native_click(scene: &mut Scene, focused: &mut Option<PanelId>, id: PanelId) -> bool {
+    if scene.get(id).is_none() {
+        return false;
+    }
+    scene.bring_to_front(id);
+    *focused = Some(id);
+    true
+}
+
 /// Runs one ordered session write. A poisoned lock still writes: the writer holds no
 /// half-done state between calls.
 fn write_session(
@@ -4134,6 +4145,26 @@ fn installed_version(plugins: &[InstalledPlugin], plugin_id: &str) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_click_focuses_and_raises_a_plugin() {
+        let mut scene = Scene::default();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let plugin = scene.add(
+            PanelKind::Plugin {
+                plugin_id: "hello-world".to_string(),
+                plugin_version: None,
+                settings: serde_json::Value::Null,
+            },
+            rect,
+        );
+        let front = scene.add(PanelKind::terminal(), rect);
+        let mut focused = Some(front);
+
+        assert!(apply_native_click(&mut scene, &mut focused, plugin));
+        assert_eq!(focused, Some(plugin));
+        assert_eq!(scene.panels.last().map(|panel| panel.id), Some(plugin));
+    }
 
     #[test]
     fn only_terminals_with_content_skip_the_underfill() {
