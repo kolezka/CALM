@@ -435,6 +435,27 @@ Open questions: `.ai/open-questions.md`.
 
 ## In progress (not on `main`)
 
+- Bugfix wave for 0.1 (2026-11-06), six PRs from `origin/main` ff8d0e5, one agent each,
+  tests, clippy and fmt green on every branch, cross-family review on the non-trivial ones;
+  the smoke gate was not run before the pushes (machine in use) and is owed before each merge:
+  - #93 `fix/covered-terminal-focus` (backlog 17): `window.prevent_default()` when `PointerGate`
+    rejects a press, so a covered terminal no longer takes focus from a click on the panel in
+    front. Two lines, no behavioral test possible without a live terminal; by eye owed.
+  - #94 `fix/terminal-drag-release` (backlog 18): window-level capture listeners from a paint
+    callback are the only mouse move and release path for terminals, with a `WeakEntity`;
+    `TestAppContext` regression `[Move, Move, Release]`. Adds the `gpui` `test-support`
+    dev-dependency (Linux CI unaffected).
+  - #95 `fix/escape-redraw-hover`: chrome hover is cleared by native mouse moves (gated by a
+    `Cell<bool>` before the hit test) and reports the title bar only, so buttons show over the
+    title bar, not the panel body. The Escape commit returns `Redraw` from the core but changes
+    no app behavior: `apply_effects` always refreshed, so the stale prompt is still open below.
+  - #96 `fix/native-smoke-menu-count`: the example derives its menu counts from the core tree.
+  - #97 `fix/restored-titles` (backlog 11, 12): a restored unbuilt plugin shows "(not built)";
+    a plain terminal's literal title survives settings changes, in memory only and only under a
+    placeholder-free template (`.ai/decisions.md`).
+  - #98 `fix/plugin-click-focus` (backlog 5): a click inside a plugin page focuses and raises the
+    panel through the browser's monitor pattern and one shared `native_click` path.
+
 - `feat/close-panel-key`: action `panel.close` ("Close focused panel without asking",
   default `cmd-w`, Keys tab row, no menu item) closes the focused panel through
   `Effect::ClosePanel` with no confirmation, also for a running terminal. Table and
@@ -683,14 +704,17 @@ z-order follows scene order; preview snapshots about one per 2 s; settings persi
   `rgb_from_ns` (`settings_window.rs`) drops the picker's alpha, so no color well can set
   one. Since #74 every CALM well sets `supportsAlpha = false`
   (`.ai/decisions.md`, "Color wells without opacity").
-- Escape on the close confirmation does not redraw until the next event.
+- Escape on the close confirmation sometimes leaves the prompt painted until the next event.
+  Cause unknown: `apply_effects` already refreshes and notifies on an empty effect list (review
+  of #95), so the key likely never reaches the canvas while a native view holds the keyboard,
+  or paint stalled. Needs a reproduction with a log in `cancel()`.
 - Panel bottom corners are square because the native view is square.
 - Chrome hover is tracked from GPUI mouse moves only, so buttons can stay visible over a
   live native view.
 - A transitive `block 0.1.6` future-incompatibility warning.
-- `calm-native` example `native_smoke` fails its menu check: it expects 7 Add items and 1
-  submenu, and there are 8 items since Run Command (#63). Not in the Makefile or CI. Fix
-  pending, in the final wave of `feat/presets-welcome`.
+- `calm-native` example `native_smoke` fails its menu check (hard-coded 8 items, 9 since
+  Add > Markdown). Not in the Makefile or CI. Fix open as #96, which derives the counts from
+  the core menu tree.
 - repo-intel 0.1.8 prints `tmp: nieustawiona zmienna` on its error path. Upstream bug.
 
 ## User-owned next steps
