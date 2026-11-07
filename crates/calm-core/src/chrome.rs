@@ -175,11 +175,14 @@ pub fn chrome_hit(metrics: &ChromeMetrics, panel: &Panel, world: Point) -> Optio
     }
 }
 
-/// The panel under the screen point and the button under it, if any. Drives hover styling.
+/// The chrome under the screen point and the button under it, if any. Drives hover styling.
 pub fn hover_target(scene: &Scene, screen: Point) -> Option<(PanelId, Option<ChromeButton>)> {
     let id = scene.hit_test_screen(screen)?;
     let panel = scene.get(id)?;
     let world = scene.camera_of(panel).screen_to_world(screen);
+    if !title_bar_layout(&scene.chrome, panel).bar.contains(world) {
+        return None;
+    }
     Some((id, chrome_hit(&scene.chrome, panel, world)))
 }
 
@@ -737,7 +740,7 @@ mod tests {
     }
 
     #[test]
-    fn hover_reports_panel_and_button() {
+    fn hover_reports_chrome_but_not_panel_content() {
         let (scene, id) = scene_with_panel();
         let layout = title_bar_layout(&ChromeMetrics::default(), scene.get(id).unwrap());
         let close = layout.close.unwrap();
@@ -748,10 +751,7 @@ mod tests {
             ),
             Some((id, Some(ChromeButton::Close)))
         );
-        assert_eq!(
-            hover_target(&scene, Point::new(200.0, 200.0)),
-            Some((id, None))
-        );
+        assert_eq!(hover_target(&scene, Point::new(200.0, 200.0)), None);
         assert_eq!(hover_target(&scene, Point::new(0.0, 0.0)), None);
     }
 

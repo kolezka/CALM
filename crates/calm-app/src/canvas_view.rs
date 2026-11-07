@@ -53,8 +53,10 @@ use gpui::{
 
 use calm_plugins::{BridgeRequest, InstalledPlugin, PluginContent};
 use futures::StreamExt as _;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -173,8 +175,9 @@ pub struct CanvasView {
     /// Path of the last saved layout, shown in the status bar. Task 13 sets it.
     pub saved_flash: Option<String>,
     focused: Option<PanelId>,
-    /// Panel under the pointer and the chrome button under it. Shows the buttons.
+    /// Panel chrome under the pointer and its button, if any. Shows the buttons.
     hover: Option<(PanelId, Option<ChromeButton>)>,
+    pub(super) move_wanted: Rc<Cell<bool>>,
     /// Resize edge under the pointer, or of the resize under way. Sets the cursor.
     resize_cursor: Option<ResizeEdge>,
     /// Live terminals by panel. Dropping an entry ends its process.
@@ -313,6 +316,7 @@ impl CanvasView {
             saved_flash: None,
             focused: None,
             hover: None,
+            move_wanted: Rc::new(Cell::new(false)),
             resize_cursor: None,
             terminals: Vec::new(),
             terminal_meta: Vec::new(),
@@ -2402,14 +2406,24 @@ impl CanvasView {
         self.apply_effects(effects, window, cx);
     }
 
+    pub(super) fn has_hover(&self) -> bool {
+        self.hover.is_some()
+    }
+
+    pub(super) fn update_hover_target(&mut self, screen: Point) -> bool {
+        let hover = hover_target(&self.scene, screen);
+        let changed = hover != self.hover;
+        self.hover = hover;
+        self.move_wanted.set(self.hover.is_some());
+        changed
+    }
+
     fn mouse_move(&mut self, event: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         let screen = self.to_canvas(event.position);
         let effects = self
             .input
             .mouse_move(screen, to_mods(&event.modifiers), &mut self.scene);
-        let hover = hover_target(&self.scene, screen);
-        let hover_changed = hover != self.hover;
-        self.hover = hover;
+        let hover_changed = self.update_hover_target(screen);
         let cursor_changed = self.update_resize_cursor(screen);
         if !effects.is_empty() {
             self.apply_effects(effects, window, cx);
@@ -3525,7 +3539,7 @@ impl PaintSnapshot {
             );
         }
 
-        // Buttons show while the pointer is over the panel, and during a close confirmation.
+        // Buttons show while the pointer is over the title bar, and during a close confirmation.
         if hovered_button.is_some() || confirming {
             let buttons = [
                 (ChromeButton::Minimize, layout.minimize),
