@@ -459,7 +459,7 @@ fn handle_event(controls: &Controls, clip: &NSView, event: &NSEvent) -> bool {
     true
 }
 
-fn clicked_inside(clip: &NSView, event: &NSEvent) -> bool {
+pub(crate) fn clicked_inside(clip: &NSView, event: &NSEvent) -> bool {
     let mtm = MainThreadMarker::from(clip);
     let (Some(window), Some(clip_window)) = (event.window(mtm), clip.window()) else {
         return false;

@@ -32,7 +32,7 @@ pub use process_stats::{ProcessSample, ProcessSampler};
 pub use prompt::{TextPrompt, alert, choose, confirm, prompt_text, prompt_value};
 pub use settings_window::{SettingsWindow, WindowLayout, choose_image_file, settings_window_count};
 pub use status_bar::StatusBar;
-pub use webview::{DEFAULT_BROWSER_URL, WebPanel};
+pub use webview::{DEFAULT_BROWSER_URL, WebPanel, WebPanelEvent};
 
 use std::fmt;
 

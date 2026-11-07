@@ -1,6 +1,7 @@
 //! Plugin panels: discovery at startup, one WKWebView per panel, and the host side of the
 //! `window.calm` bridge. Calls that block on the host live in `plugin_services`.
 
+use crate::browser_panel::BrowserEvents;
 use crate::plugin_services::ServiceCall;
 use calm_core::geometry::{Point, Rect, Size};
 use calm_core::interaction::Effect;
@@ -9,7 +10,7 @@ use calm_core::preview::PanelMode;
 use calm_core::resize::ResizePolicy;
 use calm_core::scene::{PanelId, PanelKind, Scene};
 use calm_core::viewport::NativePlacement;
-use calm_native::{NativeChild, WebPanel};
+use calm_native::{BrowserEvent, NativeChild, WebPanel, WebPanelEvent};
 use calm_plugins::{
     API_VERSION, ApiError, BridgeEvent, BridgeRequest, BridgeResponse, CALM_PRELUDE_JS, Discovery,
     ErrorCode, InstalledPlugin, discover_search, host_info_js, is_known_method, missing_scripts,
@@ -138,11 +139,19 @@ impl PluginPanel {
         id: PanelId,
         plugin: &InstalledPlugin,
         bridge: BridgeSender,
+        events: BrowserEvents,
         window: &mut Window,
     ) -> Result<PluginPanel, String> {
         let mut host = NativeChild::new(window).map_err(|err| err.to_string())?;
         host.set_visible(false);
         let mut web = WebPanel::new(&host).map_err(|err| err.to_string())?;
+        web.on_event(Box::new(move |event| match event {
+            WebPanelEvent::Clicked => {
+                if events.try_send((id, BrowserEvent::Clicked)).is_err() {
+                    eprintln!("calm: plugin panel {}: canvas gone, click dropped", id.0);
+                }
+            }
+        }));
         // Before the prelude, so `calm.has` works from the first line of the page.
         web.add_user_script_at_document_start(&host_info_js(API_VERSION, served_methods()));
         web.add_user_script_at_document_start(CALM_PRELUDE_JS);

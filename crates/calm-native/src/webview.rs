@@ -1,11 +1,14 @@
 use std::cell::RefCell;
 use std::path::Path;
+use std::ptr::NonNull;
+use std::rc::Rc;
 
+use block2::RcBlock;
 use calm_core::geometry::Size;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
+use objc2_app_kit::{NSAutoresizingMaskOptions, NSEvent, NSEventMask, NSView};
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest};
 use objc2_web_kit::{
     WKScriptMessage, WKScriptMessageHandler, WKUserContentController, WKUserScript,
@@ -21,6 +24,12 @@ pub const DEFAULT_BROWSER_URL: &str = "https://ghostty.org";
 const MESSAGE_HANDLER_NAME: &str = "calm";
 
 type MessageCallback = Box<dyn FnMut(String)>;
+type EventCallback = Box<dyn FnMut(WebPanelEvent)>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebPanelEvent {
+    Clicked,
+}
 
 #[derive(Default)]
 struct HandlerIvars {
@@ -87,6 +96,8 @@ pub struct WebPanel {
     controller: Retained<WKUserContentController>,
     handler: Retained<MessageHandler>,
     zoom_view: Retained<NSView>,
+    event_callback: Rc<RefCell<Option<EventCallback>>>,
+    monitor: Option<Retained<AnyObject>>,
 }
 
 impl WebPanel {
@@ -111,11 +122,38 @@ impl WebPanel {
         web_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewNotSizable);
         let zoom_view = host.zoom_view().clone();
         zoom_view.addSubview(&web_view);
+        let event_callback: Rc<RefCell<Option<EventCallback>>> = Rc::new(RefCell::new(None));
+        let callback = event_callback.clone();
+        let clip = host.clip_view().clone();
+        let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit keeps the event alive during the handler.
+            let event_ref = unsafe { event.as_ref() };
+            if crate::browser::clicked_inside(&clip, event_ref) {
+                let taken = callback.borrow_mut().take();
+                if let Some(mut handler) = taken {
+                    handler(WebPanelEvent::Clicked);
+                    let mut slot = callback.borrow_mut();
+                    if slot.is_none() {
+                        *slot = Some(handler);
+                    }
+                }
+            }
+            event.as_ptr()
+        });
+        // SAFETY: the block returns the event unchanged and Drop removes the monitor.
+        let monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseDown,
+                &block,
+            )
+        };
         Ok(WebPanel {
             web_view,
             controller,
             handler,
             zoom_view,
+            event_callback,
+            monitor,
         })
     }
 
@@ -159,6 +197,11 @@ impl WebPanel {
             self.web_view
                 .evaluateJavaScript_completionHandler(&NSString::from_str(script), None)
         };
+    }
+
+    /// Replaces the callback for native page events.
+    pub fn on_event(&mut self, callback: Box<dyn FnMut(WebPanelEvent)>) {
+        *self.event_callback.borrow_mut() = Some(callback);
     }
 
     /// Replaces the callback for messages posted to the `calm` handler.
@@ -206,6 +249,10 @@ impl WebPanel {
 
 impl Drop for WebPanel {
     fn drop(&mut self) {
+        if let Some(monitor) = self.monitor.take() {
+            // SAFETY: the monitor was returned by AppKit's local monitor registration.
+            unsafe { NSEvent::removeMonitor(&monitor) };
+        }
         // The controller retains the handler; remove it to break the cycle.
         // SAFETY: removing a handler we registered, on the main thread.
         unsafe {
